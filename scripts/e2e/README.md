@@ -82,6 +82,9 @@ My Gift Cards surface:
 ```bash
 # Create, open, and claim a card between two accounts, on the simulator.
 scripts/e2e/flutter-ios-regtest-mobile-payment-link-round-trip.sh
+
+# First-wallet Gift creation/import, receipt, Home setup, and recipient removal.
+scripts/e2e/flutter-ios-regtest-mobile-gift-onboarding.sh
 ```
 
 It is part of `scripts/e2e/flutter-ios-regtest-mobile-full.sh` and follows
@@ -90,6 +93,33 @@ the mobile lane rules: `run_mobile_e2e` injects `VIZOR_FORM_FACTOR=mobile`,
 runner passes `VIZOR_PAYMENT_LINK_REGTEST_ENABLED=true` — without which
 payment links stay gated off — plus `VIZOR_DEEPLINK_BASE_URL`. Set
 `SIMULATOR_UDID` when more than one simulator is booted.
+
+The onboarding runner funds fresh external Gift addresses through the existing
+Python driver, then drives **Activate gift card → Paste card link** in a walletless
+app. It verifies account/passcode persistence, real claim transactions and Home
+Activity, six-confirmation bearer/temporary DB cleanup, manual setup carousel,
+backup deferral/completion and birthday, education, first-wallet passphrase
+import, and deletion of a waiting card with its removed recipient. The runner
+passes the mobile tag/define and opts into skipped mobile tests. It does not
+capture recovery words or bearer links, and skips native biometric enrollment.
+Both Gift runners reset the disposable regtest chain by default; run them
+serially. `E2E_DRIVER_PORT` selects the onboarding driver's port.
+
+The desktop and simulator round-trip runners also accept
+`--dart-define=GIFT_CARD_E2E_AMOUNT_MODE=usd` or `usd-max` (the default is
+`zec`). These modes fix only the USD price at $125.50 per ZEC, check both
+currency switches, and use real regtest funding and claims. The `usd-max`
+case checks that rounding the visible dollar amount preserves the exact
+ZEC Max quote through the copied card link and recipient balance:
+
+```bash
+scripts/e2e/flutter-macos-regtest-payment-link-round-trip.sh \
+  --dart-define=GIFT_CARD_E2E_AMOUNT_MODE=usd-max
+
+SIMULATOR_UDID=<simulator-udid> \
+  scripts/e2e/flutter-ios-regtest-mobile-payment-link-round-trip.sh \
+  --dart-define=GIFT_CARD_E2E_AMOUNT_MODE=usd
+```
 
 Both the desktop and simulator Gift Card runs drive the app's **Redeem a
 card → Paste card link** path rather than opening a universal link. macOS

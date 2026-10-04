@@ -107,6 +107,7 @@ use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine;
 use crate::wallet::{confirmations_policy, payment_link_claim_confirmations_policy};
 
+mod gift_card_input;
 use super::migration::MIN_IRONWOOD_MIGRATION_OUTPUT_ZATOSHI;
 use super::migration_wallet_ops::{
     migration_locked_input_policy, select_spendable_orchard_v2_notes,
@@ -1062,6 +1063,12 @@ fn propose_request(
     purpose: SendPurpose,
     context: &str,
 ) -> Result<(Proposal<WalletFeeRule, ReceivedNoteId>, Option<TxVersion>), String> {
+    if purpose == SendPurpose::PaymentLinkClaim {
+        if let Some(source) = gift_card_input::CardInput::load(db, db_path, account_id)? {
+            let proposal = source.propose(network, request.build()?)?;
+            return Ok((proposal, Some(TxVersion::V6)));
+        }
+    }
     let proposed_tx_version = proposed_tx_version_for_wallet_db(db, network, context)?;
     let transaction_request = request.build()?;
     let migration_locks = super::migration::locked_migration_note_refs(db_path, account_uuid)?;
@@ -1130,6 +1137,11 @@ pub(crate) fn estimate_send_max_for_purpose(
 ) -> Result<SendMaxEstimateResult, String> {
     let mut db = open_wallet_db_for_read(db_path, network)?;
     let account_id = parse_account_uuid(account_uuid)?;
+    if purpose == SendPurpose::PaymentLinkClaim {
+        if let Some(source) = gift_card_input::CardInput::load(&db, db_path, account_id)? {
+            return source.estimate_max(network, to_address, memo_str);
+        }
+    }
     // librustzcash's max-spend proposal path no longer takes a proposed tx
     // version: the version (and its fee shape) is decided when the PCZT is
     // created, so the quote stays aligned with what `propose_send` can build.
@@ -1228,7 +1240,7 @@ fn ledger_shielding_progress(
     let balances = transparent_shielding_balances(db, id, (tip + 1).into())?;
     let mut progress = LedgerShieldingProgress {
         input_count: 0,
-        input_limit: crate::wallet::ledger::MAX_TRANSPARENT_INPUTS as u32,
+        input_limit: crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS as u32,
         below_threshold: false,
     };
     if !balances
@@ -1246,7 +1258,7 @@ fn ledger_shielding_progress(
     }
     let round_value = outputs
         .iter()
-        .take(crate::wallet::ledger::MAX_TRANSPARENT_INPUTS)
+        .take(crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS)
         .try_fold(Zatoshis::ZERO, |sum, output| sum + output.txout().value())
         .ok_or("Ledger shielding value overflow")?;
     progress.below_threshold = round_value < shielding_threshold()?;
@@ -3917,7 +3929,7 @@ fn build_ledger_shielding_round(
         .map_err(|e| e.to_string())?
         .ok_or("Wallet must sync before shielding")?;
     let mut outputs = ledger_shielding_outputs(db, addresses)?;
-    outputs.truncate(crate::wallet::ledger::MAX_TRANSPARENT_INPUTS);
+    outputs.truncate(crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS);
     let selected = outputs
         .iter()
         .try_fold(Zatoshis::ZERO, |sum, o| sum + o.txout().value())
@@ -4054,6 +4066,19 @@ fn validate_payment_link_batch_proposal<NoteRef>(
             }
         }
         HardwareSignerKind::Ledger => {
+            // Review slots are shared across shielded pools, independent of
+            // the per-pool action budget. Internal change does not use a slot.
+            if crate::wallet::ledger::limits::validate_external_shielded_outputs(
+                step.output_count_in_pool(PoolType::ORCHARD),
+                step.output_count_in_pool(PoolType::IRONWOOD),
+            )
+            .is_err()
+            {
+                let max = crate::wallet::ledger::limits::MAX_EXTERNAL_SHIELDED_OUTPUTS;
+                return Err(payment_link_batch_rejection(format_args!(
+                    "has more shielded recipients than your Ledger can display (maximum {max}). {PAYMENT_LINK_BATCH_ADVICE}"
+                )));
+            }
             if step.input_count_in_pool(PoolType::SAPLING) > 0 {
                 return Err(payment_link_batch_rejection(format_args!(
                     "would spend older Sapling funds, which your Ledger can’t sign. {PAYMENT_LINK_BATCH_ADVICE}"
@@ -4074,7 +4099,7 @@ fn validate_payment_link_batch_proposal<NoteRef>(
                 }
                 let actions =
                     payment_link_ledger_action_count(branch, value_pool, spends, outputs)?;
-                let max = crate::wallet::ledger::MAX_SHIELDED_ACTIONS;
+                let max = crate::wallet::ledger::limits::MAX_SHIELDED_ACTIONS_PER_POOL;
                 if actions > max {
                     return Err(payment_link_batch_rejection(format_args!(
                         "is too large for your Ledger to sign. {PAYMENT_LINK_BATCH_ADVICE}"
@@ -6801,6 +6826,28 @@ where
             return ResubmitStats::default();
         }
     };
+    resubmit_transactions(
+        lightwalletd_url,
+        client,
+        current_height,
+        candidates,
+        should_exit,
+    )
+    .await
+}
+
+/// Relay an already validated candidate set. Gift Card inspection supplies its
+/// own chain-authoritative candidates; ordinary sync keeps its existing query.
+pub(crate) async fn resubmit_transactions<ShouldExit>(
+    lightwalletd_url: &str,
+    client: &mut zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient<tonic::transport::Channel>,
+    current_height: u32,
+    candidates: Vec<super::transactions::ResubmittableTx>,
+    should_exit: ShouldExit,
+) -> ResubmitStats
+where
+    ShouldExit: Fn() -> bool,
+{
     let candidates = order_resubmittable_transactions(candidates);
 
     if candidates.is_empty() {

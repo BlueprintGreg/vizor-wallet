@@ -3952,6 +3952,7 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
             account_index: 7,
             coin_type: 133,
             seed_fingerprint: fp,
+            device_public_key: [0; 33],
         },
     )
     .unwrap();
@@ -4410,18 +4411,18 @@ fn gift_card_batch_keystone_counts_orchard_and_ironwood_signatures() {
 fn gift_card_batch_ledger_limits_orchard_actions() {
     use crate::wallet::keys::HardwareSignerKind::Ledger;
 
-    // Before NU6.3 an Orchard action pairs one spend with one output, so 30
-    // cards plus change fit beside up to 32 spends.
+    // Four displayed payments plus unreviewed change fit beside 32 spends.
+    // The action budget and the device-review budget are independent.
     assert_eq!(
         validate_batch(
-            &fabricated_batch_step(30, batch_orchard_inputs(32), 1),
+            &fabricated_batch_step(4, batch_orchard_inputs(32), 1),
             Some(Ledger)
         ),
         Ok(())
     );
     assert_eq!(
         validate_batch(
-            &fabricated_batch_step(30, batch_orchard_inputs(33), 1),
+            &fabricated_batch_step(4, batch_orchard_inputs(33), 1),
             Some(Ledger)
         )
         .unwrap_err(),
@@ -4527,4 +4528,18 @@ async fn policy_transition_withholds_remaining_migration_status_checks() {
     .await;
     assert!(result.unwrap_err().contains("private transparent policy"));
     assert_eq!(observed.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn gift_card_batch_ledger_rejects_fifth_recipient_before_signing() {
+    use crate::wallet::keys::HardwareSignerKind;
+    let proposal = fabricated_batch_step(5, batch_orchard_inputs(1), 1);
+    assert_eq!(
+        validate_batch(&proposal, Some(HardwareSignerKind::Ledger)).unwrap_err(),
+        "This group has more shielded recipients than your Ledger can display (maximum 4). \
+         Try fewer cards or a smaller amount per card."
+    );
+    // The device review budget does not constrain software or Keystone accounts.
+    validate_batch(&proposal, None).unwrap();
+    validate_batch(&proposal, Some(HardwareSignerKind::Keystone)).unwrap();
 }
