@@ -230,9 +230,10 @@ features = ["sqlite", "testing"]
 version = "=0.1.0-rc.6"
 
 # A real transparent shard service in process for import discovery's
-# end-to-end test: the publisher's crates and wallet-pir's shard server at the
-# revision zakura-pir-transparent already depends on, driven through the
-# server's axum router.
+# end-to-end test and the transparent history harness
+# (rust/tests/transparent_history_cases): the publisher's crates and
+# wallet-pir's shard server at the revision zakura-pir-transparent already
+# depends on, driven through the server's axum router.
 [dev-dependencies.transparent-shard]
 git = "https://github.com/valargroup/wallet-pir"
 rev = "9d2cbda0b4336258cfce76ca8ee77b095daa7fd7"
@@ -325,4 +326,12 @@ zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", 
 opt-level = 3
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# valar-spiral-rs's reduction wraps by design, which debug overflow checks turn
+# into a panic in the PIR server the transparent history harness runs in
+# process. Test builds only, as in wallet-pir and wallet-libraries; a named
+# package entry does not inherit `package."*"`, so repeat its opt-level.
+[profile.test.package.valar-spiral-rs]
+overflow-checks = false
 opt-level = 3
