@@ -44,7 +44,7 @@ pub(super) use payload::{phase, queue_stored_transactions};
 #[cfg(test)]
 pub(crate) use policy::test_mode;
 pub(crate) use policy::{
-    live_transparent_mode, may_raise, private_queries_active, set_preference_confirmed,
+    live_transparent_mode, may_raise, regtest_private_e2e, private_queries_active, set_preference_confirmed,
     transparent_ledger_mode_for, transparent_mode_for_preference, EnhancementPolicy,
     PublicTransparentLookups,
 };
