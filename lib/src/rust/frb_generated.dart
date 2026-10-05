@@ -19808,6 +19808,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_createdTime = sse_decode_u_64(deserializer);
     var var_detailsComplete = sse_decode_bool(deserializer);
     var var_provisional = sse_decode_bool(deserializer);
+    var var_amountIncludesFee = sse_decode_bool(deserializer);
     return TransactionInfo(
       txidHex: var_txidHex,
       minedHeight: var_minedHeight,
@@ -19827,6 +19828,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       createdTime: var_createdTime,
       detailsComplete: var_detailsComplete,
       provisional: var_provisional,
+      amountIncludesFee: var_amountIncludesFee,
     );
   }
 
@@ -24120,6 +24122,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.createdTime, serializer);
     sse_encode_bool(self.detailsComplete, serializer);
     sse_encode_bool(self.provisional, serializer);
+    sse_encode_bool(self.amountIncludesFee, serializer);
   }
 
   @protected
