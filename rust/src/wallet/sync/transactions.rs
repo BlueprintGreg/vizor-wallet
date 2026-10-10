@@ -3176,6 +3176,10 @@ mod private_shielding_tests;
 mod private_recovery_tests;
 
 #[cfg(test)]
+#[path = "transactions/history_golden_tests.rs"]
+mod history_golden_tests;
+
+#[cfg(test)]
 mod tests {
     //! SQL-predicate regression tests for `get_resubmittable_txs`.
     //!
