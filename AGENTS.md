@@ -679,8 +679,11 @@ policy-aware openers and fails closed while Tor is starting or broken.
   (`BackgroundMigrationTorRoute`, the `flutter.zcash_tor_enabled` user
   default) before each request. With Tor saved, the outbox defers to the
   foreground (`deferredToForeground`, no reschedule) and preparation tracking
-  stays foreground-only. The mobile settings card and migration status
-  disclose this. `open_background_direct_lwd_channel`, the public status
+  stays foreground-only. Foreground entry hands off the outbox on every
+  supported iOS version before settings can change; only continued-preparation
+  handoff requires iOS 26. Already-pending proof notifications are returned
+  even when network inspection is deferred. The mobile settings card and
+  migration status disclose this. `open_background_direct_lwd_channel`, the public status
   lookup's opener, refuses while this process's route is Tor.
 - **The saved route may be stricter than the enforced route, never laxer.**
   The saved preference is all a fresh launch has to go on, so a toggle

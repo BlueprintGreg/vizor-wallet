@@ -5,6 +5,89 @@ import XCTest
 #endif
 
 final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
+  func testTorDeferredWakePreservesPendingVerifiedProofNotification() throws {
+    try verifyDeferredProofNotification(verified: true)
+  }
+
+  func testTorDeferredWakePreservesPendingUnverifiedProofNotice() throws {
+    try verifyDeferredProofNotification(verified: false)
+  }
+
+  func testTorDeferredWakeDoesNotInventProofReadiness() throws {
+    try verifyDeferredProofNotification(verified: nil)
+  }
+
+  private func verifyDeferredProofNotification(verified: Bool?) throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = BackgroundMigrationOutboxStore(
+      fileURL: directory.appendingPathComponent("outbox.bin"),
+      keyProvider: { Data(repeating: 0xCD, count: 32) }
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = Date()
+    let batch = BackgroundMigrationOutboxBatch(
+      batchId: "proof-watch", network: "test", accountUuid: "a", runId: "run-a",
+      lightwalletdUrl: "https://example.invalid", timingMeanBlocks: 144,
+      timingMaxBlocks: 576, createdAt: now, armedAt: nil,
+      nextProofHeight: 288, proofReadyNotificationPendingAt: nil,
+      proofReadyNotifiedAt: nil, items: []
+    )
+    _ = try store.update { snapshot in
+      try snapshot.stage(batch)
+      try snapshot.armBatch(batchId: batch.batchId, expectedDigests: [:], at: now)
+      if let verified {
+        if verified {
+          XCTAssertTrue(snapshot.recordVerifiedProofReadiness(
+            network: batch.network, accountUuid: batch.accountUuid, runId: batch.runId, at: now
+          ))
+        } else {
+          XCTAssertNotNil(snapshot.markUnverifiedProofReadyNoticeIfNeeded(
+            batchId: batch.batchId, at: now
+          ))
+        }
+      }
+    }
+    let dependencies = BackgroundMigrationOutboxRunnerDependencies.background(
+      torSelected: { true },
+      transport: BackgroundMigrationOutboxRunnerDependencies(
+        latestBlockHeight: { _, _ in
+          XCTFail("A Tor-deferred wake contacted the network")
+          return .success(288)
+        },
+        sendTransaction: { _, _, _ in
+          XCTFail("A Tor-deferred wake broadcast a transaction")
+          return .failure(.timedOut)
+        }
+      )
+    )
+    let expected = verified.map {
+      BackgroundMigrationProofReadyMetadata(batchId: batch.batchId, observedHeight: 288, verified: $0)
+    }
+    // Delivery failure leaves the same metadata available on the next wake.
+    for _ in 0..<2 {
+      let result = BackgroundMigrationOutboxRunner.runOnce(
+        store: store, cancellation: BackgroundMigrationCancellation(), now: now,
+        requiresPreparationProofVerification: true, dependencies: dependencies
+      )
+      XCTAssertEqual(result.transport, .deferredToForeground)
+      XCTAssertEqual(result.proofReady, expected)
+    }
+    if let verified {
+      _ = try store.update { snapshot in
+        if verified {
+          try snapshot.acknowledgeProofReadyNotification(batchId: batch.batchId, at: now)
+        } else {
+          try snapshot.acknowledgeUnverifiedProofReadyNotice(batchId: batch.batchId, at: now)
+        }
+      }
+      let result = BackgroundMigrationOutboxRunner.runOnce(
+        store: store, cancellation: BackgroundMigrationCancellation(), now: now,
+        requiresPreparationProofVerification: true, dependencies: dependencies
+      )
+      XCTAssertNil(result.proofReady, "An acknowledged notice must not be announced again")
+    }
+  }
+
   func testReleasedLeaseCannotAuthorizeLatePauseDuringRetry() {
     let gate = BackgroundMigrationOutboxExecutionGate()
     gate.pause(leaseId: "expired")

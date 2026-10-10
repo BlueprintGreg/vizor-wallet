@@ -13,19 +13,67 @@ final class BackgroundMigrationCancellation: @unchecked Sendable {
   var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
   func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 }
-enum NativeLightwalletdError: Error, Equatable { case cancelled, timedOut }
+enum NativeLightwalletdError: Error, Equatable { case cancelled, timedOut, routeBlocked, routeDeferredToForeground }
 struct NativeLightwalletdSendResponse { let errorCode: Int32; let errorMessage: String }
 enum NativeLightwalletdClient {
   static func latestBlockHeight(endpoint: String, cancellation: BackgroundMigrationCancellation) -> Result<UInt64, NativeLightwalletdError> { fatalError("Inject transport in tests") }
   static func sendTransaction(endpoint: String, rawTransaction: Data, cancellation: BackgroundMigrationCancellation) -> Result<NativeLightwalletdSendResponse, NativeLightwalletdError> { fatalError("Inject transport in tests") }
 }
 SWIFT
+# Exercise the real lifecycle callback without Flutter/UIKit or a simulator.
+# Substitute availability with both pre-26 and 26+ cases; framework stubs record
+# the handoff. This checks callback wiring, not the native transport implementation.
+python3 - "$test_dir/ForegroundLifecycle.swift" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path('ios/Runner/AppDelegate.swift').read_text()
+start = source.index('  override func applicationWillEnterForeground(')
+end = source.index('  func didInitializeImplicitFlutterEngine(', start)
+callback = source[start:end].replace('#available(iOS 26.0, *)', 'supportsContinuedProcessing')
+Path(sys.argv[1]).write_text('''
+import XCTest
+private var supportsContinuedProcessing = false
+private class UIApplication {}
+private class FlutterAppDelegate {
+  func applicationWillEnterForeground(_ application: UIApplication) {}
+}
+private final class IronwoodMigrationNotificationGate {
+  static let shared = IronwoodMigrationNotificationGate()
+  func enforceOnForeground() {}
+}
+private final class BackgroundMigrationManager {
+  static let shared = BackgroundMigrationManager()
+  var handoffs = 0
+  func handoffToForeground() { handoffs += 1 }
+}
+private final class AppDelegate: FlutterAppDelegate {
+''' + callback + '''
+}
+final class BackgroundMigrationForegroundHandoffTests: XCTestCase {
+  func testForegroundEntryHandsOffOnIOS15Through25() {
+    verifyHandoff(continuedProcessing: false)
+  }
+  func testForegroundEntryHandsOffOnIOS26AndLater() {
+    verifyHandoff(continuedProcessing: true)
+  }
+  private func verifyHandoff(continuedProcessing: Bool) {
+    supportsContinuedProcessing = continuedProcessing
+    let before = BackgroundMigrationManager.shared.handoffs
+    AppDelegate().applicationWillEnterForeground(UIApplication())
+    XCTAssertEqual(BackgroundMigrationManager.shared.handoffs, before + 1)
+  }
+}
+''')
+PY
 cat > "$test_dir/main.swift" <<'SWIFT'
 import XCTest
 import Darwin
-let suite = BackgroundMigrationOutboxExecutionGateTests.defaultTestSuite
+let suite = XCTestSuite(name: "Migration outbox and foreground handoff")
+suite.addTest(BackgroundMigrationOutboxExecutionGateTests.defaultTestSuite)
+suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 8 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 13 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"
@@ -37,5 +85,6 @@ xcrun swiftc -swift-version 5 -Xlinker -rpath -Xlinker "$test_private_frameworks
   ios/Runner/BackgroundMigrationOutboxRunner.swift \
   "$test_dir/TransportStub.swift" \
   ios/RunnerTests/BackgroundMigrationOutboxExecutionGateTests.swift \
+  "$test_dir/ForegroundLifecycle.swift" \
   "$test_dir/main.swift" -o "$test_dir/tests"
 "$test_dir/tests"

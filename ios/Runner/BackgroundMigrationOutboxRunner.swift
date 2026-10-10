@@ -101,18 +101,23 @@ enum BackgroundMigrationOutboxRunner {
     }
 
     var broadcastComplete: BackgroundMigrationBroadcastCompleteMetadata?
+    var proofReady: BackgroundMigrationProofReadyMetadata?
     let endpoint: String
     do {
       var selectedEndpoint: String?
       _ = try store.update { snapshot in
         snapshot.recoverInterruptedSubmissions(at: now)
         broadcastComplete = snapshot.pendingBroadcastCompleteNotification()
+        // Already queued notifications need no network observation. Preserve
+        // them even when the saved route defers this wake to the foreground.
+        proofReady = snapshot.pendingProofReadyNotification()
+          ?? snapshot.pendingUnverifiedProofReadyNotice()
         selectedEndpoint = snapshot.nextEndpointForInspection()
       }
       guard let selectedEndpoint else {
         return BackgroundMigrationOutboxRunResult(
           transport: .noWork,
-          proofReady: nil,
+          proofReady: proofReady,
           broadcastComplete: broadcastComplete
         )
       }
@@ -120,13 +125,13 @@ enum BackgroundMigrationOutboxRunner {
     } catch BackgroundMigrationOutboxStoreError.temporarilyUnavailable {
       return BackgroundMigrationOutboxRunResult(
         transport: .temporarilyUnavailable,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     } catch {
       return BackgroundMigrationOutboxRunResult(
         transport: .needsUserAction,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     }
@@ -138,31 +143,30 @@ enum BackgroundMigrationOutboxRunner {
     case .failure(.cancelled):
       return BackgroundMigrationOutboxRunResult(
         transport: .cancelled,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     case .failure(.routeDeferredToForeground):
       return BackgroundMigrationOutboxRunResult(
         transport: .deferredToForeground,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     case .failure:
       return BackgroundMigrationOutboxRunResult(
         transport: .temporarilyUnavailable,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     }
     if cancellation.isCancelled {
       return BackgroundMigrationOutboxRunResult(
         transport: .cancelled,
-        proofReady: nil,
+        proofReady: proofReady,
         broadcastComplete: broadcastComplete
       )
     }
 
-    var proofReady: BackgroundMigrationProofReadyMetadata?
     var attemptedAccountUuid: String?
     let selection: BackgroundMigrationOutboxSelection
     do {

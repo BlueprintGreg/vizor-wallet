@@ -44,9 +44,10 @@ import UIKit
 
   override func applicationWillEnterForeground(_ application: UIApplication) {
     IronwoodMigrationNotificationGate.shared.enforceOnForeground()
-    if #available(iOS 26.0, *) {
-      BackgroundMigrationManager.shared.handoffToForeground()
-    }
+    // BGProcessingTask can overlap foreground entry on every supported iOS
+    // version. Cancel its unsent requests before Dart can change the Tor setting.
+    // The manager gates only the iOS 26 continued-preparation handoff itself.
+    BackgroundMigrationManager.shared.handoffToForeground()
     super.applicationWillEnterForeground(application)
   }
 
