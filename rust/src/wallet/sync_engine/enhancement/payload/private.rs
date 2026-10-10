@@ -22,21 +22,16 @@ use zcash_client_backend::data_api::enhance_pir::{
     EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_protocol::consensus::BlockHeight;
-/// Debug builds only: override the Enhance PIR endpoint, the legacy name
-/// second. Release builds always use [`DEFAULT_MAINNET_ENDPOINT`] and never
-/// read them.
+/// Debug builds only: overrides the Enhance PIR endpoint. Release builds
+/// always use [`DEFAULT_MAINNET_ENDPOINT`] and never read it.
 #[cfg(debug_assertions)]
 const ENDPOINT_ENV: &str = "VIZOR_ENHANCE_PIR_URL";
-#[cfg(debug_assertions)]
-const LEGACY_ENDPOINT_ENV: &str = "VIZOR_MEMO_PIR_URL";
 
 /// The Enhance PIR endpoint: the production service, or in a debug build a
 /// configured override.
 fn enhance_endpoint() -> String {
     #[cfg(debug_assertions)]
-    if let Ok(endpoint) =
-        std::env::var(ENDPOINT_ENV).or_else(|_| std::env::var(LEGACY_ENDPOINT_ENV))
-    {
+    if let Ok(endpoint) = std::env::var(ENDPOINT_ENV) {
         return endpoint;
     }
     DEFAULT_MAINNET_ENDPOINT.into()
