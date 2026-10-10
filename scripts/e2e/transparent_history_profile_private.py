@@ -30,9 +30,12 @@ chain facts. Per (tx, account, variant), for variants with complete evidence:
   the account took part in. A row is present unless the public profile allows
   folding it (TEX leg 1); its movement is exact; any final row is a true one;
   a known fee is the whole fee and never zero; the amount is a real owned
-  amount, the sole funder's real payment, or at most the movement; the fee is
-  known when the account owns a transparent script in it, unknown when its
-  part is shielded only and no other Alice account owns a script in it.
+  amount, the sole funder's real payment, or at most the movement. Its fee is
+  unknown when the account's share is not established (shielded components,
+  or an input another party funded): the whole fee is reconstruction
+  evidence, not the account's fee (#839 `30d252d06`). Otherwise it is known
+  when the account owns a transparent script in it, and unknown when its part
+  is shielded only and no other Alice account owns a script in it.
 
 Incomplete-evidence variants (N_pre, and the faults N_lag and N_pir_fail)
 keep the public honesty constraints. Fault variants assert no spendable claim
@@ -170,13 +173,19 @@ def whole_fees(record, facts, context):
     return fees
 
 
-def fee_states(record, effect, context, account):
-    """The fee states an honestly incomplete row of a spend may have: known
-    when the account owns a transparent script in it, unknown when its part is
-    shielded only and no other Alice account owns a script in it. None when
-    the account spent nothing."""
+def fee_states(record, facts, effect, context, account):
+    """The fee states an honestly incomplete row of a spend may have. Unknown
+    when the account's share of the fee is not established: the transaction
+    has shielded components, or another party funded an input. The exact
+    whole fee from the recovered metadata is reconstruction evidence only,
+    and never stands in for an unknown account fee (#839 `30d252d06`).
+    Otherwise known when the account owns a transparent script in it, and
+    unknown when its part is shielded only and no other Alice account owns a
+    script in it. None when the account spent nothing."""
     if not effect["spent"]:
         return None
+    if facts["has_shielded"] or effect["owned_input_count"] != len(facts["inputs"]):
+        return ["unknown"]
     if owns_script(effect):
         return ["known"]
     if other_account_owns_script(context, record["txid"], account):
@@ -209,7 +218,7 @@ def incomplete(item, record, facts, effect, context):
             "value": abs(delta),
         },
     ]
-    states = fee_states(record, effect, context, account)
+    states = fee_states(record, facts, effect, context, account)
     if states:
         constraints.append({"name": "fee_state_in", "values": states})
     return dict(item, row_sets=None, constraints=constraints)
@@ -332,7 +341,7 @@ def incomplete_ui_row(record, facts, effect, account, context):
     the sole funder's real payment, or at most the movement; a shown fee is a
     whole fee, never zero, and a known fee state shows one."""
     row_sets, _ = public.expectations(record["intent"], facts, effect, record, account, context)
-    states = fee_states(record, effect, context, account)
+    states = fee_states(record, facts, effect, context, account)
     return {
         "case": record["case"],
         "intent": record["intent"],

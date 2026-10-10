@@ -200,11 +200,13 @@ class PrivateActivity(unittest.TestCase):
                 item(self.public, "dd" * 32, "A0", variant),
             )
 
-    def test_a_restored_shield_is_honestly_incomplete_with_a_known_fee(self):
+    def test_a_restored_shield_is_honestly_incomplete_with_an_unknown_fee(self):
+        # #839 30d252d06: the shield's whole fee is reconstruction evidence; it
+        # does not stand in for the account's unknown share.
         got = item(self.private, "dd" * 32, "A0", "N")
         self.assertIsNone(got["row_sets"])
         constraints = names(got)
-        self.assertEqual(constraints["fee_state_in"]["values"], ["known"])
+        self.assertEqual(constraints["fee_state_in"]["values"], ["unknown"])
         self.assertEqual(constraints["delta_is"]["values"], [-FEE])
         self.assertEqual(constraints["known_fee_is_whole"]["values"], [FEE])
         self.assertIn("row_present", constraints)
@@ -218,9 +220,11 @@ class PrivateActivity(unittest.TestCase):
         self.assertEqual(constraints["fee_state_in"]["values"], ["unknown"])
         self.assertEqual(constraints["delta_is"]["values"], [-(ZEC + FEE)])
 
-    def test_another_accounts_receive_may_supply_the_fee(self):
+    def test_another_accounts_receive_does_not_supply_the_fee(self):
+        # The sender's part is shielded: another account's whole-fee evidence
+        # does not establish its share (#839 30d252d06).
         constraints = names(item(self.private, "ff" * 32, "A0", "N"))
-        self.assertEqual(constraints["fee_state_in"]["values"], ["known", "unknown"])
+        self.assertEqual(constraints["fee_state_in"]["values"], ["unknown"])
         # The receiving account's row is an exact transparent receive.
         self.assertEqual(
             item(self.private, "ff" * 32, "A1", "N"), item(self.public, "ff" * 32, "A1", "N")
@@ -334,7 +338,7 @@ class PrivateUiRows(unittest.TestCase):
         self.assertTrue(row["row_incomplete"])
         self.assertFalse(row["optional"])
         self.assertEqual(row["status"], "Completed")
-        self.assertEqual((row["fee_known"], row["fee_values"]), (FEE, [FEE]))
+        self.assertEqual((row["fee_known"], row["fee_values"]), (None, [FEE]))
         self.assertEqual(row["amount_max"], FEE)
         self.assertIn(2 * ZEC - FEE, row["amount_values"])
 
@@ -386,11 +390,11 @@ class PrivateUiRows(unittest.TestCase):
         effect = {"delta": -FEE, "owned_input_count": 1}
         self.assertEqual(private.fee_presentations(facts, effect, ["known"]), ["fee_only"])
 
-    def test_a_shielded_movement_of_the_whole_fee_is_a_net_change(self):
-        # vizor-wallet 4db46f38f: without Enhance evidence a shield stays a
-        # provisional "Sent" net change.
+    def test_a_shielded_movement_of_the_whole_fee_shows_no_fee(self):
+        # #839 30d252d06: without Enhance evidence a shield's account fee stays
+        # unknown, so no whole fee is shown beside its movement.
         (row,) = self.rows_for("dd" * 32)
-        self.assertEqual(row["fee_presentations"], ["net_change"])
+        self.assertEqual(row["fee_presentations"], ["separate"])
 
     def test_a_reconstructed_payment_keeps_its_fee_separate(self):
         (row,) = self.rows_for("bb" * 32)
@@ -400,9 +404,9 @@ class PrivateUiRows(unittest.TestCase):
         (row,) = self.rows_for("ee" * 32)
         self.assertEqual(row["fee_presentations"], ["separate"])
 
-    def test_a_fee_another_account_may_supply_allows_a_net_change(self):
+    def test_a_fee_another_account_could_supply_is_not_shown(self):
         (sender,) = self.rows_for("ff" * 32)
-        self.assertEqual(sender["fee_presentations"], ["net_change", "separate"])
+        self.assertEqual(sender["fee_presentations"], ["separate"])
 
     def test_a_known_whole_fee_inside_a_larger_movement_is_a_net_change(self):
         effect = {"delta": -(ZEC + FEE)}

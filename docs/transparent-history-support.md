@@ -10,8 +10,25 @@ measured by the H01-H13 suite on an isolated regtest chain, in two layers:
 - the desktop app layer (`integration_test/regtest_transparent_history_cases_test.dart`,
   the macOS app), in both modes.
 
-Runs: 2026-10-07, branch `claude/tpir-private-history` on #839 `3d7810c4a`,
-wallet-libraries main `a3dee2ab5`, wallet-pir `648264bb`.
+Latest runs: 2026-10-10, Rust layer only, branch `claude/tpir-private-history`
+restacked on #839 `b7f8d4cc7`, wallet-libraries `bfbb4f4a`, wallet-pir
+`9d2cbda0`. The private profile now also serves txid display PIR, so private
+receipts fill their transparent details as production does.
+
+| Run | Output | Time | Exit |
+|---|---|---|---|
+| Public, Rust layer | `public-1833` | 191 s | 101 (G2, G4, G5) |
+| Private, Rust layer | `private2-1922` | 538 s | 0 |
+
+Private: all 13 cases pass, no privacy violation in any request (now also
+checked for every chain txid), and 262 txid display requests. The first
+private run failed only where the oracle still expected a recovered whole fee
+to stand in for an unknown account fee; #839 `30d252d06` stopped that on
+purpose, and the oracle follows it. The app layers were not rerun on
+`b7f8d4cc7`; the app-layer results below are from the earlier runs.
+
+Earlier runs: 2026-10-07, on #839 `3d7810c4a`, wallet-libraries main
+`a3dee2ab5`, wallet-pir `648264bb`.
 
 | Run | Commit | Output | Time | Exit |
 |---|---|---|---|---|
