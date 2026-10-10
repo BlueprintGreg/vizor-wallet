@@ -11,10 +11,9 @@ use zcash_client_backend::data_api::{
     testing::TestBuilder,
     transparent_ledger::{
         ReceiveEvent, RecoveryRevision, SpendEvent, TransactionMetadata,
-        TransparentDetailRead as _, TransparentDetailWrite as _, TransparentDisplayFacts,
-        TransparentDisplayOutput, TransparentDisplayProvenance, TransparentDisplaySender,
-        TransparentDisplayStore, TransparentLedgerMode, TransparentLedgerWrite as _, WatchOrigin,
-        WholeTransactionFee,
+        TransparentDetailWrite as _, TransparentDisplayFacts, TransparentDisplayOutput,
+        TransparentDisplayProvenance, TransparentDisplaySender, TransparentDisplayStore,
+        TransparentLedgerMode, TransparentLedgerWrite as _, WatchOrigin, WholeTransactionFee,
     },
 };
 use zcash_client_sqlite::testing::{db::TestDbFactory, BlockCache};
@@ -528,17 +527,14 @@ fn receipt_keeps_its_snapshot_when_recovery_withdraws_spends() {
         let conn = open_readonly_conn(&path).unwrap();
         let read_tx = conn.unchecked_transaction().unwrap();
         let txid = hex::encode([tag; 32]);
-        let mut receipt =
+        // This first read pins the snapshot.
+        let read = || {
             read_transaction_detail(&read_tx, NETWORK, account, &txid, "sent", |base| {
-                attach_history_details(
-                    &read_tx,
-                    &path,
-                    NETWORK,
-                    account,
-                    std::slice::from_mut(base),
-                )
+                read_receipt(&read_tx, &path, NETWORK, account, base)
             })
-            .unwrap();
+            .unwrap()
+        };
+        let receipt = read();
         assert_eq!(receipt.account_balance_delta, -500_000);
         assert!(receipt.effects_settled);
         assert_eq!(receipt.fee, Some(10_000));
@@ -555,12 +551,9 @@ fn receipt_keeps_its_snapshot_when_recovery_withdraws_spends() {
             .unwrap();
         assert_eq!(fresh, None, "shared: {shared}");
 
-        let (view, source) =
-            transparent_details_view(&read_tx, &path, NETWORK, account, &txid).unwrap();
-        receipt.transparent_details = Some(view);
-        apply_display_source(&mut receipt, source);
-        apply_display_recipient(&mut receipt);
-        apply_display_receive_completion(&mut receipt);
+        // The receipt read again within the snapshot still has its history
+        // view and its display facts together.
+        let receipt = read();
         assert_eq!(receipt.details_complete, !shared);
         assert_eq!(receipt.provisional, shared);
         assert_eq!(receipt.primary_address.is_some(), !shared);
