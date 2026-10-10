@@ -58,8 +58,8 @@ pub(crate) use zakura_pir_transparent::{
 };
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        AccountLifecycle, RecoveryBlocker, TransparentLedgerMode, TransparentLedgerRead,
-        TransparentLedgerWrite, TransparentWatchSet,
+        AccountLifecycle, RecoveryBlocker, TransparentAddressWatchSet, TransparentLedgerMode,
+        TransparentLedgerRead, TransparentLedgerWrite,
     },
     Account as _, WalletRead,
 };
@@ -113,7 +113,7 @@ pub(crate) struct SourceRequest<'a> {
     pub(crate) account: AccountUuid,
     /// The account's watch set as the wallet reported it. Its context binds
     /// every commit of the answer.
-    pub(crate) watch: &'a TransparentWatchSet<AccountUuid>,
+    pub(crate) watch: &'a TransparentAddressWatchSet<AccountUuid>,
     /// Cancellation, or the end of the account's time budget. A source stops
     /// at it, waits for any work it started, and returns
     /// [`SourceError::Cancelled`].
@@ -746,7 +746,7 @@ fn quarantined(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncEr
 fn watch_set(
     db: &WalletDatabase,
     account: AccountUuid,
-) -> Result<Option<TransparentWatchSet<AccountUuid>>, SyncError> {
+) -> Result<Option<TransparentAddressWatchSet<AccountUuid>>, SyncError> {
     match db.transparent_watch_set(account) {
         Ok(watch) => Ok(Some(watch)),
         Err(SqliteClientError::AccountUnknown) => Ok(None),

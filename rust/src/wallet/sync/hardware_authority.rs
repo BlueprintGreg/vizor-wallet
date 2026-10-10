@@ -34,12 +34,14 @@ use futures::future::{select, Either};
 
 use voting_crypto_deps::rand::rngs::OsRng;
 use zcash_client_backend::data_api::{
-    transparent_ledger::{
-        CandidateBlocker, RecoveryBlocker, TransparentLedgerMode, TransparentLedgerRead,
-    },
+    transparent_ledger::{TransparentLedgerMode, TransparentLedgerRead},
     WalletRead,
 };
-use zcash_client_sqlite::{util::SystemClock, AccountUuid, WalletDb};
+use zcash_client_sqlite::{
+    error::{AuthorityRefusal, SqliteClientError},
+    util::SystemClock,
+    WalletDb,
+};
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::BlockHeight;
 
@@ -280,13 +282,10 @@ fn authorize(
         Ok(()) => Ok((db, reserved)),
         Err(error) => {
             let message = format!("Transparent broadcast authority unavailable: {error}");
-            if mode != TransparentLedgerMode::PrivateRequired {
-                return Err(refused(message));
-            }
-            match catching_up(&db, db_path, network, tx, earlier) {
-                Ok(true) => Err(DispatchRefusal::CatchingUp(message)),
-                Ok(false) => Err(refused(message)),
-                Err(unread) => Err(DispatchRefusal::Unavailable(format!("{message}; {unread}"))),
+            if catching_up(&error, db_path, network, mode) {
+                Err(DispatchRefusal::CatchingUp(message))
+            } else {
+                Err(refused(message))
             }
         }
     }
@@ -300,75 +299,25 @@ fn is_busy(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Whether private authority is missing for `tx`'s inputs only because
-/// private recovery has not yet covered the wallet's latest block: this build
-/// recovers the wallet privately, and every account owning an input that no
-/// earlier batch transaction creates is active, unheld, and blocked by
-/// nothing but coverage or a scan behind the tip. Any doubt is `false`, so the
-/// refusal stays final, except a reader that could not be opened, which is
-/// the error: nothing was learned about the transaction.
+/// Whether private authority refused `tx`'s inputs only because private
+/// recovery has not yet covered the wallet's latest block: this build recovers
+/// the wallet privately, the library classified the refusal as pending, and
+/// no owning account is held. The library decides the input and ledger
+/// conditions in the read that refused; a hold lives only in this process.
 fn catching_up(
-    db: &ReservedWallet,
+    error: &SqliteClientError,
     db_path: &str,
     network: WalletNetwork,
-    tx: &Transaction,
-    earlier: &[&Transaction],
-) -> Result<bool, String> {
-    if !selects_private_recovery(db_path, network) {
-        return Ok(false);
-    }
-    let Some(bundle) = tx.transparent_bundle() else {
-        return Ok(false);
+    mode: TransparentLedgerMode,
+) -> bool {
+    let SqliteClientError::TransparentAuthorityUnavailable(AuthorityRefusal::Pending { accounts }) =
+        error
+    else {
+        return false;
     };
-    // A separate reader: the classification only chooses between waiting and
-    // failing, and the reservation's own check still decides.
-    let reader = open_wallet_raw_conn_with_timeout(db_path, READ_DB_BUSY_TIMEOUT)?;
-    let mut owners = Vec::new();
-    for input in &bundle.vin {
-        let prevout = input.prevout();
-        if earlier
+    mode == TransparentLedgerMode::PrivateRequired
+        && selects_private_recovery(db_path, network)
+        && accounts
             .iter()
-            .any(|parent| parent.txid() == *prevout.txid())
-        {
-            continue;
-        }
-        match input_owner(&reader, prevout) {
-            Some(owner) if !owners.contains(&owner) => owners.push(owner),
-            Some(_) => {}
-            None => return Ok(false),
-        }
-    }
-    Ok(!owners.is_empty()
-        && owners.into_iter().all(|owner| {
-            recovery_hold(db_path, owner).is_none()
-                && db
-                    .transparent_ledger_snapshot(owner, crate::wallet::confirmations_policy())
-                    .is_ok_and(|snapshot| {
-                        !snapshot.blockers.is_empty()
-                            && snapshot.blockers.iter().all(|blocker| {
-                                matches!(
-                                    blocker,
-                                    RecoveryBlocker::Recovery(CandidateBlocker::IncompleteCoverage)
-                                        | RecoveryBlocker::ChainBehindTip
-                                )
-                            })
-                    })
-        }))
-}
-
-/// The account owning the wallet output `prevout`, if the wallet holds it.
-fn input_owner(
-    conn: &rusqlite::Connection,
-    prevout: &transparent::bundle::OutPoint,
-) -> Option<AccountUuid> {
-    conn.query_row(
-        "SELECT a.uuid FROM transparent_received_outputs o
-             JOIN transactions t ON t.id_tx = o.transaction_id
-             JOIN accounts a ON a.id = o.account_id
-             WHERE t.txid = ?1 AND o.output_index = ?2",
-        rusqlite::params![prevout.hash(), prevout.n()],
-        |row| row.get::<_, uuid::Uuid>(0),
-    )
-    .ok()
-    .map(AccountUuid::from_uuid)
+            .all(|owner| recovery_hold(db_path, *owner).is_none())
 }

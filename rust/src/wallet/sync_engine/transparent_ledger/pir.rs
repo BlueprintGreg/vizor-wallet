@@ -51,10 +51,10 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use zakura_pir_transparent::{
     Applied, ApplyFailure, BatchState, Companion, CompanionDir, Interrupted, OpenError,
-    RecoveryBatch, RecoveryConfig, RecoveryError, TransparentPirHttp, Trust, WalletChain,
-    WriteGate,
+    RecoveryBatch, RecoveryError, TransparentHistoryRecoveryConfig, TransparentPirHttp, Trust,
+    WalletChain, WriteGate,
 };
-use zcash_client_backend::data_api::{transparent_ledger::TransparentWatchSet, WalletRead};
+use zcash_client_backend::data_api::{transparent_ledger::TransparentAddressWatchSet, WalletRead};
 use zcash_client_sqlite::AccountUuid;
 
 use super::{RecoverySource, SourceBatch, SourceError, SourceRequest};
@@ -373,7 +373,7 @@ struct Pass {
     network: WalletNetwork,
     origin: String,
     account: AccountUuid,
-    watch: TransparentWatchSet<AccountUuid>,
+    watch: TransparentAddressWatchSet<AccountUuid>,
     handle: Handle,
     cancel: Arc<AtomicBool>,
     clock: fn() -> Instant,
@@ -519,8 +519,11 @@ pub(crate) fn origin_override(read: impl FnOnce(&str) -> Option<String>) -> Opti
 }
 
 /// The adapter configuration for `account`'s companion.
-pub(super) fn recovery_config(account: AccountUuid, origin: &str) -> RecoveryConfig {
-    RecoveryConfig {
+pub(super) fn recovery_config(
+    account: AccountUuid,
+    origin: &str,
+) -> TransparentHistoryRecoveryConfig {
+    TransparentHistoryRecoveryConfig {
         source: SOURCE.to_vec(),
         account_binding: account.expose_uuid().as_bytes().to_vec(),
         origin: origin.to_owned(),
@@ -565,23 +568,6 @@ pub(crate) fn remove_orphan_companions(db_path: &str) -> Result<(), String> {
                 .map_err(io::Error::other)
         })
         .map_err(|error| format!("Failed to remove orphan transparent PIR companions: {error}"))
-}
-
-/// Deletes every companion of the wallet at `db_path`, with its sidecars,
-/// waiting at most `wait` in all for those another handle holds.
-///
-/// Forgetting private ledger facts calls this first and forgets nothing
-/// unless it succeeds: a companion records which revisions the wallet holds,
-/// and one that outlived the facts would make a later private run skip them.
-/// A companion still locked, as by an abandoned pass, fails the call and is
-/// left for the next attempt.
-pub(crate) fn remove_all_companions(db_path: &str, wait: Duration) -> Result<(), String> {
-    companion_dir(db_path)
-        .clear(wait)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::WouldBlock => "A transparent PIR companion is in use".to_owned(),
-            _ => format!("Failed to remove a transparent PIR companion: {error}"),
-        })
 }
 
 /// [`remove_companions`], waiting at most `wait` for each companion's lock.
