@@ -115,8 +115,7 @@ the fault variants above).
 
 What the run sets, all before the first wallet exists:
 
-- The process switches of a flagged build with private queries on:
-  `configure_private_transparent_recovery(true)`,
+- The process switches of a build with private queries on:
   `set_enhance_pir_enabled(true)`, `set_enhance_pir_preference_confirmed(true)`.
 - `ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT=1`, a debug-build-only switch that
   lets regtest select `PrivateRequired`, gives regtest a transparent PIR
