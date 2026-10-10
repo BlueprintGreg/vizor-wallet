@@ -6,6 +6,9 @@
 //! Adapted from wallet-libraries' `zakura/pir-transparent/tests/fixture`, which
 //! adapted wallet-pir's shard-server test fixtures, through the crates' public
 //! APIs only. Every shard has the smallest published geometry and no re-cut.
+//! Block hashes follow the coordinator tests' main chain (`main_hash`), so a
+//! wallet scanned with those tests' `scan` agrees with every shard boundary
+//! the service publishes inside its scanned range.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use http_body_util::{BodyExt, Full};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use transparent::address::TransparentAddress;
-use transparent_events::{ReceiveEvent, TransparentEvent, Txid};
+use transparent_events::{ReceiveEvent, SpendEvent, TransparentEvent, Txid};
 use transparent_filter::{
     filter_hash, BlockHash, ScriptBytes, SealParameters, ShardMap, ShardMapEntry,
 };
@@ -27,7 +30,7 @@ use transparent_shard::manifest::{
 use transparent_shard_server::service::{router, ServiceConfig, ServiceState};
 use transparent_shard_server::shardset::{ShardSet, DEFAULT_RETAIN_REVISIONS};
 
-use crate::wallet::sync_engine::enhancement::RequestObserver;
+use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver};
 
 /// Every shard's geometry: the smallest one a build publishes, which keeps the
 /// tables a test sets up and queries small.
@@ -40,13 +43,36 @@ const SEAL: SealParameters = SealParameters {
     max_txids: 0,
 };
 
-/// One shard: its range, whether it is sealed, and every event in it, keyed by
-/// the script it concerns.
+/// One shard: its range, whether it is sealed, every event in it, keyed by
+/// the script it concerns, and which revision of the shard it is.
 pub(super) struct ShardSpec {
     pub(super) start: u64,
     pub(super) end: u64,
     pub(super) sealed: bool,
     pub(super) events: Vec<(ScriptBytes, TransparentEvent)>,
+    /// Zero for a shard published once. A republished tail advances it and
+    /// names the manifest digest it supersedes, as a publisher must.
+    pub(super) revision: u32,
+    pub(super) supersedes: String,
+}
+
+impl ShardSpec {
+    /// The first revision of a shard.
+    pub(super) fn first(
+        start: u64,
+        end: u64,
+        sealed: bool,
+        events: Vec<(ScriptBytes, TransparentEvent)>,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            sealed,
+            events,
+            revision: 0,
+            supersedes: String::new(),
+        }
+    }
 }
 
 /// The pay-to-public-key-hash script of `address`.
@@ -59,19 +85,42 @@ pub(super) fn script(address: TransparentAddress) -> ScriptBytes {
     }
 }
 
-/// A receive of 50,000 zatoshis at `height` in the transaction tagged `tag`.
-pub(super) fn receive(height: u64, tag: u64) -> TransparentEvent {
+/// The txid of the transaction tagged `tag`.
+pub(super) fn tagged(tag: u64) -> Txid {
     let mut txid = [0u8; 32];
     txid[..8].copy_from_slice(&tag.to_le_bytes());
     txid[31] = 0x77;
+    Txid(txid)
+}
+
+/// A receive of [`RECEIVED`] zatoshis at `height` in the transaction tagged
+/// `tag`, its output 0.
+pub(super) fn receive(height: u64, tag: u64) -> TransparentEvent {
     TransparentEvent::Receive(ReceiveEvent {
         metadata: None,
         height: height as u32,
-        txid: Txid(txid),
+        txid: tagged(tag),
         transaction_index: 1,
         output_index: 0,
-        value: 50_000,
+        value: RECEIVED,
         coinbase: false,
+    })
+}
+
+/// What every [`receive`] pays.
+pub(super) const RECEIVED: u64 = 50_000;
+
+/// A spend at `height`, in the transaction tagged `tag`, of output 0 of the
+/// transaction tagged `spent`.
+pub(super) fn spend(height: u64, tag: u64, spent: u64) -> TransparentEvent {
+    TransparentEvent::Spend(SpendEvent {
+        metadata: None,
+        height: height as u32,
+        spending_txid: tagged(tag),
+        transaction_index: 1,
+        input_index: 0,
+        spent_txid: tagged(spent),
+        spent_output_index: 0,
     })
 }
 
@@ -94,11 +143,13 @@ pub(super) fn noise(start: u64, end: u64, salt: u32) -> Vec<(ScriptBytes, Transp
         .collect()
 }
 
-/// A block hash for a synthetic height, distinct per height.
-fn synthetic(height: u64) -> BlockHash {
+/// The block hash at `height` on the coordinator tests' chain `fork`
+/// (`chain_hash`; fork 0 is `main_hash`).
+fn synthetic(height: u64, fork: u8) -> BlockHash {
     let mut bytes = [0u8; 32];
-    bytes[..8].copy_from_slice(&height.to_le_bytes());
-    bytes[31] = 0x5a;
+    bytes[..4].copy_from_slice(&(height as u32).to_le_bytes());
+    bytes[4] = fork;
+    bytes[31] = 1;
     BlockHash::from_internal_bytes(bytes)
 }
 
@@ -106,14 +157,25 @@ fn synthetic(height: u64) -> BlockHash {
 pub(super) struct ShardService {
     runtime: Arc<tokio::runtime::Runtime>,
     router: axum::Router,
+    /// The map published, for a later revision to supersede its entries.
+    map: ShardMap,
     _dir: tempfile::TempDir,
 }
 
 impl ShardService {
     /// Publishes `shards`, numbered from zero, and serves them.
     pub(super) fn publish(shards: &[ShardSpec]) -> Self {
+        Self::publish_forked(shards, u64::MAX)
+    }
+
+    /// Like [`Self::publish`], but on chain fork 1 from `fork_from` up: every
+    /// block hash the publication names at or above it differs from the main
+    /// chain's.
+    pub(super) fn publish_forked(shards: &[ShardSpec], fork_from: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        publish(dir.path(), shards);
+        let map = publish(dir.path(), shards, |height| {
+            synthetic(height, u8::from(height >= fork_from))
+        });
         let set = ShardSet::open(dir.path(), DEFAULT_RETAIN_REVISIONS).expect("a verified set");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -126,8 +188,14 @@ impl ShardService {
         Self {
             runtime: Arc::new(runtime),
             router: router(state),
+            map,
             _dir: dir,
         }
+    }
+
+    /// The manifest digest this service publishes for shard `shard_id`.
+    pub(super) fn digest(&self, shard_id: usize) -> String {
+        self.map.shards[shard_id].manifest_digest.clone()
     }
 
     /// An observer answering every request with the service's own reply.
@@ -135,31 +203,45 @@ impl ShardService {
     /// The transport consults it inside its own runtime, so each request is
     /// served on this service's runtime from a thread of its own.
     pub(super) fn observer(&self) -> RequestObserver {
+        self.observer_with(|_, _, _| {})
+    }
+
+    /// Like [`Self::observer`], but `tamper` may rewrite each reply's status,
+    /// headers and body before the wallet reads it: a misbehaving service
+    /// in front of real data.
+    pub(super) fn observer_with(
+        &self,
+        tamper: impl Fn(&ObservedRequest, &mut http::response::Parts, &mut Vec<u8>)
+            + Send
+            + Sync
+            + 'static,
+    ) -> RequestObserver {
         let (runtime, router) = (self.runtime.clone(), self.router.clone());
-        RequestObserver::answering(move |request| {
+        RequestObserver::answering(move |observed| {
             let request = http::Request::builder()
-                .method(request.method.clone())
-                .uri(request.path.clone())
-                .body(axum::body::Body::from(request.body.clone()))
+                .method(observed.method.clone())
+                .uri(observed.path.clone())
+                .body(axum::body::Body::from(observed.body.clone()))
                 .unwrap();
             let (runtime, router) = (runtime.clone(), router.clone());
-            std::thread::spawn(move || {
+            let (mut parts, mut body) = std::thread::spawn(move || {
                 runtime.block_on(async move {
                     let response = router.oneshot(request).await.unwrap();
                     let (parts, body) = response.into_parts();
-                    let body = body.collect().await.unwrap().to_bytes();
-                    http::Response::from_parts(parts, Full::new(Bytes::from(body)))
+                    (parts, body.collect().await.unwrap().to_bytes().to_vec())
                 })
             })
             .join()
-            .unwrap()
+            .unwrap();
+            tamper(observed, &mut parts, &mut body);
+            http::Response::from_parts(parts, Full::new(Bytes::from(body)))
         })
     }
 }
 
 /// Writes a publishable shard set for `shards` to `dir`, as the publisher
 /// would: one directory per manifest digest and the map in `shards.json`.
-fn publish(dir: &Path, shards: &[ShardSpec]) -> ShardMap {
+fn publish(dir: &Path, shards: &[ShardSpec], hash: impl Fn(u64) -> BlockHash) -> ShardMap {
     let genesis = BlockHash::from_display_hex(transparent_filter::MAINNET_GENESIS_DISPLAY)
         .expect("mainnet's genesis hash");
     let mut entries = Vec::new();
@@ -171,7 +253,7 @@ fn publish(dir: &Path, shards: &[ShardSpec]) -> ShardMap {
             spec.start,
             spec.end,
             genesis,
-            synthetic(spec.end),
+            hash(spec.end),
             transparent_filter::RANGE_PROFILE,
             GEOMETRY,
             &spec.events,
@@ -196,13 +278,13 @@ fn publish(dir: &Path, shards: &[ShardSpec]) -> ShardMap {
             shard_id,
             start_height: spec.start,
             end_height: spec.end,
-            parent_block_hash: synthetic(spec.start - 1).to_display_hex(),
-            terminal_block_hash: synthetic(spec.end).to_display_hex(),
+            parent_block_hash: hash(spec.start - 1).to_display_hex(),
+            terminal_block_hash: hash(spec.end).to_display_hex(),
             tag_salt_counter: built.tag_salt_counter,
             parent_manifest_digest: parent_digest.clone(),
             sealed: spec.sealed,
-            revision: 0,
-            supersedes: String::new(),
+            revision: spec.revision,
+            supersedes: spec.supersedes.clone(),
             seal: ManifestSeal {
                 scripts_target: SEAL.max_scripts,
                 scripts_capacity: SEAL.max_scripts * 2,
@@ -260,7 +342,7 @@ fn publish(dir: &Path, shards: &[ShardSpec]) -> ShardMap {
             directory_segments: built.directory_segments(),
             page_segments: built.page_segments(),
             manifest_digest: digest.clone(),
-            revision: 0,
+            revision: spec.revision,
             sealed: spec.sealed,
         });
         parent_digest = digest;

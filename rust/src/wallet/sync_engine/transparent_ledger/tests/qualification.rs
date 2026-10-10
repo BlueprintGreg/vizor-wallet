@@ -55,7 +55,7 @@ const DISCLOSING_RPCS: &[&str] = &[
     "/GetTransaction",
 ];
 
-fn disclosing(lwd: &CapturingLwd) -> Vec<String> {
+pub(super) fn disclosing(lwd: &CapturingLwd) -> Vec<String> {
     lwd.requests()
         .into_iter()
         .filter(|path| DISCLOSING_RPCS.iter().any(|rpc| path.ends_with(rpc)))
@@ -1252,18 +1252,8 @@ fn import_discovery_finds_used_accounts_through_the_transparent_pir_service() {
     let mut tail = noise(3_420_500, 3_420_600, 2);
     tail.push((script(first(16)), receive(3_420_550, 16)));
     let service = ShardService::publish(&[
-        ShardSpec {
-            start,
-            end: 3_420_499,
-            sealed: true,
-            events: sealed,
-        },
-        ShardSpec {
-            start: 3_420_500,
-            end: 3_420_600,
-            sealed: false,
-            events: tail,
-        },
+        ShardSpec::first(start, 3_420_499, true, sealed),
+        ShardSpec::first(3_420_500, 3_420_600, false, tail),
     ]);
     // A first account: the wallet does not exist yet.
     let dir = tempfile::tempdir().unwrap();
