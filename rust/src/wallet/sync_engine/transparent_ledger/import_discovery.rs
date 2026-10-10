@@ -13,8 +13,8 @@
 //! candidate, false positives included, and timing; the per-account recovery
 //! of the accounts the user imports follows at once and can be linked to it.
 //!
-//! A discovery runs on a thread and runtime of its own, as a recovery pass
-//! does (see [`super::pir`]), and stops at [`DISCOVERY_DEADLINE`]. It
+//! A discovery runs through [`run_detached`], on a thread and runtime of its
+//! own as a recovery pass does, and stops at [`DISCOVERY_DEADLINE`]. It
 //! succeeds only when every candidate is covered through the publication's
 //! end. A pass stopped by its query or byte budget is followed by one over the
 //! candidates it did not confirm, since a heavily used address spends the
@@ -34,9 +34,9 @@ use zakura_pir_transparent::{
 };
 
 use super::pir::{
-    origin_for, origin_override, CancelOnDrop, CANCEL_GRACE, MAX_PRIVATE_BYTES, MAX_QUERIES,
-    MAX_RESPONSE_BYTES, MAX_SHARDS,
+    origin_for, origin_override, MAX_PRIVATE_BYTES, MAX_QUERIES, MAX_RESPONSE_BYTES, MAX_SHARDS,
 };
+use crate::wallet::bounded_runtime::{run_detached, Detached};
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
 
@@ -132,27 +132,17 @@ impl PrivateAccountDiscovery {
             return Err(PrivateDiscoveryFailed);
         };
         let deadline = Instant::now() + DISCOVERY_DEADLINE;
+        let past_deadline = move || Instant::now() >= deadline;
         let cancel = Arc::new(AtomicBool::new(false));
-        // A dropped call stops the discovery at its next request.
-        let _cancel_on_drop = CancelOnDrop(cancel.clone());
         let stop = cancel.clone();
-        let (done, answer) = tokio::sync::oneshot::channel();
-        let spawned = std::thread::Builder::new()
-            .name("transparent-pir-discovery".to_owned())
-            .spawn(move || {
-                // Its I/O runs on this runtime, so an abandoned discovery never
-                // holds the caller's.
-                let Ok(io) = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .thread_name("transparent-pir-discovery-io")
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
+        let ran = run_detached(
+            "transparent-pir-discovery",
+            cancel,
+            &past_deadline,
+            move |io| {
                 let exit = || stop.load(Ordering::SeqCst) || Instant::now() >= deadline;
                 let result = (|| {
-                    let exchange = RoutedExchange::transparent(&origin, &exit, io.handle().clone())
+                    let exchange = RoutedExchange::transparent(&origin, &exit, io)
                         .map_err(|_| "transport refused the origin")?;
                     #[cfg(test)]
                     let exchange = transport.attach(exchange);
@@ -179,24 +169,24 @@ impl PrivateAccountDiscovery {
                         interpret(result, http.outage())
                     }))
                 })();
-                let _ = done.send(result.unwrap_or_else(|name: &str| {
+                result.unwrap_or_else(|name: &str| {
                     log::warn!("private account discovery: {name}");
                     Err(PrivateDiscoveryFailed)
-                }));
-                io.shutdown_background();
-            });
-        if spawned.is_err() {
-            log::error!("private account discovery: could not start");
-            return Err(PrivateDiscoveryFailed);
-        }
-        match tokio::time::timeout(DISCOVERY_DEADLINE + CANCEL_GRACE, answer).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
+                })
+            },
+        )
+        .await;
+        match ran {
+            Detached::Returned(result) => result,
+            Detached::NotStarted => {
+                log::error!("private account discovery: could not start");
+                Err(PrivateDiscoveryFailed)
+            }
+            Detached::Panicked => {
                 log::error!("private account discovery: panicked");
                 Err(PrivateDiscoveryFailed)
             }
-            Err(_) => {
-                cancel.store(true, Ordering::SeqCst);
+            Detached::Abandoned => {
                 log::warn!("private account discovery: abandoned past its deadline");
                 Err(PrivateDiscoveryFailed)
             }

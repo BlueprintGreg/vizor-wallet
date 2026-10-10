@@ -30,11 +30,9 @@
 //! adapter's `apply_and_acknowledge`, which applies its commits and
 //! acknowledges it only once every one committed.
 //!
-//! A pass runs on a thread and runtime of its own, never the sync's runtime
-//! or its blocking pool: a runtime's shutdown waits for every blocking-pool
-//! task, so a pass that ignored its cancellation would hold the sync, and
-//! every start queued behind it, until the app restarted. It reads the wallet
-//! through a read-only handle for the chain view and stops at cancellation or
+//! A pass runs through [`run_detached`], on a thread and runtime of its own,
+//! never the sync's runtime or its blocking pool. It reads the wallet through
+//! a read-only handle for the chain view and stops at cancellation or
 //! [`PASS_DEADLINE`], counted from the call. On cancellation the pass gets
 //! [`CANCEL_GRACE`] to return; one that does not is abandoned, still holding
 //! its read-only handle and its companion's lock until it returns, and
@@ -60,13 +58,15 @@ use zcash_client_backend::data_api::{transparent_ledger::TransparentWatchSet, Wa
 use zcash_client_sqlite::AccountUuid;
 
 use super::{RecoverySource, SourceBatch, SourceError, SourceRequest};
+#[cfg(doc)]
+use crate::wallet::bounded_runtime::CANCEL_GRACE;
+use crate::wallet::bounded_runtime::{run_detached, Detached};
 use crate::wallet::db::{
     open_wallet_db_readonly_with_timeout, with_wallet_db_write_lock, writers_waiting,
     WalletDatabase, READ_DB_BUSY_TIMEOUT,
 };
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
-use crate::wallet::sync_engine::watch_for_exit;
 
 /// The transparent PIR service mainnet wallets recover from.
 pub(crate) const DEFAULT_MAINNET_ORIGIN: &str = "https://transparent-pir.valargroup.dev";
@@ -97,9 +97,6 @@ pub(super) const MAX_QUERIES: u64 = 256;
 pub(super) const MAX_PRIVATE_BYTES: u64 = 96 << 20;
 /// Bytes one successful response may carry.
 pub(super) const MAX_RESPONSE_BYTES: usize = 8 << 20;
-
-/// How long a cancelled pass may take to return before it is abandoned.
-pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// How long account deletion waits for a companion another pass holds.
 pub(crate) const REMOVE_WAIT: Duration = Duration::from_secs(5);
@@ -229,9 +226,6 @@ impl RecoverySource for TransparentPirSource {
         let mut parked = self.parked.lock().await;
         let held = parked.remove(&account);
         let cancel = Arc::new(AtomicBool::new(false));
-        // A dropped call stops the pass at its next request instead of leaving
-        // it running detached.
-        let _cancel_on_drop = CancelOnDrop(cancel.clone());
         let pass = Pass {
             db_path: self.db_path.clone(),
             network: self.network,
@@ -245,48 +239,26 @@ impl RecoverySource for TransparentPirSource {
             #[cfg(test)]
             transport,
         };
-        let (done, mut answer) = tokio::sync::oneshot::channel();
-        let spawned = std::thread::Builder::new()
-            .name("transparent-pir".to_owned())
-            .spawn(move || {
-                // The pass's I/O, DNS lookups on a blocking pool among it, runs
-                // on this runtime, so an abandoned pass never holds the sync's.
-                let Ok(io) = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .thread_name("transparent-pir-io")
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                let mut pass = pass;
-                pass.handle = io.handle().clone();
-                // A send to an abandoning caller drops the companion here,
-                // releasing its lock.
-                let _ = done.send(pass.run(held));
-                io.shutdown_background();
-            });
-        if spawned.is_err() {
-            log::error!("transparent PIR: could not start a pass");
-            return Err(SourceError::Failed);
-        }
-        let joined = tokio::select! {
-            biased;
-            _ = watch_for_exit(&should_exit) => {
-                cancel.store(true, Ordering::SeqCst);
-                match tokio::time::timeout(CANCEL_GRACE, &mut answer).await {
-                    Ok(joined) => joined,
-                    Err(_) => {
-                        log::warn!("transparent PIR: abandoned a pass that ignored cancellation");
-                        return Err(SourceError::Cancelled);
-                    }
-                }
+        let ran = run_detached("transparent-pir", cancel.clone(), should_exit, move |io| {
+            let mut pass = pass;
+            pass.handle = io;
+            pass.run(held)
+        })
+        .await;
+        let (held, result) = match ran {
+            Detached::Returned(ran) => ran,
+            Detached::Abandoned => {
+                log::warn!("transparent PIR: abandoned a pass that ignored cancellation");
+                return Err(SourceError::Cancelled);
             }
-            joined = &mut answer => joined,
-        };
-        let Ok((held, result)) = joined else {
-            log::error!("transparent PIR: pass panicked");
-            return Err(SourceError::Failed);
+            Detached::NotStarted => {
+                log::error!("transparent PIR: could not start a pass");
+                return Err(SourceError::Failed);
+            }
+            Detached::Panicked => {
+                log::error!("transparent PIR: pass panicked");
+                return Err(SourceError::Failed);
+            }
         };
         // A pass that raced cancellation is discarded whole. Revisions it
         // marked exported stay marked, as after a crash before applying.
@@ -380,15 +352,6 @@ impl WriteGate for SettlementGate<'_> {
             "sync_engine.transparent_ledger.apply",
             write,
         ))
-    }
-}
-
-/// Sets a pass's cancellation flag when dropped.
-pub(super) struct CancelOnDrop(pub(super) Arc<AtomicBool>);
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
     }
 }
 
@@ -643,35 +606,30 @@ pub(super) fn remove_account_companions(
 #[cfg(test)]
 pub(crate) mod test_transport {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-    use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutePolicy, RoutedExchange};
+    use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutedExchange};
 
-    /// Every request reaches `observer`, which answers it; each pass records
-    /// the route policy of the transport it built.
+    /// Every request reaches `observer`, which answers it; each pass counts
+    /// the transport it built, always on the wallet's route.
     #[derive(Clone)]
     pub(crate) struct Seam {
         pub(crate) observer: RequestObserver,
-        routes: Arc<Mutex<Vec<RoutePolicy>>>,
+        transports: Arc<AtomicUsize>,
     }
 
     impl Seam {
-        /// The route policy of each pass's transport, in order.
-        pub(crate) fn routes(&self) -> Vec<RoutePolicy> {
-            self.routes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
+        /// How many transports passes built.
+        pub(crate) fn transports(&self) -> usize {
+            self.transports.load(Ordering::SeqCst)
         }
 
         pub(in crate::wallet::sync_engine::transparent_ledger) fn attach<'a, F: Fn() -> bool>(
             &self,
             exchange: RoutedExchange<'a, F>,
         ) -> RoutedExchange<'a, F> {
-            self.routes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(exchange.route_policy());
+            self.transports.fetch_add(1, Ordering::SeqCst);
             exchange.with_observer(self.observer.clone())
         }
     }
@@ -694,7 +652,7 @@ pub(crate) mod test_transport {
     pub(crate) fn set(db_path: &str, observer: RequestObserver) -> SeamGuard {
         let seam = Seam {
             observer,
-            routes: Default::default(),
+            transports: Default::default(),
         };
         seams()
             .lock()

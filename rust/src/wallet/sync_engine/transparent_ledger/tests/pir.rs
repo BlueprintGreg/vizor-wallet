@@ -17,7 +17,7 @@ use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
 
 use super::super::pir::{self, test_transport, TransparentPirSource, PASS_DEADLINE};
 use super::*;
-use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver, RoutePolicy};
+use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver};
 
 const MAIN: WalletNetwork = WalletNetwork::Main;
 /// Every mainnet wallet's birthday, below the live service's publications so
@@ -334,7 +334,7 @@ async fn new_selects_the_origin_gates_mainnet_and_uses_the_wallet_route() {
         Err(SourceError::Unavailable)
     );
     assert_eq!(paths(&seam.seam.observer.requests()), [MAP]);
-    assert_eq!(seam.seam.routes(), [RoutePolicy::WalletPreference]);
+    assert_eq!(seam.seam.transports(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -721,7 +721,7 @@ async fn a_dropped_pass_stops_at_its_next_request() {
 }
 
 /// A pass that ignores its cancellation, here a request that never returns,
-/// is abandoned after [`pir::CANCEL_GRACE`] rather than holding the call, and
+/// is abandoned after [`CANCEL_GRACE`](crate::wallet::bounded_runtime::CANCEL_GRACE) rather than holding the call, and
 /// the runtime that ran the call shuts down without waiting for it: the pass
 /// runs on a thread of its own, never on that runtime's blocking pool, whose
 /// shutdown would wait forever. Once it returns, its companion is free again.
@@ -766,7 +766,7 @@ fn a_stuck_pass_holds_neither_the_call_nor_its_runtime() {
     let took = begun.elapsed();
     assert_eq!(answer, Err(SourceError::Cancelled));
     assert!(
-        took < pir::CANCEL_GRACE + Duration::from_secs(10),
+        took < crate::wallet::bounded_runtime::CANCEL_GRACE + Duration::from_secs(10),
         "the call or its runtime waited for the stuck pass: {took:?}"
     );
 

@@ -246,21 +246,24 @@ pub extern "C" fn zcash_lightwalletd_latest_block_height(
 /// across the C ABI.
 ///
 /// The request discloses the txid, so it is authorized like every other public
-/// transparent lookup: against the wallet at `db_path`, opened read-only with
-/// its reads honoring a durable `PrivateRequired`, then re-checked by
+/// transparent lookup: under the private queries preference Swift passes in
+/// `private_preference` (a background process may not have heard Dart's
+/// setting), against the wallet at `db_path`, opened read-only with its reads
+/// honoring a durable `PrivateRequired`, then re-checked by
 /// [`TransparentLookupGate`] as it is sent.
 ///
 /// Returns 0 with `output` set, 1 for invalid arguments or a failed lookup,
 /// 2 after a panic, and 3 when cancelled. Otherwise it sends no request and
 /// leaves `output` untouched:
 /// - [`STATUS_RESULT_INCONCLUSIVE`] when the wallet cannot be read; retry later.
-/// - [`STATUS_RESULT_UNSUPPORTED`] when the wallet withholds public lookups or
-///   routes this transaction's status privately.
+/// - [`STATUS_RESULT_UNSUPPORTED`] when the preference or the wallet withholds
+///   public lookups, or the wallet routes this transaction's status privately.
 #[no_mangle]
 pub extern "C" fn zcash_lightwalletd_observe_transaction(
     lightwalletd_url: *const c_char,
     db_path: *const c_char,
     network: *const c_char,
+    private_preference: bool,
     transaction_id: *const u8,
     transaction_id_len: usize,
     output: *mut CLightwalletdTransactionObservation,
@@ -292,7 +295,7 @@ pub extern "C" fn zcash_lightwalletd_observe_transaction(
             lightwalletd_url,
             db_path,
             network,
-            EnhancementPolicy::current(network),
+            EnhancementPolicy::for_preference(network, private_preference),
             transaction_id,
             output,
             unsafe { cancellation.as_ref() },
@@ -309,7 +312,7 @@ pub extern "C" fn zcash_lightwalletd_observe_transaction(
 }
 
 /// [`zcash_lightwalletd_observe_transaction`] under an explicit `policy`, so
-/// tests select one without the process-wide preference.
+/// tests can select a transparent mode the preference would not.
 pub(crate) fn observe_public_transaction(
     lightwalletd_url: &str,
     db_path: &str,
@@ -435,141 +438,6 @@ mod test_hooks {
             hook();
         }
     }
-}
-
-#[no_mangle]
-pub extern "C" fn zcash_status_pir_is_enabled(
-    network: *const c_char,
-    private_preference: bool,
-) -> bool {
-    let Some(network) = (unsafe { c_str_to_str(network) }) else {
-        return false;
-    };
-    let Some(network) = crate::wallet::network::WalletNetwork::from_str(network) else {
-        return false;
-    };
-    crate::wallet::sync_engine::enhancement::EnhancementPolicy::for_preference(
-        network,
-        private_preference,
-    )
-    .status_mode()
-        == zcash_client_backend::data_api::status::TransactionStatusMode::Private
-}
-
-/// Legacy ABI cannot carry network/policy/coverage context. It never performs a lookup.
-#[no_mangle]
-pub extern "C" fn zcash_status_pir_observe_transaction(
-    _db_path: *const c_char,
-    _transaction_id: *const u8,
-    _transaction_id_len: usize,
-    _output: *mut CLightwalletdTransactionObservation,
-    _cancellation: *const CLightwalletdCancellation,
-) -> i32 {
-    STATUS_RESULT_UNSUPPORTED
-}
-
-/// Private status ABI with explicit policy and decision horizon. Inclusion evidence is read
-/// from the wallet. Unsupported/inconclusive results leave `output` untouched.
-#[no_mangle]
-pub extern "C" fn zcash_status_pir_observe_transaction_v2(
-    db_path: *const c_char,
-    transaction_id: *const u8,
-    transaction_id_len: usize,
-    network: *const c_char,
-    private_preference: bool,
-    has_required_through: bool,
-    required_through: u32,
-    output: *mut CLightwalletdTransactionObservation,
-    cancellation: *const CLightwalletdCancellation,
-) -> i32 {
-    let result = std::panic::catch_unwind(|| {
-        let Some(db_path) = (unsafe { c_str_to_str(db_path) }) else {
-            return 1;
-        };
-        if transaction_id.is_null() || transaction_id_len != 32 {
-            return 1;
-        }
-        let Some(output) = (unsafe { output.as_mut() }) else {
-            return 1;
-        };
-        use zcash_client_backend::data_api::status::{
-            TransactionStatusMode, TransactionStatusRead,
-        };
-        let Some(network) = (unsafe { c_str_to_str(network) })
-            .and_then(crate::wallet::network::WalletNetwork::from_str)
-        else {
-            return 1;
-        };
-        let policy = crate::wallet::sync_engine::enhancement::EnhancementPolicy::for_preference(
-            network,
-            private_preference,
-        );
-        if policy.status_mode() != TransactionStatusMode::Private {
-            return STATUS_RESULT_UNSUPPORTED;
-        }
-        let txid = TxId::from_bytes(
-            unsafe { std::slice::from_raw_parts(transaction_id, 32) }
-                .try_into()
-                .expect("validated txid length"),
-        );
-        let mut db = match crate::wallet::db::open_wallet_db_readonly_with_timeout(
-            db_path,
-            network,
-            crate::wallet::db::READ_DB_BUSY_TIMEOUT,
-        ) {
-            Ok(db) => db,
-            Err(_) => return 1,
-        };
-        policy.configure_db(&mut db);
-        let work = match db.transaction_status_work_for(txid) {
-            Ok(work) => work,
-            Err(_) => return 1,
-        };
-        let runtime = match lightwalletd_runtime() {
-            Ok(runtime) => runtime,
-            Err(_) => return 1,
-        };
-        let cancellation = unsafe { cancellation.as_ref() };
-        match runtime.block_on(await_lightwalletd_request_or_cancellation(
-            cancellation,
-            async {
-                let cancelled =
-                    || cancellation.is_some_and(|token| token.cancelled.load(Ordering::Acquire));
-                let private_source =
-                    crate::wallet::sync_engine::enhancement::status::PrivateStatusSource::new(
-                        db_path, network, &cancelled, true,
-                    );
-                let mut reader =
-                    crate::wallet::sync_engine::enhancement::status::RoutedStatusReader::new(
-                        DisabledSource,
-                        private_source,
-                    );
-                reader
-                    .observe(work, has_required_through.then_some(required_through))
-                    .await
-                    .map(TransactionObservation::from)
-            },
-        )) {
-            Err(()) | Ok(Err(zakura_transaction_status::StatusError::Cancelled)) => {
-                LIGHTWALLETD_RESULT_CANCELLED
-            }
-            Ok(Ok(observation)) => {
-                *output = observation.into();
-                0
-            }
-            Ok(Err(zakura_transaction_status::StatusError::CoverageIncomplete)) => {
-                STATUS_RESULT_INCONCLUSIVE
-            }
-            Ok(Err(error)) => {
-                log::warn!("ffi: private status lookup: {error}");
-                1
-            }
-        }
-    });
-    result.unwrap_or_else(|panic| {
-        log_panic("private status", panic);
-        2
-    })
 }
 
 /// Submit one transaction through tonic. The error message is copied into the
@@ -853,44 +721,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_abi_policy_and_result_codes_are_unambiguous() {
-        let main = std::ffi::CString::new("main").unwrap();
-        let test = std::ffi::CString::new("test").unwrap();
-        assert!(zcash_status_pir_is_enabled(main.as_ptr(), true));
-        assert!(!zcash_status_pir_is_enabled(main.as_ptr(), false));
-        assert!(!zcash_status_pir_is_enabled(test.as_ptr(), true));
+    fn status_abi_result_codes_are_unambiguous() {
         assert_ne!(STATUS_RESULT_INCONCLUSIVE, LIGHTWALLETD_RESULT_CANCELLED);
         assert_ne!(STATUS_RESULT_UNSUPPORTED, LIGHTWALLETD_RESULT_CANCELLED);
-        assert_eq!(
-            zcash_status_pir_observe_transaction(
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null()
-            ),
-            STATUS_RESULT_UNSUPPORTED
-        );
-        let path = std::ffi::CString::new("unused").unwrap();
-        let mut output = CLightwalletdTransactionObservation {
-            state: 99,
-            mined_height: 99,
-        };
-        assert_eq!(
-            zcash_status_pir_observe_transaction_v2(
-                path.as_ptr(),
-                [0u8; 32].as_ptr(),
-                32,
-                test.as_ptr(),
-                true,
-                true,
-                10,
-                &mut output,
-                std::ptr::null()
-            ),
-            STATUS_RESULT_UNSUPPORTED
-        );
-        assert_eq!(output.state, 99);
+        assert_ne!(STATUS_RESULT_INCONCLUSIVE, STATUS_RESULT_UNSUPPORTED);
     }
 
     #[test]
@@ -1019,6 +853,7 @@ mod tests {
                 network
                     .as_ref()
                     .map_or(std::ptr::null(), |network| network.as_ptr()),
+                false,
                 TXID.as_ptr(),
                 TXID.len(),
                 &mut output,

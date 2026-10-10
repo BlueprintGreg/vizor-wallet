@@ -30,7 +30,7 @@ use super::pir::{
 use super::*;
 use crate::wallet::sync::{get_shield_transparent_status, get_transaction_history};
 use crate::wallet::sync::{TransactionFeeState, TransparentStopReason};
-use crate::wallet::sync_engine::enhancement::{EnhancementSession, RoutePolicy};
+use crate::wallet::sync_engine::enhancement::EnhancementSession;
 use crate::wallet::sync_engine::test_lwd::CapturingLwd;
 use crate::wallet::sync_engine::transparent_recovery_tests::{downloaded, legacy_transaction};
 use crate::wallet::sync_engine::{
@@ -935,10 +935,12 @@ async fn an_activated_wallet_discloses_nothing_through_any_lane_including_the_pi
             state: 99,
             mined_height: 99,
         };
+        // With the preference off: the wallet's durable policy withholds it.
         let code = crate::ffi::zcash_lightwalletd_observe_transaction(
             url.as_ptr(),
             wallet_path.as_ptr(),
             network.as_ptr(),
+            false,
             txid.as_ptr(),
             txid.len(),
             &mut output,
@@ -967,7 +969,7 @@ async fn an_activated_wallet_discloses_nothing_through_any_lane_including_the_pi
         .collect();
     assert_eq!(paths[..2], [MAP, INIT]);
     assert_eq!(requests.len(), 3, "one filter, then the pass failed");
-    assert_eq!(seam.seam.routes(), [RoutePolicy::WalletPreference]);
+    assert_eq!(seam.seam.transports(), 1);
     let mut secrets = watched_hashes(&db, account);
     secrets.push(txid.to_vec());
     assert_private(&requests, &secrets);

@@ -86,12 +86,6 @@ impl From<SyncError> for RoutedHttpError {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RoutePolicy {
-    WalletPreference,
-    ForceDirect,
-}
-
 /// One transport per `run`, reused by every request it makes.
 ///
 /// The pooled client lives here rather than being built per request: a hyper
@@ -107,17 +101,10 @@ pub(crate) enum RoutePolicy {
 pub(in crate::wallet::sync_engine) struct RoutedTransport<'a, F> {
     should_exit: &'a F,
     direct: DirectHttpsClient,
-    route_policy: RoutePolicy,
 }
 
 impl<'a, F> RoutedTransport<'a, F> {
     pub(in crate::wallet::sync_engine) fn new(should_exit: &'a F) -> Self {
-        Self::with_route(should_exit, RoutePolicy::WalletPreference)
-    }
-    pub(in crate::wallet::sync_engine) fn new_direct(should_exit: &'a F) -> Self {
-        Self::with_route(should_exit, RoutePolicy::ForceDirect)
-    }
-    fn with_route(should_exit: &'a F, route_policy: RoutePolicy) -> Self {
         // Both rustls providers are compiled in, so none is the default until
         // one is installed. Lightwalletd channels install ring; a routed
         // request can be the process's first TLS use (private import
@@ -133,7 +120,6 @@ impl<'a, F> RoutedTransport<'a, F> {
             .wrap_connector(DirectRouteConnector::new());
         Self {
             should_exit,
-            route_policy,
             // Cheap: no connection is opened until the first request, and the
             // Tor route simply never uses it.
             direct: Client::builder(TokioExecutor::new()).build(connector),
@@ -164,14 +150,7 @@ async fn routed_request(
     direct: &DirectHttpsClient,
 ) -> Result<transport::ResponseBody, RoutedHttpError> {
     receive_response(
-        routed_response(
-            method,
-            url,
-            body,
-            should_exit,
-            direct,
-            RoutePolicy::WalletPreference,
-        ),
+        routed_response(method, url, body, should_exit, direct),
         collector,
         should_exit,
     )
@@ -184,15 +163,12 @@ async fn routed_response(
     body: Vec<u8>,
     should_exit: &impl Fn() -> bool,
     direct: &DirectHttpsClient,
-    route_policy: RoutePolicy,
 ) -> Result<http::Response<Incoming>, RoutedHttpError> {
     if should_exit() {
         return Err(RoutedHttpError::Cancelled);
     }
     let uri = secure_endpoint_uri(url)?;
-    if matches!(route_policy, RoutePolicy::WalletPreference)
-        && crate::network_privacy::is_tor_desired()
-    {
+    if crate::network_privacy::is_tor_desired() {
         let client = crate::network_privacy::tor_client_for_route(true, || should_exit())
             .await
             .map_err(|error| {
