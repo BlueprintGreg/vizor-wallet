@@ -60,9 +60,8 @@ use tonic::transport::Channel;
 use zakura_pir_transparent::{DetailAnswer, DetailApplied, DetailRun, DetailStep, DetailWrite};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        TransparentDetailOutcome, TransparentDetailRead, TransparentDetailRequest,
-        TransparentDetailWrite, TransparentDisplayStore, TransparentDisplayView,
-        TransparentLedgerMode, TransparentLedgerRead,
+        TransparentDetailOutcome, TransparentDetailRequest, TransparentDetailWrite,
+        TransparentDisplayStore, TransparentLedgerMode, TransparentLedgerRead,
     },
     wallet::decrypt_and_store_transaction,
     WalletRead,
@@ -844,14 +843,20 @@ pub(crate) fn enhance_publicly(
 
 /// The detail view of `txid` (protocol byte order) for `account`, from the
 /// wallet behind `db`; `None` when the transaction has no transparent part
-/// the account takes part in. The library decides the account's part from
-/// the same read snapshot as the view, so a caller that overlays receipt
-/// reads binds `db` to their snapshot.
+/// the account takes part in. Receipts read it with their history view
+/// through the library's receipt read.
+#[cfg(test)]
 pub(crate) fn detail_view(
-    db: &impl TransparentDetailRead<AccountId = AccountUuid, Error = SqliteClientError>,
+    db: &impl zcash_client_backend::data_api::transparent_ledger::TransparentDetailRead<
+        AccountId = AccountUuid,
+        Error = SqliteClientError,
+    >,
     account: AccountUuid,
     txid: &[u8],
-) -> Result<Option<TransparentDisplayView>, String> {
+) -> Result<
+    Option<zcash_client_backend::data_api::transparent_ledger::TransparentDisplayView>,
+    String,
+> {
     let txid: [u8; 32] = txid.try_into().map_err(|_| "txid length".to_owned())?;
     db.transparent_display_view(account, TxId::from_bytes(txid))
         .map_err(|error| format!("transparent detail view: {error}"))

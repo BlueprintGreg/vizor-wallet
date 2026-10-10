@@ -23,7 +23,8 @@ use zakura_pir_transparent::{
 };
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        TransparentDetailOutcome, TransparentDisplayFacts, TransparentDisplayOutput,
+        TransparentDetailOutcome, TransparentDetailRead, TransparentDisplayFacts,
+        TransparentDisplayOutput,
         TransparentDisplayProvenance, TransparentDisplaySender, TransparentDisplaySource,
         TransparentDisplayView, TransparentLedgerMode, TransparentLedgerWrite,
     },
