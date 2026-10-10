@@ -298,8 +298,10 @@ lane cannot reach them any other way; the public status source is wrapped by
 transaction identifiers, so they need no gate. When the gate withholds
 software account discovery, discovery asks the transparent PIR service instead
 (see "Import account discovery" below) and sends lightwalletd nothing. The iOS FFI
-`zcash_lightwalletd_observe_transaction` takes the wallet's path and network:
-it opens the wallet read-only, honors a durable `PrivateRequired`, and returns
+`zcash_lightwalletd_observe_transaction` takes the wallet's path, network and
+the private queries preference Swift holds (a background process may not have
+heard Dart's): it captures its policy from that preference, opens the wallet
+read-only, honors a durable `PrivateRequired`, and returns
 `STATUS_RESULT_UNSUPPORTED` without sending anything when lookups are withheld
 or the transaction's status work is private. An unreadable wallet is
 `STATUS_RESULT_INCONCLUSIVE`. Otherwise its request goes through the gate.
@@ -1027,9 +1029,7 @@ protocol adapter
               v
 privacy-routed HTTPS core
     |
-    +-- wallet route policy --> Tor when desired, otherwise direct
-    |
-    `-- force direct --------> iOS read-only background status path
+    `-- wallet route policy --> Tor when desired, otherwise direct
 ```
 
 All endpoints require HTTPS. Response bodies are bounded, error statuses are
@@ -1070,8 +1070,9 @@ The sync engine should use only the parent facade:
 - `phase`
 
 iOS read-only FFI and migration reconciliation use the explicit `status`
-facade plus the same `EnhancementPolicy`. The old native status symbol fails
-closed; callers use the versioned ABI with explicit network and coverage context.
+facade plus the same `EnhancementPolicy`. Native code has only the public
+observation; private status has no native entry point, since a background pass
+never tracks confirmations under private queries.
 
 Status work is read separately from transparent discovery. The returned variant is
 the dispatch authority. Private work carries the wallet's conservative inclusion

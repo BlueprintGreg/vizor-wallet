@@ -17,7 +17,7 @@ use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
 
 use super::super::pir::{self, test_transport, TransparentPirSource, PASS_DEADLINE};
 use super::*;
-use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver, RoutePolicy};
+use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver};
 
 const MAIN: WalletNetwork = WalletNetwork::Main;
 /// Every mainnet wallet's birthday, below the live service's publications so
@@ -334,7 +334,7 @@ async fn new_selects_the_origin_gates_mainnet_and_uses_the_wallet_route() {
         Err(SourceError::Unavailable)
     );
     assert_eq!(paths(&seam.seam.observer.requests()), [MAP]);
-    assert_eq!(seam.seam.routes(), [RoutePolicy::WalletPreference]);
+    assert_eq!(seam.seam.transports(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

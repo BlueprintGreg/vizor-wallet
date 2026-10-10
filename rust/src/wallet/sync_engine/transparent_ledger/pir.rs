@@ -606,35 +606,30 @@ pub(super) fn remove_account_companions(
 #[cfg(test)]
 pub(crate) mod test_transport {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-    use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutePolicy, RoutedExchange};
+    use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutedExchange};
 
-    /// Every request reaches `observer`, which answers it; each pass records
-    /// the route policy of the transport it built.
+    /// Every request reaches `observer`, which answers it; each pass counts
+    /// the transport it built, always on the wallet's route.
     #[derive(Clone)]
     pub(crate) struct Seam {
         pub(crate) observer: RequestObserver,
-        routes: Arc<Mutex<Vec<RoutePolicy>>>,
+        transports: Arc<AtomicUsize>,
     }
 
     impl Seam {
-        /// The route policy of each pass's transport, in order.
-        pub(crate) fn routes(&self) -> Vec<RoutePolicy> {
-            self.routes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
+        /// How many transports passes built.
+        pub(crate) fn transports(&self) -> usize {
+            self.transports.load(Ordering::SeqCst)
         }
 
         pub(in crate::wallet::sync_engine::transparent_ledger) fn attach<'a, F: Fn() -> bool>(
             &self,
             exchange: RoutedExchange<'a, F>,
         ) -> RoutedExchange<'a, F> {
-            self.routes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(exchange.route_policy());
+            self.transports.fetch_add(1, Ordering::SeqCst);
             exchange.with_observer(self.observer.clone())
         }
     }
@@ -657,7 +652,7 @@ pub(crate) mod test_transport {
     pub(crate) fn set(db_path: &str, observer: RequestObserver) -> SeamGuard {
         let seam = Seam {
             observer,
-            routes: Default::default(),
+            transports: Default::default(),
         };
         seams()
             .lock()
