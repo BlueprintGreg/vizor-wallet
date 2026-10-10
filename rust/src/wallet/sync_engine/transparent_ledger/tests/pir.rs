@@ -972,7 +972,7 @@ async fn a_quarantine_never_reaches_an_account_added_later() {
         db.transparent_ledger_snapshot(account, crate::wallet::confirmations_policy())
             .unwrap()
             .blockers
-            .contains(&RecoveryBlocker::Quarantined)
+            .contains(&RecoveryBlocker::RecoverySuspended)
     };
     assert!(matches!(
         settle_trusted(first).await,

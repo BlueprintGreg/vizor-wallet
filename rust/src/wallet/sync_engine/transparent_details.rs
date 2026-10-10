@@ -893,7 +893,8 @@ pub(crate) fn debug_lookup(
         #[cfg(test)]
         observer: None,
     }
-    .run();
+    .run()
+    .found;
     debug_answer(
         network,
         txid,

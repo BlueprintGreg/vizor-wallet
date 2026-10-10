@@ -64,7 +64,8 @@ async fn txid_live() {
                 cancel: Default::default(),
                 observer: Some(observer),
             }
-            .run();
+            .run()
+            .found;
             (found, started.elapsed())
         })
     };

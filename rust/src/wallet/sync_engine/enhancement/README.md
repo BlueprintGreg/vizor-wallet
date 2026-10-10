@@ -516,7 +516,7 @@ until an account is promoted.
 ### Activation (Phase 4)
 
 Under `PrivateRequired`, the coordinator offers each account whose passes
-finished to `promote_transparent_account`, one account at a time. The library
+finished to `activate_transparent_ledger`, one account at a time. The library
 rechecks everything in one transaction: the account is complete through a
 target equal to the chain tip, not quarantined, every contributing revision is
 qualified, and legacy public evidence agrees. A blocked promotion changes

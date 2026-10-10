@@ -688,12 +688,12 @@ impl<S: RecoverySource> Run<'_, S> {
         }
         let db = &mut *self.db;
         let promoted = with_wallet_db_write_lock("sync_engine.transparent_ledger.promote", || {
-            db.promote_transparent_account(account)
+            db.activate_transparent_ledger(account)
         });
         match promoted {
             Ok(()) => Ok(true),
             // Blocker kinds name no address or outpoint.
-            Err(SqliteClientError::TransparentPromotionBlocked(blockers)) => {
+            Err(SqliteClientError::TransparentActivationBlocked(blockers)) => {
                 log::info!("transparent ledger: promotion blocked ({blockers:?})");
                 if blockers.contains(&RecoveryBlocker::LegacyDiscrepancy) {
                     log::warn!(
@@ -735,7 +735,9 @@ fn is_ledger(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncErro
 /// Whether `account` is quarantined, from its private snapshot.
 fn quarantined(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncError> {
     match db.transparent_ledger_snapshot(account, crate::wallet::confirmations_policy()) {
-        Ok(snapshot) => Ok(snapshot.blockers.contains(&RecoveryBlocker::Quarantined)),
+        Ok(snapshot) => Ok(snapshot
+            .blockers
+            .contains(&RecoveryBlocker::RecoverySuspended)),
         // Its first pass finds a deleted account gone.
         Err(SqliteClientError::AccountUnknown) => Ok(false),
         Err(error) => Err(db_error(error)),

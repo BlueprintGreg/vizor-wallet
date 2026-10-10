@@ -18,9 +18,9 @@ use sha2::{Digest, Sha256};
 use transparent::{address::TransparentAddress, bundle::OutPoint};
 use zakura_pir_transparent::testing::{unsupported_txid_init, TxidPublication};
 use zakura_pir_transparent::{
-    AddressKind, DetailAnswer, DisplayEntry, EntryAddress, EntryOutput, HttpExchange, HttpFailure,
-    HttpReply, HttpRequest, MapCheck, MapChecked, Placement, ProtocolKind, Provenance, Tier,
-    TxidDisplayService, TxidError, TxidLookup,
+    AddressKind, DetailAnswer, DisplayEntry, DisplayLookup, EntryAddress, EntryOutput,
+    HttpExchange, HttpFailure, HttpReply, HttpRequest, MapCheck, MapChecked, Placement,
+    ProtocolKind, Provenance, Tier, TxidDisplayService, TxidError, TxidLookup,
 };
 use zcash_client_backend::data_api::{
     transparent_ledger::{
@@ -499,9 +499,12 @@ impl DetailSource for Scripted {
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }
-        Ok(DetailAnswer::Display(match (self.answer)(txid) {
-            Ok(facts) => Ok(found(&facts)),
-            Err(outcome) => failed(outcome),
+        Ok(DetailAnswer::Display(DisplayLookup {
+            found: match (self.answer)(txid) {
+                Ok(facts) => Ok(found(&facts)),
+                Err(outcome) => failed(outcome),
+            },
+            map_sha256: self.service.map_sha256(),
         }))
     }
 

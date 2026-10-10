@@ -238,7 +238,7 @@ fn privately_recovered_with_metadata_fee(
     set_policy(&mut st, TransparentLedgerMode::PrivateRequired);
     st.wallet_mut()
         .db_mut()
-        .promote_transparent_account(account)
+        .activate_transparent_ledger(account)
         .unwrap();
     st.wallet_mut()
         .db_mut()

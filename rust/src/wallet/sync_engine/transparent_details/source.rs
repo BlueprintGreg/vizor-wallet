@@ -19,8 +19,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use tokio::runtime::Handle;
 use tonic::transport::Channel;
 use zakura_pir_transparent::{
-    DetailAnswer, HttpExchange, MapCheck, MapChecked, TransportError, TxidDisplayService,
-    TxidError, TxidLookup,
+    DetailAnswer, DisplayLookup, HttpExchange, MapCheck, MapChecked, TransportError,
+    TxidDisplayService, TxidError, TxidLookup,
 };
 use zcash_client_backend::data_api::transparent_ledger::TransparentDetailOutcome;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -163,7 +163,7 @@ impl DetailSource for PirSource {
         #[cfg(test)]
         if self.observer.is_none() {
             // No test reaches the live service by accident.
-            return Ok(DetailAnswer::Display(Err(TxidError::Unavailable {
+            return Ok(DetailAnswer::Display(unanswered(TxidError::Unavailable {
                 retry_after: None,
             })));
         }
@@ -173,7 +173,7 @@ impl DetailSource for PirSource {
             Ok(found) => DetailAnswer::Display(found),
             Err(Unanswered::Cancelled) => DetailAnswer::Cancelled,
             Err(Unanswered::NotStarted) => {
-                DetailAnswer::Display(Err(TxidError::Unavailable { retry_after: None }))
+                DetailAnswer::Display(unanswered(TxidError::Unavailable { retry_after: None }))
             }
             // The lookup panicked: an unusable answer.
             Err(Unanswered::Panicked) => {
@@ -224,10 +224,11 @@ pub(crate) struct BlockingLookup {
 impl BlockingLookup {
     /// Runs the lookup on the calling thread, which must not be a runtime
     /// worker.
-    pub(crate) fn run(self) -> Result<TxidLookup, TxidError> {
+    pub(crate) fn run(self) -> DisplayLookup {
         self.with_exchange(|service, exchange, exit| {
-            service.lookup(&exchange, self.txid, self.mined_height, exit)
+            Ok(service.lookup(&exchange, self.txid, self.mined_height, exit))
         })
+        .unwrap_or_else(unanswered)
     }
 
     /// Fetches the display map `check` asks for; `None` when the origin is
@@ -260,6 +261,14 @@ impl BlockingLookup {
             None => exchange,
         };
         call(&self.service, &exchange, &exit)
+    }
+}
+
+/// A lookup that failed before the service answered, so under no map.
+fn unanswered(error: TxidError) -> DisplayLookup {
+    DisplayLookup {
+        found: Err(error),
+        map_sha256: None,
     }
 }
 

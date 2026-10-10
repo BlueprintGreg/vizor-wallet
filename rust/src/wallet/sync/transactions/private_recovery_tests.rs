@@ -52,7 +52,7 @@ fn promote(st: &mut State, account: AccountUuid) {
     set_policy(st, TransparentLedgerMode::PrivateRequired);
     st.wallet_mut()
         .db_mut()
-        .promote_transparent_account(account)
+        .activate_transparent_ledger(account)
         .unwrap();
 }
 
@@ -430,7 +430,7 @@ fn private_send_in_revision(
     set_policy(&mut st, TransparentLedgerMode::PrivateRequired);
     st.wallet_mut()
         .db_mut()
-        .promote_transparent_account(account)
+        .activate_transparent_ledger(account)
         .unwrap();
 
     let mut spend = commit(&watch(&st, account));
@@ -863,7 +863,7 @@ fn inputs_of_two_accounts_keep_each_receipt_shared() {
     for account in [a, b] {
         st.wallet_mut()
             .db_mut()
-            .promote_transparent_account(account)
+            .activate_transparent_ledger(account)
             .unwrap();
     }
     for (account, input_index, prevout_tag, funder) in
