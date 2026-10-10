@@ -149,6 +149,23 @@ fn notify_tor_status_changed() {
     tor_status_changed().notify_waiters();
 }
 
+/// How long a switch to Tor waits for direct connections to close.
+///
+/// Uncommitted direct connections are cancelled the moment Tor is requested
+/// and close almost at once. A committed broadcast is not cancelled: it runs
+/// until lightwalletd answers or its unary deadline expires. The drain must
+/// outlast that deadline, or a broadcast answered slowly but successfully
+/// would fail the switch. The margin covers dropping the channel after the
+/// deadline fires.
+pub(crate) const DIRECT_ROUTE_DRAIN_TIMEOUT: Duration =
+    crate::wallet::sync_engine::LIGHTWALLETD_UNARY_RPC_TIMEOUT
+        .saturating_add(Duration::from_secs(5));
+
+/// The drain a switch to Tor performs, under [`DIRECT_ROUTE_DRAIN_TIMEOUT`].
+pub(crate) async fn quiesce_direct_connections() -> Result<(), String> {
+    wait_for_direct_connections_to_close(DIRECT_ROUTE_DRAIN_TIMEOUT).await
+}
+
 pub(crate) async fn wait_for_direct_connections_to_close(timeout: Duration) -> Result<(), String> {
     tokio::time::timeout(timeout, async {
         loop {

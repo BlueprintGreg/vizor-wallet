@@ -66,14 +66,42 @@ final class BackgroundMigrationForegroundHandoffTests: XCTestCase {
 }
 ''')
 PY
+# Compile the preparation manager's pure continuation-scope rules and their
+# Tor-deferral tests on their own; the manager itself needs UIKit and
+# BackgroundTasks.
+python3 - "$test_dir/PreparationTorDeferral.swift" <<'PY'
+from pathlib import Path
+import sys
+
+def declaration(source, header):
+    start = source.index(header)
+    end = source.index('\n}\n', start) + 3
+    return source[start:end]
+
+manager = Path('ios/Runner/BackgroundMigrationPreparationManager.swift').read_text()
+tests = Path('ios/RunnerTests/RunnerTests.swift').read_text()
+parts = ['import XCTest\n']
+for header in [
+    'enum BackgroundMigrationPreparationResumeTarget',
+    'enum BackgroundMigrationPreparationContinuedTaskDisposition',
+    'func migrationPreparationContinuedTaskDisposition(',
+    'func migrationPreparationPendingTrackableScopes(',
+    'func migrationPreparationHandoffContinuationScopes(',
+    'func migrationPreparationForegroundOnlyLaunchContinuationScopes(',
+]:
+    parts.append(declaration(manager, header))
+parts.append(declaration(tests, 'final class BackgroundMigrationPreparationTorDeferralTests'))
+Path(sys.argv[1]).write_text('\n'.join(parts))
+PY
 cat > "$test_dir/main.swift" <<'SWIFT'
 import XCTest
 import Darwin
 let suite = XCTestSuite(name: "Migration outbox and foreground handoff")
 suite.addTest(BackgroundMigrationOutboxExecutionGateTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
+suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 13 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 15 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"
@@ -86,5 +114,6 @@ xcrun swiftc -swift-version 5 -Xlinker -rpath -Xlinker "$test_private_frameworks
   "$test_dir/TransportStub.swift" \
   ios/RunnerTests/BackgroundMigrationOutboxExecutionGateTests.swift \
   "$test_dir/ForegroundLifecycle.swift" \
+  "$test_dir/PreparationTorDeferral.swift" \
   "$test_dir/main.swift" -o "$test_dir/tests"
 "$test_dir/tests"

@@ -26,7 +26,8 @@ void failNetworkPrivacyEnable() =>
     RustLib.instance.api.crateApiNetworkPrivacyFailNetworkPrivacyEnable();
 
 /// Waits until direct tonic connections cancelled by
-/// [begin_network_privacy_enable] have released their sockets.
+/// [begin_network_privacy_enable] have released their sockets, and until a
+/// broadcast already dispatched directly has finished.
 Future<void> quiesceNetworkPrivacyDirectRequests() => RustLib.instance.api
     .crateApiNetworkPrivacyQuiesceNetworkPrivacyDirectRequests();
 

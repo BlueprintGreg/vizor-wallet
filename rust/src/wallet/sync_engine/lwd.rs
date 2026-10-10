@@ -42,7 +42,7 @@ use super::block_source::MemoryBlockSource;
 use super::{elapsed, SyncError, WalletDatabase};
 
 const LIGHTWALLETD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const LIGHTWALLETD_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const LIGHTWALLETD_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_START_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 

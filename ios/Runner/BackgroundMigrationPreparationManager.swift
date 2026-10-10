@@ -665,6 +665,40 @@ func migrationPreparationHandoffContinuationScopes(
   )
 }
 
+/// The continuation scopes a launched task records when its disposition sends
+/// it to the foreground instead of tracking confirmations.
+///
+/// Most foreground-only launches record every eligible run, as they always
+/// have: a run in state `2`, `3`, or `5` needs the app, and with private
+/// recovery on the foreground owns confirmation tracking. A Tor deferral is
+/// different. It lasts only while Tor is the saved route, and the run is still
+/// a healthy state `0` run the read-only task can finish once the route is
+/// direct again. Recording it would park it like a confirmed wave, which only
+/// its own migration screen clears, so after Tor is turned off
+/// `startPreparation` would find no trackable run and never re-arm it.
+///
+/// So a Tor-only deferral records the way a foreground handoff does: keep
+/// already-recorded confirmed waves, add runs that genuinely need the
+/// foreground, and leave confirmation-trackable runs unrecorded.
+func migrationPreparationForegroundOnlyLaunchContinuationScopes(
+  resumeTarget: BackgroundMigrationPreparationResumeTarget,
+  privateRecovery: Bool,
+  torSelected: Bool,
+  existingScopes: Set<String>,
+  eligibleScopes: Set<String>,
+  confirmationTrackableScopes: Set<String>
+) -> Set<String> {
+  guard resumeTarget == .continuedProcessing, torSelected, !privateRecovery
+  else {
+    return eligibleScopes
+  }
+  return migrationPreparationHandoffContinuationScopes(
+    existingScopes: existingScopes,
+    eligibleScopes: eligibleScopes,
+    confirmationTrackableScopes: confirmationTrackableScopes
+  )
+}
+
 /// Whether a foreground launch found any preparation run bound to the pending
 /// request.
 ///
@@ -1576,16 +1610,23 @@ final class BackgroundMigrationPreparationManager {
     stateLock.withPreparationLock {
       submissionInFlight = false
     }
+    let resumeTarget = preparationResumeTarget()
+    let privateRecovery = BackgroundMigrationPrivateRecovery.isEnabled()
+    let torSelected = BackgroundMigrationTorRoute.isSelected()
     let disposition = migrationPreparationContinuedTaskDisposition(
-      preparationResumeTarget(),
-      privateRecovery: BackgroundMigrationPrivateRecovery.isEnabled(),
-      torSelected: BackgroundMigrationTorRoute.isSelected()
+      resumeTarget,
+      privateRecovery: privateRecovery,
+      torSelected: torSelected
     )
     switch disposition {
     case .trackConfirmations:
       break
     case .foregroundOnly:
-      markForegroundContinuationsReady()
+      markForegroundContinuationsReadyForLaunch(
+        resumeTarget: resumeTarget,
+        privateRecovery: privateRecovery,
+        torSelected: torSelected
+      )
       finishForegroundOnlyTask(task)
       return
     case .complete:
@@ -2695,6 +2736,32 @@ final class BackgroundMigrationPreparationManager {
     return migrationPreparationHandoffHasBoundPreparation(
       eligibleScopes: eligibleScopes
     )
+  }
+
+  /// Records continuations for a launched task that defers to the foreground.
+  /// See `migrationPreparationForegroundOnlyLaunchContinuationScopes` for why a
+  /// Tor deferral leaves confirmation-trackable runs unrecorded.
+  private func markForegroundContinuationsReadyForLaunch(
+    resumeTarget: BackgroundMigrationPreparationResumeTarget,
+    privateRecovery: Bool,
+    torSelected: Bool
+  ) {
+    guard let eligibleScopes = foregroundContinuationEligibleScopes() else {
+      return
+    }
+    let trackableScopes = confirmationTrackableScopes() ?? []
+    stateLock.withPreparationLock {
+      foregroundContinuationScopes =
+        migrationPreparationForegroundOnlyLaunchContinuationScopes(
+          resumeTarget: resumeTarget,
+          privateRecovery: privateRecovery,
+          torSelected: torSelected,
+          existingScopes: foregroundContinuationScopes,
+          eligibleScopes: eligibleScopes,
+          confirmationTrackableScopes: trackableScopes
+        )
+      persistForegroundContinuationScopesLocked()
+    }
   }
 
   private func pruneForegroundContinuationScopes() {

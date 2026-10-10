@@ -370,6 +370,51 @@ async fn a_switch_to_tor_mid_tip_request_is_not_completed_directly() {
         "a direct tip request completed after Tor was selected"
     );
     assert!(server.methods().is_empty(), "{:?}", server.methods());
+
+    // The longer production drain is for committed broadcasts only: an
+    // uncommitted connection is cancelled, so the switch is not held up by it.
+    drop(channel);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::network_privacy::quiesce_direct_connections(),
+    )
+    .await
+    .expect("a cancelled direct request does not hold the Tor switch")
+    .expect("the drain");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_tor_switch_drain_outlasts_a_committed_broadcast_deadline() {
+    // lightwalletd accepts the broadcast and never answers. The broadcast is
+    // committed, so the switch to Tor must wait for its own deadline instead
+    // of giving up first and failing the enable.
+    let _policy = lock_route_policy();
+    disable_tor();
+    let server = RecordingLwd::start_holding_send();
+
+    let url = server.url_str().to_owned();
+    let broadcast =
+        tokio::spawn(async move { routed_send_transaction(&url, &[1, 2, 3, 4], || {}).await });
+    tokio::time::timeout(Duration::from_secs(10), server.send_received.notified())
+        .await
+        .expect("the broadcast reached lightwalletd");
+
+    // From here the clock advances only when every task is idle, so the
+    // production drain and the broadcast deadline race in virtual time.
+    tokio::time::pause();
+    begin_tor_enable();
+    let drain = tokio::spawn(crate::network_privacy::quiesce_direct_connections());
+
+    let result = broadcast.await.expect("the broadcast task");
+    assert!(
+        matches!(result, Err(RoutedRequestError::Failed(_))),
+        "{result:?}"
+    );
+    drain
+        .await
+        .expect("the drain task")
+        .expect("the production drain outlasts the committed broadcast deadline");
+    assert_eq!(server.methods(), ["SendTransaction"]);
 }
 
 /// Swift can only link what the bridging header declares, so this pins the

@@ -55,9 +55,10 @@ pub fn fail_network_privacy_enable() {
 }
 
 /// Waits until direct tonic connections cancelled by
-/// [begin_network_privacy_enable] have released their sockets.
+/// [begin_network_privacy_enable] have released their sockets, and until a
+/// broadcast already dispatched directly has finished.
 pub async fn quiesce_network_privacy_direct_requests() -> Result<(), String> {
-    crate::network_privacy::wait_for_direct_connections_to_close(Duration::from_secs(5)).await
+    crate::network_privacy::quiesce_direct_connections().await
 }
 
 /// Configures the process-wide network route used by wallet gRPC and HTTP

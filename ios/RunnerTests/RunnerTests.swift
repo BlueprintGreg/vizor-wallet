@@ -3408,3 +3408,68 @@ final class ModalCornerCacheTests: XCTestCase {
     XCTAssertNil(cache.radii(for: "1", limit: 201))
   }
 }
+
+final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
+  private let confirmedA = "test:account-a:run-1"
+  private let stillCountingB = "test:account-b:run-2"
+  private let needsForegroundC = "test:account-c:run-3"
+
+  func testTorDeferredLaunchLeavesStillCountingRunsTrackableAfterTorOff() {
+    // A task launches while Tor is saved. A's wave already confirmed and was
+    // recorded (its row still reads state 0 until the foreground advances
+    // it), B is mid-wave, and C needs the foreground app.
+    let recorded = migrationPreparationForegroundOnlyLaunchContinuationScopes(
+      resumeTarget: .continuedProcessing,
+      privateRecovery: false,
+      torSelected: true,
+      existingScopes: [confirmedA],
+      eligibleScopes: [confirmedA, stillCountingB, needsForegroundC],
+      confirmationTrackableScopes: [confirmedA, stillCountingB]
+    )
+    XCTAssertEqual(recorded, [confirmedA, needsForegroundC])
+
+    // The user turns Tor off. The next start must re-arm tracking for B
+    // without reviving A's confirmed wave.
+    XCTAssertEqual(
+      migrationPreparationContinuedTaskDisposition(
+        .continuedProcessing,
+        privateRecovery: false,
+        torSelected: false
+      ),
+      .trackConfirmations
+    )
+    XCTAssertEqual(
+      migrationPreparationPendingTrackableScopes(
+        continuationScopes: recorded,
+        confirmationTrackableScopes: [confirmedA, stillCountingB]
+      ),
+      [stillCountingB]
+    )
+  }
+
+  func testForegroundOwnedLaunchesStillRecordEveryEligibleRun() {
+    // Private recovery hands confirmation tracking to the foreground, and a
+    // background-processing target needs the app. Both keep the blanket mark.
+    let eligible: Set<String> = [stillCountingB, needsForegroundC]
+    let launches: [(BackgroundMigrationPreparationResumeTarget, Bool, Bool)] = [
+      (.continuedProcessing, true, false),
+      (.continuedProcessing, true, true),
+      (.backgroundProcessing, false, false),
+      (.backgroundProcessing, false, true),
+    ]
+    for (resumeTarget, privateRecovery, torSelected) in launches {
+      XCTAssertEqual(
+        migrationPreparationForegroundOnlyLaunchContinuationScopes(
+          resumeTarget: resumeTarget,
+          privateRecovery: privateRecovery,
+          torSelected: torSelected,
+          existingScopes: [confirmedA],
+          eligibleScopes: eligible,
+          confirmationTrackableScopes: [stillCountingB]
+        ),
+        eligible,
+        "\(resumeTarget) private=\(privateRecovery) tor=\(torSelected)"
+      )
+    }
+  }
+}
