@@ -415,8 +415,8 @@ and balances, input selection, locks, address allocation and history ignore it
 until an account is promoted.
 
 - **Source boundary.** A `RecoverySource` answers one pass over one account
-  (`SourceRequest`: the account, its watch set and an exit signal) with a
-  `SourceBatch`, and says whether its commits come from a `trusted()` origin.
+  (`SourceRequest`: the account, its watch set and an exit signal) with the
+  adapter's `PassReport`, and says whether its commits come from a `trusted()` origin.
   The transparent PIR source is the only production source (see below). The
   deterministic `FixtureSource` is test-only; its revisions carry the
   `vizor-fixture` source id, and `trust()` makes it trusted. No source falls
@@ -473,6 +473,11 @@ until an account is promoted.
   hardware broadcast reservation waits about one commit, not the batch. A settlement the run's budget or
   cancellation stops between commits is not acknowledged, and the next pass
   replays it.
+- **Pass plan.** The adapter's `PassPlan` reads each pass and its settlement
+  and names the next step: pass again, refresh from a fresh watch set, wait,
+  hold, skip, stop, fail, or done. The coordinator keeps the time budgets, the
+  wait cap, the hold durations, the durable-policy check before a refresh,
+  and promotion.
 - **Continuations and waits.** `next` comes from the adapter's outcome:
   `Complete`, `More` (pass again at once), `RetryAfter` (10 s behind a lagging
   publication, 30 s after an overload) and `Stalled`. A further pass also
@@ -730,10 +735,10 @@ trusted, since every commit comes from the configured origin.
   a dropped call stops its pass at the next request. The sync and mempool
   runtimes also shut down with a 2 s grace, and `SYNC_RUNNING` is cleared by a
   guard, so no blocking work can keep the sync, its progress stream and every
-  start queued behind it open until restart. A
-  publication whose set identity changed is retried once on the same
-  companion, which the adapter has reset, keeping its catalog. A pass that
-  failed because the service could not be reached or was not serving (the
+  start queued behind it open until restart. The adapter's pass retries a
+  publication whose set identity changed once on the same companion, which
+  it has reset, keeping its catalog. A pass that failed while the service
+  could not be reached or was not serving (the
   library's outage: a failed connection or route, a timeout, a 429 or 5xx on
   the map, a filter or init, or a 429 or non-capacity 5xx on a shard route) is
   `Unavailable` and ends the whole run instead of failing each account in

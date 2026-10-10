@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::Full;
 use sha2::{Digest, Sha256};
-use zakura_pir_transparent::{ApplyStats, Outcome, TransparentHistoryRecovery, SCHEMA};
+use zakura_pir_transparent::{ApplyStats, Outcome, Progress, TransparentHistoryRecovery, SCHEMA};
 use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
 
 use super::super::pir::{self, test_transport, TransparentPirSource, PASS_DEADLINE};
@@ -249,8 +249,23 @@ fn request<'a>(
     }
 }
 
+/// What these tests compare of a pass's report: its batch state and
+/// progress.
+#[derive(Debug, PartialEq, Eq)]
+struct Answer {
+    state: BatchState,
+    progress: Progress,
+}
+
+fn answered(report: Result<PassReport, SourceError>) -> Result<Answer, SourceError> {
+    report.map(|report| Answer {
+        state: report.state,
+        progress: report.progress,
+    })
+}
+
 /// The `Ready` answer of a pass that needed no retrieval.
-const COMPLETE: SourceBatch = SourceBatch {
+const COMPLETE: Answer = Answer {
     state: BatchState::Ready,
     progress: Progress {
         covered_through: TOP as u64,
@@ -271,11 +286,11 @@ enum Settled {
     },
 }
 
-fn settled(settlement: Option<Result<Applied, ApplyFailure>>) -> Settled {
+fn settled(settlement: Result<Option<Applied>, ApplyFailure>) -> Settled {
     match settlement {
-        None => Settled::Nothing,
-        Some(Ok(applied)) => Settled::Acknowledged(applied.stats),
-        Some(Err(failure)) => Settled::Refused {
+        Ok(None) => Settled::Nothing,
+        Ok(Some(applied)) => Settled::Acknowledged(applied.stats),
+        Err(failure) => Settled::Refused {
             applied: failure.stats.applied,
             action: failure.action(),
         },
@@ -356,9 +371,11 @@ async fn companions_are_per_account_and_bound_to_origin_and_schema() {
     );
     for account in [a, b] {
         assert_eq!(
-            source
-                .recover(request(account, &bare(account), &|| false))
-                .await,
+            answered(
+                source
+                    .recover(request(account, &bare(account), &|| false))
+                    .await
+            ),
             Ok(COMPLETE)
         );
     }
@@ -403,9 +420,11 @@ async fn deleting_an_account_removes_its_companion_and_sidecars() {
     let source = TransparentPirSource::new(&wallet.path, MAIN);
     for account in [a, b] {
         assert_eq!(
-            source
-                .recover(request(account, &bare(account), &|| false))
-                .await,
+            answered(
+                source
+                    .recover(request(account, &bare(account), &|| false))
+                    .await
+            ),
             Ok(COMPLETE)
         );
     }
@@ -672,9 +691,11 @@ async fn cancelling_a_pass_waits_for_the_blocking_task() {
         Settled::Nothing
     );
     assert_eq!(
-        source
-            .recover(request(account, &bare(account), &|| false))
-            .await,
+        answered(
+            source
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
         Ok(COMPLETE)
     );
 }
@@ -782,7 +803,7 @@ fn a_stuck_pass_holds_neither_the_call_nor_its_runtime() {
             .recover(request(account, &bare(account), &|| false))
             .await
     });
-    assert_eq!(next, Ok(COMPLETE));
+    assert_eq!(answered(next), Ok(COMPLETE));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -827,9 +848,11 @@ async fn passes_and_acknowledgments_on_one_companion_are_serialized() {
     // A source parks the companion of a ready pass with its lock.
     let first = TransparentPirSource::new(&wallet.path, MAIN);
     assert_eq!(
-        first
-            .recover(request(account, &bare(account), &|| false))
-            .await,
+        answered(
+            first
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
         Ok(COMPLETE)
     );
 
@@ -867,7 +890,7 @@ async fn passes_and_acknowledgments_on_one_companion_are_serialized() {
 
     // Dropping it releases the companion to the waiting pass.
     drop(first);
-    assert_eq!(waiting.await.unwrap(), Ok(COMPLETE));
+    assert_eq!(answered(waiting.await.unwrap()), Ok(COMPLETE));
     // A batch without retired revisions may also be settled as trusted.
     let mut db = open_wallet_db_with_timeout(&wallet.path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
     assert_eq!(
@@ -957,7 +980,7 @@ async fn a_quarantine_never_reaches_an_account_added_later() {
         let path = path.clone();
         async move {
             assert_eq!(
-                source.recover(request(account, &watch, &|| false)).await,
+                answered(source.recover(request(account, &watch, &|| false)).await),
                 Ok(COMPLETE)
             );
             let mut db = open_wallet_db_with_timeout(&path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
@@ -1037,7 +1060,7 @@ async fn cancellation_stops_a_settlement_between_wallet_writes() {
     let exit_after_first = || qualified() >= 1;
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert_eq!(
@@ -1056,7 +1079,7 @@ async fn cancellation_stops_a_settlement_between_wallet_writes() {
     // The next pass replays the batch, and it is acknowledged.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert!(matches!(
@@ -1101,7 +1124,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // is refused, and nothing reaches the wallet.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     bump_policy_generation(&path);
@@ -1119,7 +1142,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // applies qualified, and the batch is acknowledged.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     let stats = acknowledged(
@@ -1154,7 +1177,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     );
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert!(
@@ -1179,7 +1202,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     *map.lock().unwrap() = empty_filter_map(BIRTHDAY - 100, 1);
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert_eq!(
@@ -1192,7 +1215,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     );
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     let stats = acknowledged(
@@ -1207,7 +1230,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // it again, so even an observed settlement goes through.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     acknowledged(

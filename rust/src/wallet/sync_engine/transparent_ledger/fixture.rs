@@ -2,10 +2,11 @@
 //!
 //! It answers from a configurable set of mined receives and spends, by default
 //! with one `Ready` commit per pass, in real adapter batches built with
-//! `zakura_pir_transparent::testing`. Its revisions use [`FIXTURE_SOURCE`] as
-//! their source id. It is untrusted unless [`FixtureSource::trust`] makes it
-//! trusted, as the transparent PIR source is, so the coordinator qualifies its
-//! revisions only when a test asks for it. It settles a batch with the
+//! `zakura_pir_transparent::testing`, reported as the adapter's pass reports
+//! them. Its revisions use [`FIXTURE_SOURCE`] as their source id. It is
+//! untrusted unless [`FixtureSource::trust`] makes it trusted, as the
+//! transparent PIR source is, so the coordinator qualifies its revisions only
+//! when a test asks for it. It settles a batch with the
 //! adapter's own settlement, `testing::apply`, which is
 //! `apply_and_acknowledge` without a companion to acknowledge.
 
@@ -14,7 +15,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use transparent::address::TransparentAddress;
-use zakura_pir_transparent::{testing, Outcome, RecoveryBatch, WithdrawnCause};
+use zakura_pir_transparent::{testing, Outcome, Progress, RecoveryBatch, WithdrawnCause};
 use zcash_client_backend::data_api::transparent_ledger::{
     AddressRange, ChainPoint, PageRequest, PublicationAnchor, ReceiveEvent, RecoveryRevision,
     SpendEvent, TransparentLedgerCommit,
@@ -24,8 +25,8 @@ use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
 
 use super::{
-    Applied, ApplyFailure, BatchState, Progress, RecoverySource, SourceBatch, SourceError,
-    SourceRequest, Trust,
+    Applied, ApplyFailure, BatchState, PassReport, RecoverySource, SourceError, SourceRequest,
+    Trust,
 };
 use crate::wallet::db::{with_wallet_db_write_lock, WalletDatabase};
 
@@ -281,7 +282,7 @@ impl RecoverySource for Observed<'_> {
     fn recover(
         &self,
         request: SourceRequest<'_>,
-    ) -> impl Future<Output = Result<SourceBatch, SourceError>> + Send {
+    ) -> impl Future<Output = Result<PassReport, SourceError>> + Send {
         self.0.recover(request)
     }
 
@@ -291,7 +292,7 @@ impl RecoverySource for Observed<'_> {
         db: &mut WalletDatabase,
         trust: Trust,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Option<Result<Applied, ApplyFailure>>> + Send {
+    ) -> impl Future<Output = Result<Option<Applied>, ApplyFailure>> + Send {
         self.0.apply(account, db, trust, should_exit)
     }
 }
@@ -304,7 +305,7 @@ impl RecoverySource for FixtureSource {
     fn recover(
         &self,
         request: SourceRequest<'_>,
-    ) -> impl Future<Output = Result<SourceBatch, SourceError>> + Send {
+    ) -> impl Future<Output = Result<PassReport, SourceError>> + Send {
         let hook = {
             let mut state = self.state.lock().unwrap();
             state.calls.push(request.account);
@@ -322,10 +323,10 @@ impl RecoverySource for FixtureSource {
         db: &mut WalletDatabase,
         trust: Trust,
         _should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Option<Result<Applied, ApplyFailure>>> + Send {
+    ) -> impl Future<Output = Result<Option<Applied>, ApplyFailure>> + Send {
         let parked = self.state.lock().unwrap().unacknowledged.remove(&account);
         let Some(batch) = parked else {
-            return std::future::ready(None);
+            return std::future::ready(Ok(None));
         };
         let settled = with_wallet_db_write_lock("sync_engine.transparent_ledger.apply", || {
             testing::apply(batch, db, trust)
@@ -343,7 +344,7 @@ impl RecoverySource for FixtureSource {
                 state.retiring = false;
             }
         }
-        std::future::ready(Some(settled))
+        std::future::ready(settled.map(Some))
     }
 }
 
@@ -355,15 +356,28 @@ fn progress(height: BlockHeight, outcome: Outcome) -> Progress {
     }
 }
 
+/// The report of a pass whose batch is `state` with `progress`, and holds no
+/// commit.
+fn report(state: BatchState, progress: Progress) -> PassReport {
+    PassReport {
+        state,
+        progress,
+        commits: 0,
+        retired: 0,
+        publication_changed: false,
+    }
+}
+
 impl State {
-    fn answer(&mut self, request: &SourceRequest<'_>) -> Result<SourceBatch, SourceError> {
+    fn answer(&mut self, request: &SourceRequest<'_>) -> Result<PassReport, SourceError> {
+        // As the adapter's pass does, a pass forgets an earlier unsettled
+        // batch.
+        self.unacknowledged.remove(&request.account);
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
         }
-        let unanswered = |state, outcome| SourceBatch {
-            state,
-            progress: progress(BlockHeight::from_u32(0), outcome),
-        };
+        let unanswered =
+            |state, outcome| report(state, progress(BlockHeight::from_u32(0), outcome));
         if let Some(cause) = self.withdrawn.get(&request.account) {
             return Ok(unanswered(BatchState::Withdrawn(*cause), Outcome::Stalled));
         }
@@ -475,7 +489,7 @@ impl State {
         account: AccountUuid,
         commits: Vec<TransparentLedgerCommit<AccountUuid>>,
         progress: Progress,
-    ) -> SourceBatch {
+    ) -> PassReport {
         let retired = match (&self.revision, self.retiring) {
             (Some(revision), true) => vec![RecoveryRevision {
                 revision: b"retired".to_vec(),
@@ -484,14 +498,16 @@ impl State {
             }],
             _ => Vec::new(),
         };
+        let ready = PassReport {
+            commits: commits.len(),
+            retired: retired.len(),
+            ..report(BatchState::Ready, progress)
+        };
         self.unacknowledged.insert(
             account,
             testing::batch(commits, progress, BatchState::Ready, retired),
         );
-        SourceBatch {
-            state: BatchState::Ready,
-            progress,
-        }
+        ready
     }
 
     /// One provisional revision per publication; a new publication replaces
