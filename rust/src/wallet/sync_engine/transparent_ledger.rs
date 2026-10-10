@@ -2,17 +2,17 @@
 //!
 //! After each completed sync, [`run`] asks a [`RecoverySource`] about each
 //! account in passes, with no database lock held across a source call. A pass
-//! answers with a [`SourceBatch`]: the adapter's batch state and progress,
+//! answers with the adapter's [`PassReport`]: the batch state and progress,
 //! whose [`Retry`] says when to pass again. The source then settles a `Ready`
 //! batch itself ([`RecoverySource::apply`]): its commits are applied in order,
 //! each in its own library transaction, and the batch is acknowledged only
-//! once every one committed. A batch that was not acknowledged says what to
-//! do next ([`ApplyAction`]); budgets, holds and promotion are the
-//! coordinator's. The transparent PIR source takes the wallet write lock for
-//! one commit at a time and steps aside between commits for a waiting writer,
-//! so a foreground wallet write waits at most one commit, and cancellation
-//! stops a settlement between commits. A `Pending` or `Withdrawn` batch
-//! applies nothing and is never acknowledged.
+//! once every one committed. The adapter's [`PassPlan`] reads each pass and
+//! its settlement and names the next [`Step`]; budgets, waits, holds and
+//! promotion are the coordinator's. The transparent PIR source takes the
+//! wallet write lock for one commit at a time and steps aside between commits
+//! for a waiting writer, so a foreground wallet write waits at most one
+//! commit, and cancellation stops a settlement between commits. A `Pending`
+//! or `Withdrawn` batch applies nothing and is never acknowledged.
 //!
 //! Under `PrivateRequired`, a trusted source's commits are qualified as they
 //! are applied ([`Trust::Trusted`]): the trusted-indexer decision, which is
@@ -35,8 +35,8 @@
 //! transaction.
 //!
 //! A run is bounded. The active account goes first and the rest follow from a
-//! rotating cursor. Each account gets at most [`MAX_PASSES_PER_ACCOUNT`]
-//! passes and [`ACCOUNT_BUDGET`], the run at most [`RUN_BUDGET`], and waits
+//! rotating cursor. Each account gets at most [`LIMITS`] passes and
+//! [`ACCOUNT_BUDGET`], the run at most [`RUN_BUDGET`], and waits
 //! for a lagging publication or an overloaded service take at most
 //! [`PUBLICATION_WAIT_CAP`] in all. An account that cannot progress is held
 //! in memory for [`HOLD`] and skipped without traffic, as is a quarantined
@@ -54,12 +54,13 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 pub(crate) use zakura_pir_transparent::{
-    Applied, ApplyAction, ApplyFailure, BatchState, Progress, Retry, Trust, WithdrawnCause,
+    Applied, ApplyAction, ApplyFailure, BatchState, PassReport, Retry, Trust, WithdrawnCause,
 };
+use zakura_pir_transparent::{HoldCause as PlanHold, PassLimits, PassPlan, Step, StopCause};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        AccountLifecycle, RecoveryBlocker, TransparentLedgerMode, TransparentLedgerRead,
-        TransparentLedgerWrite, TransparentWatchSet,
+        AccountLifecycle, RecoveryBlocker, TransparentAddressWatchSet, TransparentLedgerMode,
+        TransparentLedgerRead, TransparentLedgerWrite,
     },
     Account as _, WalletRead,
 };
@@ -85,12 +86,13 @@ pub(crate) use policy::{
     current_transparent_policy, forget_private_ledger, set_transparent_policy,
 };
 
-/// Answered passes per account in one run. Each pass after the first needs
-/// new work: a grown window, a changed watch set, or a continuation that asks
-/// for one.
-const MAX_PASSES_PER_ACCOUNT: usize = 8;
-/// Fresh watch sets tried for one account after stale commits.
-const MAX_STALE_RETRIES: usize = 3;
+/// Answered passes per account in one run, and fresh watch sets tried after
+/// stale commits. Each pass after the first needs new work: a grown window, a
+/// changed watch set, or a continuation that asks for one.
+const LIMITS: PassLimits = PassLimits {
+    passes: 8,
+    stale_refreshes: 3,
+};
 /// Time one run may wait, in all, before asking a source again about a
 /// publication that ends below the target or a service that refused for
 /// capacity.
@@ -113,22 +115,11 @@ pub(crate) struct SourceRequest<'a> {
     pub(crate) account: AccountUuid,
     /// The account's watch set as the wallet reported it. Its context binds
     /// every commit of the answer.
-    pub(crate) watch: &'a TransparentWatchSet<AccountUuid>,
+    pub(crate) watch: &'a TransparentAddressWatchSet<AccountUuid>,
     /// Cancellation, or the end of the account's time budget. A source stops
     /// at it, waits for any work it started, and returns
     /// [`SourceError::Cancelled`].
     pub(crate) should_exit: &'a (dyn Fn() -> bool + Sync),
-}
-
-/// One pass of a batch source over one account: whether its commits may be
-/// applied, and how far it covered the watch set.
-///
-/// Only a `Ready` batch has commits. The source keeps them, opaque, until
-/// [`RecoverySource::apply`] settles the batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SourceBatch {
-    pub(crate) state: BatchState,
-    pub(crate) progress: Progress,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,11 +145,12 @@ pub(crate) trait RecoverySource {
     /// under `PrivateRequired` the coordinator qualifies its revisions.
     fn trusted(&self) -> bool;
 
-    /// One pass over `request.account`.
+    /// One pass over `request.account`. Only a `Ready` batch has commits; the
+    /// source keeps them, opaque, until [`Self::apply`] settles the batch.
     fn recover(
         &self,
         request: SourceRequest<'_>,
-    ) -> impl Future<Output = Result<SourceBatch, SourceError>> + Send;
+    ) -> impl Future<Output = Result<PassReport, SourceError>> + Send;
 
     /// Settles `account`'s last `Ready` batch: applies its commits to `db` in
     /// order with `trust`, each in its own wallet transaction under the
@@ -168,7 +160,7 @@ pub(crate) trait RecoverySource {
     /// wait at most one commit, and stops between commits once `should_exit`
     /// holds ([`ApplyAction::Interrupted`]). Under [`Trust::Observed`] a batch
     /// resolving retired revisions is refused before anything applies. No
-    /// network request is made. `None` when no unsettled `Ready` batch is
+    /// network request is made. `Ok(None)` when no unsettled `Ready` batch is
     /// held for the account.
     fn apply(
         &self,
@@ -176,7 +168,7 @@ pub(crate) trait RecoverySource {
         db: &mut WalletDatabase,
         trust: Trust,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Option<Result<Applied, ApplyFailure>>> + Send;
+    ) -> impl Future<Output = Result<Option<Applied>, ApplyFailure>> + Send;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -468,29 +460,29 @@ impl<S: RecoverySource> Run<'_, S> {
     }
 
     /// Recovers `account` in passes until its source and watch set settle, or
-    /// until `deadline`.
+    /// until `deadline`. The adapter's [`PassPlan`] names each next step; the
+    /// coordinator bounds its waits, holds the account, and stops the run.
     async fn recover_account(
         &mut self,
         account: AccountUuid,
         deadline: Instant,
     ) -> Result<AccountOutcome, SyncError> {
-        let Some(mut watch) = watch_set(self.db, account)? else {
+        let Some(watch) = watch_set(self.db, account)? else {
             return Ok(AccountOutcome::Done(None));
         };
         let (clock, should_exit) = (self.clock, self.should_exit);
         let pass_exit = move || should_exit() || clock() >= deadline;
-        let mut passes = 0;
-        let mut stale = 0;
+        let mut plan = PassPlan::new(watch, LIMITS);
+        if let Step::Done(retry) = plan.first() {
+            return Ok(AccountOutcome::Done(retry));
+        }
         loop {
             if should_exit() {
                 return Ok(AccountOutcome::Stop(RunOutcome::Exited));
             }
-            if watch.context().is_none() {
-                return Ok(AccountOutcome::Done(None));
-            }
             let request = SourceRequest {
                 account,
-                watch: &watch,
+                watch: plan.watch(),
                 should_exit: &pass_exit,
             };
             let answer = tokio::time::timeout(PASS_BACKSTOP, self.source.recover(request)).await;
@@ -498,8 +490,8 @@ impl<S: RecoverySource> Run<'_, S> {
             if should_exit() {
                 return Ok(AccountOutcome::Stop(RunOutcome::Exited));
             }
-            let batch = match answer {
-                Ok(Ok(batch)) => batch,
+            let report = match answer {
+                Ok(Ok(report)) => report,
                 Ok(Err(SourceError::Unavailable)) => {
                     return Ok(AccountOutcome::Stop(RunOutcome::SourceUnavailable));
                 }
@@ -516,85 +508,74 @@ impl<S: RecoverySource> Run<'_, S> {
                     return Ok(AccountOutcome::Skipped);
                 }
             };
-            let SourceBatch { state, progress } = batch;
-            let next = progress.retry();
-            let window_grew = match state {
-                BatchState::Withdrawn(cause) => {
-                    log::warn!(
-                        "transparent ledger: publication withdrawn ({cause:?}); holding the account"
-                    );
-                    set_hold(self.db_path, account, HoldCause::Withdrawn(cause), clock());
-                    return Ok(AccountOutcome::Skipped);
-                }
-                BatchState::Pending => {
-                    log::info!("transparent ledger: source batch pending ({next:?})");
-                    false
-                }
-                BatchState::Ready => match self.apply(account, &pass_exit).await {
-                    Some(Ok(applied)) => {
-                        let target = watch.target.map_or(0, |target| u32::from(target.height));
-                        let behind = progress.behind(u64::from(target));
-                        if behind > 0 {
-                            log::info!("transparent ledger: publication {behind} blocks behind");
-                        }
-                        applied.stats.window_grew
+            if report.state == BatchState::Pending {
+                log::info!(
+                    "transparent ledger: source batch pending ({:?})",
+                    report.retry()
+                );
+            }
+            let target = plan
+                .watch()
+                .target
+                .map_or(0, |target| u32::from(target.height));
+            // Settled whatever the pass reported: nothing is held unless it
+            // was `Ready`.
+            let settled = self.apply(account, &pass_exit).await;
+            match &settled {
+                Ok(Some(_)) => {
+                    let behind = report.progress.behind(u64::from(target));
+                    if behind > 0 {
+                        log::info!("transparent ledger: publication {behind} blocks behind");
                     }
-                    None => {
-                        log::warn!("transparent ledger: nothing to settle; skipping the account");
-                        return Ok(AccountOutcome::Skipped);
-                    }
-                    // Logs carry the error's message, which names only its
-                    // kind: nested errors can quote wallet history.
-                    Some(Err(failure)) => match failure.action() {
-                        ApplyAction::Refresh => {
-                            self.stats.stale_retries += 1;
-                            stale += 1;
-                            if stale > MAX_STALE_RETRIES {
-                                log::warn!(
-                                    "transparent ledger: commits stayed stale; retrying next run"
-                                );
-                                return Ok(AccountOutcome::Skipped);
-                            }
-                            if !durably_permitted(self.db)? {
-                                return Ok(AccountOutcome::Stop(RunOutcome::NotEnabled));
-                            }
-                            let Some(fresh) = watch_set(self.db, account)? else {
-                                return Ok(AccountOutcome::Done(None));
-                            };
-                            watch = fresh;
-                            continue;
+                }
+                Err(failure) if failure.action() == ApplyAction::Refresh => {
+                    self.stats.stale_retries += 1;
+                }
+                _ => {}
+            }
+            let Some(fresh) = watch_set(self.db, account)? else {
+                return Ok(AccountOutcome::Done(None));
+            };
+            match plan.next(&report, &settled, fresh) {
+                Step::Pass => {}
+                // Stale commits: the next pass runs from the fresh watch set.
+                Step::Refresh => {}
+                Step::Wait(wait) => match self.wait(wait, deadline).await {
+                    None => return Ok(AccountOutcome::Stop(RunOutcome::Exited)),
+                    Some(false) => return Ok(AccountOutcome::Done(Some(Retry::After(wait)))),
+                    Some(true) => {}
+                },
+                Step::Hold(cause) => {
+                    let cause = match cause {
+                        PlanHold::Withdrawn(cause) => {
+                            log::warn!(
+                                "transparent ledger: publication withdrawn ({cause:?}); \
+                                 holding the account"
+                            );
+                            HoldCause::Withdrawn(cause)
                         }
                         // Only trusted commits withdraw the retired
                         // revisions' evidence, so nothing was applied or
                         // acknowledged, and the source reports them again.
-                        ApplyAction::Reconcile => {
+                        PlanHold::Unreconciled => {
                             log::warn!(
                                 "transparent ledger: retired revisions need trusted \
                                  reconciliation; holding the account"
                             );
-                            set_hold(self.db_path, account, HoldCause::Unreconciled, clock());
-                            return Ok(AccountOutcome::Skipped);
+                            HoldCause::Unreconciled
                         }
-                        ApplyAction::Skip => {
-                            log::warn!(
-                                "transparent ledger: {}; skipping the account",
-                                failure.error
-                            );
-                            return Ok(AccountOutcome::Skipped);
-                        }
-                        ApplyAction::NotEnabled => {
-                            return Ok(AccountOutcome::Stop(RunOutcome::NotEnabled))
-                        }
-                        ApplyAction::Fail => {
-                            return Err(SyncError::db(format!(
-                                "transparent ledger: {}",
-                                failure.error
-                            )))
-                        }
+                    };
+                    set_hold(self.db_path, account, cause, clock());
+                    return Ok(AccountOutcome::Skipped);
+                }
+                // Logs carry the error's message, which names only its kind:
+                // nested errors can quote wallet history.
+                Step::Skip => {
+                    match &settled {
                         // Stopped between commits: what applied stays, and
                         // the next pass replays the rest. Neither a hold nor
                         // a stall.
-                        ApplyAction::Interrupted => {
+                        Err(failure) if failure.action() == ApplyAction::Interrupted => {
                             if should_exit() {
                                 return Ok(AccountOutcome::Stop(RunOutcome::Exited));
                             }
@@ -602,31 +583,33 @@ impl<S: RecoverySource> Run<'_, S> {
                                 "transparent ledger: account budget spent while settling; \
                                  the next run continues"
                             );
-                            return Ok(AccountOutcome::Skipped);
                         }
-                    },
-                },
-            };
-            passes += 1;
-            let Some(fresh) = watch_set(self.db, account)? else {
-                return Ok(AccountOutcome::Done(None));
-            };
-            let changed = window_grew || fresh.addresses != watch.addresses;
-            watch = fresh;
-            if passes >= MAX_PASSES_PER_ACCOUNT {
-                return Ok(AccountOutcome::Done(Some(next)));
-            }
-            match next {
-                Retry::More => {}
-                Retry::After(wait) => match self.wait(wait, deadline).await {
-                    None => return Ok(AccountOutcome::Stop(RunOutcome::Exited)),
-                    Some(false) => return Ok(AccountOutcome::Done(Some(next))),
-                    Some(true) => {}
-                },
-                Retry::Complete | Retry::Stalled if changed => {}
-                Retry::Complete | Retry::Stalled => {
-                    return Ok(AccountOutcome::Done(Some(next)));
+                        Ok(_) => log::warn!(
+                            "transparent ledger: nothing to settle; skipping the account"
+                        ),
+                        Err(failure) if failure.action() == ApplyAction::Refresh => log::warn!(
+                            "transparent ledger: commits stayed stale; retrying next run"
+                        ),
+                        Err(failure) => log::warn!(
+                            "transparent ledger: {}; skipping the account",
+                            failure.error
+                        ),
+                    }
+                    return Ok(AccountOutcome::Skipped);
                 }
+                // The policy no longer permits this run's recovery, or
+                // changed since it was captured: a later run decides afresh.
+                Step::Stop(StopCause::NotEnabled | StopCause::PolicyChanged) => {
+                    return Ok(AccountOutcome::Stop(RunOutcome::NotEnabled))
+                }
+                // Only a failed settlement fails.
+                Step::Fail => {
+                    return Err(SyncError::db(match settled {
+                        Err(failure) => format!("transparent ledger: {}", failure.error),
+                        Ok(_) => "transparent ledger: settlement failed".to_owned(),
+                    }))
+                }
+                Step::Done(retry) => return Ok(AccountOutcome::Done(retry)),
             }
         }
     }
@@ -639,7 +622,7 @@ impl<S: RecoverySource> Run<'_, S> {
         &mut self,
         account: AccountUuid,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Option<Result<Applied, ApplyFailure>> {
+    ) -> Result<Option<Applied>, ApplyFailure> {
         let trust = if self.qualify {
             Trust::Trusted
         } else {
@@ -648,14 +631,15 @@ impl<S: RecoverySource> Run<'_, S> {
         let settled = self
             .source
             .apply(account, self.db, trust, should_exit)
-            .await?;
+            .await;
         let stats = match &settled {
-            Ok(applied) => applied.stats,
+            Ok(None) => return settled,
+            Ok(Some(applied)) => applied.stats,
             Err(failure) => failure.stats,
         };
         self.stats.commits += stats.applied;
         self.stats.qualified += stats.qualified;
-        Some(settled)
+        settled
     }
 
     /// Waits `wait` before the account's next pass, if the run's wait cap and
@@ -688,12 +672,12 @@ impl<S: RecoverySource> Run<'_, S> {
         }
         let db = &mut *self.db;
         let promoted = with_wallet_db_write_lock("sync_engine.transparent_ledger.promote", || {
-            db.promote_transparent_account(account)
+            db.activate_transparent_ledger(account)
         });
         match promoted {
             Ok(()) => Ok(true),
             // Blocker kinds name no address or outpoint.
-            Err(SqliteClientError::TransparentPromotionBlocked(blockers)) => {
+            Err(SqliteClientError::TransparentActivationBlocked(blockers)) => {
                 log::info!("transparent ledger: promotion blocked ({blockers:?})");
                 if blockers.contains(&RecoveryBlocker::LegacyDiscrepancy) {
                     log::warn!(
@@ -715,13 +699,6 @@ impl<S: RecoverySource> Run<'_, S> {
     }
 }
 
-/// Whether the wallet's durable policy permits private recovery. The handle's
-/// own mode is checked by the caller and again by the library at commit.
-fn durably_permitted(db: &WalletDatabase) -> Result<bool, SyncError> {
-    let applied = db.applied_transparent_policy().map_err(db_error)?;
-    Ok(applied.mode != TransparentLedgerMode::Public)
-}
-
 /// Whether `account` is a Ledger account.
 fn is_ledger(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncError> {
     Ok(db
@@ -735,7 +712,9 @@ fn is_ledger(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncErro
 /// Whether `account` is quarantined, from its private snapshot.
 fn quarantined(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncError> {
     match db.transparent_ledger_snapshot(account, crate::wallet::confirmations_policy()) {
-        Ok(snapshot) => Ok(snapshot.blockers.contains(&RecoveryBlocker::Quarantined)),
+        Ok(snapshot) => Ok(snapshot
+            .blockers
+            .contains(&RecoveryBlocker::RecoverySuspended)),
         // Its first pass finds a deleted account gone.
         Err(SqliteClientError::AccountUnknown) => Ok(false),
         Err(error) => Err(db_error(error)),
@@ -746,7 +725,7 @@ fn quarantined(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncEr
 fn watch_set(
     db: &WalletDatabase,
     account: AccountUuid,
-) -> Result<Option<TransparentWatchSet<AccountUuid>>, SyncError> {
+) -> Result<Option<TransparentAddressWatchSet<AccountUuid>>, SyncError> {
     match db.transparent_watch_set(account) {
         Ok(watch) => Ok(Some(watch)),
         Err(SqliteClientError::AccountUnknown) => Ok(None),

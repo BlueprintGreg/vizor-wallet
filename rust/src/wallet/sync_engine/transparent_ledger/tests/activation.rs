@@ -1136,8 +1136,5 @@ async fn public_hardware_tex_legs_dispatch_and_unknown_inputs_are_withheld() {
 
     let unknown = hardware_tx(vec![OutPoint::new([2; 32], 0)]);
     let error = dispatch(&wallet.path, &unknown, &[]).await.unwrap_err();
-    assert!(
-        error.contains("private transparent authority is required"),
-        "{error}"
-    );
+    assert!(error.contains("an input is not a wallet output"), "{error}");
 }

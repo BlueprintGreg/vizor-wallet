@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::Full;
 use sha2::{Digest, Sha256};
-use zakura_pir_transparent::{ApplyStats, Outcome, ReferenceRecovery, SCHEMA};
+use zakura_pir_transparent::{ApplyStats, Outcome, Progress, TransparentHistoryRecovery, SCHEMA};
 use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
 
 use super::super::pir::{self, test_transport, TransparentPirSource, PASS_DEADLINE};
@@ -65,8 +65,8 @@ pub(super) fn main_wallet(accounts: usize) -> MainWallet {
 
 /// A watch set for `account` at the wallet's tip with nothing to watch: a
 /// pass needs no retrieval, and is `Ready` once the wallet accepts the tip.
-fn bare(account: AccountUuid) -> TransparentWatchSet<AccountUuid> {
-    TransparentWatchSet {
+fn bare(account: AccountUuid) -> TransparentAddressWatchSet<AccountUuid> {
+    TransparentAddressWatchSet {
         account,
         lifecycle: AccountLifecycle::Candidate,
         policy_generation: 0,
@@ -80,7 +80,10 @@ fn bare(account: AccountUuid) -> TransparentWatchSet<AccountUuid> {
 }
 
 /// `account`'s watch set as the wallet reports it.
-fn watched_by(wallet: &MainWallet, account: AccountUuid) -> TransparentWatchSet<AccountUuid> {
+fn watched_by(
+    wallet: &MainWallet,
+    account: AccountUuid,
+) -> TransparentAddressWatchSet<AccountUuid> {
     let db = open_wallet_db_with_timeout(&wallet.path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
     let watch = db.transparent_watch_set(account).unwrap();
     assert!(!watch.addresses.is_empty());
@@ -236,7 +239,7 @@ fn touch(path: &Path) {
 /// A request for one pass over `account` from `watch`.
 fn request<'a>(
     account: AccountUuid,
-    watch: &'a TransparentWatchSet<AccountUuid>,
+    watch: &'a TransparentAddressWatchSet<AccountUuid>,
     should_exit: &'a (dyn Fn() -> bool + Sync),
 ) -> SourceRequest<'a> {
     SourceRequest {
@@ -246,8 +249,23 @@ fn request<'a>(
     }
 }
 
+/// What these tests compare of a pass's report: its batch state and
+/// progress.
+#[derive(Debug, PartialEq, Eq)]
+struct Answer {
+    state: BatchState,
+    progress: Progress,
+}
+
+fn answered(report: Result<PassReport, SourceError>) -> Result<Answer, SourceError> {
+    report.map(|report| Answer {
+        state: report.state,
+        progress: report.progress,
+    })
+}
+
 /// The `Ready` answer of a pass that needed no retrieval.
-const COMPLETE: SourceBatch = SourceBatch {
+const COMPLETE: Answer = Answer {
     state: BatchState::Ready,
     progress: Progress {
         covered_through: TOP as u64,
@@ -268,11 +286,11 @@ enum Settled {
     },
 }
 
-fn settled(settlement: Option<Result<Applied, ApplyFailure>>) -> Settled {
+fn settled(settlement: Result<Option<Applied>, ApplyFailure>) -> Settled {
     match settlement {
-        None => Settled::Nothing,
-        Some(Ok(applied)) => Settled::Acknowledged(applied.stats),
-        Some(Err(failure)) => Settled::Refused {
+        Ok(None) => Settled::Nothing,
+        Ok(Some(applied)) => Settled::Acknowledged(applied.stats),
+        Err(failure) => Settled::Refused {
             applied: failure.stats.applied,
             action: failure.action(),
         },
@@ -353,9 +371,11 @@ async fn companions_are_per_account_and_bound_to_origin_and_schema() {
     );
     for account in [a, b] {
         assert_eq!(
-            source
-                .recover(request(account, &bare(account), &|| false))
-                .await,
+            answered(
+                source
+                    .recover(request(account, &bare(account), &|| false))
+                    .await
+            ),
             Ok(COMPLETE)
         );
     }
@@ -381,14 +401,14 @@ async fn companions_are_per_account_and_bound_to_origin_and_schema() {
     assert_eq!(config.source, b"vizor/transparent-pir/v1");
     assert_eq!(config.account_binding, a.expose_uuid().as_bytes());
     assert_eq!(config.origin, pir::DEFAULT_MAINNET_ORIGIN);
-    assert!(ReferenceRecovery::open(
+    assert!(TransparentHistoryRecovery::open(
         &a_path,
         pir::recovery_config(b, pir::DEFAULT_MAINNET_ORIGIN)
     )
     .is_err());
     let other = "https://transparent-pir.example";
-    assert!(ReferenceRecovery::open(&a_path, pir::recovery_config(a, other)).is_err());
-    ReferenceRecovery::open(&a_path, config).unwrap();
+    assert!(TransparentHistoryRecovery::open(&a_path, pir::recovery_config(a, other)).is_err());
+    TransparentHistoryRecovery::open(&a_path, config).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -400,9 +420,11 @@ async fn deleting_an_account_removes_its_companion_and_sidecars() {
     let source = TransparentPirSource::new(&wallet.path, MAIN);
     for account in [a, b] {
         assert_eq!(
-            source
-                .recover(request(account, &bare(account), &|| false))
-                .await,
+            answered(
+                source
+                    .recover(request(account, &bare(account), &|| false))
+                    .await
+            ),
             Ok(COMPLETE)
         );
     }
@@ -669,9 +691,11 @@ async fn cancelling_a_pass_waits_for_the_blocking_task() {
         Settled::Nothing
     );
     assert_eq!(
-        source
-            .recover(request(account, &bare(account), &|| false))
-            .await,
+        answered(
+            source
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
         Ok(COMPLETE)
     );
 }
@@ -779,7 +803,7 @@ fn a_stuck_pass_holds_neither_the_call_nor_its_runtime() {
             .recover(request(account, &bare(account), &|| false))
             .await
     });
-    assert_eq!(next, Ok(COMPLETE));
+    assert_eq!(answered(next), Ok(COMPLETE));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -824,9 +848,11 @@ async fn passes_and_acknowledgments_on_one_companion_are_serialized() {
     // A source parks the companion of a ready pass with its lock.
     let first = TransparentPirSource::new(&wallet.path, MAIN);
     assert_eq!(
-        first
-            .recover(request(account, &bare(account), &|| false))
-            .await,
+        answered(
+            first
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
         Ok(COMPLETE)
     );
 
@@ -864,7 +890,7 @@ async fn passes_and_acknowledgments_on_one_companion_are_serialized() {
 
     // Dropping it releases the companion to the waiting pass.
     drop(first);
-    assert_eq!(waiting.await.unwrap(), Ok(COMPLETE));
+    assert_eq!(answered(waiting.await.unwrap()), Ok(COMPLETE));
     // A batch without retired revisions may also be settled as trusted.
     let mut db = open_wallet_db_with_timeout(&wallet.path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
     assert_eq!(
@@ -954,7 +980,7 @@ async fn a_quarantine_never_reaches_an_account_added_later() {
         let path = path.clone();
         async move {
             assert_eq!(
-                source.recover(request(account, &watch, &|| false)).await,
+                answered(source.recover(request(account, &watch, &|| false)).await),
                 Ok(COMPLETE)
             );
             let mut db = open_wallet_db_with_timeout(&path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
@@ -969,7 +995,7 @@ async fn a_quarantine_never_reaches_an_account_added_later() {
         db.transparent_ledger_snapshot(account, crate::wallet::confirmations_policy())
             .unwrap()
             .blockers
-            .contains(&RecoveryBlocker::Quarantined)
+            .contains(&RecoveryBlocker::RecoverySuspended)
     };
     assert!(matches!(
         settle_trusted(first).await,
@@ -1034,7 +1060,7 @@ async fn cancellation_stops_a_settlement_between_wallet_writes() {
     let exit_after_first = || qualified() >= 1;
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert_eq!(
@@ -1053,7 +1079,7 @@ async fn cancellation_stops_a_settlement_between_wallet_writes() {
     // The next pass replays the batch, and it is acknowledged.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert!(matches!(
@@ -1098,7 +1124,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // is refused, and nothing reaches the wallet.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     bump_policy_generation(&path);
@@ -1108,7 +1134,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
                 .apply(account, &mut db, Trust::Trusted, &|| false)
                 .await
         ),
-        (0, ApplyAction::Refresh)
+        (0, ApplyAction::PolicyChanged)
     );
     assert_eq!((covered(&db), qualified()), (None, 0));
 
@@ -1116,7 +1142,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // applies qualified, and the batch is acknowledged.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     let stats = acknowledged(
@@ -1151,7 +1177,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     );
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert!(
@@ -1176,7 +1202,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     *map.lock().unwrap() = empty_filter_map(BIRTHDAY - 100, 1);
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     assert_eq!(
@@ -1189,7 +1215,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     );
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     let stats = acknowledged(
@@ -1204,7 +1230,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
     // it again, so even an observed settlement goes through.
     let watch = watched_by(&wallet, account);
     assert_eq!(
-        source.recover(request(account, &watch, &|| false)).await,
+        answered(source.recover(request(account, &watch, &|| false)).await),
         Ok(COMPLETE)
     );
     acknowledged(

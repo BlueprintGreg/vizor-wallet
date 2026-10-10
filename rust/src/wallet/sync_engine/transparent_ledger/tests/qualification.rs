@@ -303,12 +303,12 @@ async fn observed_state_is_reused_only_after_revalidation() {
     // reaches the tip, so promotion refuses.
     scan(&wallet.path, wallet.birthday, TIP + 1, TIP + 1, 0);
     let blocked = with_wallet_db_write_lock("test.transparent_ledger.promote", || {
-        wallet.db.promote_transparent_account(wallet.account)
+        wallet.db.activate_transparent_ledger(wallet.account)
     });
     assert!(
         matches!(
             blocked,
-            Err(SqliteClientError::TransparentPromotionBlocked(_))
+            Err(SqliteClientError::TransparentActivationBlocked(_))
         ),
         "{blocked:?}"
     );
@@ -336,12 +336,12 @@ async fn observed_coverage_at_the_current_tip_promotes_after_one_trusted_pass() 
     let revisions = count(&wallet.path, "SELECT COUNT(*) FROM tpir_revisions");
 
     let blocked = with_wallet_db_write_lock("test.transparent_ledger.promote", || {
-        wallet.db.promote_transparent_account(wallet.account)
+        wallet.db.activate_transparent_ledger(wallet.account)
     });
     assert!(
         matches!(
             &blocked,
-            Err(SqliteClientError::TransparentPromotionBlocked(blockers))
+            Err(SqliteClientError::TransparentActivationBlocked(blockers))
                 if blockers.contains(&RecoveryBlocker::UnqualifiedRevision)
         ),
         "{blocked:?}"

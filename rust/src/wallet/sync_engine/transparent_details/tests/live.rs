@@ -55,7 +55,7 @@ async fn txid_live() {
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
-            let (found, _) = BlockingLookup {
+            let found = BlockingLookup {
                 origin: DEFAULT_MAINNET_ORIGIN.to_owned(),
                 service,
                 txid,
@@ -64,7 +64,8 @@ async fn txid_live() {
                 cancel: Default::default(),
                 observer: Some(observer),
             }
-            .run();
+            .run()
+            .found;
             (found, started.elapsed())
         })
     };

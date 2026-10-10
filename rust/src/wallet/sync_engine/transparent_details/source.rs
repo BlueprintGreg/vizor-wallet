@@ -15,17 +15,14 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
-use std::time::SystemTime;
 
 use tokio::runtime::Handle;
 use tonic::transport::Channel;
 use zakura_pir_transparent::{
-    deferral, display_facts, HttpExchange, TransportError, TxidDisplayService, TxidError,
-    TxidLookup,
+    DetailAnswer, DisplayLookup, HttpExchange, MapCheck, MapChecked, TransportError,
+    TxidDisplayService, TxidError,
 };
-use zcash_client_backend::data_api::transparent_ledger::{
-    TransparentDetailOutcome, TransparentDisplayFacts,
-};
+use zcash_client_backend::data_api::transparent_ledger::TransparentDetailOutcome;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zcash_primitives::transaction::{Transaction, TxId};
 use zcash_protocol::consensus::BlockHeight;
@@ -41,68 +38,49 @@ use crate::wallet::sync_engine::{watch_for_exit, TransparentLookupGate};
 #[cfg(test)]
 pub(crate) use crate::wallet::sync_engine::transparent_ledger::pir::DEFAULT_MAINNET_ORIGIN;
 
-/// What a lookup found.
+/// A transaction lightwalletd returned, decoded.
 #[derive(Debug)]
-pub(crate) enum DetailAnswer {
-    /// Display facts from the private publication, for the wallet to
-    /// validate and store.
-    Facts(Box<TransparentDisplayFacts>),
-    /// The whole transaction, from lightwalletd.
-    Raw {
-        transaction: Box<Transaction>,
-        mined_height: Option<BlockHeight>,
-    },
+pub(crate) struct PublicTransaction {
+    pub(crate) transaction: Box<Transaction>,
+    pub(crate) mined_height: Option<BlockHeight>,
 }
 
-/// Why a lookup found nothing to store. Carries no txid or service text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DetailFailure {
-    /// The lookup completed without storable facts; the wallet schedules the
-    /// next attempt from `outcome`. `map_sha256` names the display map the
-    /// lookup used.
-    Deferred {
-        outcome: TransparentDetailOutcome,
-        map_sha256: Option<[u8; 32]>,
-    },
-    /// The source's authority is gone: a policy transition withheld the
-    /// request. The run ends.
-    Withheld,
-    /// The run or its budget stopped the lookup.
-    Cancelled,
-}
+/// What a lookup found, for the run to record: the private service's result,
+/// a public transaction or the outcome to defer it with, or a cancellation
+/// (by the sync's exit or the run's budget), which records nothing.
+pub(crate) type Answer = DetailAnswer<PublicTransaction>;
+
+/// The source's authority is gone: a policy transition withheld the request.
+/// The run ends.
+#[derive(Debug)]
+pub(crate) struct Withheld;
 
 /// One transaction's details, from whichever source the run chose.
 pub(crate) trait DetailSource {
-    /// Looks up `txid` mined at `mined_height`. Stops at `should_exit`.
+    /// Looks up `txid` mined at `mined_height`. Stops at `should_exit`,
+    /// answering [`DetailAnswer::Cancelled`].
     fn lookup(
         &mut self,
         txid: TxId,
         mined_height: BlockHeight,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Result<DetailAnswer, DetailFailure>> + Send;
+    ) -> impl Future<Output = Result<Answer, Withheld>> + Send;
 
     /// The gate a public answer is committed under; `None` for the private
     /// source.
     fn gate(&self) -> Option<&TransparentLookupGate>;
 
-    /// The display map the source last used, which releases work held by an
-    /// older one.
-    fn map_sha256(&self) -> Option<[u8; 32]>;
+    /// The display service the run lists its work under and checks the map
+    /// with; `None` for the public source, which never checks a map.
+    fn service(&self) -> Option<Arc<TxidDisplayService>>;
 
-    /// Last attempted publication-map check, shared across sync runs.
-    fn map_checked_at(&self) -> Option<SystemTime> {
-        None
-    }
-
-    /// Records the attempt before awaiting it, including failed or cancelled checks.
-    fn map_check_started(&mut self, _now: SystemTime) {}
-
-    /// Fetches the source's display map afresh and returns its hash; `None`
-    /// for a source without one, or when the fetch failed or was stopped.
-    fn refresh_map(
+    /// Fetches the display map `check` asks for. `None` when the fetch was
+    /// stopped or could not start: the run lists nothing more.
+    fn check_map(
         &mut self,
+        check: MapCheck,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Option<[u8; 32]>> + Send;
+    ) -> impl Future<Output = Option<MapChecked>> + Send;
 }
 
 // ---- private ---------------------------------------------------------------
@@ -181,64 +159,51 @@ impl DetailSource for PirSource {
         txid: TxId,
         mined_height: BlockHeight,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Result<DetailAnswer, DetailFailure> {
+    ) -> Result<Answer, Withheld> {
         #[cfg(test)]
         if self.observer.is_none() {
             // No test reaches the live service by accident.
-            return Err(DetailFailure::Deferred {
-                outcome: TransparentDetailOutcome::Unavailable { retry_after: None },
-                map_sha256: None,
-            });
+            return Ok(DetailAnswer::Display(unanswered(TxidError::Unavailable {
+                retry_after: None,
+            })));
         }
         let request = self.request(*txid.as_ref(), u64::from(u32::from(mined_height)));
-        let (found, map) = run_blocking(request, should_exit).await?;
-        match found {
-            Ok(TxidLookup::Found { entry, provenance }) => {
-                match display_facts(txid, &entry, &provenance, mined_height) {
-                    Ok(facts) => Ok(DetailAnswer::Facts(Box::new(facts))),
-                    Err(_) => Err(DetailFailure::Deferred {
-                        outcome: TransparentDetailOutcome::Protocol,
-                        map_sha256: map,
-                    }),
-                }
+        let looked = run_blocking(request, should_exit, BlockingLookup::run).await;
+        Ok(match looked {
+            Ok(found) => DetailAnswer::Display(found),
+            Err(Unanswered::Cancelled) => DetailAnswer::Cancelled,
+            Err(Unanswered::NotStarted) => {
+                DetailAnswer::Display(unanswered(TxidError::Unavailable { retry_after: None }))
             }
-            Err(TxidError::Cancelled) => Err(DetailFailure::Cancelled),
-            // The transport reports cancellation as a transport failure.
-            Err(TxidError::Transport(_)) if should_exit() => Err(DetailFailure::Cancelled),
-            lookup => Err(DetailFailure::Deferred {
-                outcome: deferral(&lookup)
-                    .unwrap_or(TransparentDetailOutcome::Unavailable { retry_after: None }),
-                map_sha256: map,
-            }),
-        }
+            // The lookup panicked: an unusable answer.
+            Err(Unanswered::Panicked) => {
+                DetailAnswer::Public(Err(TransparentDetailOutcome::Protocol))
+            }
+        })
     }
 
     fn gate(&self) -> Option<&TransparentLookupGate> {
         None
     }
 
-    /// Read without waiting, even while a request (perhaps one abandoned
-    /// after its cancellation) holds the client.
-    fn map_sha256(&self) -> Option<[u8; 32]> {
-        self.service.map_sha256()
+    fn service(&self) -> Option<Arc<TxidDisplayService>> {
+        Some(self.service.clone())
     }
 
-    fn map_checked_at(&self) -> Option<SystemTime> {
-        self.service.map_checked_at()
-    }
-
-    fn map_check_started(&mut self, now: SystemTime) {
-        self.service.map_check_started(now);
-    }
-
-    async fn refresh_map(&mut self, should_exit: &(dyn Fn() -> bool + Sync)) -> Option<[u8; 32]> {
+    async fn check_map(
+        &mut self,
+        check: MapCheck,
+        should_exit: &(dyn Fn() -> bool + Sync),
+    ) -> Option<MapChecked> {
         #[cfg(test)]
         self.observer.as_ref()?;
         let request = self.request([0; 32], 0);
-        run_blocking_with(request, should_exit, BlockingLookup::refresh_map)
-            .await
-            .ok()
-            .flatten()
+        run_blocking(request, should_exit, move |request| {
+            request.check_map(check)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 }
 
@@ -256,22 +221,20 @@ pub(crate) struct BlockingLookup {
     pub(crate) observer: Option<crate::wallet::sync_engine::enhancement::RequestObserver>,
 }
 
-/// A lookup's result with the map digest the service holds afterwards.
-pub(crate) type Looked = (Result<TxidLookup, TxidError>, Option<[u8; 32]>);
-
 impl BlockingLookup {
     /// Runs the lookup on the calling thread, which must not be a runtime
     /// worker.
-    pub(crate) fn run(self) -> Looked {
-        let found = self.with_exchange(|service, exchange, exit| {
-            service.lookup(&exchange, self.txid, self.mined_height, exit)
-        });
-        (found, self.service.map_sha256())
+    pub(crate) fn run(self) -> DisplayLookup {
+        self.with_exchange(|service, exchange, exit| {
+            Ok(service.lookup(&exchange, self.txid, self.mined_height, exit))
+        })
+        .unwrap_or_else(unanswered)
     }
 
-    /// Fetches the display map now; the hash, or `None` on any failure.
-    pub(crate) fn refresh_map(self) -> Option<[u8; 32]> {
-        self.with_exchange(|service, exchange, exit| service.refresh_map(&exchange, exit))
+    /// Fetches the display map `check` asks for; `None` when the origin is
+    /// refused.
+    fn check_map(self, check: MapCheck) -> Option<MapChecked> {
+        self.with_exchange(|service, exchange, exit| Ok(check.fetch(service, &exchange, exit)))
             .ok()
     }
 
@@ -301,28 +264,41 @@ impl BlockingLookup {
     }
 }
 
-/// Runs `request` off the runtime until it returns or `should_exit` holds;
-/// see [`run_blocking_with`] for what happens to a request that outlives it.
-async fn run_blocking(
-    request: BlockingLookup,
-    should_exit: &(dyn Fn() -> bool + Sync),
-) -> Result<Looked, DetailFailure> {
-    run_blocking_with(request, should_exit, BlockingLookup::run).await
+/// A lookup that failed before the service answered, so under no map.
+fn unanswered(error: TxidError) -> DisplayLookup {
+    DisplayLookup {
+        found: Err(error),
+        map_sha256: None,
+    }
 }
 
-/// [`run_blocking`] for any blocking call on the request.
+/// Why a blocking call on a request returned nothing.
+enum Unanswered {
+    /// The sync's exit or the run's budget stopped it, including a failure
+    /// the cancellation itself caused.
+    Cancelled,
+    /// Its thread could not be started.
+    NotStarted,
+    /// It panicked.
+    Panicked,
+}
+
+/// Runs `call` on `request` off the runtime until it returns or
+/// `should_exit` holds.
 ///
 /// The call runs through [`run_detached`], with the request's `handle`
 /// replaced by the call's own runtime. `should_exit` (the sync's exit or the
 /// run's budget) cancels it, and it gets [`CANCEL_GRACE`] to return; a call
 /// that does not is abandoned, still running, and nothing it returns later is
-/// read, so it stores nothing. It may keep the client until it returns; later
-/// requests wait for it only while they are wanted.
-async fn run_blocking_with<T: Send + 'static>(
+/// read, so it stores nothing. A call that returns once cancelled is
+/// cancelled too: its transport reports the cancellation as a failure. It may
+/// keep the client until it returns; later requests wait for it only while
+/// they are wanted.
+async fn run_blocking<T: Send + 'static>(
     request: BlockingLookup,
     should_exit: &(dyn Fn() -> bool + Sync),
-    call: fn(BlockingLookup) -> T,
-) -> Result<T, DetailFailure> {
+    call: impl FnOnce(BlockingLookup) -> T + Send + 'static,
+) -> Result<T, Unanswered> {
     let cancel = request.cancel.clone();
     let ran = run_detached("txid-display", cancel.clone(), should_exit, move |io| {
         let mut request = request;
@@ -331,21 +307,14 @@ async fn run_blocking_with<T: Send + 'static>(
     })
     .await;
     if matches!(ran, Detached::NotStarted) {
-        return Err(DetailFailure::Deferred {
-            outcome: TransparentDetailOutcome::Unavailable { retry_after: None },
-            map_sha256: None,
-        });
+        return Err(Unanswered::NotStarted);
     }
     if cancel.load(Ordering::SeqCst) || should_exit() {
-        return Err(DetailFailure::Cancelled);
+        return Err(Unanswered::Cancelled);
     }
     match ran {
         Detached::Returned(result) => Ok(result),
-        // The call panicked.
-        _ => Err(DetailFailure::Deferred {
-            outcome: TransparentDetailOutcome::Protocol,
-            map_sha256: None,
-        }),
+        _ => Err(Unanswered::Panicked),
     }
 }
 
@@ -372,43 +341,37 @@ impl DetailSource for GateSource {
         txid: TxId,
         _mined_height: BlockHeight,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Result<DetailAnswer, DetailFailure> {
+    ) -> Result<Answer, Withheld> {
         if should_exit() {
-            return Err(DetailFailure::Cancelled);
+            return Ok(DetailAnswer::Cancelled);
         }
         let response = tokio::select! {
             biased;
-            _ = watch_for_exit(&should_exit) => return Err(DetailFailure::Cancelled),
+            _ = watch_for_exit(&should_exit) => return Ok(DetailAnswer::Cancelled),
             response = self.gate.transaction(&mut self.client, txid) => response,
         };
         if should_exit() {
-            return Err(DetailFailure::Cancelled);
+            return Ok(DetailAnswer::Cancelled);
         }
-        let unavailable = Err(DetailFailure::Deferred {
-            outcome: TransparentDetailOutcome::Unavailable { retry_after: None },
-            map_sha256: None,
-        });
+        let failed = |outcome| Ok(DetailAnswer::Public(Err(outcome)));
+        let unavailable = TransparentDetailOutcome::Unavailable { retry_after: None };
         match response {
-            Err(_) => unavailable,
-            Ok(None) => Err(DetailFailure::Withheld),
+            Err(_) => failed(unavailable),
+            Ok(None) => Err(Withheld),
             // Lightwalletd does not have this transaction: an answer about it,
             // not an outage, so the run's remaining lookups proceed.
             Ok(Some(Err(status))) if status.code() == tonic::Code::NotFound => {
-                Err(DetailFailure::Deferred {
-                    outcome: TransparentDetailOutcome::Absent,
-                    map_sha256: None,
-                })
+                failed(TransparentDetailOutcome::Absent)
             }
-            Ok(Some(Err(_))) => unavailable,
+            Ok(Some(Err(_))) => failed(unavailable),
             Ok(Some(Ok(raw))) => match decode_enhancement_payload(&raw, txid) {
-                Ok((transaction, mined_height)) => Ok(DetailAnswer::Raw {
-                    transaction: Box::new(transaction),
-                    mined_height,
-                }),
-                Err(_) => Err(DetailFailure::Deferred {
-                    outcome: TransparentDetailOutcome::Protocol,
-                    map_sha256: None,
-                }),
+                Ok((transaction, mined_height)) => {
+                    Ok(DetailAnswer::Public(Ok(PublicTransaction {
+                        transaction: Box::new(transaction),
+                        mined_height,
+                    })))
+                }
+                Err(_) => failed(TransparentDetailOutcome::Protocol),
             },
         }
     }
@@ -417,11 +380,16 @@ impl DetailSource for GateSource {
         Some(&self.gate)
     }
 
-    fn map_sha256(&self) -> Option<[u8; 32]> {
+    fn service(&self) -> Option<Arc<TxidDisplayService>> {
         None
     }
 
-    async fn refresh_map(&mut self, _should_exit: &(dyn Fn() -> bool + Sync)) -> Option<[u8; 32]> {
+    /// Never asked: a run without a service checks no map.
+    async fn check_map(
+        &mut self,
+        _check: MapCheck,
+        _should_exit: &(dyn Fn() -> bool + Sync),
+    ) -> Option<MapChecked> {
         None
     }
 }

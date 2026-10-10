@@ -26,9 +26,9 @@
 //!
 //! A source parks each companion it opened, with its lock, until the source is
 //! dropped, so a pass and its settlement see the same companion and nothing
-//! removes it in between. Settlement hands the parked batch, unopened, to the
-//! adapter's `apply_and_acknowledge`, which applies its commits and
-//! acknowledges it only once every one committed.
+//! removes it in between. The companion's pass holds its `Ready` batch, and
+//! the adapter's `settle_latest` applies its commits and acknowledges it only
+//! once every one committed.
 //!
 //! A pass runs through [`run_detached`], on a thread and runtime of its own,
 //! never the sync's runtime or its blocking pool. It reads the wallet through
@@ -50,14 +50,13 @@ use std::time::{Duration, Instant};
 
 use tokio::runtime::Handle;
 use zakura_pir_transparent::{
-    Applied, ApplyFailure, BatchState, Companion, CompanionDir, Interrupted, OpenError,
-    RecoveryBatch, RecoveryConfig, RecoveryError, TransparentPirHttp, Trust, WalletChain,
-    WriteGate,
+    Applied, ApplyFailure, Companion, CompanionDir, Interrupted, OpenError, PassError, PassReport,
+    RecoveryError, TransparentHistoryRecoveryConfig, Trust, WalletChain, WriteGate,
 };
-use zcash_client_backend::data_api::{transparent_ledger::TransparentWatchSet, WalletRead};
+use zcash_client_backend::data_api::{transparent_ledger::TransparentAddressWatchSet, WalletRead};
 use zcash_client_sqlite::AccountUuid;
 
-use super::{RecoverySource, SourceBatch, SourceError, SourceRequest};
+use super::{RecoverySource, SourceError, SourceRequest};
 #[cfg(doc)]
 use crate::wallet::bounded_runtime::CANCEL_GRACE;
 use crate::wallet::bounded_runtime::{run_detached, Detached};
@@ -112,52 +111,35 @@ pub(crate) struct TransparentPirSource {
     /// `None` off mainnet: every pass is unavailable and sends nothing.
     origin: Option<String>,
     clock: fn() -> Instant,
-    parked: tokio::sync::Mutex<HashMap<AccountUuid, Parked>>,
+    /// Each companion this source opened, kept, with its lock, between
+    /// passes. It holds its last pass's `Ready` batch until it is settled.
+    parked: tokio::sync::Mutex<HashMap<AccountUuid, Companion>>,
     #[cfg(test)]
     transport: Option<test_transport::Seam>,
 }
 
-/// A companion this source opened, kept, with its lock, between passes.
-struct Parked {
-    companion: Companion,
-    /// The last pass's `Ready` batch until it is settled. Nothing outside the
-    /// adapter reads or changes its commits.
-    batch: Option<RecoveryBatch<AccountUuid>>,
-}
-
 /// Why a pass failed, for logs. Adapter errors are reduced to their variant.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum PassFailure {
     Wallet,
     Companion,
     Transport,
-    Invalid,
-    Failure,
-    PublicationChanged,
-    /// The service could not be reached or was not serving.
-    Outage,
+    /// The watch set has no target to recover to.
+    Untargeted,
+    Pass(PassError),
 }
 
 impl PassFailure {
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             PassFailure::Wallet => "wallet unreadable",
             PassFailure::Companion => "companion unusable",
             PassFailure::Transport => "transport refused the origin",
-            PassFailure::Invalid => "invalid",
-            PassFailure::Failure => "failure",
-            PassFailure::PublicationChanged => "publication changed",
-            PassFailure::Outage => "service unavailable",
-        }
-    }
-}
-
-impl From<&RecoveryError> for PassFailure {
-    fn from(error: &RecoveryError) -> Self {
-        match error {
-            RecoveryError::Invalid(_) => PassFailure::Invalid,
-            RecoveryError::Failure(_) => PassFailure::Failure,
-            RecoveryError::PublicationChanged => PassFailure::PublicationChanged,
+            PassFailure::Untargeted => "no target",
+            PassFailure::Pass(PassError::Outage) => "service unavailable",
+            PassFailure::Pass(PassError::Invalid(_)) => "invalid",
+            PassFailure::Pass(PassError::Failure(_)) => "failure",
+            PassFailure::Pass(PassError::PublicationChanged) => "publication changed",
         }
     }
 }
@@ -196,14 +178,15 @@ impl RecoverySource for TransparentPirSource {
     ///
     /// Opens the account's companion on its first pass, then retrieves on a
     /// blocking thread until the adapter returns, `should_exit` holds, or
-    /// [`PASS_DEADLINE`] passes. A publication whose set identity changed is
-    /// retried once on the same companion. Only a `Ready` batch has commits;
-    /// it stays parked for [`apply`](Self::apply), and a later pass on the
-    /// account supersedes an unsettled one.
+    /// [`PASS_DEADLINE`] passes. The adapter's pass retries a publication
+    /// whose set identity changed once on the same companion. Only a `Ready`
+    /// batch has commits; the parked companion holds it for
+    /// [`apply`](Self::apply), and a later pass on the account supersedes an
+    /// unsettled one.
     /// Cancellation waits up to [`CANCEL_GRACE`] for the pass, abandoning it
     /// after that, and returns [`SourceError::Cancelled`], discarding
     /// whatever it retrieved.
-    async fn recover(&self, request: SourceRequest<'_>) -> Result<SourceBatch, SourceError> {
+    async fn recover(&self, request: SourceRequest<'_>) -> Result<PassReport, SourceError> {
         let SourceRequest {
             account,
             watch,
@@ -271,21 +254,23 @@ impl RecoverySource for TransparentPirSource {
             });
         };
         let answer = if cancelled {
+            // Nothing it retrieved may be settled.
+            held.take_latest::<AccountUuid>();
             Err(SourceError::Cancelled)
         } else {
             match result {
-                Ok(batch) => {
+                Ok(report) => {
                     let target = watch.target.map_or(0, |target| u32::from(target.height));
-                    let (state, progress) = (batch.state(), batch.progress());
-                    log::info!(
-                        "transparent PIR: pass {state:?}, {:?}, {} blocks behind",
-                        progress.outcome,
-                        progress.behind(target.into())
-                    );
-                    if state == BatchState::Ready {
-                        held.batch = Some(batch);
+                    if report.publication_changed {
+                        log::info!("transparent PIR: publication changed; retried once");
                     }
-                    Ok(SourceBatch { state, progress })
+                    log::info!(
+                        "transparent PIR: pass {:?}, {:?}, {} blocks behind",
+                        report.state,
+                        report.progress.outcome,
+                        report.progress.behind(target.into())
+                    );
+                    Ok(report)
                 }
                 Err(failure) => Err(fail(Some(failure))),
             }
@@ -300,8 +285,8 @@ impl RecoverySource for TransparentPirSource {
     /// own ([`SettlementGate`]), so another wallet write waits at most one
     /// commit, and `should_exit` stops the batch between them.
     ///
-    /// `None` when no unsettled `Ready` batch is parked for the account. The
-    /// batch is consumed either way: a refused or interrupted batch is
+    /// `Ok(None)` when no unsettled `Ready` batch is parked for the account.
+    /// The batch is consumed either way: a refused or interrupted batch is
     /// replayed by the account's next pass.
     async fn apply(
         &self,
@@ -309,13 +294,13 @@ impl RecoverySource for TransparentPirSource {
         db: &mut WalletDatabase,
         trust: Trust,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Option<Result<Applied, ApplyFailure>> {
+    ) -> Result<Option<Applied>, ApplyFailure> {
         let mut parked = self.parked.lock().await;
-        let held = parked.get_mut(&account)?;
-        let batch = held.batch.take()?;
-        let companion = &mut held.companion;
+        let Some(companion) = parked.get_mut(&account) else {
+            return Ok(None);
+        };
         let mut gate = SettlementGate { should_exit };
-        Some(companion.apply_and_acknowledge_gated(batch, db, trust, &mut gate))
+        companion.settle_latest(db, trust, &mut gate)
     }
 }
 
@@ -359,10 +344,10 @@ impl WriteGate for SettlementGate<'_> {
 /// which no other account's pass would avoid, as unavailable, anything else
 /// as failed.
 fn fail(failure: Option<PassFailure>) -> SourceError {
-    let name = failure.map_or("unknown", PassFailure::name);
+    let name = failure.as_ref().map_or("unknown", PassFailure::name);
     log::warn!("transparent PIR: pass failed ({name})");
     match failure {
-        Some(PassFailure::Outage) => SourceError::Unavailable,
+        Some(PassFailure::Pass(PassError::Outage)) => SourceError::Unavailable,
         _ => SourceError::Failed,
     }
 }
@@ -373,7 +358,7 @@ struct Pass {
     network: WalletNetwork,
     origin: String,
     account: AccountUuid,
-    watch: TransparentWatchSet<AccountUuid>,
+    watch: TransparentAddressWatchSet<AccountUuid>,
     handle: Handle,
     cancel: Arc<AtomicBool>,
     clock: fn() -> Instant,
@@ -391,13 +376,7 @@ impl Pass {
     /// Runs the pass on `held`, the companion this source parked for the
     /// account, or one it opens, and returns the companion to park: none when
     /// it could not be opened.
-    fn run(
-        self,
-        held: Option<Parked>,
-    ) -> (
-        Option<Parked>,
-        Result<RecoveryBatch<AccountUuid>, PassFailure>,
-    ) {
+    fn run(self, held: Option<Companion>) -> (Option<Companion>, Result<PassReport, PassFailure>) {
         let _runtime = self.handle.enter();
         let db = match open_wallet_db_readonly_with_timeout(
             &self.db_path,
@@ -410,16 +389,11 @@ impl Pass {
         let mut held = match held {
             Some(held) => held,
             None => match self.open(&db) {
-                Ok(companion) => Parked {
-                    companion,
-                    batch: None,
-                },
+                Ok(companion) => companion,
                 Err(failure) => return (None, Err(failure)),
             },
         };
-        // The adapter honors only its latest pass's acknowledgment.
-        held.batch = None;
-        let result = self.recover(&db, &mut held.companion);
+        let result = self.recover(&db, &mut held);
         (Some(held), result)
     }
 
@@ -459,7 +433,9 @@ impl Pass {
                     // The pass stopped while another handle held it.
                     OpenError::Busy if self.exit() => return PassFailure::Companion,
                     OpenError::Busy => "in use",
-                    OpenError::Recovery(error) => PassFailure::from(error).name(),
+                    OpenError::Recovery(RecoveryError::Invalid(_)) => "invalid",
+                    OpenError::Recovery(RecoveryError::Failure(_)) => "failure",
+                    OpenError::Recovery(RecoveryError::PublicationChanged) => "publication changed",
                     OpenError::Account | OpenError::Io(_) => "unusable",
                 };
                 log::warn!("transparent PIR: companion refused ({name})");
@@ -467,38 +443,25 @@ impl Pass {
             })
     }
 
-    /// One adapter pass, retried once on the same companion if the
-    /// publication's set identity changed. The adapter has then reset the
-    /// companion's store and kept its catalog, which still records the
-    /// revisions the wallet holds, so the companion is never recreated.
+    /// One adapter pass over the routed transport. The adapter retries a
+    /// changed publication set once on the same companion, whose store it has
+    /// reset while keeping its catalog, which still records the revisions the
+    /// wallet holds, so the companion is never recreated.
     fn recover(
         &self,
         db: &crate::wallet::db::WalletDatabase,
         companion: &mut Companion,
-    ) -> Result<RecoveryBatch<AccountUuid>, PassFailure> {
-        let target = self.watch.target.ok_or(PassFailure::Invalid)?;
+    ) -> Result<PassReport, PassFailure> {
+        let target = self.watch.target.ok_or(PassFailure::Untargeted)?;
         let chain = WalletChain::new(db, target);
         let exit = || self.exit();
         let exchange = RoutedExchange::transparent(&self.origin, &exit, self.handle.clone())
             .map_err(|_| PassFailure::Transport)?;
         #[cfg(test)]
         let exchange = self.transport.attach(exchange);
-        let mut http = TransparentPirHttp::new(exchange, MAX_RESPONSE_BYTES);
-        let mut attempt = || {
-            let (mut filters, mut shards) = http.split();
-            companion.recover(&self.watch, &chain, &mut filters, &mut shards)
-        };
-        let result = match attempt() {
-            Err(RecoveryError::PublicationChanged) if !exit() => {
-                log::info!("transparent PIR: publication changed; retrying once");
-                attempt()
-            }
-            result => result,
-        };
-        result.map_err(|error| match error {
-            RecoveryError::Failure(_) if http.outage() => PassFailure::Outage,
-            error => PassFailure::from(&error),
-        })
+        companion
+            .pass(&self.watch, &chain, exchange, MAX_RESPONSE_BYTES, &exit)
+            .map_err(PassFailure::Pass)
     }
 }
 
@@ -519,8 +482,11 @@ pub(crate) fn origin_override(read: impl FnOnce(&str) -> Option<String>) -> Opti
 }
 
 /// The adapter configuration for `account`'s companion.
-pub(super) fn recovery_config(account: AccountUuid, origin: &str) -> RecoveryConfig {
-    RecoveryConfig {
+pub(super) fn recovery_config(
+    account: AccountUuid,
+    origin: &str,
+) -> TransparentHistoryRecoveryConfig {
+    TransparentHistoryRecoveryConfig {
         source: SOURCE.to_vec(),
         account_binding: account.expose_uuid().as_bytes().to_vec(),
         origin: origin.to_owned(),
@@ -565,23 +531,6 @@ pub(crate) fn remove_orphan_companions(db_path: &str) -> Result<(), String> {
                 .map_err(io::Error::other)
         })
         .map_err(|error| format!("Failed to remove orphan transparent PIR companions: {error}"))
-}
-
-/// Deletes every companion of the wallet at `db_path`, with its sidecars,
-/// waiting at most `wait` in all for those another handle holds.
-///
-/// Forgetting private ledger facts calls this first and forgets nothing
-/// unless it succeeds: a companion records which revisions the wallet holds,
-/// and one that outlived the facts would make a later private run skip them.
-/// A companion still locked, as by an abandoned pass, fails the call and is
-/// left for the next attempt.
-pub(crate) fn remove_all_companions(db_path: &str, wait: Duration) -> Result<(), String> {
-    companion_dir(db_path)
-        .clear(wait)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::WouldBlock => "A transparent PIR companion is in use".to_owned(),
-            _ => format!("Failed to remove a transparent PIR companion: {error}"),
-        })
 }
 
 /// [`remove_companions`], waiting at most `wait` for each companion's lock.

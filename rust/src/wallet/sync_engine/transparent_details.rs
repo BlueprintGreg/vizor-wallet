@@ -22,28 +22,33 @@
 //!   `decrypt_and_store_transaction` like any enhancement payload. A policy
 //!   transition while the run is in flight withholds the rest of it.
 //!
-//! [`run`] is bounded: [`MAX_LOOKUPS`] lookups and [`RUN_BUDGET`] per run,
-//! one at a time, in the wallet's order, with transactions a detail view
-//! asked for ([`prioritize`]) ahead of the rest within the 64-row work window.
-//! A requested older transaction outside that window must wait to enter it.
-//! Lookups run with no
-//! database lock held; each result is stored, or each failure deferred, under
-//! the wallet write lock in its own short transaction. Once the budget is
-//! spent or the sync exits, a lookup gets [`CANCEL_GRACE`] to return
-//! before it is abandoned, and writes may wait for the lock until
+//! The library's [`DetailRun`] lists the work, decides when to check the
+//! display map, and turns each lookup's result into what the wallet records;
+//! [`run`] drives it. A run is bounded by [`RUN_BUDGET`] and makes one lookup
+//! at a time: the due transactions a detail view asked for ([`prioritize`])
+//! first, whatever their age, then up to [`MAX_LOOKUPS`] others in the
+//! wallet's order. Lookups run with no database lock held; each result is
+//! stored, or each failure deferred, under the wallet write lock in its own
+//! short transaction. A lookup the budget stopped timed out and is deferred
+//! like an unavailable service; one the sync's exit stopped is not an
+//! attempt: nothing is recorded, and the transaction stays due. Once the
+//! budget is spent or the sync exits, a lookup gets [`CANCEL_GRACE`] to
+//! return before it is abandoned, and writes may wait for the lock until
 //! [`WRITE_GRACE`] past the budget: a run ends within 47 s, plus at most one
-//! SQLite write already under way. Failures are logged by kind, never by txid. The display facts the
-//! private source stores change no balance, spendability, send or history;
-//! the public source's raw transaction is ordinary wallet data, as from
-//! payload enhancement. Nothing this loop does can fail the sync:
-//! [`transparent_details_followup`] catches errors and panics.
+//! SQLite write already under way. Failures are logged by kind, never by
+//! txid. The display facts the private source stores change no balance,
+//! spendability, send or history; the public source's raw transaction is
+//! ordinary wallet data, as from payload enhancement. Nothing this loop does
+//! can fail the sync: [`transparent_details_followup`] catches errors and
+//! panics.
 //!
 //! Work a private lookup held for the display map waits for the map to
 //! change, and no lookup may be due to fetch a newer one: when nothing is due
 //! and work is parked, the private source fetches the map alone and the run
-//! lists again (see `list_work`). The database's refresh time bounds these
-//! checks to six hours after the latest parked attempt or attempted map check.
-//! The process keeps check times by origin across runs, including failed checks.
+//! lists again ([`DetailStep::RefreshMap`]). The database's refresh time
+//! bounds these checks to six hours after the latest parked attempt or
+//! attempted map check. The process keeps check times by origin across runs,
+//! including failed checks.
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
@@ -52,9 +57,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::FutureExt;
 use tonic::transport::Channel;
+use zakura_pir_transparent::{DetailAnswer, DetailApplied, DetailRun, DetailStep, DetailWrite};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        TransparentDetailOutcome, TransparentDetailRead, TransparentDetailWork,
+        TransparentDetailOutcome, TransparentDetailRead, TransparentDetailRequest,
         TransparentDetailWrite, TransparentDisplayStore, TransparentDisplayView,
         TransparentLedgerMode, TransparentLedgerRead,
     },
@@ -64,7 +70,6 @@ use zcash_client_backend::data_api::{
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zcash_client_sqlite::{error::SqliteClientError, AccountUuid};
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::consensus::BlockHeight;
 
 use super::enhancement::EnhancementPolicy;
 use super::{
@@ -78,7 +83,7 @@ pub(crate) mod source;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use source::{DetailAnswer, DetailFailure, DetailSource, GateSource, PirSource};
+use source::{DetailSource, GateSource, PirSource, PublicTransaction};
 
 /// Time one run's lookups may take; see the module documentation for the
 /// grace a run takes past it.
@@ -86,10 +91,8 @@ pub(crate) const RUN_BUDGET: Duration = Duration::from_secs(45);
 /// How long past the budget a run may wait to record the lookup the budget
 /// stopped: as long as that lookup had to return.
 const WRITE_GRACE: Duration = CANCEL_GRACE;
-/// Lookups one run may make.
+/// Lookups one run may make besides the transactions detail views asked for.
 pub(crate) const MAX_LOOKUPS: usize = 8;
-/// Due work one run reads, so that prioritized transactions can go first.
-const WORK_WINDOW: usize = 64;
 /// Transactions a wallet's detail views may ask for at once.
 const MAX_INTEREST: usize = 32;
 
@@ -98,9 +101,9 @@ const MAX_INTEREST: usize = 32;
 static INTEREST: LazyLock<Mutex<HashMap<String, VecDeque<[u8; 32]>>>> =
     LazyLock::new(Default::default);
 
-/// Prioritizes `txid` (protocol byte order) for the wallet at `db_path` when
-/// it is due and included in the next run's 64-row work window. The hint does
-/// not pull older work outside that window into the run.
+/// Looks up `txid` (protocol byte order) first in the next run over the
+/// wallet at `db_path`, whatever its age, when it is due. A cancelled lookup
+/// keeps it first; any recorded outcome serves it.
 pub(crate) fn prioritize(db_path: &str, txid: [u8; 32]) {
     let mut interest = INTEREST.lock().unwrap_or_else(PoisonError::into_inner);
     let queue = interest.entry(db_path.to_owned()).or_default();
@@ -109,12 +112,12 @@ pub(crate) fn prioritize(db_path: &str, txid: [u8; 32]) {
     queue.truncate(MAX_INTEREST);
 }
 
-fn interest(db_path: &str) -> Vec<[u8; 32]> {
+fn interest(db_path: &str) -> Vec<TxId> {
     INTEREST
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(db_path)
-        .map(|queue| queue.iter().copied().collect())
+        .map(|queue| queue.iter().copied().map(TxId::from_bytes).collect())
         .unwrap_or_default()
 }
 
@@ -210,16 +213,25 @@ pub(crate) async fn run<S: DetailSource>(
     // Writes may finish the budget's last lookup, but never wait on the
     // wallet's write lock past a short grace, nor once the sync exits.
     let write_exit = move || should_exit() || (clock.instant)() >= deadline + WRITE_GRACE;
-    let Some(work) = list_work(db, source, clock, &budget_exit).await else {
+    let service = source.service();
+    let planned = DetailRun::plan(
+        &*db,
+        service.as_deref(),
+        (clock.system)(),
+        MAX_LOOKUPS,
+        &interest(db_path),
+    );
+    let Ok(mut work) = planned else {
+        log::warn!("transparent details: work unreadable; retrying later");
         return RunOutcome::Failed;
     };
     if should_exit() {
         return RunOutcome::Exited(stats);
     }
-    // The listing's snapshot decides: a policy moved since the run captured
-    // its source ends the run, and public transport needs the listed mode to
-    // retain public authority.
-    if work.policy_generation != expected_generation {
+    // The listing's snapshot decides, for the whole run: a policy moved since
+    // the run captured its source ends the run, and public transport needs
+    // the listed mode to retain public authority.
+    if work.policy_generation() != expected_generation {
         log::info!("transparent details: policy changed before the run; ending it");
         return RunOutcome::Superseded(stats);
     }
@@ -227,18 +239,8 @@ pub(crate) async fn run<S: DetailSource>(
         log::info!("transparent details: transparent policy withholds public lookups");
         return RunOutcome::Withheld(stats);
     }
-    let expected_generation = work.policy_generation;
-    let mut work = work.requests;
-    let prioritized = interest(db_path);
-    work.sort_by_key(|request| {
-        prioritized
-            .iter()
-            .position(|txid| txid == request.txid.as_ref())
-            .unwrap_or(usize::MAX)
-    });
-    work.truncate(MAX_LOOKUPS);
 
-    for request in work {
+    while let Some(step) = work.next() {
         if should_exit() {
             return RunOutcome::Exited(stats);
         }
@@ -246,54 +248,110 @@ pub(crate) async fn run<S: DetailSource>(
             log::info!("transparent details: run budget spent; the rest waits for a later run");
             break;
         }
-        let txid = request.txid;
-        let looked_up_height = request.mined_height;
-        let answer = source
-            .lookup(txid, request.mined_height, &budget_exit)
-            .await;
-        stats.lookups += 1;
-        served(db_path, txid.as_ref());
-        let now = (clock.system)();
-        let answer = match answer {
-            Ok(answer) => answer,
-            Err(DetailFailure::Cancelled) => {
+        let request = match step {
+            DetailStep::Lookup(request) => request,
+            DetailStep::RefreshMap(check) => {
+                let checked = source.check_map(check, &budget_exit).await;
                 if should_exit() {
                     return RunOutcome::Exited(stats);
                 }
-                // The budget, not the sync, stopped a slow lookup.
-                log::info!("transparent details: run budget spent during a lookup");
-                defer(
-                    db,
-                    txid,
-                    looked_up_height,
-                    now,
-                    TransparentDetailOutcome::Unavailable { retry_after: None },
-                    None,
-                    &mut stats,
-                    &write_exit,
-                )
-                .await;
-                break;
+                let Some(checked) = checked else {
+                    continue;
+                };
+                if checked.changed().is_some() {
+                    log::info!("transparent details: display map changed; re-listing parked work");
+                }
+                if work.relist(&*db, checked, (clock.system)()).is_err() {
+                    log::warn!("transparent details: work unreadable; retrying later");
+                    return RunOutcome::Failed;
+                }
+                continue;
             }
-            Err(DetailFailure::Withheld) => {
+        };
+        let answer = source
+            .lookup(request.txid, request.mined_height, &budget_exit)
+            .await;
+        stats.lookups += 1;
+        let answer = match answer {
+            Ok(DetailAnswer::Cancelled) if !should_exit() => {
+                // The budget, not the sync, stopped a slow lookup: it timed
+                // out, and backs off like any unavailable service.
+                log::info!("transparent details: run budget spent during a lookup");
+                DetailAnswer::TimedOut
+            }
+            Ok(answer) => answer,
+            Err(_) => {
                 log::info!("transparent details: transparent policy withholds public lookups");
                 return RunOutcome::Withheld(stats);
             }
-            Err(DetailFailure::Deferred {
-                outcome,
-                map_sha256,
-            }) => {
+        };
+        let now = (clock.system)();
+        // Only the sync's exit cancels a lookup, which records nothing; its
+        // transaction stays due.
+        let Some(write) = work.record(&request, answer) else {
+            return RunOutcome::Exited(stats);
+        };
+        // What a failed write leaves to record: the deferral it was, or
+        // the map of the facts it could not store.
+        let (deferral, facts_map) = match &write {
+            DetailWrite::Defer { outcome, .. } => {
                 log::info!(
                     "transparent details: lookup deferred ({})",
-                    outcome_name(outcome)
+                    outcome_name(*outcome)
                 );
+                (Some(*outcome), None)
+            }
+            DetailWrite::Store { facts, .. } => (None, Some(facts.provenance.map_sha256)),
+            DetailWrite::Raw { .. } => (None, None),
+        };
+        let Some(applied) = apply(db, write, now, &write_exit).await else {
+            return gave_up(should_exit, stats);
+        };
+        let transaction = match applied {
+            Ok(DetailApplied::Raw(transaction)) => transaction,
+            Ok(DetailApplied::Stored(stored)) => {
+                served(db_path, request.txid.as_ref());
+                match stored {
+                    TransparentDisplayStore::Stored => stats.stored += 1,
+                    // Raw bytes arrived meanwhile, or the transaction left.
+                    TransparentDisplayStore::Superseded => {}
+                    TransparentDisplayStore::Contradiction(kind) => {
+                        log::warn!(
+                            "transparent details: facts contradict the wallet ({kind:?}); held"
+                        );
+                        stats.contradicted += 1;
+                    }
+                }
+                continue;
+            }
+            Ok(DetailApplied::Deferred(outcome)) => {
+                served(db_path, request.txid.as_ref());
+                count_deferral(outcome, &mut stats);
+                if matches!(outcome, TransparentDetailOutcome::Unavailable { .. }) {
+                    return RunOutcome::Unavailable(stats);
+                }
+                continue;
+            }
+            Err(SqliteClientError::StaleTransparentPolicy { .. }) => {
+                log::info!("transparent details: policy changed; ending the run");
+                return RunOutcome::Superseded(stats);
+            }
+            Err(_) => {
+                if let Some(outcome) = deferral {
+                    log::warn!("transparent details: could not record a deferral");
+                    if matches!(outcome, TransparentDetailOutcome::Unavailable { .. }) {
+                        return RunOutcome::Unavailable(stats);
+                    }
+                    continue;
+                }
+                log::warn!("transparent details: store failed; retrying later");
+                let unavailable = TransparentDetailOutcome::Unavailable { retry_after: None };
                 if !defer(
                     db,
-                    txid,
-                    looked_up_height,
+                    &request,
                     now,
-                    outcome,
-                    map_sha256,
+                    unavailable,
+                    facts_map,
                     &mut stats,
                     &write_exit,
                 )
@@ -301,190 +359,96 @@ pub(crate) async fn run<S: DetailSource>(
                 {
                     return gave_up(should_exit, stats);
                 }
-                if matches!(outcome, TransparentDetailOutcome::Unavailable { .. }) {
-                    return RunOutcome::Unavailable(stats);
-                }
+                served(db_path, request.txid.as_ref());
                 continue;
             }
         };
-        match answer {
-            DetailAnswer::Facts(facts) => {
-                if facts.txid != txid {
-                    log::error!("transparent details: source answered another transaction");
-                    if !defer(
-                        db,
-                        txid,
-                        looked_up_height,
-                        now,
-                        TransparentDetailOutcome::Protocol,
-                        None,
-                        &mut stats,
-                        &write_exit,
-                    )
-                    .await
-                    {
-                        return gave_up(should_exit, stats);
-                    }
-                    continue;
-                }
-                let map_sha256 = Some(facts.provenance.map_sha256);
-                let stored = with_wallet_db_write_lock_unless(
-                    "sync_engine.transparent_details.store",
-                    &write_exit,
-                    || db.store_transparent_display(*facts, expected_generation, now),
-                )
-                .await;
-                let Some(stored) = stored else {
-                    return gave_up(should_exit, stats);
-                };
-                match stored {
-                    Ok(TransparentDisplayStore::Stored) => stats.stored += 1,
-                    // Raw bytes arrived meanwhile, or the transaction left.
-                    Ok(TransparentDisplayStore::Superseded) => {}
-                    Ok(TransparentDisplayStore::Contradiction(kind)) => {
-                        log::warn!(
-                            "transparent details: facts contradict the wallet ({kind:?}); held"
-                        );
-                        stats.contradicted += 1;
-                    }
-                    Err(SqliteClientError::StaleTransparentPolicy { .. }) => {
-                        log::info!("transparent details: policy changed; ending the run");
-                        return RunOutcome::Superseded(stats);
-                    }
-                    Err(_) => {
-                        log::warn!("transparent details: store failed; retrying later");
-                        if !defer(
-                            db,
-                            txid,
-                            looked_up_height,
-                            now,
-                            TransparentDetailOutcome::Unavailable { retry_after: None },
-                            map_sha256,
-                            &mut stats,
-                            &write_exit,
-                        )
-                        .await
-                        {
-                            return gave_up(should_exit, stats);
-                        }
-                    }
-                }
+        let Some(gate) = source.gate() else {
+            if !defer(
+                db,
+                &request,
+                now,
+                TransparentDetailOutcome::Protocol,
+                None,
+                &mut stats,
+                &write_exit,
+            )
+            .await
+            {
+                return gave_up(should_exit, stats);
             }
-            DetailAnswer::Raw {
-                transaction,
-                mined_height,
-            } => {
-                let Some(gate) = source.gate() else {
-                    if !defer(
-                        db,
-                        txid,
-                        looked_up_height,
-                        now,
-                        TransparentDetailOutcome::Protocol,
-                        None,
-                        &mut stats,
-                        &write_exit,
-                    )
-                    .await
-                    {
-                        return gave_up(should_exit, stats);
+            served(db_path, request.txid.as_ref());
+            continue;
+        };
+        let PublicTransaction {
+            transaction,
+            mined_height,
+        } = transaction;
+        // A completing write: the policy is read in the same transaction, so
+        // a transition while the lookup was in flight leaves the transaction
+        // to a later authorized run.
+        let stored = with_wallet_db_write_lock_unless(
+            "sync_engine.transparent_details.decrypt_and_store_transaction",
+            &write_exit,
+            || {
+                db.transactionally(|tx| {
+                    if !gate.permits_applied(tx.applied_transparent_policy()?) {
+                        return Ok(false);
                     }
-                    continue;
-                };
-                // A completing write: the policy is read in the same
-                // transaction, so a transition while the lookup was in flight
-                // leaves the transaction to a later authorized run.
-                let stored = with_wallet_db_write_lock_unless(
-                    "sync_engine.transparent_details.decrypt_and_store_transaction",
+                    decrypt_and_store_transaction(&network, tx, &transaction, mined_height)?;
+                    Ok::<_, SqliteClientError>(true)
+                })
+            },
+        )
+        .await;
+        let Some(stored) = stored else {
+            return gave_up(should_exit, stats);
+        };
+        match stored {
+            Ok(true) => stats.stored += 1,
+            Ok(false) => {
+                log::info!("transparent details: transparent policy changed; ending the run");
+                return RunOutcome::Withheld(stats);
+            }
+            Err(_) => {
+                log::warn!("transparent details: store failed; retrying later");
+                let unavailable = TransparentDetailOutcome::Unavailable { retry_after: None };
+                if !defer(
+                    db,
+                    &request,
+                    now,
+                    unavailable,
+                    None,
+                    &mut stats,
                     &write_exit,
-                    || {
-                        db.transactionally(|tx| {
-                            if !gate.permits_applied(tx.applied_transparent_policy()?) {
-                                return Ok(false);
-                            }
-                            decrypt_and_store_transaction(
-                                &network,
-                                tx,
-                                &transaction,
-                                mined_height,
-                            )?;
-                            Ok::<_, SqliteClientError>(true)
-                        })
-                    },
                 )
-                .await;
-                let Some(stored) = stored else {
+                .await
+                {
                     return gave_up(should_exit, stats);
-                };
-                match stored {
-                    Ok(true) => stats.stored += 1,
-                    Ok(false) => {
-                        log::info!(
-                            "transparent details: transparent policy changed; ending the run"
-                        );
-                        return RunOutcome::Withheld(stats);
-                    }
-                    Err(_) => {
-                        log::warn!("transparent details: store failed; retrying later");
-                        if !defer(
-                            db,
-                            txid,
-                            looked_up_height,
-                            now,
-                            TransparentDetailOutcome::Unavailable { retry_after: None },
-                            None,
-                            &mut stats,
-                            &write_exit,
-                        )
-                        .await
-                        {
-                            return gave_up(should_exit, stats);
-                        }
-                    }
                 }
             }
         }
+        served(db_path, request.txid.as_ref());
     }
     RunOutcome::Finished(stats)
 }
 
-/// The due work. When nothing is due but lookups are parked on the display
-/// map they last saw, the source refreshes its map once and the work is
-/// listed again under the new map hash. `None` when the work is unreadable.
-async fn list_work<S: DetailSource>(
-    db: &WalletDatabase,
-    source: &mut S,
-    clock: StageClock,
-    should_exit: &(dyn Fn() -> bool + Sync),
-) -> Option<TransparentDetailWork> {
-    let list = |map: Option<[u8; 32]>| {
-        db.transparent_detail_work((clock.system)(), WORK_WINDOW, map)
-            .map_err(|_| log::warn!("transparent details: work unreadable; retrying later"))
-            .ok()
+/// Writes what a lookup's result writes under the wallet's write lock: facts
+/// or a deferral, each in its own short transaction. A public transaction is
+/// handed back unwritten. `None` when it gave up waiting for the lock at
+/// `write_exit`, writing nothing.
+async fn apply(
+    db: &mut WalletDatabase,
+    write: DetailWrite<PublicTransaction>,
+    now: SystemTime,
+    write_exit: &(dyn Fn() -> bool + Sync),
+) -> Option<Result<DetailApplied<PublicTransaction>, SqliteClientError>> {
+    let operation = match &write {
+        DetailWrite::Store { .. } => "sync_engine.transparent_details.store",
+        DetailWrite::Defer { .. } => "sync_engine.transparent_details.defer",
+        DetailWrite::Raw { .. } => "sync_engine.transparent_details.raw",
     };
-    let map = source.map_sha256();
-    let work = list(map)?;
-    if !work.requests.is_empty() {
-        return Some(work);
-    }
-    let now = (clock.system)();
-    let parked = db
-        .transparent_detail_parked(now, map, source.map_checked_at())
-        .ok();
-    if !parked
-        .is_some_and(|parked| parked.count > 0 && parked.refresh_at.is_some_and(|at| at <= now))
-        || should_exit()
-    {
-        return Some(work);
-    }
-    source.map_check_started(now);
-    match source.refresh_map(should_exit).await {
-        Some(refreshed) if Some(refreshed) != map => {
-            log::info!("transparent details: display map changed; re-listing parked work");
-            list(Some(refreshed))
-        }
-        _ => Some(work),
-    }
+    with_wallet_db_write_lock_unless(operation, write_exit, || write.apply(db, now)).await
 }
 
 /// How the run ends when it gave up waiting for the wallet's write lock:
@@ -497,13 +461,12 @@ fn gave_up(should_exit: &(dyn Fn() -> bool + Sync), stats: RunStats) -> RunOutco
     RunOutcome::Finished(stats)
 }
 
-/// Records a failed lookup of `txid` in the wallet, which schedules the next
-/// attempt, and counts it. `false` when it gave up waiting for the wallet's
-/// write lock at `write_exit`, recording nothing.
+/// Records a lookup of `request` whose result could not be stored, which
+/// schedules the next attempt, and counts it. `false` when it gave up waiting
+/// for the wallet's write lock at `write_exit`, recording nothing.
 async fn defer(
     db: &mut WalletDatabase,
-    txid: TxId,
-    looked_up_height: BlockHeight,
+    request: &TransparentDetailRequest,
     now: SystemTime,
     outcome: TransparentDetailOutcome,
     map_sha256: Option<[u8; 32]>,
@@ -513,22 +476,35 @@ async fn defer(
     let deferred = with_wallet_db_write_lock_unless(
         "sync_engine.transparent_details.defer",
         write_exit,
-        || db.defer_transparent_detail(txid, looked_up_height, outcome, map_sha256, now),
+        || {
+            db.defer_transparent_detail(
+                request.txid,
+                request.mined_height,
+                outcome,
+                map_sha256,
+                now,
+            )
+        },
     )
     .await;
     let Some(deferred) = deferred else {
         return false;
     };
     match deferred {
-        Ok(()) => match outcome {
-            TransparentDetailOutcome::NotCovered | TransparentDetailOutcome::Unsupported => {
-                stats.not_covered += 1
-            }
-            _ => stats.deferred += 1,
-        },
+        Ok(()) => count_deferral(outcome, stats),
         Err(_) => log::warn!("transparent details: could not record a deferral"),
     }
     true
+}
+
+/// Counts a recorded deferral by its outcome.
+fn count_deferral(outcome: TransparentDetailOutcome, stats: &mut RunStats) {
+    match outcome {
+        TransparentDetailOutcome::NotCovered | TransparentDetailOutcome::Unsupported => {
+            stats.not_covered += 1
+        }
+        _ => stats.deferred += 1,
+    }
 }
 
 /// An outcome's name, for logs.
@@ -913,7 +889,7 @@ pub(crate) fn debug_lookup(
         .enable_all()
         .build()
         .map_err(|error| format!("tokio: {error}"))?;
-    let (found, _) = source::BlockingLookup {
+    let found = source::BlockingLookup {
         service: source::service_for(&origin),
         origin,
         txid,
@@ -923,7 +899,8 @@ pub(crate) fn debug_lookup(
         #[cfg(test)]
         observer: None,
     }
-    .run();
+    .run()
+    .found;
     debug_answer(
         network,
         txid,
