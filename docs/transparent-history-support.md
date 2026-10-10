@@ -13,7 +13,9 @@ measured by the H01-H13 suite on an isolated regtest chain, in two layers:
 Latest runs: 2026-10-10, Rust layer only, branch `claude/tpir-private-history`
 restacked on #839 `b7f8d4cc7`, wallet-libraries `bfbb4f4a`, wallet-pir
 `9d2cbda0`. The private profile now also serves txid display PIR, so private
-receipts fill their transparent details as production does.
+receipts fill their transparent details as production does. Both profiles
+were rerun on #839 `4c7382d04` (#957) with the same verdicts: private passes
+all 13 cases, public fails only on G2, G4 and G5.
 
 | Run | Output | Time | Exit |
 |---|---|---|---|
