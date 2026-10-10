@@ -20,11 +20,21 @@
 //! is the real regtest genesis, which the map's shape check never compares to
 //! the declared genesis and which lies below every account's floor.
 //!
+//! The same origin also serves txid display PIR, the service a private
+//! receipt fills its transparent details from, as production does. Every
+//! transaction of `[1, tip - lag]` is published with its display facts (its
+//! transparent outputs, the outputs its inputs spend, its whole fee and
+//! whether it has shielded components) in one unsealed recent display shard,
+//! republished with the history publication. Display publications carry
+//! wallet-pir's synthetic network label and block hashes: the display client
+//! binds a publication to its map, not to the wallet's chain.
+//!
 //! One listener serves the whole run, so the origin a companion binds never
 //! changes; the publication behind it is swapped. Every request is checked as
-//! it arrives: it must take one of the service's routes, carry no query string,
-//! and carry none of Alice's scripts (bytes or hex) in its path, headers or
-//! body. Only route counts and violations are kept.
+//! it arrives: it must take one of the two services' routes, carry no query
+//! string, carry none of Alice's scripts (bytes or hex) and no txid of the
+//! chain (bytes or hex) in its path, headers or body. Only route counts and
+//! violations are kept.
 //!
 //! With a Flutter layer to follow, the Rust layer's process keeps serving the
 //! final publication on the same origin after its gate, faults cleared, and
@@ -57,11 +67,21 @@ use transparent_filter::{
     filter_hash, BlockHash, ScriptBytes, SealParameters, ShardMap, ShardMapEntry,
 };
 use transparent_shard::build::build_shard;
+use transparent_shard::display::{DisplaySealParams, TXID_2K};
+use transparent_shard::txid::{DisplayEntry, DisplayFacts, DisplayOutput};
 use transparent_shard::layout::{Geometry, RECENT_4K};
 use transparent_shard::manifest::{
     ManifestLayout, ManifestOccupancy, ManifestSeal, ShardManifest, TableGeometry, SCHEMA,
 };
-use transparent_shard_server::service::{router, ServiceConfig, ServiceState};
+use transparent_shard_server::assignment::WorkerRole;
+use transparent_shard_server::display::{
+    live::{DisplayCommand, DisplayLive, DisplayPublication},
+    service::DisplayRuntime,
+    synth,
+};
+use transparent_shard_server::service::{
+    router, ReadinessMode, ServiceConfig, ServiceState,
+};
 use transparent_shard_server::shardset::{ShardSet, DEFAULT_RETAIN_REVISIONS};
 
 use crate::chain::rpc_at;
@@ -76,9 +96,25 @@ const SEAL: SealParameters = SealParameters {
     max_txids: 0,
 };
 
-/// Every route the service serves a wallet, with its method (the adapter
-/// end-to-end test's expression).
-const ROUTES: &str = r"^(GET /v1/(filters/shards(/[0-9]+/filter)?|shards/init|shards/[0-9]+/revisions/[0-9a-f]{64}/(manifest|setup/(directory|pages)/[0-9]+))|POST /v1/shards/[0-9]+/revisions/[0-9a-f]{64}/query/(directory|pages))$";
+/// Every route the two services serve a wallet, with its method: transparent
+/// PIR (the adapter end-to-end test's expression) and txid display PIR (the
+/// wallet's `TXID_ROUTES`).
+const ROUTES: &str = concat!(
+    r"^(GET /v1/(filters/shards(/[0-9]+/filter)?|shards/init|shards/[0-9]+/revisions/[0-9a-f]{64}/(manifest|setup/(directory|pages)/[0-9]+))",
+    r"|POST /v1/shards/[0-9]+/revisions/[0-9a-f]{64}/query/(directory|pages)",
+    r"|GET /v1/txid/(init|map|map/[0-9]+/[0-9a-f]{64}|shards/[0-9]+/revisions/[0-9a-f]{64}/manifest|(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/setup/directory-[0-9]+/[0-9]+)",
+    r"|POST /v1/txid/(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/query/directory-[0-9]+)$",
+);
+
+/// The display publication's seal parameters: one recent shard, never
+/// sealed (wallet-libraries' display end-to-end test's).
+const DISPLAY_SEAL: DisplaySealParams = DisplaySealParams {
+    n_archive: 1,
+    n_recent: 1,
+    archive_target: 1,
+    recent_floor: 1,
+    reorg_margin: 1,
+};
 
 /// Publications kept on disk: the one served and the one before it.
 const KEEP_PUBLICATIONS: u32 = 2;
@@ -99,11 +135,14 @@ pub fn install(publisher: Publisher) -> &'static Publisher {
     GLOBAL.get().unwrap()
 }
 
-/// One extracted block: its height, display hash and indexed events.
+/// One extracted block: its height, display hash, indexed events, and the
+/// display entry and internal txid of each of its transactions.
 struct BlockEvents {
     height: u64,
     hash: String,
     events: Vec<(ScriptBytes, TransparentEvent)>,
+    display: Vec<DisplayEntry>,
+    txids: Vec<[u8; 32]>,
 }
 
 struct Chainview {
@@ -120,16 +159,21 @@ struct Chainview {
 /// What the server shares with its request handler.
 struct Shared {
     current: RwLock<Option<Router>>,
+    /// The txid display service, serving 503 until its first publication.
+    display: Router,
     fail_queries: AtomicBool,
     routes: Regex,
     /// Alice's public key hashes, raw and as lower- and upper-case hex.
     watched: RwLock<(HashSet<Vec<u8>>, HashSet<Vec<u8>>)>,
+    /// Every txid of the chain, raw and as hex, in both byte orders.
+    txids: RwLock<(HashSet<Vec<u8>>, HashSet<Vec<u8>>)>,
     counts: Mutex<BTreeMap<String, usize>>,
     violations: Mutex<Vec<String>>,
 }
 
 pub struct Publisher {
     runtime: tokio::runtime::Runtime,
+    display: DisplayLive,
     rpc_port: u16,
     dir: PathBuf,
     url: String,
@@ -147,11 +191,29 @@ impl Publisher {
             .enable_all()
             .build()
             .expect("publisher runtime");
+        let display = DisplayLive::new(
+            DisplayRuntime::new(
+                ServiceConfig {
+                    cache_bytes: 2 << 30,
+                    readiness: ReadinessMode::Warm,
+                    ..ServiceConfig::default()
+                },
+                None,
+            ),
+            WorkerRole::RecentReplica,
+            3,
+            dir.join("display").join("recent.active.json"),
+            Vec::new(),
+            None,
+        )
+        .expect("a txid display service");
         let shared = Arc::new(Shared {
             current: RwLock::new(None),
+            display: display.router(),
             fail_queries: AtomicBool::new(false),
             routes: Regex::new(ROUTES).unwrap(),
             watched: RwLock::default(),
+            txids: RwLock::default(),
             counts: Mutex::default(),
             violations: Mutex::default(),
         });
@@ -169,6 +231,7 @@ impl Publisher {
         eprintln!("[tpir] serving transparent PIR on {url}");
         Publisher {
             runtime,
+            display,
             rpc_port,
             dir: dir.to_path_buf(),
             url,
@@ -227,13 +290,17 @@ impl Publisher {
         for height in from..=tip {
             let hash = self.block_hash(height);
             let block = self.rpc("getblock", json!([hash, 2]));
-            let events = block_events(&block, height as u32, &mut chain.prevouts);
+            let (events, display, txids) =
+                block_events(&block, height as u32, &mut chain.prevouts);
             chain.blocks.push(BlockEvents {
                 height,
                 hash,
                 events,
+                display,
+                txids,
             });
         }
+        self.watch_txids(chain.blocks.iter().flat_map(|b| b.txids.iter()));
         let end = tip.saturating_sub(chain.lag).max(1);
         let terminal = chain.blocks[end as usize - 1].hash.clone();
         if chain.published.as_ref() == Some(&(end, terminal.clone())) {
@@ -263,6 +330,13 @@ impl Publisher {
             .current
             .write()
             .unwrap_or_else(PoisonError::into_inner) = Some(app);
+        let records: Vec<DisplayEntry> = chain
+            .blocks
+            .iter()
+            .take_while(|b| b.height <= end)
+            .flat_map(|b| b.display.iter().cloned())
+            .collect();
+        self.publish_display(end, revision, &records);
         chain.published = Some((end, terminal));
         if revision > KEEP_PUBLICATIONS {
             let _ = std::fs::remove_dir_all(
@@ -274,6 +348,75 @@ impl Publisher {
             "[tpir] publication {revision}: [1, {end}], {} events, tip {tip}",
             events.len()
         );
+    }
+
+    /// Publishes `records` as the txid display service's one unsealed recent
+    /// shard over `[1, end]` at `revision`, and activates it.
+    fn publish_display(&self, end: u64, revision: u32, records: &[DisplayEntry]) {
+        let root = self.dir.join("display");
+        // The smallest bucket count whose tables hold every record.
+        let shard = (0..12)
+            .map(|exponent| 1u32 << exponent)
+            .find_map(|n_buckets| {
+                synth::write_shard(
+                    &root,
+                    &synth::ShardSpec {
+                        shard_id: 0,
+                        start_height: 1,
+                        end_height: end,
+                        sealed: false,
+                        revision: 0,
+                        supersedes: String::new(),
+                        parent_manifest_digest: String::new(),
+                        n_buckets,
+                        archive_target: 1,
+                        geometry: &TXID_2K,
+                    },
+                    records,
+                )
+                .ok()
+            })
+            .expect("a display shard holding every record");
+        let (directory, map_sha256) =
+            synth::write_candidate(&root, &DISPLAY_SEAL, &[shard], &format!("p{revision}"))
+                .expect("a display candidate");
+        let live = &self.display;
+        self.runtime.block_on(async {
+            let expected = live.expected();
+            live.command(DisplayCommand::Prepare {
+                expected: expected.clone(),
+                publication: DisplayPublication {
+                    directory,
+                    map_sha256: map_sha256.clone(),
+                },
+            })
+            .await
+            .expect("prepare the display publication");
+            live.command(DisplayCommand::Activate {
+                expected,
+                map_sha256,
+            })
+            .await
+            .expect("activate the display publication");
+        });
+    }
+
+    /// Adds `txids` (internal byte order) to the txids no request may carry.
+    fn watch_txids<'t>(&self, txids: impl Iterator<Item = &'t [u8; 32]>) {
+        let mut watched = self
+            .shared
+            .txids
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for txid in txids {
+            let mut display = *txid;
+            display.reverse();
+            for bytes in [*txid, display] {
+                watched.0.insert(bytes.to_vec());
+                watched.1.insert(hex::encode(bytes).into_bytes());
+                watched.1.insert(hex::encode_upper(bytes).into_bytes());
+            }
+        }
     }
 
     /// Publishes only through `tip - blocks` from the next
@@ -367,8 +510,14 @@ impl Publisher {
 }
 
 fn carries(watched: &(HashSet<Vec<u8>>, HashSet<Vec<u8>>), bytes: &[u8]) -> bool {
-    bytes.windows(20).any(|window| watched.0.contains(window))
-        || bytes.windows(40).any(|window| watched.1.contains(window))
+    carries_sized(watched, bytes, 20)
+}
+
+/// Whether `bytes` holds one of `watched`'s `len`-byte values raw, or one of
+/// its hex forms.
+fn carries_sized(watched: &(HashSet<Vec<u8>>, HashSet<Vec<u8>>), bytes: &[u8], len: usize) -> bool {
+    bytes.windows(len).any(|window| watched.0.contains(window))
+        || bytes.windows(2 * len).any(|window| watched.1.contains(window))
 }
 
 /// `path` with shard ids, revisions and segments elided.
@@ -425,6 +574,16 @@ async fn dispatch(State(shared): State<Arc<Shared>>, request: Request) -> Respon
                 template(&line)
             ));
         }
+        let txids = shared.txids.read().unwrap_or_else(PoisonError::into_inner);
+        let names_txid = |bytes: &[u8]| carries_sized(&txids, bytes, 32);
+        if names_txid(path.as_bytes())
+            || names_txid(&body)
+            || parts.headers.iter().any(|(name, value)| {
+                names_txid(name.as_str().as_bytes()) || names_txid(value.as_bytes())
+            })
+        {
+            problems.push(format!("a txid in {}", template(&line)));
+        }
         *shared
             .counts
             .lock()
@@ -442,6 +601,17 @@ async fn dispatch(State(shared): State<Arc<Shared>>, request: Request) -> Respon
         && shared.fail_queries.load(Ordering::SeqCst)
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if path.starts_with("/v1/txid/") {
+        return match shared
+            .display
+            .clone()
+            .oneshot(Request::from_parts(parts, Body::from(body)))
+            .await
+        {
+            Ok(response) => response,
+            Err(never) => match never {},
+        };
     }
     let current = shared
         .current
@@ -477,11 +647,16 @@ fn internal(display_hex: &str) -> [u8; 32] {
 
 /// Every indexed event of one verbose (`getblock <hash> 2`) block at `height`,
 /// recording its outputs in `prevouts` first so same-block spends resolve.
+#[allow(clippy::type_complexity)]
 fn block_events(
     block: &Value,
     height: u32,
     prevouts: &mut HashMap<([u8; 32], u32), (u64, Vec<u8>)>,
-) -> Vec<(ScriptBytes, TransparentEvent)> {
+) -> (
+    Vec<(ScriptBytes, TransparentEvent)>,
+    Vec<DisplayEntry>,
+    Vec<[u8; 32]>,
+) {
     let transactions = block["tx"].as_array().expect("a verbose block");
     for tx in transactions {
         let txid = internal(tx["txid"].as_str().unwrap());
@@ -494,8 +669,11 @@ fn block_events(
         }
     }
     let mut events = Vec::new();
+    let mut display = Vec::new();
+    let mut txids = Vec::new();
     for (transaction_index, tx) in transactions.iter().enumerate() {
         let txid = Txid(internal(tx["txid"].as_str().unwrap()));
+        txids.push(txid.0);
         let transaction_index = u16::try_from(transaction_index).expect("a u16 transaction index");
         let vin = tx["vin"].as_array().unwrap();
         let vout = tx["vout"].as_array().unwrap();
@@ -554,6 +732,34 @@ fn block_events(
         metadata
             .validate(coinbase)
             .expect("valid transaction metadata");
+        display.push(
+            DisplayFacts {
+                txid,
+                coinbase,
+                fee: match fee {
+                    FeeState::Exact(fee) => fee,
+                    _ => 0,
+                },
+                has_shielded_components,
+                spent: spent
+                    .iter()
+                    .map(|(_, _, (value, script))| DisplayOutput {
+                        value: *value,
+                        script: script.clone(),
+                    })
+                    .collect(),
+                outputs: vout
+                    .iter()
+                    .map(|output| DisplayOutput {
+                        value: zat(&output["valueZat"]) as u64,
+                        script: hex::decode(output["scriptPubKey"]["hex"].as_str().unwrap())
+                            .unwrap(),
+                    })
+                    .collect(),
+            }
+            .entry()
+            .expect("a display entry"),
+        );
         for output in vout {
             let script = ScriptBytes::new(
                 hex::decode(output["scriptPubKey"]["hex"].as_str().unwrap()).unwrap(),
@@ -593,7 +799,7 @@ fn block_events(
             ));
         }
     }
-    events
+    (events, display, txids)
 }
 
 /// Writes a publishable set of one unsealed tail shard, id 0, over `[1, end]`
