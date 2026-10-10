@@ -52,7 +52,7 @@ pub(crate) use policy::{
 pub(crate) use transport::test_log;
 pub(super) use transport::RoutedExchange;
 #[cfg(test)]
-pub(super) use transport::{response, ObservedRequest, RequestObserver, RoutePolicy};
+pub(super) use transport::{response, ObservedRequest, RequestObserver};
 
 use std::collections::HashSet;
 use tonic::transport::Channel;

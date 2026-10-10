@@ -103,11 +103,6 @@ impl<'a, F: Fn() -> bool> RoutedExchange<'a, F> {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn route_policy(&self) -> super::RoutePolicy {
-        self.route.route_policy
-    }
-
     /// Records every request; see [`RequestObserver`].
     #[cfg(test)]
     pub(crate) fn with_observer(mut self, observer: RequestObserver) -> Self {
@@ -141,7 +136,6 @@ impl<'a, F: Fn() -> bool> RoutedExchange<'a, F> {
                 request.body.clone(),
                 should_exit,
                 &self.route.direct,
-                self.route.route_policy,
             )
             .await
             .map_err(|error| match error {
@@ -353,7 +347,6 @@ pub(crate) fn response(reply: HttpReply) -> http::Response<http_body_util::Full<
 
 #[cfg(test)]
 mod tests {
-    use super::super::RoutePolicy;
     use super::*;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -443,7 +436,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exchange.origin, ORIGIN);
-        assert_eq!(exchange.route_policy(), RoutePolicy::WalletPreference);
     }
 
     #[test]

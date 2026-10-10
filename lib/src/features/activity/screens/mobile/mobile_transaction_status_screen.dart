@@ -2,18 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart' show Scaffold;
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../../../main.dart' show log;
 import '../../../../core/config/swap_feature_config.dart';
 import '../../../../core/config/zcash_explorer.dart';
 import '../../../../core/formatting/address_display.dart';
 import '../../../../core/formatting/zec_amount.dart';
 import '../../../../core/layout/mobile/mobile_top_nav.dart';
 import '../../../../core/privacy/privacy_mask.dart';
-import '../../../../core/storage/wallet_paths.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_profile_picture.dart';
@@ -23,17 +20,13 @@ import '../../../../core/widgets/mobile/mobile_address_verify_sheet.dart';
 import '../../../../core/widgets/mobile/mobile_review_row.dart';
 import '../../../../core/widgets/mobile/mobile_tx_fee_info_sheet.dart';
 import '../../../../providers/account_provider.dart';
-import '../../../../providers/app_security_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../../../../providers/privacy_mode_provider.dart';
-import '../../../../providers/public_details_loads_provider.dart';
 import '../../../../providers/rpc_endpoint_provider.dart';
-import '../../../../providers/sync_provider.dart';
 import '../../../../providers/zcash_explorer_provider.dart';
 import '../../../../rust/api/sync.dart' as rust_sync;
 import '../../../address_book/models/address_book_contact.dart';
 import '../../../address_book/providers/address_book_provider.dart';
-import '../../../payment_links/services/payment_link_transaction_matching.dart';
 import '../../../payment_links/widgets/mobile/payment_link_mobile_views.dart'
     show kPaymentLinkMobileCardHeight, kPaymentLinkMobileCardWidth;
 import '../../../payment_links/widgets/payment_link_copy.dart';
@@ -51,18 +44,12 @@ import '../../activity_row_mapper.dart'
 import '../../gift_card_activity_index.dart';
 import '../../transaction_completeness.dart';
 import '../../widgets/transparent_details_section.dart';
-import '../../widgets/public_details_lookup_dialog.dart';
-import '../activity_transaction_status_screen.dart'
-    show
-        PublicLookupConfirmation,
-        TransparentDetailsDebugLookup,
-        TransparentDetailsPrioritizer,
-        TransparentDetailsPublicLookup;
+import '../transaction_receipt_loading.dart';
 
 /// Route arguments for [MobileTransactionStatusScreen]. The row that
 /// was tapped passes its [initialTransaction] so the screen renders
 /// immediately; the screen refreshes itself from the wallet DB.
-class MobileTransactionStatusArgs {
+class MobileTransactionStatusArgs implements TransactionReceiptArgs {
   const MobileTransactionStatusArgs({
     required this.txidHex,
     this.txKind,
@@ -72,77 +59,44 @@ class MobileTransactionStatusArgs {
     this.giftCard,
   });
 
+  @override
   final String txidHex;
+  @override
   final String? txKind;
+  @override
   final rust_sync.TransactionInfo? initialTransaction;
+  @override
   final rust_sync.TransactionDetail? initialDetail;
-
-  /// Account that supplied the row and its metadata. Absent for direct links.
+  @override
   final String? sourceAccountUuid;
 
-  /// Set when the tapped row already resolved this tx as a Gift Card; the
-  /// screen re-resolves it from the index when this is null.
+  /// The screen re-resolves the Gift Card from the index when this is null.
+  @override
   final GiftCardActivityMetadata? giftCard;
 }
-
-/// Loads the transaction history; injectable so widget tests can avoid
-/// the Rust FFI.
-typedef MobileTxHistoryLoader =
-    Future<List<rust_sync.TransactionInfo>> Function(String accountUuid);
-
-/// Loads one transaction's detail; injectable for widget tests.
-typedef MobileTxDetailLoader =
-    Future<rust_sync.TransactionDetail?> Function(
-      String accountUuid,
-      rust_sync.TransactionInfo transaction,
-    );
 
 /// Mobile transaction status/detail — Figma `ACTIVITY & STATUS` frames
 /// `Status Sending` (4752:70731), `Status Scucess` (4752:71303),
 /// `Status Fail` (4752:71663), and `Received` (4752:75264): the serif
 /// review header (amount / counterparty with the flow arrow) above the
 /// rounded detail card (status chip, message, timestamp, tx id, fee).
-class MobileTransactionStatusScreen extends ConsumerStatefulWidget {
+class MobileTransactionStatusScreen extends TransactionReceiptScreen {
   const MobileTransactionStatusScreen({
     required this.args,
-    this.historyLoader,
-    this.detailLoader,
-    this.transparentDetailsPrioritizer,
-    this.transparentDetailsDebugLookup,
-    this.transparentDetailsPublicLookup,
-    this.publicLookupConfirmation = confirmPublicDetailsLookup,
-    this.showPrivateLookupDiagnostics = kDebugMode,
+    super.historyLoader,
+    super.detailLoader,
+    super.transparentDetailsPrioritizer,
+    super.transparentDetailsDebugLookup,
+    super.transparentDetailsPublicLookup,
+    super.publicLookupConfirmation,
+    super.showPrivateLookupDiagnostics,
     super.key,
   });
 
   final MobileTransactionStatusArgs args;
 
-  /// Test seam — production asks Rust.
-  @visibleForTesting
-  final TransparentDetailsPrioritizer? transparentDetailsPrioritizer;
-
-  /// Test seam — production asks Rust.
-  @visibleForTesting
-  final TransparentDetailsDebugLookup? transparentDetailsDebugLookup;
-
-  /// Test seam — production asks Rust.
-  @visibleForTesting
-  final TransparentDetailsPublicLookup? transparentDetailsPublicLookup;
-
-  /// Test seam — production shows [PublicDetailsLookupDialog].
-  final PublicLookupConfirmation publicLookupConfirmation;
-
-  /// Whether this is a development build that offers the private lookup
-  /// button.
-  final bool showPrivateLookupDiagnostics;
-
-  /// Test seam — production reads the wallet DB through Rust.
-  @visibleForTesting
-  final MobileTxHistoryLoader? historyLoader;
-
-  /// Test seam — production reads the wallet DB through Rust.
-  @visibleForTesting
-  final MobileTxDetailLoader? detailLoader;
+  @override
+  TransactionReceiptArgs get receiptArgs => args;
 
   @override
   ConsumerState<MobileTransactionStatusScreen> createState() =>
@@ -150,358 +104,17 @@ class MobileTransactionStatusScreen extends ConsumerStatefulWidget {
 }
 
 class _MobileTransactionStatusScreenState
-    extends ConsumerState<MobileTransactionStatusScreen> {
-  rust_sync.TransactionInfo? _transaction;
-  rust_sync.TransactionDetail? _detail;
-  String? _error;
-  bool _isLoading = true;
-  // A null detail can mean pending, unavailable, or failed. Keep the read
-  // state separate, and show placeholders only without a matching cached detail.
-  bool _detailsPending = true;
-  String? _activeAccountUuid;
-  String? _argsAccountUuid;
-  int _loadGeneration = 0;
+    extends ConsumerState<MobileTransactionStatusScreen>
+    with TransactionReceiptLoading<MobileTransactionStatusScreen> {
   bool _messageExpanded = false;
-  Timer? _transparentDetailsPoll;
-  bool _transparentDetailsPollInFlight = false;
-  bool _transparentDetailsPrioritized = false;
-  String? _debugLookupText;
-  String? _publicLookupText;
-  bool _publicLookupRunning = false;
-  int _debugLookupGeneration = 0;
 
   @override
-  void dispose() {
-    _transparentDetailsPoll?.cancel();
-    super.dispose();
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _transaction = widget.args.initialTransaction;
-    _detail = widget.args.initialDetail;
-    _activeAccountUuid = ref.read(accountProvider).value?.activeAccountUuid;
-    _argsAccountUuid = widget.args.sourceAccountUuid ?? _activeAccountUuid;
-    if (_argsAccountUuid != _activeAccountUuid) {
-      _transaction = null;
-      _detail = null;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_loadTransaction());
-    });
-  }
-
-  Future<List<rust_sync.TransactionInfo>> _loadHistory(
-    String accountUuid,
-  ) async {
-    final loader = widget.historyLoader;
-    if (loader != null) return loader(accountUuid);
-    final dbPath = await getWalletDbPath();
-    final endpoint = ref.read(rpcEndpointProvider);
-    return rust_sync.getTransactionHistory(
-      dbPath: dbPath,
-      network: endpoint.networkName,
-      accountUuid: accountUuid,
-    );
-  }
-
-  Future<rust_sync.TransactionDetail?> _loadDetail(
-    String accountUuid,
-    rust_sync.TransactionInfo transaction,
-  ) async {
-    final loader = widget.detailLoader;
-    if (loader != null) return loader(accountUuid, transaction);
-    final dbPath = await getWalletDbPath();
-    final endpoint = ref.read(rpcEndpointProvider);
-    return rust_sync.getTransactionDetail(
-      dbPath: dbPath,
-      network: endpoint.networkName,
-      accountUuid: accountUuid,
-      txidHex: transaction.txidHex,
-      txKind: transaction.txKind,
-    );
-  }
-
-  bool _loadIsCurrent(int generation, String? accountUuid) =>
-      mounted &&
-      generation == _loadGeneration &&
-      accountUuid == ref.read(accountProvider).value?.activeAccountUuid;
-
-  bool get _detailsLoading =>
-      _detailsPending && _matchingDetailFor(_transaction) == null;
-
-  rust_sync.TransactionDetail? _matchingDetailFor(
-    rust_sync.TransactionInfo? tx,
-  ) {
-    final detail = _detail;
-    if (tx == null ||
-        detail == null ||
-        !_txidsMatch(detail.txidHex, tx.txidHex) ||
-        !_txKindMatches(detail.txKind, tx.txKind)) {
-      return null;
-    }
-    return detail;
-  }
-
-  Future<void> _loadTransaction() async {
-    final generation = ++_loadGeneration;
-    ++_debugLookupGeneration;
-    final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
-    final accountChanged = accountUuid != _activeAccountUuid;
-    _activeAccountUuid = accountUuid;
-    setState(() {
-      _debugLookupText = null;
-      // A refresh while a public load runs keeps its state; the load
-      // refreshes again when it finishes.
-      if (!_publicLookupRunning || accountChanged) _publicLookupText = null;
-      _detailsPending = true;
-      if (accountChanged) {
-        _transaction = null;
-        _detail = null;
-        _messageExpanded = false;
-        _error = null;
-        _isLoading = true;
-      }
-    });
-    if (accountUuid == null) {
-      setState(() {
-        _isLoading = false;
-        _detailsPending = false;
-        _error = 'No active account.';
-      });
-      return;
-    }
-
-    try {
-      final txs = await _loadHistory(accountUuid);
-      if (!_loadIsCurrent(generation, accountUuid)) return;
-      final tx = _findTransaction(txs);
-      if (tx == null) {
-        setState(() {
-          _error = _transaction == null
-              ? 'Transaction could not be loaded.'
-              : 'Latest transaction status could not be refreshed.';
-          _isLoading = false;
-          _detailsPending = false;
-        });
-        return;
-      }
-      setState(() {
-        _transaction = tx;
-        _detail = _matchingDetailFor(tx);
-        _error = null;
-        _isLoading = false;
-      });
-      final detail = await _loadDetail(accountUuid, tx);
-      if (!_loadIsCurrent(generation, accountUuid)) return;
-      setState(() {
-        _detail = detail ?? _detail;
-        _detailsPending = false;
-      });
-      _followTransparentDetails();
-    } catch (e, st) {
-      if (!_loadIsCurrent(generation, accountUuid)) return;
-      log('MobileTransactionStatus: transaction load failed: $e\n$st');
-      setState(() {
-        _error = _transaction == null
-            ? 'Transaction could not be loaded.'
-            : 'Latest transaction status could not be refreshed.';
-        _isLoading = false;
-        _detailsPending = false;
-      });
-    }
-  }
-
-  /// While the shown transaction's transparent details may still arrive,
-  /// asks the next sync to look them up first (once) and re-reads the detail
-  /// until they do.
-  void _followTransparentDetails() {
-    final detail = _matchingDetailFor(_transaction);
-    if (!transparentDetailsAwaited(detail)) {
-      _transparentDetailsPoll?.cancel();
-      _transparentDetailsPoll = null;
-      return;
-    }
-    if (!_transparentDetailsPrioritized) {
-      _transparentDetailsPrioritized = true;
-      unawaited(_prioritizeTransparentDetails(detail!.txidHex));
-    }
-    _transparentDetailsPoll ??= Timer.periodic(
-      kTransparentDetailsPollInterval,
-      (_) => unawaited(_pollTransparentDetails()),
-    );
-  }
-
-  Future<void> _prioritizeTransparentDetails(String txidHex) async {
-    try {
-      final prioritizer = widget.transparentDetailsPrioritizer;
-      if (prioritizer != null) return await prioritizer(txidHex);
-      rust_sync.prioritizeTransparentDetails(
-        dbPath: await getWalletDbPath(),
-        txidHex: txidHex,
-      );
-    } catch (e) {
-      log('MobileTransactionStatus: prioritize failed: $e');
-    }
-  }
-
-  Future<void> _pollTransparentDetails() async {
-    // Full receipt loads supersede polls through the same generation guard.
-    // Do not start a second read while either refresh is still running.
-    if (_detailsPending || _transparentDetailsPollInFlight) return;
-    final generation = _loadGeneration;
-    final tx = _transaction;
-    final accountUuid = _activeAccountUuid;
-    if (tx == null || accountUuid == null) return;
-    _transparentDetailsPollInFlight = true;
-    try {
-      final detail = await _loadDetail(accountUuid, tx);
-      if (!_loadIsCurrent(generation, accountUuid) || detail == null) {
-        return;
-      }
-      setState(() => _detail = detail);
-      _followTransparentDetails();
-    } catch (e) {
-      log('MobileTransactionStatus: transparent details refresh failed: $e');
-    } finally {
-      _transparentDetailsPollInFlight = false;
-    }
-  }
-
-  bool _offersDebugLookup(
-    rust_sync.TransactionInfo tx,
-    rust_sync.TransactionDetail? detail,
-  ) {
-    final state = detail?.transparentDetailsState;
-    return widget.showPrivateLookupDiagnostics &&
-        state != null &&
-        state != rust_sync.TransparentDetailsState.available &&
-        tx.minedHeight > BigInt.zero;
-  }
-
-  Future<void> _runDebugLookup(rust_sync.TransactionInfo tx) async {
-    final generation = _loadGeneration;
-    final accountUuid = _activeAccountUuid;
-    final lookupGeneration = ++_debugLookupGeneration;
-    bool isCurrent() =>
-        _loadIsCurrent(generation, accountUuid) &&
-        lookupGeneration == _debugLookupGeneration;
-    setState(() => _debugLookupText = 'Looking up…');
-    try {
-      final lookup = widget.transparentDetailsDebugLookup;
-      final text = lookup != null
-          ? await lookup(tx)
-          : describeTransparentDetailsLookup(
-              await rust_sync.debugLookupTransparentDetails(
-                network: ref.read(rpcEndpointProvider).networkName,
-                txidHex: tx.txidHex,
-                minedHeight: tx.minedHeight,
-              ),
-            );
-      if (isCurrent()) setState(() => _debugLookupText = text);
-    } catch (e) {
-      if (isCurrent()) setState(() => _debugLookupText = 'Failed: $e');
-    }
-  }
-
-  /// Loads [tx]'s full details from the server once the user confirms, then
-  /// refreshes the receipt. Nothing here runs without that confirmation, and a
-  /// refresh while it runs neither drops its result nor offers it again.
-  Future<void> _runPublicLookup(rust_sync.TransactionInfo tx) async {
-    // One load at a time: a tap while one runs asks nothing.
-    if (_publicLookupRunning) return;
-    _publicLookupRunning = true;
-    final accountUuid = _activeAccountUuid;
-    var loaded = false;
-    try {
-      if (!await widget.publicLookupConfirmation(context) || !mounted) return;
-      setState(() => _publicLookupText = kLoadDetailsPubliclyLoadingText);
-      final lookup = widget.transparentDetailsPublicLookup;
-      if (lookup != null) {
-        await lookup(tx);
-      } else {
-        final endpoint = ref.read(rpcEndpointProvider);
-        // A lock cancels the load and wallet deletion waits for it, so it
-        // never runs on, or stores into, a wallet the user has left.
-        if (ref.read(appSecurityProvider).requiresUnlock) {
-          throw StateError('The wallet is locked.');
-        }
-        final ran = await ref.read(publicDetailsLoadsProvider).run(() async {
-          // Never create a wallet database name for a load.
-          final dbPath = await getExistingWalletDbPath();
-          if (dbPath == null) throw StateError('The wallet is unavailable.');
-          await rust_sync.enhanceTransactionPublicly(
-            dbPath: dbPath,
-            network: endpoint.networkName,
-            lightwalletdUrl: endpoint.lightwalletdUrl,
-            txidHex: tx.txidHex,
-          );
-        });
-        if (!ran) throw StateError('The wallet is changing.');
-      }
-      loaded = true;
-    } catch (e) {
-      log('MobileTransactionStatus: public details lookup failed');
-      if (mounted && _activeAccountUuid == accountUuid) {
-        setState(() => _publicLookupText = kLoadDetailsPubliclyFailedText);
-      }
-    } finally {
-      _publicLookupRunning = false;
-    }
-    // A full refresh supersedes any read that started before the store.
-    if (loaded && mounted && _activeAccountUuid == accountUuid) {
-      await _loadTransaction();
-    }
-  }
-
-  rust_sync.TransactionInfo? _findTransaction(
-    Iterable<rust_sync.TransactionInfo> transactions,
-  ) {
-    final txKind =
-        _transaction?.txKind ??
-        widget.args.initialTransaction?.txKind ??
-        widget.args.txKind;
-    for (final tx in transactions) {
-      if (!_txidsMatch(widget.args.txidHex, tx.txidHex)) continue;
-      if (txKind == null || _txKindMatches(txKind, tx.txKind)) return tx;
-    }
-    final shown = _transaction ?? widget.args.initialTransaction;
-    if (shown != null && shown.provisional) {
-      return provisionalRoleSuccessor(
-        transactions,
-        (other) => _txidsMatch(widget.args.txidHex, other),
-      );
-    }
-    return null;
-  }
-
-  bool _txKindMatches(String expected, String actual) {
-    if (expected == actual) return true;
-    return (expected == 'receiving' && actual == 'received') ||
-        (expected == 'received' && actual == 'receiving');
-  }
-
-  String _recentTxSignature(SyncState? sync) {
-    for (final tx in sync?.recentTransactions ?? const []) {
-      if (_txidsMatch(widget.args.txidHex, tx.txidHex)) {
-        return '${tx.txidHex}:${tx.minedHeight}:${tx.expiredUnmined}:'
-            '${tx.txKind}:${tx.displayAmount}:${tx.fee}:${tx.activityPool}:'
-            '${transactionCompletenessSignature(tx)}';
-      }
-    }
-    return '';
-  }
-
-  bool _txidsMatch(String first, String second) {
-    if (widget.args.giftCard != null) {
-      return paymentLinkTxidsMatch(first, second);
-    }
-    return first.toLowerCase() == second.toLowerCase();
+  void onReceiptAccountChanged() {
+    _messageExpanded = false;
   }
 
   _TxPhase get _phase {
-    final tx = _transaction;
+    final tx = receiptTransaction;
     if (tx == null) return _TxPhase.pending;
     if (tx.expiredUnmined) return _TxPhase.failed;
     if (tx.minedHeight == BigInt.zero) return _TxPhase.pending;
@@ -509,17 +122,18 @@ class _MobileTransactionStatusScreenState
   }
 
   bool get _isIncoming {
-    final kind = _transaction?.txKind ?? widget.args.txKind;
+    final kind = receiptTransaction?.txKind ?? widget.args.txKind;
     return kind == 'received' || kind == 'receiving';
   }
 
   bool get _isShielding =>
-      (_transaction?.txKind ?? widget.args.txKind) == 'shielded';
+      (receiptTransaction?.txKind ?? widget.args.txKind) == 'shielded';
 
   bool get _isMigration =>
-      (_transaction?.txKind ?? widget.args.txKind) == 'migration';
+      (receiptTransaction?.txKind ?? widget.args.txKind) == 'migration';
 
-  bool get _isSent => (_transaction?.txKind ?? widget.args.txKind) == 'sent';
+  bool get _isSent =>
+      (receiptTransaction?.txKind ?? widget.args.txKind) == 'sent';
 
   /// The fee presentation of the shown entry. A Gift Card shows its own
   /// amount, so its fee stays separate.
@@ -570,7 +184,7 @@ class _MobileTransactionStatusScreenState
     // Unclassified transactions and balance movements stay neutral, like
     // the desktop fallback receipt: neither establishes an external payment.
     if (!_isSent ||
-        _feePresentationFor(_transaction, null) !=
+        _feePresentationFor(receiptTransaction, null) !=
             TransactionFeePresentation.separate) {
       return 'Transaction';
     }
@@ -626,45 +240,23 @@ class _MobileTransactionStatusScreenState
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<AsyncValue<AccountState>>(accountProvider, (previous, next) {
-      final nextUuid = next.value?.activeAccountUuid;
-      if (nextUuid != _activeAccountUuid) unawaited(_loadTransaction());
-    });
-    ref.listen<AsyncValue<SyncState>>(syncProvider, (previous, next) {
-      // Enhancement can change older rows outside the ten recent transactions,
-      // and the deferred account refresh and ephemeral address checks report
-      // completion again after scanning already completed.
-      final syncCompleted =
-          next.value?.isSyncComplete == true &&
-          (previous?.value?.isSyncComplete != true ||
-              previous?.value?.lastSyncCompletedAt !=
-                  next.value?.lastSyncCompletedAt);
-      if (_recentTxSignature(previous?.value) !=
-              _recentTxSignature(next.value) ||
-          syncCompleted) {
-        unawaited(_loadTransaction());
-      }
-    });
-    // So can recovery and detail follow-ups that finish after completion.
-    ref.listen<int>(syncFollowupProvider, (_, _) {
-      unawaited(_loadTransaction());
-    });
+    listenForReceiptRefresh();
 
     final colors = context.colors;
     final privacyModeEnabled = ref.watch(privacyModeProvider);
-    final tx = _transaction;
-    final detail = _matchingDetailFor(tx);
+    final tx = receiptTransaction;
+    final detail = matchingReceiptDetailFor(tx);
     final activeAccountUuid =
         ref.watch(accountProvider).value?.activeAccountUuid ??
-        _activeAccountUuid;
+        receiptAccountUuid;
     // The args metadata was resolved for the account that was active when the
     // row was tapped; under another account only that account's index counts.
-    final suppliedGiftCard = _argsAccountUuid == activeAccountUuid
+    final suppliedGiftCard = receiptArgsAccountUuid == activeAccountUuid
         ? widget.args.giftCard
         : null;
     final giftCard =
         _resolvedGiftCard(tx, activeAccountUuid) ?? suppliedGiftCard;
-    final detailsLoading = giftCard == null && _detailsLoading;
+    final detailsLoading = giftCard == null && receiptDetailsLoading;
     if (tx == null) {
       return Scaffold(
         body: SafeArea(
@@ -677,9 +269,9 @@ class _MobileTransactionStatusScreenState
               Expanded(
                 child: Center(
                   child: Text(
-                    _isLoading
+                    receiptLoading
                         ? 'Loading transaction…'
-                        : (_error ?? 'Transaction could not be loaded.'),
+                        : (receiptError ?? 'Transaction could not be loaded.'),
                     style: AppTypography.bodyMedium.copyWith(
                       color: colors.text.secondary,
                     ),
@@ -1108,7 +700,8 @@ class _MobileTransactionStatusScreenState
                             giftCard?.kind == GiftCardActivityKind.created,
                         showsNetworkFee:
                             giftCard == null &&
-                            unattributedReceiptNetworkFee(tx, _detail) != null,
+                            unattributedReceiptNetworkFee(tx, receiptDetail) !=
+                                null,
                         feeText: feeOnly
                             ? null
                             : _feeText(
@@ -1123,19 +716,19 @@ class _MobileTransactionStatusScreenState
                         TransparentDetailsSection(
                           detail: detail,
                           privacyModeEnabled: privacyModeEnabled,
-                          debugLookupText: _debugLookupText,
-                          onDebugLookup: _offersDebugLookup(tx, detail)
-                              ? () => unawaited(_runDebugLookup(tx))
+                          debugLookupText: debugLookupText,
+                          onDebugLookup: offersDebugLookup(tx, detail)
+                              ? () => unawaited(runDebugLookup(tx))
                               : null,
-                          publicLookupText: _publicLookupText,
+                          publicLookupText: publicLookupText,
                           onLoadPublicly: offersPublicDetailsLookup(detail)
-                              ? () => unawaited(_runPublicLookup(tx))
+                              ? () => unawaited(runPublicLookup(tx))
                               : null,
                         ),
-                      if (_error != null) ...[
+                      if (receiptError != null) ...[
                         const SizedBox(height: AppSpacing.sm),
                         Text(
-                          _error!,
+                          receiptError!,
                           textAlign: TextAlign.center,
                           style: AppTypography.bodySmall.copyWith(
                             color: colors.text.destructive,
@@ -1189,7 +782,7 @@ class _MobileTransactionStatusScreenState
   bool _showIncompleteDetails(rust_sync.TransactionInfo tx) =>
       ref.watch(enhancePirProvider) &&
       transactionDetailsIncomplete(tx) &&
-      !receiptDetailsComplete(_detail);
+      !receiptDetailsComplete(receiptDetail);
 
   String? _feeText(
     rust_sync.TransactionInfo? tx, {
@@ -1204,7 +797,7 @@ class _MobileTransactionStatusScreenState
       return null;
     }
     final networkFee = giftCard == null
-        ? unattributedReceiptNetworkFee(tx, _detail)
+        ? unattributedReceiptNetworkFee(tx, receiptDetail)
         : null;
     if (networkFee != null) {
       return hideAmountIfPrivacyMode(

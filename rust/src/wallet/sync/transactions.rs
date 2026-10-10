@@ -952,10 +952,21 @@ impl TxOutput {
     }
 }
 
+/// One output of a transaction: its pool and its index within that pool.
+type OutputKey = (i64, i64);
+
+impl TxOutput {
+    fn key(&self) -> OutputKey {
+        (self.output_pool, self.output_index)
+    }
+}
+
 #[derive(Default, Clone)]
 struct ActivityAmounts {
     amount: u64,
     output_count: usize,
+    /// The outputs counted, in the order they were added.
+    outputs: Vec<OutputKey>,
     has_transparent: bool,
     has_sapling: bool,
     has_orchard: bool,
@@ -966,6 +977,7 @@ impl ActivityAmounts {
     fn add_output(&mut self, output: &TxOutput) {
         self.amount = self.amount.saturating_add(output.value);
         self.output_count += 1;
+        self.outputs.push(output.key());
         match output.output_pool {
             TRANSPARENT_POOL => self.has_transparent = true,
             SAPLING_POOL => self.has_sapling = true,
@@ -1035,6 +1047,8 @@ struct SuppressedFundingStepFees {
 
 struct ClassifiedTx {
     info: TransactionInfo,
+    /// The outputs this row counted, which its receipt shows.
+    outputs: Vec<OutputKey>,
     sort_pending_rank: u8,
     sort_timestamp: u64,
     sort_mined_height: u64,
@@ -1748,17 +1762,15 @@ fn read_transaction_detail(
             .then_with(|| a.output_pool.cmp(&b.output_pool))
     });
 
-    let pays_others = pays_others(&outputs, uuid_bytes.as_slice());
     let effects_settled = base.history.effects_settled
         && base.mined_height.is_some()
         && !outputs
             .iter()
             .any(|output| has_unknown_transparent_scope(output, uuid_bytes.as_slice()));
+    let shown = receipt_output_keys(&base, &outputs, uuid_bytes.as_slice(), tx_kind);
     let visible_outputs = outputs
         .iter()
-        .filter(|output| {
-            detail_includes_output(&base, output, uuid_bytes.as_slice(), tx_kind, pays_others)
-        })
+        .filter(|output| shown.contains(&output.key()))
         .collect::<Vec<_>>();
     let memo = visible_outputs
         .iter()
@@ -2357,35 +2369,31 @@ fn pays_others(outputs: &[TxOutput], account_uuid: &[u8]) -> bool {
     })
 }
 
-fn detail_includes_output(
+/// The outputs a receipt of `tx_kind` shows: exactly those its Activity row
+/// counted, by the same classification, so a receipt never shows more than
+/// its row established. A role the transaction has no row for shows none.
+fn receipt_output_keys(
     base: &TxBase,
-    output: &TxOutput,
+    outputs: &[TxOutput],
     account_uuid: &[u8],
     tx_kind: &str,
-    pays_others: bool,
-) -> bool {
-    let from_own = output.from_account_uuid.as_deref() == Some(account_uuid);
-    let to_own = output.to_account_uuid.as_deref() == Some(account_uuid);
+) -> Vec<OutputKey> {
+    let summary = summarize_activity_outputs(base, outputs, account_uuid);
+    classify_history_tx(base, &summary, Fee::NotApplicable)
+        .into_iter()
+        .find(|row| same_activity_role(&row.info.tx_kind, tx_kind))
+        .map(|row| row.outputs)
+        .unwrap_or_default()
+}
 
-    match tx_kind {
-        "shielded" => base.is_shielding && to_own && is_shielded_pool(output.output_pool),
-        "sent" => {
-            !base.is_shielding
-                && from_own
-                && (!to_own || (is_user_visible_self_output(output) && !pays_others))
-        }
-        "received" | "receiving" => {
-            !base.is_shielding && to_own && (!from_own || is_user_visible_self_output(output))
-        }
-        "migration" => {
-            !base.is_shielding
-                && from_own
-                && to_own
-                && base.spent_orchard_note
-                && is_ironwood_output(output)
-        }
-        _ => false,
-    }
+/// Whether two Activity roles are the same one: a receive stays itself
+/// once it is mined.
+fn same_activity_role(first: &str, second: &str) -> bool {
+    first == second
+        || matches!(
+            (first, second),
+            ("received", "receiving") | ("receiving", "received")
+        )
 }
 
 fn is_shielded_pool(output_pool: i64) -> bool {
@@ -2587,20 +2595,22 @@ fn classify_history_tx(
         } else {
             base.total_received
         };
-        return vec![build_classified_tx(
-            base, "shielded", amount, "shielded", false, 0,
-        )];
+        let mut row = build_classified_tx(base, "shielded", amount, "shielded", false, 0);
+        row.outputs = summary.shielded.outputs.clone();
+        return vec![row];
     }
 
     if is_internal_ironwood_transition(base, summary) {
-        return vec![build_classified_tx(
+        let mut row = build_classified_tx(
             base,
             "migration",
             summary.internal_ironwood_transition.amount,
             "ironwood",
             false,
             1,
-        )];
+        );
+        row.outputs = summary.internal_ironwood_transition.outputs.clone();
+        return vec![row];
     }
 
     // Private recovery reconstructed the exact payment of a transparent-only
@@ -2671,6 +2681,7 @@ fn classify_history_tx(
                 );
                 received.info.provisional = !activity_settled;
                 received.info.activity_pool = Some("transparent".to_string());
+                received.outputs = summary.received_transparent.outputs.clone();
                 rows.push(received);
             }
             return rows;
@@ -2707,6 +2718,7 @@ fn classify_history_tx(
             base.history.shown_fee().plus(extra_sent_fee),
         );
         row.info.activity_pool = Some(summary.sent.activity_pool().to_string());
+        row.outputs = summary.sent.outputs.clone();
         rows.push(row);
     }
     // Before enhancement links our zero-value change to its send, the change
@@ -2725,6 +2737,7 @@ fn classify_history_tx(
             2,
         );
         row.info.activity_pool = Some(summary.received.activity_pool().to_string());
+        row.outputs = summary.received.outputs.clone();
         rows.push(row);
     }
 
@@ -2828,6 +2841,7 @@ fn build_classified_tx_with_fee(
 ) -> ClassifiedTx {
     let sort_timestamp = base.display_timestamp();
     ClassifiedTx {
+        outputs: Vec::new(),
         info: TransactionInfo {
             txid_hex: hex::encode(&base.txid),
             mined_height: base.mined_height.unwrap_or(0) as u64,
@@ -3831,6 +3845,119 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display_amount, 10_000);
         assert!(rows[0].amount_includes_fee);
+    }
+
+    /// A recovered self-payment to the account's own external address shows
+    /// as Sent and Received, and both receipts list it. Private recovery
+    /// links its receiver before its sender, so the receipt follows the row
+    /// rather than requiring a recorded sender.
+    #[test]
+    fn receipts_of_a_recovered_self_transfer_list_its_self_payment() {
+        let account = test_account_uuid().as_bytes().to_vec();
+        let mut base = tx_base_for_history();
+        base.spent_orchard_note = false;
+        base.total_spent = 110_000;
+        base.total_received = 100_000;
+        base.account_balance_delta = -10_000;
+        base.fee = Some(10_000);
+        base.history = HistoryCompleteness {
+            inferred_payment: Some(0),
+            whole_fee: Some(10_000),
+            fee: Fee::Known(10_000),
+            details_complete: false,
+            provisional: false,
+            effects_settled: true,
+            classification: None,
+            has_transparent_outputs: Some(true),
+            inferred_outgoing: None,
+        };
+        let payment = TxOutput {
+            txid: base.txid.clone(),
+            output_pool: TRANSPARENT_POOL,
+            output_index: 0,
+            from_account_uuid: None,
+            to_account_uuid: Some(account.clone()),
+            to_address: None,
+            sent_to_address: None,
+            transparent_receiver_address: Some("synthetic-receiver".to_owned()),
+            to_key_scope: Some(0),
+            value: 100_000,
+            memo: None,
+            note_version: None,
+        };
+        let outputs = [payment];
+
+        let summary = summarize_activity_outputs(&base, &outputs, &account);
+        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.info.tx_kind.as_str(), row.info.display_amount))
+                .collect::<Vec<_>>(),
+            [("sent", 100_000), ("received", 100_000)]
+        );
+        for kind in ["sent", "received"] {
+            assert_eq!(
+                receipt_output_keys(&base, &outputs, &account, kind),
+                [(TRANSPARENT_POOL, 0)],
+                "{kind}"
+            );
+        }
+        assert!(receipt_output_keys(&base, &outputs, &account, "shielded").is_empty());
+    }
+
+    /// The received row of a private outgoing transaction counts only the
+    /// account's transparent receipts. Its receipt lists the same outputs, not
+    /// the shielded change compact scanning found without a recorded sender.
+    #[test]
+    fn the_received_receipt_of_an_inferred_outgoing_transaction_omits_shielded_change() {
+        let account = test_account_uuid().as_bytes().to_vec();
+        let mut base = tx_base_for_history();
+        base.total_spent = 1_000_000;
+        base.total_received = 985_000;
+        base.account_balance_delta = -15_000;
+        base.attach_history(HistoryCompleteness {
+            has_transparent_outputs: Some(true),
+            details_complete: false,
+            classification: Some(HistoryClassification::Provisional),
+            provisional: true,
+            effects_settled: false,
+            fee: Fee::Unknown,
+            whole_fee: Some(15_000),
+            inferred_payment: None,
+            inferred_outgoing: Some(250_000),
+        });
+        let output = |pool, index, scope, value| TxOutput {
+            txid: base.txid.clone(),
+            output_pool: pool,
+            output_index: index,
+            from_account_uuid: None,
+            to_account_uuid: Some(account.clone()),
+            to_address: None,
+            sent_to_address: None,
+            transparent_receiver_address: None,
+            to_key_scope: Some(scope),
+            value,
+            memo: None,
+            note_version: None,
+        };
+        let outputs = [
+            output(ORCHARD_POOL, 0, 1, 735_000),
+            output(TRANSPARENT_POOL, 0, 0, 250_000),
+        ];
+
+        let summary = summarize_activity_outputs(&base, &outputs, &account);
+        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
+        let received = rows
+            .iter()
+            .find(|row| row.info.tx_kind == "received")
+            .expect("the transparent receipt has its row");
+        assert_eq!(received.info.display_amount, 250_000);
+        assert_eq!(
+            receipt_output_keys(&base, &outputs, &account, "received"),
+            [(TRANSPARENT_POOL, 0)]
+        );
+        // The sent row names no payee output, so its receipt lists none.
+        assert!(receipt_output_keys(&base, &outputs, &account, "sent").is_empty());
     }
 
     #[test]

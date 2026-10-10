@@ -29,7 +29,7 @@
 //! Lookups run with no
 //! database lock held; each result is stored, or each failure deferred, under
 //! the wallet write lock in its own short transaction. Once the budget is
-//! spent or the sync exits, a lookup gets [`source::CANCEL_GRACE`] to return
+//! spent or the sync exits, a lookup gets [`CANCEL_GRACE`] to return
 //! before it is abandoned, and writes may wait for the lock until
 //! [`WRITE_GRACE`] past the budget: a run ends within 47 s, plus at most one
 //! SQLite write already under way. Failures are logged by kind, never by txid. The display facts the
@@ -70,6 +70,7 @@ use super::enhancement::EnhancementPolicy;
 use super::{
     elapsed, followup_updated_event, SyncProgressEvent, TransparentLookupGate, WalletDatabase,
 };
+use crate::wallet::bounded_runtime::CANCEL_GRACE;
 use crate::wallet::db::with_wallet_db_write_lock_unless;
 use crate::wallet::network::WalletNetwork;
 
@@ -83,8 +84,8 @@ use source::{DetailAnswer, DetailFailure, DetailSource, GateSource, PirSource};
 /// grace a run takes past it.
 pub(crate) const RUN_BUDGET: Duration = Duration::from_secs(45);
 /// How long past the budget a run may wait to record the lookup the budget
-/// stopped.
-const WRITE_GRACE: Duration = Duration::from_secs(2);
+/// stopped: as long as that lookup had to return.
+const WRITE_GRACE: Duration = CANCEL_GRACE;
 /// Lookups one run may make.
 pub(crate) const MAX_LOOKUPS: usize = 8;
 /// Due work one run reads, so that prioritized transactions can go first.

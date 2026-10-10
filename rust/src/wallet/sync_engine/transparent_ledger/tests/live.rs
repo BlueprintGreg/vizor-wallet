@@ -28,7 +28,7 @@ use super::super::pir::{test_transport, TransparentPirSource, DEFAULT_MAINNET_OR
 use super::super::policy::POLICY_DRAIN;
 use super::pir::assert_private;
 use super::*;
-use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutePolicy, RoutedExchange};
+use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutedExchange};
 
 const MAIN: WalletNetwork = WalletNetwork::Main;
 /// Routes the run through Tor when set to `1`.
@@ -234,11 +234,6 @@ async fn a_fresh_mainnet_account_recovers_and_promotes_against_the_live_service(
     // Every request used a service route on the wallet's route, and none
     // carried a watched script.
     let requests = seam.seam.observer.requests();
-    assert!(seam
-        .seam
-        .routes()
-        .iter()
-        .all(|route| *route == RoutePolicy::WalletPreference));
     secrets.extend(watched_hashes(&db, account));
     assert_private(&requests, &secrets.into_iter().collect::<Vec<_>>());
 
@@ -335,11 +330,6 @@ async fn a_fresh_phrase_discovers_no_accounts_against_the_live_service() {
     );
 
     assert_eq!(active, Ok(BTreeSet::new()), "a fresh phrase has no history");
-    assert!(seam
-        .seam
-        .routes()
-        .iter()
-        .all(|route| *route == RoutePolicy::WalletPreference));
     assert_private(&requests, &secrets);
     // Filters only for shards overlapping the floor through the end, at most
     // one each; the map may move during the run.

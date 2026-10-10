@@ -88,7 +88,7 @@ where
 {
     RoutedStatusReader::new(
         public_source,
-        PrivateStatusSource::new(db_path, network, should_exit, false),
+        PrivateStatusSource::new(db_path, network, should_exit),
     )
 }
 

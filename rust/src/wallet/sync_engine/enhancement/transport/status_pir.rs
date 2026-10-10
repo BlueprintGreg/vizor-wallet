@@ -25,13 +25,6 @@ impl<'a, F> StatusPirTransport<'a, F> {
         }
     }
 
-    pub(crate) fn new_direct(should_exit: &'a F) -> Self {
-        Self {
-            route: RoutedTransport::new_direct(should_exit),
-            session_error: AtomicU16::new(0),
-        }
-    }
-
     /// Returns and clears a 409/410 observed by the status adapter.
     ///
     /// The upstream status transport error vocabulary collapses HTTP failures
@@ -77,7 +70,6 @@ impl<F: Fn() -> bool> StatusPirTransport<'_, F> {
                 body,
                 self.route.should_exit,
                 &self.route.direct,
-                self.route.route_policy,
             )
             .await
             .map_err(|_| Error::Unavailable)?;
