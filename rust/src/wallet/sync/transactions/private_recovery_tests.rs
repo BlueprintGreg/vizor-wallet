@@ -529,7 +529,7 @@ fn receipt_keeps_its_snapshot_when_recovery_withdraws_spends() {
         let txid = hex::encode([tag; 32]);
         // This first read pins the snapshot.
         let read = || {
-            read_transaction_detail(&read_tx, NETWORK, account, &txid, "sent", |base| {
+            read_transaction_detail(&read_tx, account, &txid, "sent", |base| {
                 read_receipt(&read_tx, &path, NETWORK, account, base)
             })
             .unwrap()
