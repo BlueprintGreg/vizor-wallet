@@ -163,17 +163,19 @@ impl DetailSource for PirSource {
         #[cfg(test)]
         if self.observer.is_none() {
             // No test reaches the live service by accident.
-            return Ok(DetailAnswer::Display(unanswered(TxidError::Unavailable {
-                retry_after: None,
-            })));
+            return Ok(DetailAnswer::Display(Box::new(unanswered(
+                TxidError::Unavailable { retry_after: None },
+            ))));
         }
         let request = self.request(*txid.as_ref(), u64::from(u32::from(mined_height)));
         let looked = run_blocking(request, should_exit, BlockingLookup::run).await;
         Ok(match looked {
-            Ok(found) => DetailAnswer::Display(found),
+            Ok(found) => DetailAnswer::Display(Box::new(found)),
             Err(Unanswered::Cancelled) => DetailAnswer::Cancelled,
             Err(Unanswered::NotStarted) => {
-                DetailAnswer::Display(unanswered(TxidError::Unavailable { retry_after: None }))
+                DetailAnswer::Display(Box::new(unanswered(TxidError::Unavailable {
+                    retry_after: None,
+                })))
             }
             // The lookup panicked: an unusable answer.
             Err(Unanswered::Panicked) => {

@@ -494,13 +494,13 @@ impl DetailSource for Scripted {
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }
-        Ok(DetailAnswer::Display(DisplayLookup {
+        Ok(DetailAnswer::Display(Box::new(DisplayLookup {
             found: match (self.answer)(txid) {
                 Ok(facts) => Ok(found(&facts)),
                 Err(outcome) => failed(outcome),
             },
             map_sha256: self.service.map_sha256(),
-        }))
+        })))
     }
 
     fn gate(&self) -> Option<&TransparentLookupGate> {

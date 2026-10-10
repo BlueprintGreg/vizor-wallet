@@ -3344,7 +3344,6 @@ mod tests {
             classification: HistoryClassification::Provisional,
             pending_private_details: vec![],
             activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
-            funding_step: Default::default(),
         }
     }
 
@@ -3439,7 +3438,6 @@ mod tests {
             classification: HistoryClassification::LocalIntent,
             pending_private_details: vec![],
             activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
-            funding_step: Default::default(),
         };
         let pending = HistoryCompleteness::of(&details);
         assert!(pending.details_complete);
@@ -3503,7 +3501,6 @@ mod tests {
             classification: HistoryClassification::Reconstructed,
             pending_private_details: vec![],
             activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
-            funding_step: Default::default(),
         };
         for classification in [
             HistoryClassification::LocalIntent,
