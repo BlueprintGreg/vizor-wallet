@@ -820,7 +820,8 @@ impl HistoryCompleteness {
             effects_settled,
             fee: match details.fee {
                 FeeState::Known(fee) => Fee::Known(fee.into()),
-                FeeState::Unknown => Fee::Unknown,
+                // The whole fee stays in `whole_fee`; the account's share is unknown.
+                FeeState::Unknown | FeeState::Unattributed { .. } => Fee::Unknown,
                 FeeState::NotApplicable => Fee::NotApplicable,
             },
             // Only an account that spent can owe any of the fee: a receive,
@@ -4286,6 +4287,8 @@ mod tests {
             fee: FeeState::Known(Zatoshis::from_u64(10_000).unwrap()),
             classification: HistoryClassification::Reconstructed,
             pending_private_details: vec![],
+            activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
+            funding_step: Default::default(),
         };
         assert_eq!(
             HistoryCompleteness::of(&details).inferred_payment,
@@ -4356,6 +4359,8 @@ mod tests {
             fee: FeeState::Unknown,
             classification: HistoryClassification::Provisional,
             pending_private_details: vec![],
+            activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
+            funding_step: Default::default(),
         }
     }
 
@@ -4848,6 +4853,8 @@ mod tests {
             fee: FeeState::Known(Zatoshis::from_u64(10_000).unwrap()),
             classification: HistoryClassification::LocalIntent,
             pending_private_details: vec![],
+            activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
+            funding_step: Default::default(),
         };
         let pending = HistoryCompleteness::of(&details);
         assert!(pending.details_complete);
@@ -4910,6 +4917,8 @@ mod tests {
             fee: FeeState::NotApplicable,
             classification: HistoryClassification::Reconstructed,
             pending_private_details: vec![],
+            activity: zcash_client_backend::data_api::transparent_ledger::AccountActivity::Unknown,
+            funding_step: Default::default(),
         };
         for classification in [
             HistoryClassification::LocalIntent,
