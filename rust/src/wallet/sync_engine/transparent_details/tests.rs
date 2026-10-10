@@ -23,7 +23,8 @@ use zakura_pir_transparent::{
 };
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        TransparentDetailOutcome, TransparentDisplayFacts, TransparentDisplayOutput,
+        TransparentDetailOutcome, TransparentDetailRead, TransparentDisplayFacts,
+        TransparentDisplayOutput,
         TransparentDisplayProvenance, TransparentDisplaySender, TransparentDisplaySource,
         TransparentDisplayView, TransparentLedgerMode, TransparentLedgerWrite,
     },
@@ -493,13 +494,13 @@ impl DetailSource for Scripted {
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }
-        Ok(DetailAnswer::Display(DisplayLookup {
+        Ok(DetailAnswer::Display(Box::new(DisplayLookup {
             found: match (self.answer)(txid) {
                 Ok(facts) => Ok(found(&facts)),
                 Err(outcome) => failed(outcome),
             },
             map_sha256: self.service.map_sha256(),
-        }))
+        })))
     }
 
     fn gate(&self) -> Option<&TransparentLookupGate> {
