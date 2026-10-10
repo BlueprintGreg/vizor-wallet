@@ -1083,9 +1083,13 @@ there is no separate release gate.
 
 The eight patched library crates (now including `zakura-pir-enhance`) and the
 `zakura-pir-transparent` adapter share one wallet-libraries revision,
-`1fc05ed7fc04ce867dd7da01b5a34bc3b50c7477` on main
-([PR #139](https://github.com/zakura-core/wallet-libraries/pull/139), import-time
-account discovery, after
+`bfbb4f4a59d70040ac385133bd8c032fce5be5c5` on main
+([PR #137](https://github.com/zakura-core/wallet-libraries/pull/137), Enhance
+queries over only the rows a domain can hold, after
+[PR #140](https://github.com/zakura-core/wallet-libraries/pull/140), the same for
+a growing Transparent tail's pages, and
+[PR #139](https://github.com/zakura-core/wallet-libraries/pull/139), import-time
+account discovery, and
 [PR #138](https://github.com/zakura-core/wallet-libraries/pull/138), gated
 settlement). Main also carries
 [PR #133](https://github.com/zakura-core/wallet-libraries/pull/133), which
@@ -1097,8 +1101,10 @@ queries, [PR #134](https://github.com/zakura-core/wallet-libraries/pull/134)
 and [PR #132](https://github.com/zakura-core/wallet-libraries/pull/132),
 which removes the unused `PrivateShadow` ledger mode on top of
 [PR #130](https://github.com/zakura-core/wallet-libraries/pull/130).
-Enhance and Status uploads need servers at wallet-pir `06a972db` or later, which
-accept both the 49-bit and the 44-bit query.
+Enhance and Transparent uploads need servers at wallet-pir `0f89fbe0` or later,
+which accept a selection over only a growing domain's or tail's leading rows as
+well as the 49-bit and 44-bit full queries; Status needs `06a972db` or later.
+The production fleets run `9d2cbda0`.
 It retains the parent's private-recovery and compact txid-display changes and
 adds durable privacy-policy resolution at each sensitive read plus optional
 SQLite `apply_and_acknowledge`. Vizor supplies explicit trust, then the library
