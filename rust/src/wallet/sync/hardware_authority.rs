@@ -40,7 +40,7 @@ use zcash_client_backend::data_api::{
 use zcash_client_sqlite::{
     error::{AuthorityRefusal, SqliteClientError},
     util::SystemClock,
-    WalletDb,
+    AccountUuid, WalletDb,
 };
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::BlockHeight;
@@ -278,16 +278,27 @@ fn authorize(
             .map(BlockHeight::from_u32)
             .ok_or_else(|| refused("Transparent broadcast target exceeds u32".into()))?,
     };
-    match db.check_transparent_transaction_inputs(tx, earlier, target.into()) {
-        Ok(()) => Ok((db, reserved)),
-        Err(error) => {
-            let message = format!("Transparent broadcast authority unavailable: {error}");
-            if catching_up(&error, db_path, network, mode) {
-                Err(DispatchRefusal::CatchingUp(message))
-            } else {
-                Err(refused(message))
-            }
-        }
+    db.check_transparent_transaction_inputs(tx, earlier, target.into())
+        .map_err(|error| refusal(&error, |owner| catching_up(owner, db_path, network, mode)))?;
+    Ok((db, reserved))
+}
+
+/// What a failed input check means for the broadcast: waiting while
+/// `waits_for` admits every account a pending refusal names, keeping the
+/// transaction when the check could not read the wallet, and otherwise a final
+/// refusal.
+fn refusal(
+    error: &SqliteClientError,
+    waits_for: impl Fn(&[AccountUuid]) -> bool,
+) -> DispatchRefusal {
+    let message = format!("Transparent broadcast authority unavailable: {error}");
+    match error {
+        SqliteClientError::TransparentAuthorityUnavailable(AuthorityRefusal::Pending {
+            accounts,
+        }) if waits_for(accounts) => DispatchRefusal::CatchingUp(message),
+        // Nothing was decided about the transaction.
+        SqliteClientError::DbError(_) => DispatchRefusal::Unavailable(message),
+        _ => DispatchRefusal::Refused(message),
     }
 }
 
@@ -299,25 +310,63 @@ fn is_busy(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Whether private authority refused `tx`'s inputs only because private
-/// recovery has not yet covered the wallet's latest block: this build recovers
-/// the wallet privately, the library classified the refusal as pending, and
-/// no owning account is held. The library decides the input and ledger
-/// conditions in the read that refused; a hold lives only in this process.
+/// Whether a refusal pending on `accounts` is only private recovery catching
+/// up with the wallet's latest block: this build recovers the wallet
+/// privately, the policy requires it, and no owning account is held. The
+/// library decides the input and ledger conditions in the read that refused;
+/// a hold lives only in this process.
 fn catching_up(
-    error: &SqliteClientError,
+    accounts: &[AccountUuid],
     db_path: &str,
     network: WalletNetwork,
     mode: TransparentLedgerMode,
 ) -> bool {
-    let SqliteClientError::TransparentAuthorityUnavailable(AuthorityRefusal::Pending { accounts }) =
-        error
-    else {
-        return false;
-    };
     mode == TransparentLedgerMode::PrivateRequired
         && selects_private_recovery(db_path, network)
         && accounts
             .iter()
             .all(|owner| recovery_hold(db_path, *owner).is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_waits_only_when_pending_on_accounts_it_may_wait_for() {
+        let account = AccountUuid::from_uuid(uuid::Uuid::from_u128(1));
+        let pending =
+            SqliteClientError::TransparentAuthorityUnavailable(AuthorityRefusal::Pending {
+                accounts: vec![account],
+            });
+        assert!(matches!(
+            refusal(&pending, |_| true),
+            DispatchRefusal::CatchingUp(_)
+        ));
+        assert!(matches!(
+            refusal(&pending, |_| false),
+            DispatchRefusal::Refused(_)
+        ));
+        let spent = SqliteClientError::TransparentAuthorityUnavailable(AuthorityRefusal::Refused(
+            zcash_client_sqlite::error::RefusalReason::Spent,
+        ));
+        assert!(matches!(
+            refusal(&spent, |_| true),
+            DispatchRefusal::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn a_check_that_could_not_read_the_wallet_keeps_the_transaction() {
+        let busy = SqliteClientError::DbError(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        let refusal = refusal(&busy, |_| false);
+        assert!(
+            matches!(refusal, DispatchRefusal::Unavailable(_)),
+            "{refusal}"
+        );
+        assert!(refusal.is_retryable());
+    }
 }
