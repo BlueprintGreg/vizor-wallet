@@ -23,6 +23,7 @@ use std::{
 };
 
 use rusqlite::{types::Value, vtab::array::Array, OptionalExtension};
+#[cfg(test)]
 use transparent::address::TransparentAddress;
 #[cfg(test)]
 use zcash_client_backend::data_api::transparent_ledger::{AggregatePayment, WholeTransactionFee};
@@ -37,9 +38,11 @@ use zcash_client_backend::data_api::{
     Account as _, Balance, WalletRead, WalletWrite,
 };
 use zcash_client_sqlite::{wallet::history::TransactionSummary, AccountUuid};
-use zcash_primitives::transaction::{Transaction, TxId};
+use zcash_primitives::transaction::TxId;
+#[cfg(test)]
+use zcash_protocol::consensus::BranchId;
 use zcash_protocol::{
-    consensus::{BlockHeight, BranchId},
+    consensus::BlockHeight,
     memo::{Memo, MemoBytes},
     PoolType,
 };
@@ -1454,7 +1457,7 @@ pub(crate) fn get_transaction_detail(
     let read_tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("SQL error: {e}"))?;
-    read_transaction_detail(&read_tx, network, account, txid_hex, tx_kind, |base| {
+    read_transaction_detail(&read_tx, account, txid_hex, tx_kind, |base| {
         read_receipt(&read_tx, db_path, network, account, base)
     })
 }
@@ -1499,9 +1502,7 @@ fn read_receipt(
 /// Shows what the library's receipt attribution establishes from the
 /// transaction's transparent details beyond its history view: a send's
 /// recipient when the wallet recorded none, completing the receipt once its
-/// effects are settled; a settled receive the details account for; and a
-/// receive's source when its raw transaction could not say (the shielded
-/// pool, or a funding address the account does not own).
+/// effects are settled; and a settled receive the details account for.
 fn apply_receipt_attribution(detail: &mut TransactionDetail, attribution: &ReceiptAttribution) {
     if detail.tx_kind == "sent" && detail.primary_address.is_none() {
         if let Attribution::Established(recipient) = &attribution.recipient {
@@ -1515,25 +1516,6 @@ fn apply_receipt_attribution(detail: &mut TransactionDetail, attribution: &Recei
     if detail.tx_kind == "received" && attribution.receive_completes {
         detail.details_complete = true;
         detail.provisional = false;
-    }
-    if matches!(detail.tx_kind.as_str(), "received" | "receiving")
-        && detail.source_address.is_none()
-    {
-        let source = &attribution.source;
-        match detail.source_pool.as_deref() {
-            Some("unknown") if source.pool == SourcePool::Shielded => {
-                detail.source_pool = Some("shielded".to_string());
-            }
-            // A transparent source the receipt could not name keeps its pool
-            // and gains the address.
-            Some("unknown" | "transparent") => {
-                if let Some(address) = &source.address {
-                    detail.source_address = Some(address.encoded.clone());
-                    detail.source_pool = Some("transparent".to_string());
-                }
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1599,7 +1581,6 @@ fn transparent_details_view(view: TransparentDisplayView) -> TransparentDetailsV
 /// same snapshot as the base and outputs.
 fn read_transaction_detail(
     read_tx: &rusqlite::Connection,
-    network: WalletNetwork,
     account: AccountUuid,
     txid_hex: &str,
     tx_kind: &str,
@@ -1641,15 +1622,11 @@ fn read_transaction_detail(
     } else {
         None
     };
-    let source = if matches!(tx_kind, "received" | "receiving") && !visible_outputs.is_empty() {
-        let raw_tx = read_raw_transaction_for_tx(read_tx, &uuid_bytes, &txid)?;
-        Some(received_source_from_raw_transaction(
-            network,
-            raw_tx.as_deref(),
-        ))
-    } else {
-        None
-    };
+    // Who funded a receive: the library reads the stored raw transaction and
+    // completes it from the transparent detail view. Without its receipt the
+    // source is unknown.
+    let source = (matches!(tx_kind, "received" | "receiving") && !visible_outputs.is_empty())
+        .then(|| attribution.as_ref().map(|attribution| &attribution.source));
     let source_account_uuid = if matches!(tx_kind, "received" | "receiving") {
         received_source_account(&visible_outputs)
     } else {
@@ -1670,8 +1647,11 @@ fn read_transaction_detail(
         txid_hex: hex::encode(&base.txid),
         tx_kind: tx_kind.to_string(),
         primary_address,
-        source_address: source.as_ref().and_then(|s| s.address.clone()),
-        source_pool: source.map(|s| s.pool.to_string()),
+        source_address: source
+            .flatten()
+            .and_then(|s| s.address.as_ref().map(|a| a.encoded.clone())),
+        source_pool: source
+            .map(|s| source_pool_label(s.map_or(SourcePool::Unknown, |s| s.pool)).to_string()),
         source_account_uuid,
         memo,
         outputs,
@@ -1691,9 +1671,13 @@ fn read_transaction_detail(
     Ok(detail)
 }
 
-struct TransactionSource {
-    address: Option<String>,
-    pool: &'static str,
+/// The name a receipt uses for a source pool.
+fn source_pool_label(pool: SourcePool) -> &'static str {
+    match pool {
+        SourcePool::Unknown => "unknown",
+        SourcePool::Shielded => "shielded",
+        SourcePool::Transparent => "transparent",
+    }
 }
 
 /// The wallet account that sent the received outputs a receipt shows, from
@@ -1711,111 +1695,6 @@ fn received_source_account(outputs: &[&TxOutput]) -> Option<String> {
     uuid::Uuid::from_slice(first)
         .ok()
         .map(|uuid| uuid.to_string())
-}
-
-fn received_source_from_raw_transaction(
-    network: WalletNetwork,
-    raw_tx: Option<&[u8]>,
-) -> TransactionSource {
-    let Some(raw_tx) = raw_tx else {
-        return TransactionSource {
-            address: None,
-            pool: "unknown",
-        };
-    };
-
-    let Ok(tx) = Transaction::read(raw_tx, BranchId::Sapling) else {
-        return TransactionSource {
-            address: None,
-            pool: "unknown",
-        };
-    };
-
-    let Some(bundle) = tx.transparent_bundle() else {
-        return TransactionSource {
-            address: None,
-            pool: "shielded",
-        };
-    };
-
-    if bundle.vin.is_empty() {
-        return TransactionSource {
-            address: None,
-            pool: "shielded",
-        };
-    }
-
-    TransactionSource {
-        address: bundle.vin.iter().find_map(|input| {
-            transparent_source_address_from_script_sig(network, input.script_sig().0 .0.as_slice())
-        }),
-        pool: "transparent",
-    }
-}
-
-fn transparent_source_address_from_script_sig(
-    network: WalletNetwork,
-    script_sig: &[u8],
-) -> Option<String> {
-    let pubkey = parse_standard_p2pkh_pubkey_from_script_sig(script_sig)?;
-    let address = TransparentAddress::PublicKeyHash(transparent::util::hash160::hash(pubkey));
-    Some(zcash_keys::encoding::encode_transparent_address_p(
-        &network, &address,
-    ))
-}
-
-fn parse_standard_p2pkh_pubkey_from_script_sig(script_sig: &[u8]) -> Option<&[u8]> {
-    let pushes = parse_script_pushes(script_sig)?;
-    pushes
-        .into_iter()
-        .rev()
-        .find(|push| push.len() == 33 && matches!(push.first(), Some(0x02 | 0x03)))
-}
-
-fn parse_script_pushes(script: &[u8]) -> Option<Vec<&[u8]>> {
-    let mut pushes = Vec::new();
-    let mut index = 0;
-    while index < script.len() {
-        let opcode = script[index];
-        index += 1;
-
-        let len = match opcode {
-            0x01..=0x4b => opcode as usize,
-            0x4c => {
-                let len = *script.get(index)? as usize;
-                index += 1;
-                len
-            }
-            0x4d => {
-                let bytes = script.get(index..index + 2)?;
-                index += 2;
-                u16::from_le_bytes([bytes[0], bytes[1]]) as usize
-            }
-            _ => return None,
-        };
-
-        let data = script.get(index..index + len)?;
-        pushes.push(data);
-        index += len;
-    }
-
-    Some(pushes)
-}
-
-fn read_raw_transaction_for_tx(
-    conn: &rusqlite::Connection,
-    account_uuid: &[u8],
-    txid: &[u8],
-) -> Result<Option<Vec<u8>>, String> {
-    conn.query_row(
-        "SELECT raw FROM v_transactions \
-         WHERE account_uuid = ?1 AND txid = ?2 AND raw IS NOT NULL \
-         LIMIT 1",
-        rusqlite::params![account_uuid, txid],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| format!("Query error: {e}"))
 }
 
 fn read_history_base_by_txid(
@@ -3609,13 +3488,6 @@ mod tests {
         vec![0xDE, 0xAD, 0xBE, 0xEF]
     }
 
-    fn transparent_source_raw_tx() -> Vec<u8> {
-        hex::decode(
-            "0400008085202f8901aee37187e843da597683c26c01457f5fd3b1a038996ef74dc8d60d483aaf395a000000006b483045022100874c70db77ea9e93f75cc83a9e141e17c8eb97588e29fe4e307631fdde4f162a02203493df62d648cd86a1189eaf9bcafc652bc14c5df02519d9e45e25b32aaffb5b012102106a2dcaaac2ae3b24358a03f4264e05db420c5b090399bc23885fa02fef7716ffffffff02764e1900000000001976a914fb451987556f7a19b726966ee6cff917e0bb3bfb88ac560ca400000000001976a9141634f5ff0b8f6603a17570436d6c12a91f4b1fed88ac00000000000000000000000000000000000000",
-        )
-        .unwrap()
-    }
-
     fn transparent_source_test_address() -> String {
         let pubkey =
             hex::decode("02106a2dcaaac2ae3b24358a03f4264e05db420c5b090399bc23885fa02fef7716")
@@ -4763,7 +4635,7 @@ mod tests {
     /// facts: the transaction is treated as completely known.
     fn detail_from_fixture(
         db_path: &str,
-        network: WalletNetwork,
+        _network: WalletNetwork,
         account_uuid: &str,
         txid_hex: &str,
         tx_kind: &str,
@@ -4773,7 +4645,7 @@ mod tests {
         let read_tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("SQL error: {e}"))?;
-        read_transaction_detail(&read_tx, network, account, txid_hex, tx_kind, |base| {
+        read_transaction_detail(&read_tx, account, txid_hex, tx_kind, |base| {
             base.attach_history(HistoryCompleteness::complete_for(base));
             Ok(None)
         })
@@ -7051,59 +6923,6 @@ mod tests {
         // The fix: the bare t-address, not the unified address.
         assert_eq!(got.outputs[0].address.as_deref(), Some("t-my-receiver"));
         assert_eq!(got.outputs[0].pool, "transparent");
-    }
-
-    #[test]
-    fn detail_received_row_recovers_transparent_source_from_raw_tx() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD7);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            Some("2026-04-28T17:01:00Z"),
-        );
-        let raw = transparent_source_raw_tx();
-        set_history_tx_raw(&db, account, &txid, &raw);
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            None,
-            Some(account),
-            2_000_000,
-            false,
-            Some("u-my-receiver"),
-            Some(0),
-            Some(b"incoming memo"),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap();
-
-        let expected_source = transparent_source_test_address();
-        assert_eq!(got.primary_address, None);
-        assert_eq!(
-            got.source_address.as_deref(),
-            Some(expected_source.as_str())
-        );
-        assert_eq!(got.source_pool.as_deref(), Some("transparent"));
-        assert_eq!(got.outputs.len(), 1);
     }
 
     #[test]
