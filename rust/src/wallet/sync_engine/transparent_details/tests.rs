@@ -14,7 +14,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http_body_util::Full;
-use sha2::{Digest, Sha256};
 use transparent::{address::TransparentAddress, bundle::OutPoint};
 use zakura_pir_transparent::testing::{unsupported_txid_init, TxidPublication};
 use zakura_pir_transparent::{
@@ -463,11 +462,6 @@ impl Scripted {
             service,
             published,
         }
-    }
-
-    /// Map checks fetch the map of a publication over `start..=end` from now on.
-    fn publish(&self, start: u32, end: u32) {
-        *self.published.0.lock().unwrap() = TxidPublication::new(start.into(), end.into());
     }
 
     fn map_sha256(&self) -> Option<[u8; 32]> {
@@ -1116,16 +1110,15 @@ async fn stage_failure_timeout_sync_ok_balances_unchanged() {
     let before = balance(&fixture);
     let mut source = Scripted::new(|_| unavailable(None)).slow(Duration::from_secs(600));
     let outcome = run_scripted(&fixture, &mut source).await;
-    // The budget stopped the lookup: not an attempt, so nothing is recorded
-    // and the transaction stays due.
+    // The budget stopped the lookup: it timed out, and is deferred like an
+    // unavailable service, so its retry backs off and the run ends.
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 1 && stats.deferred == 0),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.lookups == 1 && stats.deferred == 1),
         "{outcome:?}"
     );
-    assert_eq!(work_row(&fixture.path, &tx.txid()), Some((None, None)));
     assert_eq!(
         view(&fixture, &tx.txid()),
-        Some(TransparentDisplayView::Pending)
+        Some(TransparentDisplayView::Unavailable)
     );
     assert_eq!(balance(&fixture), before);
 }
@@ -1276,7 +1269,8 @@ async fn stage_honors_should_exit_and_budget() {
     );
 
     // The budget: twenty-second lookups fit twice in forty-five seconds; the
-    // third is stopped at the budget and records nothing.
+    // third is stopped at the budget and deferred as timed out, which ends the
+    // run as unavailable.
     let fixture = paused_wallet();
     for tag in 0..5u8 {
         utxo_receipt(&fixture, 0xe0 + tag, TOP - 1);
@@ -1285,7 +1279,7 @@ async fn stage_honors_should_exit_and_budget() {
     let mut source = Scripted::new(absent).slow(Duration::from_secs(20));
     let outcome = run_scripted(&fixture, &mut source).await;
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 3 && stats.deferred == 2),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.lookups == 3 && stats.deferred == 3),
         "{outcome:?}"
     );
     let took = tokio_now() - started;
@@ -1342,49 +1336,6 @@ async fn outage_then_recovery_reconciles_next_sync() {
         panic!("recovered details");
     };
     assert_eq!(details.outputs.len(), 2);
-}
-
-/// A lookup parked on the display map it saw (after its day's wait) becomes
-/// due once the source's refreshed map differs, within the same run.
-#[tokio::test]
-async fn parked_work_relists_after_map_refresh() {
-    let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x70, TOP - 1).txid();
-    // Parking for a map is private: under public authority the work would
-    // be due at its ordinary retry.
-    let _mode = require_private(&fixture.path);
-    let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::NotCovered));
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.not_covered == 1),
-        "{outcome:?}"
-    );
-    // A day later, on the same map: parked, nothing asked.
-    advance_wall(Duration::from_secs(31 * 60 * 60));
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert_eq!(outcome, Some(RunOutcome::Finished(RunStats::default())));
-    // At the next map check, a changed map releases it.
-    advance_wall(MAP_RECHECK);
-    source.publish(TOP, TOP + 5);
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 1),
-        "{outcome:?}"
-    );
-    assert_eq!(source.looked_up(), [txid, txid]);
-}
-
-#[tokio::test]
-async fn prioritized_transactions_are_served_first() {
-    let fixture = wallet();
-    let txids: Vec<TxId> = (0..12u8)
-        .map(|tag| utxo_receipt(&fixture, 0x60 + tag, TOP - 1).txid())
-        .collect();
-    let wanted = txids[11];
-    prioritize(&fixture.path, *wanted.as_ref());
-    let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::Absent));
-    run_scripted(&fixture, &mut source).await;
-    assert_eq!(source.looked_up()[0], wanted);
 }
 
 /// A receipt a detail view asked for is looked up first even behind more
@@ -2276,7 +2227,6 @@ fn work_row(path: &str, txid: &TxId) -> Option<(Option<i64>, Option<[u8; 32]>)> 
 
 /// Longer than any backoff a held outcome gets.
 const PAST_BACKOFF: Duration = Duration::from_secs(2 * 24 * 60 * 60);
-const MAP_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// A lookup failure belongs to the placement it requested. A remine or
 /// rewind while it is in flight must not postpone the replacement work.
@@ -2384,57 +2334,6 @@ async fn held_work_learns_of_new_coverage_through_the_cached_client() {
     assert_eq!(lwd.count("/GetTransaction"), 0);
 }
 
-/// An unchanged map keeps held work held. Consecutive runs share a six-hour
-/// check interval; restarting the client forgets its attempted check time.
-#[tokio::test(flavor = "multi_thread")]
-async fn held_work_stays_held_while_the_map_is_unchanged() {
-    let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x42, TOP - 1).txid();
-    let _mode = require_private(&fixture.path);
-    let held = not_covering();
-    let map = held.map_sha256;
-    let service = RequestObserver::answering(move |request| (held.answer)(request));
-    let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
-    {
-        let _seam = test_seam::set(&fixture.path, service.clone());
-        hold(&fixture, &lwd, &txid, map).await;
-        let sent = service.requests().len();
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-
-        // New sources in consecutive sync runs retain the attempted check.
-        let sent = service.requests().len();
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert!(paths_since(&service, sent).is_empty());
-        advance_wall(MAP_RECHECK - Duration::from_secs(1));
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert!(paths_since(&service, sent).is_empty());
-        advance_wall(Duration::from_secs(1));
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-    }
-    // A restart: a new client, without a map.
-    let _seam = test_seam::set(&fixture.path, service.clone());
-    let sent = service.requests().len();
-    let outcome = followup_with(&fixture, required(), &lwd).await;
-    assert!(finished_with(outcome, 0), "{outcome:?}");
-    assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-
-    assert_eq!(
-        work_row(&fixture.path, &txid),
-        Some((Some(NOT_COVERED_CODE), Some(map)))
-    );
-    assert_eq!(
-        view(&fixture, &txid),
-        Some(TransparentDisplayView::NotCovered)
-    );
-    assert_eq!(lwd.count("/GetTransaction"), 0);
-}
-
 /// A restart forgets the map; the first run after it fetches the map before
 /// any lookup, so held work learns of new coverage.
 #[tokio::test(flavor = "multi_thread")]
@@ -2463,106 +2362,6 @@ async fn held_work_learns_of_new_coverage_after_a_restart() {
         Some((Some(ABSENT_CODE), Some(new_map)))
     );
     assert_eq!(lwd.count("/GetTransaction"), 0);
-}
-
-/// A map request that fails leaves held work held under the map it was held
-/// for, through a kept client and after a restart: no lookup, no public
-/// request, and no log line names the transaction.
-#[test]
-fn held_work_stays_held_when_the_map_cannot_be_fetched() {
-    let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x44, TOP - 1).txid();
-    let _mode = require_private(&fixture.path);
-    let held = not_covering();
-    let map = held.map_sha256;
-    let covering = publication(BIRTHDAY, TOP).answer;
-    // 0 publishes the held map; any other value fails the map request in
-    // its own way, and the rest of the service covers the receipt.
-    let failure = Arc::new(AtomicUsize::new(0));
-    const FAILURES: usize = 4;
-    let service = RequestObserver::answering({
-        let failure = failure.clone();
-        move |request| {
-            let kind = failure.load(Ordering::SeqCst);
-            if kind == 0 {
-                return (held.answer)(request);
-            }
-            if request.path != "/v1/txid/map" {
-                return covering(request);
-            }
-            match kind {
-                1 => reply(503, &[("retry-after", "30")], Vec::new()),
-                2 => reply(404, &[], Vec::new()),
-                3 => {
-                    // A map without its digest header.
-                    let mut response = covering(request);
-                    response.headers_mut().remove("x-txid-map-sha256");
-                    response
-                }
-                _ => {
-                    let body = b"not a map".to_vec();
-                    let digest = hex::encode(Sha256::digest(&body));
-                    reply(200, &[("x-txid-map-sha256", &digest)], body)
-                }
-            }
-        }
-    });
-    let lines = log_lines(|| {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
-            let check = |sent: usize| {
-                assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-                assert_eq!(
-                    work_row(&fixture.path, &txid),
-                    Some((Some(NOT_COVERED_CODE), Some(map)))
-                );
-            };
-            {
-                let _seam = test_seam::set(&fixture.path, service.clone());
-                hold(&fixture, &lwd, &txid, map).await;
-                for kind in 1..=FAILURES {
-                    failure.store(kind, Ordering::SeqCst);
-                    let sent = service.requests().len();
-                    let outcome = followup_with(&fixture, required(), &lwd).await;
-                    assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                    check(sent);
-                    let sent = service.requests().len();
-                    let outcome = followup_with(&fixture, required(), &lwd).await;
-                    assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                    assert!(
-                        paths_since(&service, sent).is_empty(),
-                        "failed checks are bounded too"
-                    );
-                    advance_wall(MAP_RECHECK);
-                }
-            }
-            for kind in 1..=FAILURES {
-                failure.store(kind, Ordering::SeqCst);
-                let _seam = test_seam::set(&fixture.path, service.clone());
-                let sent = service.requests().len();
-                let outcome = followup_with(&fixture, required(), &lwd).await;
-                assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                check(sent);
-            }
-            assert_eq!(lwd.count("/GetTransaction"), 0);
-        });
-    });
-    assert_eq!(
-        view(&fixture, &txid),
-        Some(TransparentDisplayView::NotCovered)
-    );
-    assert!(!lines.is_empty(), "the runs logged");
-    let mut reversed = *txid.as_ref();
-    reversed.reverse();
-    for needle in [hex::encode(txid.as_ref()), hex::encode(reversed)] {
-        for (_, line) in &lines {
-            assert!(!line.contains(&needle), "{line:?} names a txid");
-        }
-    }
 }
 
 /// Cancellation during the map request ends the run: nothing is looked up

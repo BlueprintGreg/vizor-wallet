@@ -20,7 +20,7 @@ use tokio::runtime::Handle;
 use tonic::transport::Channel;
 use zakura_pir_transparent::{
     DetailAnswer, DisplayLookup, HttpExchange, MapCheck, MapChecked, TransportError,
-    TxidDisplayService, TxidError, TxidLookup,
+    TxidDisplayService, TxidError,
 };
 use zcash_client_backend::data_api::transparent_ledger::TransparentDetailOutcome;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;

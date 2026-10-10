@@ -539,11 +539,7 @@ impl<S: RecoverySource> Run<'_, S> {
             match plan.next(&report, &settled, fresh) {
                 Step::Pass => {}
                 // Stale commits: the next pass runs from the fresh watch set.
-                Step::Refresh => {
-                    if !durably_permitted(self.db)? {
-                        return Ok(AccountOutcome::Stop(RunOutcome::NotEnabled));
-                    }
-                }
+                Step::Refresh => {}
                 Step::Wait(wait) => match self.wait(wait, deadline).await {
                     None => return Ok(AccountOutcome::Stop(RunOutcome::Exited)),
                     Some(false) => return Ok(AccountOutcome::Done(Some(Retry::After(wait)))),
@@ -576,6 +572,18 @@ impl<S: RecoverySource> Run<'_, S> {
                 // nested errors can quote wallet history.
                 Step::Skip => {
                     match &settled {
+                        // Stopped between commits: what applied stays, and
+                        // the next pass replays the rest. Neither a hold nor
+                        // a stall.
+                        Err(failure) if failure.action() == ApplyAction::Interrupted => {
+                            if should_exit() {
+                                return Ok(AccountOutcome::Stop(RunOutcome::Exited));
+                            }
+                            log::info!(
+                                "transparent ledger: account budget spent while settling; \
+                                 the next run continues"
+                            );
+                        }
                         Ok(_) => log::warn!(
                             "transparent ledger: nothing to settle; skipping the account"
                         ),
@@ -589,20 +597,10 @@ impl<S: RecoverySource> Run<'_, S> {
                     }
                     return Ok(AccountOutcome::Skipped);
                 }
-                Step::Stop(StopCause::NotEnabled) => {
+                // The policy no longer permits this run's recovery, or
+                // changed since it was captured: a later run decides afresh.
+                Step::Stop(StopCause::NotEnabled | StopCause::PolicyChanged) => {
                     return Ok(AccountOutcome::Stop(RunOutcome::NotEnabled))
-                }
-                // Stopped between commits: what applied stays, and the next
-                // pass replays the rest. Neither a hold nor a stall.
-                Step::Stop(StopCause::Interrupted) => {
-                    if should_exit() {
-                        return Ok(AccountOutcome::Stop(RunOutcome::Exited));
-                    }
-                    log::info!(
-                        "transparent ledger: account budget spent while settling; \
-                         the next run continues"
-                    );
-                    return Ok(AccountOutcome::Skipped);
                 }
                 // Only a failed settlement fails.
                 Step::Fail => {
@@ -699,13 +697,6 @@ impl<S: RecoverySource> Run<'_, S> {
             Err(error) => Err(db_error(error)),
         }
     }
-}
-
-/// Whether the wallet's durable policy permits private recovery. The handle's
-/// own mode is checked by the caller and again by the library at commit.
-fn durably_permitted(db: &WalletDatabase) -> Result<bool, SyncError> {
-    let applied = db.applied_transparent_policy().map_err(db_error)?;
-    Ok(applied.mode != TransparentLedgerMode::Public)
 }
 
 /// Whether `account` is a Ledger account.

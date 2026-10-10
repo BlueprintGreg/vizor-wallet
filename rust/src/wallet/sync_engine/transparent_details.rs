@@ -29,8 +29,9 @@
 //! first, whatever their age, then up to [`MAX_LOOKUPS`] others in the
 //! wallet's order. Lookups run with no database lock held; each result is
 //! stored, or each failure deferred, under the wallet write lock in its own
-//! short transaction. A lookup the budget or the sync's exit stopped is not
-//! an attempt: nothing is recorded, and the transaction stays due. Once the
+//! short transaction. A lookup the budget stopped timed out and is deferred
+//! like an unavailable service; one the sync's exit stopped is not an
+//! attempt: nothing is recorded, and the transaction stays due. Once the
 //! budget is spent or the sync exits, a lookup gets [`CANCEL_GRACE`] to
 //! return before it is abandoned, and writes may wait for the lock until
 //! [`WRITE_GRACE`] past the budget: a run ends within 47 s, plus at most one
@@ -56,7 +57,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::FutureExt;
 use tonic::transport::Channel;
-use zakura_pir_transparent::{DetailApplied, DetailRun, DetailStep, DetailWrite};
+use zakura_pir_transparent::{DetailAnswer, DetailApplied, DetailRun, DetailStep, DetailWrite};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
         TransparentDetailOutcome, TransparentDetailRead, TransparentDetailRequest,
@@ -271,19 +272,24 @@ pub(crate) async fn run<S: DetailSource>(
             .lookup(request.txid, request.mined_height, &budget_exit)
             .await;
         stats.lookups += 1;
-        let Ok(answer) = answer else {
-            log::info!("transparent details: transparent policy withholds public lookups");
-            return RunOutcome::Withheld(stats);
+        let answer = match answer {
+            Ok(DetailAnswer::Cancelled) if !should_exit() => {
+                // The budget, not the sync, stopped a slow lookup: it timed
+                // out, and backs off like any unavailable service.
+                log::info!("transparent details: run budget spent during a lookup");
+                DetailAnswer::TimedOut
+            }
+            Ok(answer) => answer,
+            Err(_) => {
+                log::info!("transparent details: transparent policy withholds public lookups");
+                return RunOutcome::Withheld(stats);
+            }
         };
         let now = (clock.system)();
-        // A cancelled lookup records nothing; its transaction stays due.
+        // Only the sync's exit cancels a lookup, which records nothing; its
+        // transaction stays due.
         let Some(write) = work.record(&request, answer) else {
-            if should_exit() {
-                return RunOutcome::Exited(stats);
-            }
-            // The budget, not the sync, stopped a slow lookup.
-            log::info!("transparent details: run budget spent during a lookup");
-            break;
+            return RunOutcome::Exited(stats);
         };
         // What a failed write leaves to record: the deferral it was, or
         // the map of the facts it could not store.

@@ -1134,7 +1134,7 @@ async fn a_covering_pass_settles_trusted_and_is_acknowledged() {
                 .apply(account, &mut db, Trust::Trusted, &|| false)
                 .await
         ),
-        (0, ApplyAction::Refresh)
+        (0, ApplyAction::PolicyChanged)
     );
     assert_eq!((covered(&db), qualified()), (None, 0));
 
