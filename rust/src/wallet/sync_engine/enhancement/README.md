@@ -715,8 +715,10 @@ trusted, since every commit comes from the configured origin.
   serialized in this process and against any other. A source parks each
   companion it opened, with its lock, until it is dropped, so a pass and its
   settlement see the same companion and nothing removes it in between.
-- **Passes.** A pass runs on a thread and runtime of its own, never the
-  sync's blocking pool, over a read-only wallet handle, whose blocks answer the
+- **Passes.** A pass runs on a thread and runtime of its own
+  (`bounded_runtime::run_detached`, which import discovery and txid display
+  lookups share), never the sync's blocking pool, over a read-only wallet
+  handle, whose blocks answer the
   adapter's chain view up to the watch set's target. It stops at cancellation
   or the 90 s pass deadline, counted from the call, so it ends before the
   coordinator's backstop. On cancellation the pass gets 2 s to return; one that

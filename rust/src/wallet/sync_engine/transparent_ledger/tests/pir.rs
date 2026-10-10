@@ -721,7 +721,7 @@ async fn a_dropped_pass_stops_at_its_next_request() {
 }
 
 /// A pass that ignores its cancellation, here a request that never returns,
-/// is abandoned after [`pir::CANCEL_GRACE`] rather than holding the call, and
+/// is abandoned after [`CANCEL_GRACE`](crate::wallet::bounded_runtime::CANCEL_GRACE) rather than holding the call, and
 /// the runtime that ran the call shuts down without waiting for it: the pass
 /// runs on a thread of its own, never on that runtime's blocking pool, whose
 /// shutdown would wait forever. Once it returns, its companion is free again.
@@ -766,7 +766,7 @@ fn a_stuck_pass_holds_neither_the_call_nor_its_runtime() {
     let took = begun.elapsed();
     assert_eq!(answer, Err(SourceError::Cancelled));
     assert!(
-        took < pir::CANCEL_GRACE + Duration::from_secs(10),
+        took < crate::wallet::bounded_runtime::CANCEL_GRACE + Duration::from_secs(10),
         "the call or its runtime waited for the stuck pass: {took:?}"
     );
 

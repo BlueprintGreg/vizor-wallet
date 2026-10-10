@@ -2578,7 +2578,7 @@ async fn held_work_is_fetched_publicly_after_a_return_to_public() {
 }
 
 /// A request that holds the shared client (a debug lookup, or one abandoned
-/// at its backstop) delays no run past its exit: neither the digest the run
+/// after its cancellation) delays no run past its exit: neither the digest the run
 /// lists its work with, nor the lookup that waits for the client.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_held_client_delays_no_run_past_its_exit() {
@@ -2812,7 +2812,9 @@ fn an_abandoned_lookup_holds_neither_the_run_nor_its_runtime() {
         "{outcome:?}"
     );
     assert!(
-        took < Duration::from_millis(500) + source::CANCEL_GRACE + Duration::from_secs(2),
+        took < Duration::from_millis(500)
+            + crate::wallet::bounded_runtime::CANCEL_GRACE
+            + Duration::from_secs(2),
         "{took:?}"
     );
 

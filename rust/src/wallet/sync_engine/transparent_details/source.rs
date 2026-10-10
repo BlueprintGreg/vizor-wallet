@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use tokio::runtime::Handle;
 use tonic::transport::Channel;
@@ -30,6 +30,9 @@ use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxS
 use zcash_primitives::transaction::{Transaction, TxId};
 use zcash_protocol::consensus::BlockHeight;
 
+#[cfg(doc)]
+use crate::wallet::bounded_runtime::CANCEL_GRACE;
+use crate::wallet::bounded_runtime::{run_detached, Detached};
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::{decode_enhancement_payload, RoutedExchange};
 use crate::wallet::sync_engine::transparent_ledger::pir::{origin_for, origin_override};
@@ -37,12 +40,6 @@ use crate::wallet::sync_engine::{watch_for_exit, TransparentLookupGate};
 
 #[cfg(test)]
 pub(crate) use crate::wallet::sync_engine::transparent_ledger::pir::DEFAULT_MAINNET_ORIGIN;
-
-/// Abandons a lookup or map fetch that has not returned, without an exit.
-const LOOKUP_BACKSTOP: Duration = Duration::from_secs(60);
-/// How long a run waits, once it exits or its budget is spent, for the
-/// lookup or map fetch it cancelled to return before abandoning it.
-pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// What a lookup found.
 #[derive(Debug)]
@@ -220,8 +217,8 @@ impl DetailSource for PirSource {
         None
     }
 
-    /// Read without waiting, even while a request (perhaps one abandoned at
-    /// its backstop) holds the client.
+    /// Read without waiting, even while a request (perhaps one abandoned
+    /// after its cancellation) holds the client.
     fn map_sha256(&self) -> Option<[u8; 32]> {
         self.service.map_sha256()
     }
@@ -315,78 +312,40 @@ async fn run_blocking(
 
 /// [`run_blocking`] for any blocking call on the request.
 ///
-/// The call runs on a thread of its own, with a runtime of its own for its
-/// I/O, never the caller's runtime or its blocking pool: a runtime's
-/// shutdown waits for every blocking-pool task, so a call that ignored its
-/// cancellation would hold the sync that owns the runtime. The request's
-/// `handle` is replaced by that runtime's. On
-/// exit the call's cancellation is set and the call gets [`CANCEL_GRACE`] to
-/// return; a call that does not is abandoned, still running, and nothing it
-/// returns later is read, so it stores nothing. It may keep the client until
-/// it returns; later requests wait for it only while they are wanted.
+/// The call runs through [`run_detached`], with the request's `handle`
+/// replaced by the call's own runtime. `should_exit` (the sync's exit or the
+/// run's budget) cancels it, and it gets [`CANCEL_GRACE`] to return; a call
+/// that does not is abandoned, still running, and nothing it returns later is
+/// read, so it stores nothing. It may keep the client until it returns; later
+/// requests wait for it only while they are wanted.
 async fn run_blocking_with<T: Send + 'static>(
     request: BlockingLookup,
     should_exit: &(dyn Fn() -> bool + Sync),
     call: fn(BlockingLookup) -> T,
 ) -> Result<T, DetailFailure> {
     let cancel = request.cancel.clone();
-    let _cancel_on_drop = CancelOnDrop(cancel.clone());
-    let (done, mut answer) = tokio::sync::oneshot::channel();
-    let spawned = std::thread::Builder::new()
-        .name("txid-display".to_owned())
-        .spawn(move || {
-            // The request's I/O (DNS lookups on its blocking pool among it)
-            // runs on a runtime of its own, never the sync's: an abandoned
-            // request must not hold the sync's runtime shutdown.
-            let Ok(io) = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .thread_name("txid-display-io")
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            let mut request = request;
-            request.handle = io.handle().clone();
-            let _ = done.send(call(request));
-            io.shutdown_background();
-        });
-    if spawned.is_err() {
+    let ran = run_detached("txid-display", cancel.clone(), should_exit, move |io| {
+        let mut request = request;
+        request.handle = io;
+        call(request)
+    })
+    .await;
+    if matches!(ran, Detached::NotStarted) {
         return Err(DetailFailure::Deferred {
             outcome: TransparentDetailOutcome::Unavailable { retry_after: None },
             map_sha256: None,
         });
     }
-    let joined = tokio::select! {
-        biased;
-        _ = watch_for_exit(&should_exit) => {
-            cancel.store(true, Ordering::SeqCst);
-            tokio::time::timeout(CANCEL_GRACE, &mut answer).await
-        }
-        joined = tokio::time::timeout(LOOKUP_BACKSTOP, &mut answer) => joined,
-    };
     if cancel.load(Ordering::SeqCst) || should_exit() {
         return Err(DetailFailure::Cancelled);
     }
-    match joined {
-        Ok(Ok(result)) => Ok(result),
-        // The call panicked, or passed its backstop.
-        Ok(Err(_)) | Err(_) => {
-            cancel.store(true, Ordering::SeqCst);
-            Err(DetailFailure::Deferred {
-                outcome: TransparentDetailOutcome::Protocol,
-                map_sha256: None,
-            })
-        }
-    }
-}
-
-/// Sets a lookup's cancellation flag when dropped.
-struct CancelOnDrop(Arc<AtomicBool>);
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+    match ran {
+        Detached::Returned(result) => Ok(result),
+        // The call panicked.
+        _ => Err(DetailFailure::Deferred {
+            outcome: TransparentDetailOutcome::Protocol,
+            map_sha256: None,
+        }),
     }
 }
 

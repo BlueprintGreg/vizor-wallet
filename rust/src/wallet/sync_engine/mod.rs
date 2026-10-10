@@ -2163,7 +2163,7 @@ async fn download_transparent_outputs(
     Ok(Some(DownloadedTransparentRefresh { refresh, outputs }))
 }
 
-async fn watch_for_exit(should_exit: &impl Fn() -> bool) {
+pub(crate) async fn watch_for_exit(should_exit: &impl Fn() -> bool) {
     while !should_exit() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
