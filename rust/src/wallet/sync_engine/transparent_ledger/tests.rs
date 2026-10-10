@@ -852,7 +852,7 @@ impl RecoverySource for Silent {
     fn recover(
         &self,
         _request: SourceRequest<'_>,
-    ) -> impl Future<Output = Result<SourceBatch, SourceError>> + Send {
+    ) -> impl Future<Output = Result<PassReport, SourceError>> + Send {
         std::future::pending()
     }
 
@@ -862,8 +862,8 @@ impl RecoverySource for Silent {
         _db: &mut WalletDatabase,
         _trust: Trust,
         _should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> impl Future<Output = Option<Result<Applied, ApplyFailure>>> + Send {
-        std::future::ready(None)
+    ) -> impl Future<Output = Result<Option<Applied>, ApplyFailure>> + Send {
+        std::future::ready(Ok(None))
     }
 }
 

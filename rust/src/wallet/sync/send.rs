@@ -3802,7 +3802,7 @@ fn transparent_shielding_balances(
         Ok(balances) => return Ok(balances),
         // Only a handle configured for the private ledger reads it; any other
         // handle keeps the library's refusal.
-        Err(SqliteClientError::TransparentAuthorityUnavailable)
+        Err(SqliteClientError::TransparentAuthorityUnavailable(_))
             if matches!(
                 db.transparent_ledger_mode(),
                 Ok(TransparentLedgerMode::PrivateRequired)

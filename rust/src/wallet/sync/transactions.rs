@@ -393,7 +393,10 @@ fn transparent_stop_reason<W>(
 where
     W: WalletRead<AccountId = AccountUuid>,
 {
-    if snapshot.blockers.contains(&RecoveryBlocker::Quarantined) {
+    if snapshot
+        .blockers
+        .contains(&RecoveryBlocker::RecoverySuspended)
+    {
         return Ok(Some(TransparentStopReason::Quarantined));
     }
     // The coordinator pauses Ledger accounts under `PrivateRequired`.

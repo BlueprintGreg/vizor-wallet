@@ -27,8 +27,8 @@ use zcash_client_backend::data_api::{
     },
     transparent_ledger::{
         AddressRange, PublicationAnchor, ReceiveEvent, RecoveryRevision, SpendEvent,
-        TransactionMetadata, TransparentLedgerCommit, TransparentLedgerMode,
-        TransparentLedgerWrite as _, TransparentWatchSet, WatchOrigin, WholeTransactionFee,
+        TransactionMetadata, TransparentAddressWatchSet, TransparentLedgerCommit,
+        TransparentLedgerMode, TransparentLedgerWrite as _, WatchOrigin, WholeTransactionFee,
     },
 };
 use zcash_client_sqlite::testing::{
@@ -94,7 +94,7 @@ pub(super) fn set_policy(st: &mut State, mode: TransparentLedgerMode) {
     db.set_transparent_ledger_mode(mode);
 }
 
-pub(super) fn watch(st: &State, account: AccountUuid) -> TransparentWatchSet<AccountUuid> {
+pub(super) fn watch(st: &State, account: AccountUuid) -> TransparentAddressWatchSet<AccountUuid> {
     st.wallet().db().transparent_watch_set(account).unwrap()
 }
 
@@ -113,7 +113,7 @@ pub(super) fn revision() -> RecoveryRevision {
 
 /// A commit covering every watched address through the watch set's target.
 pub(super) fn commit(
-    ws: &TransparentWatchSet<AccountUuid>,
+    ws: &TransparentAddressWatchSet<AccountUuid>,
 ) -> TransparentLedgerCommit<AccountUuid> {
     let target = ws.target.unwrap();
     TransparentLedgerCommit {
@@ -137,7 +137,7 @@ pub(super) fn commit(
     }
 }
 
-pub(super) fn external(ws: &TransparentWatchSet<AccountUuid>) -> TransparentAddress {
+pub(super) fn external(ws: &TransparentAddressWatchSet<AccountUuid>) -> TransparentAddress {
     ws.addresses
         .iter()
         .find(|w| {
@@ -238,7 +238,7 @@ fn privately_recovered_with_metadata_fee(
     set_policy(&mut st, TransparentLedgerMode::PrivateRequired);
     st.wallet_mut()
         .db_mut()
-        .promote_transparent_account(account)
+        .activate_transparent_ledger(account)
         .unwrap();
     st.wallet_mut()
         .db_mut()

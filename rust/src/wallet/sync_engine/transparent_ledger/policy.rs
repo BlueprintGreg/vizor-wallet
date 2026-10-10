@@ -21,9 +21,10 @@
 use std::path::Path;
 use std::time::Duration;
 
+use zakura_pir_transparent::{forget_private_recovery, ForgetError, Interrupted, WriteGate};
 use zcash_client_backend::data_api::transparent_ledger::{
     AppliedTransparentPolicy, ForgottenTransparentLedger, TransparentLedgerMode,
-    TransparentLedgerRead, TransparentLedgerWrite,
+    TransparentLedgerRead,
 };
 
 use super::super::enhancement::select_transparent_mode;
@@ -99,8 +100,8 @@ pub(crate) async fn set_transparent_policy(
 /// view from its own observations, so a fabricated receive or a false spend
 /// of a real output does not outlive the policy that admitted it.
 ///
-/// Every companion is deleted first, and nothing is forgotten unless that
-/// succeeded: see [`pir::remove_all_companions`]. A wallet still
+/// The library deletes every companion first and forgets nothing unless that
+/// succeeded; see [`forget_private_recovery`]. A wallet still
 /// `PrivateRequired` is left as it is, and a missing one is left missing.
 /// Returns what was removed, or `None` when nothing was attempted.
 pub(crate) fn forget_private_ledger(
@@ -110,18 +111,19 @@ pub(crate) fn forget_private_ledger(
     let Some(mut db) = open_policy_wallet(db_path, network)? else {
         return Ok(None);
     };
-    // Any configured mode reads the stored policy as it is.
-    db.set_transparent_ledger_mode(TransparentLedgerMode::PrivateRequired);
-    if applied_policy(&db)?.mode != TransparentLedgerMode::Public {
-        return Ok(None);
-    }
-    pir::remove_all_companions(db_path, pir::REMOVE_WAIT).map_err(SyncError::db)?;
-    // The library forgets only through a public handle over a public policy.
+    // The library forgets only through a public handle over a public policy,
+    // and refuses any other before deleting a companion.
     db.set_transparent_ledger_mode(TransparentLedgerMode::Public);
-    let forgotten = with_wallet_db_write_lock("transparent_policy.forget", || {
-        db.forget_transparent_ledger()
-    })
-    .map_err(|error| SyncError::db(format!("forget_transparent_ledger: {error}")))?;
+    let forgotten = match forget_private_recovery(
+        &pir::companion_dir(db_path),
+        &mut db,
+        &mut WriteLockGate,
+        pir::REMOVE_WAIT,
+    ) {
+        Ok(forgotten) => forgotten,
+        Err(ForgetError::NotPublic) => return Ok(None),
+        Err(error) => return Err(SyncError::db(format!("forget_private_recovery: {error}"))),
+    };
     // A hold names facts or a companion that no longer exist: a private run
     // after this starts the account afresh.
     super::clear_holds(db_path);
@@ -136,6 +138,18 @@ pub(crate) fn forget_private_ledger(
         );
     }
     Ok(Some(forgotten))
+}
+
+/// Runs the forget under the wallet write lock.
+struct WriteLockGate;
+
+impl WriteGate for WriteLockGate {
+    fn write<T>(&mut self, write: impl FnOnce() -> T) -> Result<T, Interrupted> {
+        Ok(with_wallet_db_write_lock(
+            "transparent_policy.forget",
+            write,
+        ))
+    }
 }
 
 /// The durable policy of the wallet at `db_path`, read without creating or

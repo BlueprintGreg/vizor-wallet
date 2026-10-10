@@ -14,10 +14,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http_body_util::Full;
-use sha2::{Digest, Sha256};
 use transparent::{address::TransparentAddress, bundle::OutPoint};
 use zakura_pir_transparent::testing::{unsupported_txid_init, TxidPublication};
-use zakura_pir_transparent::{HttpExchange, HttpFailure, HttpReply, HttpRequest};
+use zakura_pir_transparent::{
+    AddressKind, DetailAnswer, DisplayEntry, DisplayLookup, EntryAddress, EntryOutput,
+    HttpExchange, HttpFailure, HttpReply, HttpRequest, MapCheck, MapChecked, Placement,
+    ProtocolKind, Provenance, Tier, TxidDisplayService, TxidError, TxidLookup,
+};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
         TransparentDetailOutcome, TransparentDisplayFacts, TransparentDisplayOutput,
@@ -33,7 +36,7 @@ use zcash_protocol::{
     value::Zatoshis,
 };
 
-use super::source::{test_seam, DetailAnswer, DetailFailure, DetailSource};
+use super::source::{test_seam, Answer, DetailSource, Withheld};
 use super::*;
 use crate::wallet::db::{
     open_wallet_db_readonly_with_timeout, open_wallet_db_with_timeout, READ_DB_BUSY_TIMEOUT,
@@ -305,8 +308,8 @@ fn funder() -> TransparentDisplaySender {
 
 /// The facts of `txid` as the account's receipt: its own output, then a
 /// payment to [`PAYEE`], funded by one input from [`funder`].
-fn facts_of(fixture: &Fixture, txid: TxId) -> DetailAnswer {
-    DetailAnswer::Facts(Box::new(TransparentDisplayFacts {
+fn facts_of(fixture: &Fixture, txid: TxId) -> TransparentDisplayFacts {
+    TransparentDisplayFacts {
         txid,
         coinbase: false,
         fee: Zatoshis::const_from_u64(1_000),
@@ -332,41 +335,137 @@ fn facts_of(fixture: &Fixture, txid: TxId) -> DetailAnswer {
             map_sha256: [0xaa; 32],
             looked_up_height: BlockHeight::from_u32(TOP - 1),
         },
-    }))
+    }
 }
 
-fn deferred(outcome: TransparentDetailOutcome) -> Result<DetailAnswer, DetailFailure> {
-    Err(DetailFailure::Deferred {
-        outcome,
-        map_sha256: Some([0xaa; 32]),
-    })
+/// What a scripted lookup answers: the facts the service found, or the
+/// outcome its failure defers with.
+type Script = Result<TransparentDisplayFacts, TransparentDetailOutcome>;
+
+fn deferred(outcome: TransparentDetailOutcome) -> Script {
+    Err(outcome)
 }
 
-fn unavailable(retry_after: Option<Duration>) -> Result<DetailAnswer, DetailFailure> {
+fn unavailable(retry_after: Option<Duration>) -> Script {
     deferred(TransparentDetailOutcome::Unavailable { retry_after })
 }
 
-type Answer = Box<dyn FnMut(TxId) -> Result<DetailAnswer, DetailFailure> + Send>;
+/// The service's entry for `facts`, found in the publication their
+/// provenance names.
+fn found(facts: &TransparentDisplayFacts) -> TxidLookup {
+    let address = |address: Option<TransparentAddress>| match address {
+        Some(TransparentAddress::PublicKeyHash(hash)) => EntryAddress {
+            kind: AddressKind::P2pkh,
+            hash,
+        },
+        Some(TransparentAddress::ScriptHash(hash)) => EntryAddress {
+            kind: AddressKind::P2sh,
+            hash,
+        },
+        None => EntryAddress {
+            kind: AddressKind::Other,
+            hash: [0; 20],
+        },
+    };
+    let mut outputs = [None, None];
+    for (slot, output) in outputs.iter_mut().zip(&facts.outputs) {
+        *slot = Some(EntryOutput {
+            value: output.value.into_u64(),
+            address: address(output.address),
+        });
+    }
+    TxidLookup::Found {
+        entry: DisplayEntry {
+            tag: transparent_shard::txid::Tag::of(&transparent_events::Txid(*facts.txid.as_ref())),
+            coinbase: facts.coinbase,
+            shielded_components: facts.shielded_components,
+            multiple_source_scripts: facts.multiple_source_scripts,
+            shielded_and_transparent_funding: facts.shielded_and_transparent_funding,
+            fee: facts.fee.into_u64(),
+            input_count: facts.input_count,
+            output_count: facts.output_count,
+            source: match facts.sender {
+                TransparentDisplaySender::Absent => EntryAddress::ABSENT,
+                TransparentDisplaySender::NonStandard => address(None),
+                TransparentDisplaySender::Address(sender) => address(Some(sender)),
+            },
+            outputs,
+        },
+        provenance: Provenance {
+            map_sha256: hex::encode(facts.provenance.map_sha256),
+            shard_id: facts.provenance.shard_id,
+            revision: facts.provenance.revision,
+            manifest_digest: "cd".repeat(32),
+            tier: Tier::Recent,
+        },
+    }
+}
 
-/// A private source that answers from a script, after `delay`.
+/// The service's result that the wallet defers with `outcome`.
+fn failed(outcome: TransparentDetailOutcome) -> Result<TxidLookup, TxidError> {
+    match outcome {
+        TransparentDetailOutcome::Unavailable { retry_after } => {
+            Err(TxidError::Unavailable { retry_after })
+        }
+        TransparentDetailOutcome::NotYetPublished => {
+            Ok(TxidLookup::PlacementUnknown(Placement::Above))
+        }
+        TransparentDetailOutcome::Absent => Ok(TxidLookup::Absent),
+        TransparentDetailOutcome::NotCovered => Ok(TxidLookup::PlacementUnknown(Placement::Below)),
+        TransparentDetailOutcome::Unsupported => Ok(TxidLookup::Unsupported),
+        TransparentDetailOutcome::Protocol | TransparentDetailOutcome::Contradiction => {
+            Err(TxidError::Protocol(ProtocolKind::Decode))
+        }
+    }
+}
+
+/// A txid display service answering from one publication, which a test may
+/// replace.
+struct Published(Mutex<TxidPublication>);
+
+impl HttpExchange for Published {
+    fn send(&self, request: &HttpRequest) -> Result<HttpReply, HttpFailure> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .answer(request.method, &request.path, &request.body))
+    }
+}
+
+/// A private source that answers from a script, after `delay`, under the
+/// map of a real service.
 struct Scripted {
-    answer: Answer,
+    answer: Box<dyn FnMut(TxId) -> Script + Send>,
     delay: Duration,
     lookups: Arc<Mutex<Vec<TxId>>>,
-    /// The map hash a refresh reports.
-    refreshed: Option<[u8; 32]>,
+    /// Holds the map the work is listed under.
+    service: Arc<TxidDisplayService>,
+    /// What a map check fetches.
+    published: Arc<Published>,
 }
 
 impl Scripted {
-    fn new(
-        answer: impl FnMut(TxId) -> Result<DetailAnswer, DetailFailure> + Send + 'static,
-    ) -> Self {
+    fn new(answer: impl FnMut(TxId) -> Script + Send + 'static) -> Self {
+        let published = Arc::new(Published(Mutex::new(TxidPublication::new(
+            BIRTHDAY.into(),
+            TOP.into(),
+        ))));
+        let service = Arc::new(TxidDisplayService::new());
+        service
+            .refresh_map(&*published, &|| false)
+            .expect("the scripted service has a map");
         Self {
             answer: Box::new(answer),
             delay: Duration::ZERO,
             lookups: Default::default(),
-            refreshed: None,
+            service,
+            published,
         }
+    }
+
+    fn map_sha256(&self) -> Option<[u8; 32]> {
+        self.service.map_sha256()
     }
 
     fn slow(mut self, delay: Duration) -> Self {
@@ -385,28 +484,38 @@ impl DetailSource for Scripted {
         txid: TxId,
         _mined_height: BlockHeight,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Result<DetailAnswer, DetailFailure> {
+    ) -> Result<Answer, Withheld> {
         self.lookups.lock().unwrap().push(txid);
         if !self.delay.is_zero() {
             tokio::select! {
                 biased;
-                _ = watch_for_exit(&should_exit) => return Err(DetailFailure::Cancelled),
+                _ = watch_for_exit(&should_exit) => return Ok(DetailAnswer::Cancelled),
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }
-        (self.answer)(txid)
+        Ok(DetailAnswer::Display(DisplayLookup {
+            found: match (self.answer)(txid) {
+                Ok(facts) => Ok(found(&facts)),
+                Err(outcome) => failed(outcome),
+            },
+            map_sha256: self.service.map_sha256(),
+        }))
     }
 
     fn gate(&self) -> Option<&TransparentLookupGate> {
         None
     }
 
-    fn map_sha256(&self) -> Option<[u8; 32]> {
-        Some([0xaa; 32])
+    fn service(&self) -> Option<Arc<TxidDisplayService>> {
+        Some(self.service.clone())
     }
 
-    async fn refresh_map(&mut self, _should_exit: &(dyn Fn() -> bool + Sync)) -> Option<[u8; 32]> {
-        self.refreshed
+    async fn check_map(
+        &mut self,
+        check: MapCheck,
+        should_exit: &(dyn Fn() -> bool + Sync),
+    ) -> Option<MapChecked> {
+        Some(check.fetch(&self.service, &*self.published, should_exit))
     }
 }
 
@@ -1001,8 +1110,10 @@ async fn stage_failure_timeout_sync_ok_balances_unchanged() {
     let before = balance(&fixture);
     let mut source = Scripted::new(|_| unavailable(None)).slow(Duration::from_secs(600));
     let outcome = run_scripted(&fixture, &mut source).await;
+    // The budget stopped the lookup: it timed out, and is deferred like an
+    // unavailable service, so its retry backs off and the run ends.
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 1 && stats.deferred == 1),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.lookups == 1 && stats.deferred == 1),
         "{outcome:?}"
     );
     assert_eq!(
@@ -1158,7 +1269,8 @@ async fn stage_honors_should_exit_and_budget() {
     );
 
     // The budget: twenty-second lookups fit twice in forty-five seconds; the
-    // third is stopped at the budget and deferred.
+    // third is stopped at the budget and deferred as timed out, which ends the
+    // run as unavailable.
     let fixture = paused_wallet();
     for tag in 0..5u8 {
         utxo_receipt(&fixture, 0xe0 + tag, TOP - 1);
@@ -1167,7 +1279,7 @@ async fn stage_honors_should_exit_and_budget() {
     let mut source = Scripted::new(absent).slow(Duration::from_secs(20));
     let outcome = run_scripted(&fixture, &mut source).await;
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 3 && stats.deferred == 3),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.lookups == 3 && stats.deferred == 3),
         "{outcome:?}"
     );
     let took = tokio_now() - started;
@@ -1226,46 +1338,27 @@ async fn outage_then_recovery_reconciles_next_sync() {
     assert_eq!(details.outputs.len(), 2);
 }
 
-/// A lookup parked on the display map it saw (after its day's wait) becomes
-/// due once the source's refreshed map differs, within the same run.
+/// A receipt a detail view asked for is looked up first even behind more
+/// newer due work than one run lists, and on top of the run's own lookups.
 #[tokio::test]
-async fn parked_work_relists_after_map_refresh() {
+async fn a_prioritized_receipt_behind_64_newer_due_rows_is_looked_up_first() {
     let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x70, TOP - 1).txid();
-    // Parking for a map is private: under public authority the work would
-    // be due at its ordinary retry.
-    let _mode = require_private(&fixture.path);
-    let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::NotCovered));
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.not_covered == 1),
-        "{outcome:?}"
-    );
-    // A day later, on the same map: parked, nothing asked.
-    advance_wall(Duration::from_secs(31 * 60 * 60));
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert_eq!(outcome, Some(RunOutcome::Finished(RunStats::default())));
-    // A refreshed map releases it.
-    source.refreshed = Some([0xbb; 32]);
-    let outcome = run_scripted(&fixture, &mut source).await;
-    assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == 1),
-        "{outcome:?}"
-    );
-    assert_eq!(source.looked_up(), [txid, txid]);
-}
-
-#[tokio::test]
-async fn prioritized_transactions_are_served_first() {
-    let fixture = wallet();
-    let txids: Vec<TxId> = (0..12u8)
-        .map(|tag| utxo_receipt(&fixture, 0x60 + tag, TOP - 1).txid())
-        .collect();
-    let wanted = txids[11];
+    for tag in 0..65u8 {
+        utxo_receipt(&fixture, tag, TOP - 1);
+    }
+    let wanted = utxo_receipt(&fixture, 0xfe, BIRTHDAY).txid();
     prioritize(&fixture.path, *wanted.as_ref());
     let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::Absent));
-    run_scripted(&fixture, &mut source).await;
+    let outcome = run_scripted(&fixture, &mut source).await;
+    assert!(
+        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.lookups == MAX_LOOKUPS + 1),
+        "{outcome:?}"
+    );
     assert_eq!(source.looked_up()[0], wanted);
+    assert_eq!(
+        work_row(&fixture.path, &wanted).unwrap().0,
+        Some(ABSENT_CODE)
+    );
 }
 
 #[tokio::test]
@@ -1339,9 +1432,9 @@ fn logs_txid_free_private() {
             ];
             let mut facts = Some(facts_of(&scripted, txs[4].txid()));
             let mut source = Scripted::new(move |txid| {
-                if let Some(DetailAnswer::Facts(mut facts)) = facts.take() {
+                if let Some(mut facts) = facts.take() {
                     facts.txid = txid;
-                    return Ok(DetailAnswer::Facts(facts));
+                    return Ok(facts);
                 }
                 answers.pop().unwrap_or_else(|| unavailable(None))
             });
@@ -1450,18 +1543,14 @@ async fn receipt_source(
 ) -> (Option<String>, Option<String>) {
     let txid = utxo_receipt(fixture, tag, TOP - 1).txid();
     if let Some((coinbase, inputs, shielded)) = facts {
-        let answer = Mutex::new(Some(match facts_of(fixture, txid) {
-            DetailAnswer::Facts(mut facts) => {
-                facts.coinbase = coinbase;
-                facts.input_count = inputs;
-                facts.shielded_components = shielded;
-                if inputs == 0 {
-                    facts.sender = TransparentDisplaySender::Absent;
-                }
-                DetailAnswer::Facts(facts)
-            }
-            other => other,
-        }));
+        let mut answer = facts_of(fixture, txid);
+        answer.coinbase = coinbase;
+        answer.input_count = inputs;
+        answer.shielded_components = shielded;
+        if inputs == 0 {
+            answer.sender = TransparentDisplaySender::Absent;
+        }
+        let answer = Mutex::new(Some(answer));
         prioritize(&fixture.path, *txid.as_ref());
         let mut source = Scripted::new(move |_| Ok(answer.lock().unwrap().take().unwrap()));
         let mut db = open(&fixture.path);
@@ -1557,9 +1646,9 @@ impl DetailSource for FirstOnly<'_> {
         txid: TxId,
         mined_height: BlockHeight,
         should_exit: &(dyn Fn() -> bool + Sync),
-    ) -> Result<DetailAnswer, DetailFailure> {
+    ) -> Result<Answer, Withheld> {
         if std::mem::replace(&mut self.1, true) {
-            return Err(DetailFailure::Withheld);
+            return Err(Withheld);
         }
         self.0.lookup(txid, mined_height, should_exit).await
     }
@@ -1568,12 +1657,16 @@ impl DetailSource for FirstOnly<'_> {
         None
     }
 
-    fn map_sha256(&self) -> Option<[u8; 32]> {
-        self.0.map_sha256()
+    fn service(&self) -> Option<Arc<TxidDisplayService>> {
+        self.0.service()
     }
 
-    async fn refresh_map(&mut self, should_exit: &(dyn Fn() -> bool + Sync)) -> Option<[u8; 32]> {
-        self.0.refresh_map(should_exit).await
+    async fn check_map(
+        &mut self,
+        check: MapCheck,
+        should_exit: &(dyn Fn() -> bool + Sync),
+    ) -> Option<MapChecked> {
+        self.0.check_map(check, should_exit).await
     }
 }
 
@@ -1635,8 +1728,8 @@ fn shielded_part(path: &str, account: AccountUuid, txid: TxId, height: u32, side
 
 /// The facts of a mixed transaction: one transparent input, a payment of
 /// 5,000 to [`PAYEE`], and a shielded part.
-fn mixed_facts(txid: TxId) -> DetailAnswer {
-    DetailAnswer::Facts(Box::new(TransparentDisplayFacts {
+fn mixed_facts(txid: TxId) -> TransparentDisplayFacts {
+    TransparentDisplayFacts {
         txid,
         coinbase: false,
         fee: Zatoshis::const_from_u64(1_000),
@@ -1656,7 +1749,7 @@ fn mixed_facts(txid: TxId) -> DetailAnswer {
             map_sha256: [0xaa; 32],
             looked_up_height: BlockHeight::from_u32(TOP - 1),
         },
-    }))
+    }
 }
 
 /// A pre-Overwinter transaction spending `prevout` and paying 5,000 to
@@ -2134,7 +2227,6 @@ fn work_row(path: &str, txid: &TxId) -> Option<(Option<i64>, Option<[u8; 32]>)> 
 
 /// Longer than any backoff a held outcome gets.
 const PAST_BACKOFF: Duration = Duration::from_secs(2 * 24 * 60 * 60);
-const MAP_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// A lookup failure belongs to the placement it requested. A remine or
 /// rewind while it is in flight must not postpone the replacement work.
@@ -2169,7 +2261,7 @@ async fn stale_lookup_failures_preserve_remined_or_unmined_work() {
         assert_eq!((attempts, next), (0, 0));
         let db = open(&fixture.path);
         let work = db
-            .transparent_detail_work(wall(), WORK_WINDOW, source.map_sha256())
+            .transparent_detail_work(wall(), MAX_LOOKUPS, &[], source.map_sha256())
             .unwrap();
         if let Some(height) = new_height {
             assert_eq!(work.requests.len(), 1);
@@ -2242,57 +2334,6 @@ async fn held_work_learns_of_new_coverage_through_the_cached_client() {
     assert_eq!(lwd.count("/GetTransaction"), 0);
 }
 
-/// An unchanged map keeps held work held. Consecutive runs share a six-hour
-/// check interval; restarting the client forgets its attempted check time.
-#[tokio::test(flavor = "multi_thread")]
-async fn held_work_stays_held_while_the_map_is_unchanged() {
-    let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x42, TOP - 1).txid();
-    let _mode = require_private(&fixture.path);
-    let held = not_covering();
-    let map = held.map_sha256;
-    let service = RequestObserver::answering(move |request| (held.answer)(request));
-    let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
-    {
-        let _seam = test_seam::set(&fixture.path, service.clone());
-        hold(&fixture, &lwd, &txid, map).await;
-        let sent = service.requests().len();
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-
-        // New sources in consecutive sync runs retain the attempted check.
-        let sent = service.requests().len();
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert!(paths_since(&service, sent).is_empty());
-        advance_wall(MAP_RECHECK - Duration::from_secs(1));
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert!(paths_since(&service, sent).is_empty());
-        advance_wall(Duration::from_secs(1));
-        let outcome = followup_with(&fixture, required(), &lwd).await;
-        assert!(finished_with(outcome, 0), "{outcome:?}");
-        assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-    }
-    // A restart: a new client, without a map.
-    let _seam = test_seam::set(&fixture.path, service.clone());
-    let sent = service.requests().len();
-    let outcome = followup_with(&fixture, required(), &lwd).await;
-    assert!(finished_with(outcome, 0), "{outcome:?}");
-    assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-
-    assert_eq!(
-        work_row(&fixture.path, &txid),
-        Some((Some(NOT_COVERED_CODE), Some(map)))
-    );
-    assert_eq!(
-        view(&fixture, &txid),
-        Some(TransparentDisplayView::NotCovered)
-    );
-    assert_eq!(lwd.count("/GetTransaction"), 0);
-}
-
 /// A restart forgets the map; the first run after it fetches the map before
 /// any lookup, so held work learns of new coverage.
 #[tokio::test(flavor = "multi_thread")]
@@ -2321,106 +2362,6 @@ async fn held_work_learns_of_new_coverage_after_a_restart() {
         Some((Some(ABSENT_CODE), Some(new_map)))
     );
     assert_eq!(lwd.count("/GetTransaction"), 0);
-}
-
-/// A map request that fails leaves held work held under the map it was held
-/// for, through a kept client and after a restart: no lookup, no public
-/// request, and no log line names the transaction.
-#[test]
-fn held_work_stays_held_when_the_map_cannot_be_fetched() {
-    let fixture = wallet();
-    let txid = utxo_receipt(&fixture, 0x44, TOP - 1).txid();
-    let _mode = require_private(&fixture.path);
-    let held = not_covering();
-    let map = held.map_sha256;
-    let covering = publication(BIRTHDAY, TOP).answer;
-    // 0 publishes the held map; any other value fails the map request in
-    // its own way, and the rest of the service covers the receipt.
-    let failure = Arc::new(AtomicUsize::new(0));
-    const FAILURES: usize = 4;
-    let service = RequestObserver::answering({
-        let failure = failure.clone();
-        move |request| {
-            let kind = failure.load(Ordering::SeqCst);
-            if kind == 0 {
-                return (held.answer)(request);
-            }
-            if request.path != "/v1/txid/map" {
-                return covering(request);
-            }
-            match kind {
-                1 => reply(503, &[("retry-after", "30")], Vec::new()),
-                2 => reply(404, &[], Vec::new()),
-                3 => {
-                    // A map without its digest header.
-                    let mut response = covering(request);
-                    response.headers_mut().remove("x-txid-map-sha256");
-                    response
-                }
-                _ => {
-                    let body = b"not a map".to_vec();
-                    let digest = hex::encode(Sha256::digest(&body));
-                    reply(200, &[("x-txid-map-sha256", &digest)], body)
-                }
-            }
-        }
-    });
-    let lines = log_lines(|| {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
-            let check = |sent: usize| {
-                assert_eq!(paths_since(&service, sent), ["/v1/txid/map"]);
-                assert_eq!(
-                    work_row(&fixture.path, &txid),
-                    Some((Some(NOT_COVERED_CODE), Some(map)))
-                );
-            };
-            {
-                let _seam = test_seam::set(&fixture.path, service.clone());
-                hold(&fixture, &lwd, &txid, map).await;
-                for kind in 1..=FAILURES {
-                    failure.store(kind, Ordering::SeqCst);
-                    let sent = service.requests().len();
-                    let outcome = followup_with(&fixture, required(), &lwd).await;
-                    assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                    check(sent);
-                    let sent = service.requests().len();
-                    let outcome = followup_with(&fixture, required(), &lwd).await;
-                    assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                    assert!(
-                        paths_since(&service, sent).is_empty(),
-                        "failed checks are bounded too"
-                    );
-                    advance_wall(MAP_RECHECK);
-                }
-            }
-            for kind in 1..=FAILURES {
-                failure.store(kind, Ordering::SeqCst);
-                let _seam = test_seam::set(&fixture.path, service.clone());
-                let sent = service.requests().len();
-                let outcome = followup_with(&fixture, required(), &lwd).await;
-                assert!(finished_with(outcome, 0), "{kind}: {outcome:?}");
-                check(sent);
-            }
-            assert_eq!(lwd.count("/GetTransaction"), 0);
-        });
-    });
-    assert_eq!(
-        view(&fixture, &txid),
-        Some(TransparentDisplayView::NotCovered)
-    );
-    assert!(!lines.is_empty(), "the runs logged");
-    let mut reversed = *txid.as_ref();
-    reversed.reverse();
-    for needle in [hex::encode(txid.as_ref()), hex::encode(reversed)] {
-        for (_, line) in &lines {
-            assert!(!line.contains(&needle), "{line:?} names a txid");
-        }
-    }
 }
 
 /// Cancellation during the map request ends the run: nothing is looked up
@@ -2667,9 +2608,7 @@ async fn a_held_write_lock_delays_no_run_past_its_budget() {
     let answer = Mutex::new(Some(facts_of(&fixture, other)));
     let mut source = Scripted::new(move |txid| {
         let mut facts = answer.lock().unwrap().take().unwrap();
-        if let DetailAnswer::Facts(facts) = &mut facts {
-            facts.txid = txid;
-        }
+        facts.txid = txid;
         Ok(facts)
     });
     let release = crate::wallet::db::hold_wallet_db_write_lock(Duration::from_secs(20));
