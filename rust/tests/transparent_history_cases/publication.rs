@@ -4,7 +4,7 @@
 //!
 //! Adapted from the adapter's end-to-end fixture
 //! (`zakura/pir-transparent/tests/fixture/mod.rs` in wallet-libraries at
-//! bdebaffcb), through wallet-pir's public APIs at 648264bb only. Events are
+//! bdebaffcb), through wallet-pir's public APIs at 9d2cbda0 only. Events are
 //! extracted from zcashd's verbose blocks with the rules of wallet-pir's
 //! `transparent-filter-server/src/extract.rs` (that crate reads the node's
 //! RocksDB, so it cannot be reused here): every output script that is a filter
@@ -677,7 +677,6 @@ fn publish(
             txids: 0,
             excluded_scripts: built.excluded_scripts,
         },
-        txid_display: None,
         directory_choice: None,
     };
     let digest = manifest.digest();
@@ -711,11 +710,11 @@ fn publish(
             txids: 0,
             directory_segments: built.directory_segments(),
             page_segments: built.page_segments(),
-            txid_segments: None,
             manifest_digest: digest,
             revision,
             sealed: false,
         }],
+        recuts: Vec::new(),
     };
     map.check_shape().expect("a well-formed map");
     std::fs::write(dir.join("shards.json"), serde_json::to_vec(&map).unwrap()).unwrap();

@@ -21,7 +21,7 @@ mod report;
 mod signer;
 mod vizor;
 
-use rust_lib_zcash_wallet::api::{simple as simple_api, sync as sync_api};
+use rust_lib_zcash_wallet::api::sync as sync_api;
 
 fn run(profile: &'static str) {
     report::set_profile(profile);
@@ -32,10 +32,8 @@ fn run(profile: &'static str) {
         // Debug builds only: regtest may select private transparent recovery
         // and reach the harness's loopback service over plain HTTP.
         std::env::set_var("ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT", "1");
-        // The development flag, the private-queries preference, and that the
-        // preference was read from storage: what a flagged build with private
-        // queries on has at startup.
-        simple_api::configure_private_transparent_recovery(true);
+        // The private-queries preference, and that the preference was read
+        // from storage: what a build with private queries on has at startup.
         sync_api::set_enhance_pir_enabled(true);
         sync_api::set_enhance_pir_preference_confirmed(true);
     }

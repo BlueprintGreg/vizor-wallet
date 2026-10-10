@@ -19,7 +19,6 @@ import 'package:go_router/go_router.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:zcash_wallet/app.dart';
 import 'package:zcash_wallet/src/core/config/network_config.dart';
-import 'package:zcash_wallet/src/core/config/private_transparent_recovery_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/core/storage/enhance_pir_preference_store.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
@@ -44,12 +43,11 @@ void main() {
     e2eLog('profile ${thExpectedUiProfile()}: ${rows.length} expected rows');
     if (private) {
       expect(
-        kZcashPrivateTransparentRecovery &&
-            isEnhancePirAvailableForNetwork(kZcashDefaultNetworkName),
+        isEnhancePirAvailableForNetwork(kZcashDefaultNetworkName),
         isTrue,
         reason:
-            'the private profile needs ZCASH_PRIVATE_TRANSPARENT_RECOVERY '
-            'and ZCASH_E2E_PRIVATE_TRANSPARENT_REGTEST (debug builds only)',
+            'the private profile needs ZCASH_E2E_PRIVATE_TRANSPARENT_REGTEST '
+            '(debug builds only)',
       );
     }
     addTearDown(cleanupDesktopRegtestWallet);

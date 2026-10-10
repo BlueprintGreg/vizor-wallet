@@ -184,8 +184,7 @@ impl VizorWallet {
         if crate::report::profile() == "private" {
             // The production toggle-on path: the wallet durably requires
             // private recovery before its first sync.
-            sync_api::reconcile_transparent_policy(db.clone(), NET.into(), true)
-                .expect("raise the transparent policy to private recovery");
+            raise_private(&db);
         }
         VizorWallet {
             label: label.into(),
@@ -233,12 +232,9 @@ impl VizorWallet {
             Some(a0.name.into()),
         )
         .expect("import A0");
-        if crate::report::profile() == "private" {
-            // As in `import`: the wallet requires private recovery before its
-            // first sync. Adding A1 must keep it; that is checked below.
-            sync_api::reconcile_transparent_policy(db.clone(), NET.into(), true)
-                .expect("raise the transparent policy to private recovery");
-        }
+        // As in `import`: the wallet requires private recovery before its
+        // first sync. Adding A1 must keep it; that is checked below.
+        let raised = (crate::report::profile() == "private").then(|| raise_private(&db));
         let mut wallet = VizorWallet {
             label: label.into(),
             _dir: dir,
@@ -291,11 +287,14 @@ impl VizorWallet {
             Some(1),
         )
         .expect("add A1");
-        if private {
-            // Ok(false): the wallet already requires private recovery.
-            let raised = sync_api::reconcile_transparent_policy(db, NET.into(), true)
-                .expect("read the transparent policy");
-            assert!(!raised, "{label}: adding A1 lowered the transparent policy");
+        if let Some(raised) = raised {
+            // The wallet already requires private recovery: reconciling again
+            // finds the same policy, in the same generation.
+            assert_eq!(
+                raise_private(&db),
+                raised,
+                "{label}: adding A1 changed the transparent policy"
+            );
         }
         wallet.accounts.push(Account {
             name: a1.name,
@@ -761,4 +760,19 @@ pub struct Observation {
     pub views: Vec<AccountView>,
     pub requests: BTreeMap<String, Vec<crate::proxy::RequestRecord>>,
     pub sync_results: BTreeMap<String, Option<String>>,
+}
+
+/// Raises the wallet at `db` to private recovery through the production
+/// toggle-on path, and returns the policy that results. Panics unless it is
+/// `PrivateRequired`.
+fn raise_private(db: &str) -> sync_api::ApiAppliedTransparentPolicy {
+    let applied = sync_api::reconcile_transparent_policy(db.to_owned(), NET.into(), true)
+        .expect("raise the transparent policy to private recovery")
+        .expect("a wallet exists");
+    assert_eq!(
+        applied.mode,
+        sync_api::ApiTransparentLedgerMode::PrivateRequired,
+        "the policy was not raised; is ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT set in a debug build?"
+    );
+    applied
 }

@@ -186,11 +186,9 @@ if [[ "$PROFILE" == "private" ]]; then
   fi
   # Debug builds only, all default off: Rust's switch that lets regtest select
   # private recovery and reach the loopback service, and that service's
-  # origin; the private recovery build flag; and the app's own allowance for
-  # private queries on regtest.
+  # origin; and the app's own allowance for private queries on regtest.
   desktop_env+=(ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT=1 "VIZOR_TRANSPARENT_PIR_URL=$TH_TPIR_URL")
   desktop_defines+=(
-    "--dart-define=ZCASH_PRIVATE_TRANSPARENT_RECOVERY=true"
     "--dart-define=ZCASH_E2E_PRIVATE_TRANSPARENT_REGTEST=true"
   )
 fi
