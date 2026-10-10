@@ -51,7 +51,7 @@ The oracle's self-tests need no chain:
 | S | `signer.rs`, `provers.rs` | Harness transaction builder; signs with runtime-derived transparent keys; broadcasts through lightwalletd |
 | V | `vizor.rs` | Vizor's production send / shield / TEX / gift-card paths via `api::*` |
 | F | `proxy.rs` | lightwalletd proxy: records every request and its transparent subjects; injects faults |
-| P | `publication.rs` | Private profile: transparent PIR publisher (shards from zcashd's blocks) and in-process shard server on one loopback port; checks every request; injects lag and query faults |
+| P | `publication.rs` | Private profile: transparent PIR publisher (shards from zcashd's blocks), txid display publisher (every transaction's display facts), and both in-process services on one loopback port; checks every request for Alice's scripts and any chain txid; injects lag and query faults |
 | Parties | `keys.rs` | A0/A1 (Alice's two seeds, in Vizor), B, C, D (harness-only keys), F (harness funder: Z pays it, S turns its coins into Alice's Orchard notes) |
 | Cases | `cases.rs` | The H01–H13 timeline: builds chain facts, authors intent and shielded attribution |
 | Bookkeeping | `report.rs` | Ownership map, case manifest, observations, oracle bridge, Flutter handoff |
