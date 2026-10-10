@@ -22,8 +22,26 @@ use zcash_client_backend::data_api::enhance_pir::{
     EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_protocol::consensus::BlockHeight;
+/// Debug builds only: override the Enhance PIR endpoint, the legacy name
+/// second. Release builds always use [`DEFAULT_MAINNET_ENDPOINT`] and never
+/// read them.
+#[cfg(debug_assertions)]
 const ENDPOINT_ENV: &str = "VIZOR_ENHANCE_PIR_URL";
+#[cfg(debug_assertions)]
 const LEGACY_ENDPOINT_ENV: &str = "VIZOR_MEMO_PIR_URL";
+
+/// The Enhance PIR endpoint: the production service, or in a debug build a
+/// configured override.
+fn enhance_endpoint() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(endpoint) =
+        std::env::var(ENDPOINT_ENV).or_else(|_| std::env::var(LEGACY_ENDPOINT_ENV))
+    {
+        return endpoint;
+    }
+    DEFAULT_MAINNET_ENDPOINT.into()
+}
+
 const REDISCOVERY_COVER_BLOCKS: u32 = 100;
 fn routing_is_current_or_newer(current: &Manifest, candidate: &Manifest) -> bool {
     current_or_newer_routing_revision(
@@ -117,11 +135,7 @@ impl RoutedPayloadEnhancement {
         Self {
             network,
             db_path: db_path.into(),
-            endpoint: (enabled && network == WalletNetwork::Main).then(|| {
-                std::env::var(ENDPOINT_ENV)
-                    .or_else(|_| std::env::var(LEGACY_ENDPOINT_ENV))
-                    .unwrap_or_else(|_| DEFAULT_MAINNET_ENDPOINT.into())
-            }),
+            endpoint: (enabled && network == WalletNetwork::Main).then(enhance_endpoint),
             pending_routing: None,
             accepted_routing: None,
             private_failed_for_sync: false,
