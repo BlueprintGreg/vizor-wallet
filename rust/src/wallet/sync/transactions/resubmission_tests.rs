@@ -1,6 +1,7 @@
 use super::tests::{fake_raw, fake_txid, fresh_db, insert_row};
 use super::*;
 use tempfile::NamedTempFile;
+use zcash_protocol::consensus::BranchId;
 
 pub(crate) fn populate_recovery_wallet(path: &str, txid: &[u8], raw: &[u8]) {
     // Exercise a real migrated view with an outgoing transaction spending a

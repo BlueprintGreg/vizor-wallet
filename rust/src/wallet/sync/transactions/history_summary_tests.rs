@@ -199,12 +199,14 @@ fn history_summaries_match_view_and_preserve_account_display_and_limit() {
     for (account, expected_rows) in [(wallet.sender, 2), (wallet.recipient, 1)] {
         let bases = read_history_bases(&read_tx, &wallet.path, NETWORK, account).unwrap();
         assert_eq!(bases.len(), expected_rows);
+        let views = super::tests::read_history_bases_via_v_transactions(
+            &read_tx,
+            account.expose_uuid().as_bytes(),
+        )
+        .unwrap();
         for base in bases {
-            let view =
-                read_history_base_by_txid(&read_tx, account.expose_uuid().as_bytes(), &base.txid)
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(base, view);
+            let view = views.iter().find(|view| view.txid == base.txid).unwrap();
+            assert_eq!(&base, view);
             // The projection itself does not authorize complete history.
             assert!(!base.history.details_complete);
             assert!(base.history.provisional);
@@ -214,13 +216,10 @@ fn history_summaries_match_view_and_preserve_account_display_and_limit() {
                 assert_eq!(base.mined_height, Some(101));
                 assert_eq!(base.block_time, 600101);
                 assert_eq!(base.created_time, 1767323045);
-                assert!(base.spent_orchard_note);
-                assert!(!base.is_shielding);
                 if account == wallet.sender {
                     assert_eq!(base.total_spent, 200000);
                     assert_eq!(base.total_received, 50000);
                     assert_eq!(base.account_balance_delta, -150000);
-                    assert_eq!(base.fee, Some(10000));
                 } else {
                     assert_eq!(base.total_spent, 0);
                     assert_eq!(base.total_received, 90000);
@@ -277,8 +276,7 @@ fn history_summaries_preserve_unknown_metadata_and_private_expiry_fallback() {
     assert_eq!(payment.block_time, 0);
     assert_eq!(payment.created.as_deref(), Some("unparseable"));
     assert_eq!(payment.created_time, 0);
-    assert_eq!(payment.fee, None);
-    assert_eq!(payment.history.fee, Fee::Unknown);
+    assert_eq!(payment.history.fee, FeeState::Unknown);
     assert_eq!(payment.expiry_height, Some(150));
     // Private history's display expiry does not establish protocol expiration.
     assert!(!payment.expired_unmined);

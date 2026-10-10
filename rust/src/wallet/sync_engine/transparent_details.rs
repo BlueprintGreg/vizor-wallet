@@ -838,9 +838,9 @@ pub(crate) fn enhance_publicly(
 
 /// The detail view of `txid` (protocol byte order) for `account`, from the
 /// wallet behind `db`; `None` when the transaction has no transparent part
-/// the account takes part in. The library decides the account's part from
-/// the same read snapshot as the view, so a caller that overlays receipt
-/// reads binds `db` to their snapshot.
+/// the account takes part in. Receipts read it with their history view
+/// through the library's receipt read.
+#[cfg(test)]
 pub(crate) fn detail_view(
     db: &impl TransparentDetailRead<AccountId = AccountUuid, Error = SqliteClientError>,
     account: AccountUuid,

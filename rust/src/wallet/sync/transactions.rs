@@ -17,28 +17,30 @@
 //! PROPOSAL_STORE used by both the software and PCZT send paths.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     ops::Range,
-    rc::Rc,
 };
 
-use rusqlite::{types::Value, vtab::array::Array, OptionalExtension};
-use transparent::address::TransparentAddress;
-#[cfg(test)]
-use zcash_client_backend::data_api::transparent_ledger::WholeTransactionFee;
+use rusqlite::OptionalExtension;
 use zcash_client_backend::data_api::{
     transparent_ledger::{
-        AggregatePayment, DetailCompleteness, FeeState, HistoryClassification, RecoveryBlocker,
-        TransactionHistoryDetails, TransparentAuthority, TransparentLedgerBalance,
-        TransparentLedgerMode, TransparentLedgerRead, TransparentLedgerSnapshot,
+        AccountActivity, ActivityOutputs, Attribution, DetailCompleteness, FeeState,
+        FundingStepEvidence, HistoryClassification, OutputRef, RecoveryBlocker, SourcePool,
+        TransactionHistoryDetails, TransactionReceipt, TransparentAuthority, TransparentDetailRead,
+        TransparentDisplayOmission, TransparentDisplaySource, TransparentDisplayView,
+        TransparentLedgerBalance, TransparentLedgerMode, TransparentLedgerRead,
+        TransparentLedgerSnapshot,
     },
     Account as _, Balance, WalletRead, WalletWrite,
 };
 use zcash_client_sqlite::{wallet::history::TransactionSummary, AccountUuid};
-use zcash_primitives::transaction::{Transaction, TxId};
+use zcash_primitives::transaction::TxId;
 use zcash_protocol::{
-    consensus::{BlockHeight, BranchId},
+    consensus::BlockHeight,
     memo::{Memo, MemoBytes},
+    value::Zatoshis,
+    PoolType,
 };
 
 use crate::wallet::block_times::{self, BlockTimePoint};
@@ -50,8 +52,6 @@ use crate::wallet::sync_engine::transparent_ledger::{recovery_hold, HoldCause};
 
 use super::{open_readonly_conn, open_wallet_db, open_wallet_db_for_read};
 
-const ORCHARD_NOTE_VERSION: i64 = 2;
-const IRONWOOD_NOTE_VERSION: i64 = 3;
 const TRANSPARENT_POOL: i64 = 0;
 const SAPLING_POOL: i64 = 2;
 const ORCHARD_POOL: i64 = 3;
@@ -627,21 +627,22 @@ pub(crate) struct TransactionDetail {
     /// Whether the transaction's payment classification or owned effects remain
     /// provisional. An established Activity row can still have incomplete receipt details.
     pub provisional: bool,
-    /// Whether the account's side of the transaction is settled, as an Activity
-    /// row's is ([`classify_history_tx`]): every owned effect is settled, the
-    /// transaction is mined, and no owned transparent output has an unknown key
-    /// scope. Transparent details that account for the balance complete a
-    /// receipt only when it is: before then an effect the wallet has not found
-    /// can still change the balance they match.
+    /// Whether the account's side of the transaction is settled
+    /// (`ReceiptAttribution::effects_settled`): every owned effect is
+    /// settled, the transaction is mined, and no owned transparent output has
+    /// an unknown key scope. The library's receipt read decided from it, and
+    /// from the movement and fee below, what `primary_address`,
+    /// `details_complete` and `provisional` show; the app does not read them.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub effects_settled: bool,
     /// Transparent txid enhancement's view of the transaction: `None` when
     /// it has no transparent part the account recorded.
     pub transparent_details: Option<TransparentDetailsView>,
     /// The account's net balance change, and the fee when it is known (the
-    /// account's, or the whole transaction's): with the transparent view they
-    /// show whether its listed outputs are the transaction's only payees
-    /// ([`apply_display_recipient`]).
+    /// account's, or the whole transaction's).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub account_balance_delta: i64,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fee: Option<u64>,
     /// Exact whole-transaction fee for receipt display; never an account fee share.
     pub network_fee: Option<u64>,
@@ -692,24 +693,22 @@ pub(crate) struct ExportBirthdayAnchor {
 struct TxBase {
     txid: Vec<u8>,
     transaction_id: i64,
+    /// The mined height the Activity list shows: the library's, or the Gift
+    /// Card claim record's for a claim (see [`read_transaction_history`]).
     mined_height: Option<u32>,
     expired_unmined: bool,
     account_balance_delta: i64,
-    /// The recorded fee, if any. Never assumed zero.
-    fee: Option<u64>,
     block_time: u64,
     total_spent: u64,
     total_received: u64,
-    is_shielding: bool,
     expiry_height: Option<i64>,
     tx_index: i64,
     created: Option<String>,
     created_time: u64,
-    spent_orchard_note: bool,
-    history: HistoryCompleteness,
+    history: HistoryView,
 }
 
-/// A fee, as far as history knows it.
+/// A fee, as far as a row shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fee {
     Known(u64),
@@ -718,6 +717,16 @@ enum Fee {
 }
 
 impl Fee {
+    /// The fee the account is attributed. A whole-transaction fee whose share
+    /// is not established is not the account's, so it shows as unknown.
+    fn shown(fee: FeeState) -> Self {
+        match fee {
+            FeeState::Known(fee) => Fee::Known(fee.into_u64()),
+            FeeState::Unattributed { .. } | FeeState::Unknown => Fee::Unknown,
+            FeeState::NotApplicable => Fee::NotApplicable,
+        }
+    }
+
     /// The fee of a transaction and of a funding step shown as part of it.
     fn plus(self, other: Fee) -> Fee {
         match (self, other) {
@@ -743,62 +752,25 @@ impl Fee {
     }
 }
 
-/// What the wallet knows about the account's side of a transaction, from the
-/// library's history read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HistoryCompleteness {
+/// The library's history view of the account's side of a transaction, as the
+/// Activity list uses it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryView {
     /// Transaction-wide Enhance shape assertion, independent of payment completeness.
     has_transparent_outputs: Option<bool>,
     details_complete: bool,
+    /// The classification is provisional or an owned effect is not settled.
     provisional: bool,
-    /// Owned effects are settled independently of payment and fee attribution.
-    effects_settled: bool,
-    /// The library's classification of the account's side, once read. A net
-    /// reconstruction (a privately recovered mixed shielding) has a final
-    /// movement but no attributed fee or payment; see
-    /// [`Self::justifies_shielding`].
-    classification: Option<HistoryClassification>,
-    /// The fee as it concerns the account. Amounts are computed with this fee
-    /// only.
-    fee: Fee,
-    /// The exact fee of the whole transaction, reconciled by the library
-    /// from stored and recovered fee evidence, when the account spent in it.
-    /// Other funders may have shared it. It supports reconstruction but
-    /// never replaces an unknown account fee in the receipt.
-    whole_fee: Option<u64>,
-    /// The exact payment outside the account that the library reconstructed
-    /// from recovered transaction metadata (private recovery: the account
-    /// funded every transparent input of a transaction with no shielded
-    /// components, and the whole fee is known), when no local record exists.
-    /// The recipients themselves stay unknown.
-    inferred_payment: Option<u64>,
-    /// Activity-only residual supplied by the library; recipient and fee attribution stay unknown.
-    inferred_outgoing: Option<u64>,
+    fee: FeeState,
+    /// What the transaction shows in the account's activity list.
+    activity: AccountActivity,
+    /// What it contributes to pairing a TEX funding step with its payment.
+    funding_step: FundingStepEvidence,
+    /// Whether the library read the transaction as mined.
+    mined: bool,
 }
 
-impl HistoryCompleteness {
-    /// Complete history, with the fee the library would report for `base`.
-    #[cfg(test)]
-    fn complete_for(base: &TxBase) -> Self {
-        Self {
-            has_transparent_outputs: None,
-            details_complete: true,
-            provisional: false,
-            effects_settled: true,
-            classification: Some(HistoryClassification::Reconstructed),
-            fee: match (base.total_spent > 0, base.fee) {
-                (false, _) => Fee::NotApplicable,
-                (true, Some(fee)) => Fee::Known(fee),
-                (true, None) => Fee::Unknown,
-            },
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        }
-    }
-
-    /// Local intent can know every payment detail before scanning discovers
-    /// all owned effects. Public discovery still counts as settled.
+impl HistoryView {
     fn of(details: &TransactionHistoryDetails) -> Self {
         let effects_settled = details
             .effects
@@ -807,117 +779,50 @@ impl HistoryCompleteness {
         Self {
             has_transparent_outputs: details.has_transparent_outputs,
             details_complete: details.payment_details == DetailCompleteness::Complete,
-            classification: Some(details.classification),
-            // A net reconstruction (a privately recovered mixed shielding) has a final
-            // movement: it is shown without attributing the whole transaction's fee
-            // or inferring a payment from it.
-            provisional: match details.classification {
-                HistoryClassification::Provisional => true,
-                HistoryClassification::LocalIntent
-                | HistoryClassification::Reconstructed
-                | HistoryClassification::NetReconstructed => false,
-            } || !effects_settled,
-            effects_settled,
-            fee: match details.fee {
-                FeeState::Known(fee) => Fee::Known(fee.into()),
-                FeeState::Unknown => Fee::Unknown,
-                FeeState::NotApplicable => Fee::NotApplicable,
-            },
-            // Only an account that spent can owe any of the fee: a receive,
-            // settled or not, never shows its sender's fee.
-            whole_fee: details
-                .whole_fee
-                .filter(|_| details.account_movement.spent > 0)
-                .map(|fee| fee.into_u64()),
-            inferred_outgoing: details.inferred_outgoing.map(|amount| amount.into_u64()),
-            inferred_payment: match details.aggregate_payment {
-                AggregatePayment::Exact(amount)
-                    if details.classification == HistoryClassification::Reconstructed
-                        && details
-                            .transaction_metadata
-                            .as_ref()
-                            .is_some_and(|e| !e.metadata.has_shielded_components) =>
-                {
-                    Some(amount.into_u64())
-                }
-                _ => None,
-            },
+            provisional: details.classification == HistoryClassification::Provisional
+                || !effects_settled,
+            fee: details.fee,
+            activity: details.activity.clone(),
+            funding_step: details.funding_step,
+            mined: details.mined_height.is_some(),
         }
     }
 
-    /// Assumed until the history read reports on a transaction: nothing is
-    /// known to be complete.
-    fn unread(fee: Option<u64>) -> Self {
+    /// Assumed until the history read reports on a transaction, which it does
+    /// for every transaction the summaries list: nothing is known.
+    fn unread(mined: bool) -> Self {
         Self {
             has_transparent_outputs: None,
             details_complete: false,
             provisional: true,
-            effects_settled: false,
-            classification: None,
-            fee: fee.map_or(Fee::Unknown, Fee::Known),
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
+            fee: FeeState::Unknown,
+            activity: AccountActivity::Unknown,
+            funding_step: FundingStepEvidence::default(),
+            mined,
         }
     }
 
-    /// The account's attributed fee. A whole-transaction fee does not establish
-    /// its share, so an unknown account fee stays unknown in receipts.
-    fn shown_fee(self) -> Fee {
-        self.fee
+    fn shown_fee(&self) -> Fee {
+        Fee::shown(self.fee)
     }
 
-    /// Fee evidence used only to recognize a fully funded reconstructed
-    /// self-transfer. This does not change the fee shown in a receipt.
-    fn reconstruction_fee(self) -> Fee {
-        match (self.fee, self.whole_fee) {
-            (Fee::Unknown, Some(whole)) => Fee::Known(whole),
-            (fee, _) => fee,
-        }
-    }
-
-    /// Whether an amount is a balance movement whose unknown account fee
-    /// was not subtracted. Whole-fee evidence identifies this movement but
-    /// does not attribute a share of that fee to the account.
-    fn movement_retains_fee(self) -> bool {
-        self.fee == Fee::Unknown && self.whole_fee.is_some()
-    }
-
-    /// Only full payment details can show that a transaction moved the
-    /// account's transparent funds into its shielded pools and paid no one.
-    /// Local intent and a full reconstruction show every payment. A net
-    /// reconstruction shows that the account's transparent spends became its
-    /// own Ironwood receipt and the whole transaction's fee, which stays
-    /// unattributed: the row shows the receipt and that fee, charging none of
-    /// it. A provisional or unread history never justifies a shielding.
-    fn justifies_shielding(self) -> bool {
-        self.details_complete
-            && !self.provisional
-            && match self.classification {
-                Some(
-                    HistoryClassification::LocalIntent
-                    | HistoryClassification::Reconstructed
-                    | HistoryClassification::NetReconstructed,
-                ) => true,
-                Some(HistoryClassification::Provisional) | None => false,
-            }
+    /// Whether a movement amount retains a whole fee whose share the account
+    /// is not attributed.
+    fn movement_retains_fee(&self) -> bool {
+        matches!(self.fee, FeeState::Unattributed { .. })
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TxOutput {
-    txid: Vec<u8>,
     output_pool: i64,
     output_index: i64,
     from_account_uuid: Option<Vec<u8>>,
-    to_account_uuid: Option<Vec<u8>>,
     to_address: Option<String>,
     sent_to_address: Option<String>,
     transparent_receiver_address: Option<String>,
-    to_key_scope: Option<i64>,
     value: u64,
     memo: Option<Vec<u8>>,
-    note_version: Option<i64>,
 }
 
 impl TxOutput {
@@ -953,49 +858,54 @@ impl TxOutput {
             self.to_address.clone()
         }
     }
-}
 
-/// One output of a transaction: its pool and its index within that pool.
-type OutputKey = (i64, i64);
-
-impl TxOutput {
-    fn key(&self) -> OutputKey {
-        (self.output_pool, self.output_index)
+    /// Whether this is the output `key` names.
+    fn is(&self, key: &OutputRef) -> bool {
+        self.output_index == i64::from(key.index) && Some(self.output_pool) == pool_code(key.pool)
     }
 }
 
-#[derive(Default, Clone)]
-struct ActivityAmounts {
-    amount: u64,
-    output_count: usize,
-    /// The outputs counted, in the order they were added.
-    outputs: Vec<OutputKey>,
-    has_transparent: bool,
-    has_sapling: bool,
-    has_orchard: bool,
-    has_ironwood: bool,
+/// The wallet database's code of `pool`.
+fn pool_code(pool: PoolType) -> Option<i64> {
+    match pool {
+        PoolType::Transparent => Some(TRANSPARENT_POOL),
+        pool if pool == PoolType::SAPLING => Some(SAPLING_POOL),
+        pool if pool == PoolType::ORCHARD => Some(ORCHARD_POOL),
+        pool if pool == PoolType::IRONWOOD => Some(IRONWOOD_POOL),
+        _ => None,
+    }
 }
 
-impl ActivityAmounts {
-    fn add_output(&mut self, output: &TxOutput) {
-        self.amount = self.amount.saturating_add(output.value);
-        self.output_count += 1;
-        self.outputs.push(output.key());
-        match output.output_pool {
-            TRANSPARENT_POOL => self.has_transparent = true,
-            SAPLING_POOL => self.has_sapling = true,
-            ORCHARD_POOL => self.has_orchard = true,
-            IRONWOOD_POOL => self.has_ironwood = true,
-            _ => {}
+/// Which pools a row's outputs are in.
+#[derive(Default)]
+struct RowPools {
+    transparent: bool,
+    sapling: bool,
+    orchard: bool,
+    ironwood: bool,
+}
+
+impl RowPools {
+    fn of(outputs: &[OutputRef]) -> Self {
+        let mut pools = Self::default();
+        for output in outputs {
+            match pool_code(output.pool) {
+                Some(TRANSPARENT_POOL) => pools.transparent = true,
+                Some(SAPLING_POOL) => pools.sapling = true,
+                Some(ORCHARD_POOL) => pools.orchard = true,
+                Some(IRONWOOD_POOL) => pools.ironwood = true,
+                _ => {}
+            }
         }
+        pools
     }
 
     fn display_pool(&self) -> &'static str {
         // Preserve the legacy grouping used by Gift Card activity.
         match (
-            self.has_transparent,
-            self.has_sapling || self.has_orchard,
-            self.has_ironwood,
+            self.transparent,
+            self.sapling || self.orchard,
+            self.ironwood,
         ) {
             (true, false, false) => "transparent",
             (false, true, false) => "shielded",
@@ -1006,12 +916,7 @@ impl ActivityAmounts {
     }
 
     fn activity_pool(&self) -> &'static str {
-        match (
-            self.has_transparent,
-            self.has_sapling,
-            self.has_orchard,
-            self.has_ironwood,
-        ) {
+        match (self.transparent, self.sapling, self.orchard, self.ironwood) {
             (true, false, false, false) => "transparent",
             (false, true, false, false) => "sapling",
             (false, false, true, false) => "orchard",
@@ -1020,23 +925,6 @@ impl ActivityAmounts {
             _ => "mixed",
         }
     }
-}
-
-#[derive(Default, Clone)]
-struct ActivitySummary {
-    sent: ActivityAmounts,
-    received: ActivityAmounts,
-    /// Actual owned transparent receipts, excluding shielded change.
-    received_transparent: ActivityAmounts,
-    /// Owned transparent change/funding excluded from the visible outgoing residual.
-    internal_transparent: ActivityAmounts,
-    /// An owned receiver may later prove to be hidden change rather than a visible receipt.
-    unknown_transparent_scope: bool,
-    shielded: ActivityAmounts,
-    internal_ironwood_transition: ActivityAmounts,
-    own_transparent_output_amount: u64,
-    has_own_transparent_output: bool,
-    has_external_transparent_send: bool,
 }
 
 type FundingStepMatchKey = (String, i64, u64);
@@ -1050,8 +938,6 @@ struct SuppressedFundingStepFees {
 
 struct ClassifiedTx {
     info: TransactionInfo,
-    /// The outputs this row counted, which its receipt shows.
-    outputs: Vec<OutputKey>,
     sort_pending_rank: u8,
     sort_timestamp: u64,
     sort_mined_height: u64,
@@ -1077,14 +963,19 @@ fn read_transaction_history(
     limit: Option<u32>,
     account: AccountUuid,
 ) -> Result<Vec<TransactionInfo>, String> {
-    let uuid = account.expose_uuid();
-    let uuid_bytes = uuid.as_bytes();
-    // All library and output reads borrow this connection. The summary API joins
-    // the caller's transaction, keeping one WAL snapshot across concurrent sync.
+    // Both library reads borrow this connection, keeping one WAL snapshot
+    // across concurrent sync.
     let read_tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("SQL error: {e}"))?;
     let mut bases = read_history_bases(&read_tx, db_path, network, account)?;
+    if bases.is_empty() {
+        return Ok(Vec::new());
+    }
+    attach_history_details(&read_tx, db_path, network, account, &mut bases)?;
+    // A Gift Card claim shows the mined height Vizor recorded for it. The
+    // library does not know these records, so only its rows that depend on
+    // the mined height are re-derived ([`TxBase::activity`]).
     if let Some(state) = crate::wallet::sync_engine::gift_card_claim::snapshot_from_conn(&read_tx)?
     {
         for base in &mut bases {
@@ -1105,28 +996,9 @@ fn read_transaction_history(
             }
         }
     }
-    if bases.is_empty() {
-        return Ok(Vec::new());
-    }
-    attach_history_details(&read_tx, db_path, network, account, &mut bases)?;
-
-    // Bind the txids already in `bases` instead of re-querying
-    // `v_transactions` for DISTINCT txid. That view selects
-    // `transactions.raw`, so a second pass would re-materialize every
-    // raw blob even though this path never reads them.
-    let outputs_by_txid = read_history_outputs(
-        &read_tx,
-        uuid_bytes,
-        bases.iter().map(|base| base.txid.as_slice()),
-    )?;
     drop(read_tx);
 
-    Ok(assemble_history(
-        &bases,
-        &outputs_by_txid,
-        uuid_bytes,
-        limit,
-    ))
+    Ok(assemble_history(&bases, limit))
 }
 
 /// How many transactions one library history read covers.
@@ -1153,15 +1025,13 @@ fn attach_history_details(
             .transaction_history_details(account, batch)
             .map_err(|e| format!("Failed to read history details: {e}"))?
         {
-            read.insert(
-                details.txid.as_ref().to_vec(),
-                HistoryCompleteness::of(&details),
-            );
+            read.insert(details.txid.as_ref().to_vec(), HistoryView::of(&details));
         }
     }
     for base in bases {
-        let history = read.get(&base.txid).copied().unwrap_or(base.history);
-        base.attach_history(history);
+        if let Some(history) = read.remove(&base.txid) {
+            base.history = history;
+        }
     }
     Ok(())
 }
@@ -1172,37 +1042,13 @@ fn txid_of(bytes: &[u8]) -> Result<TxId, String> {
         .map_err(|_| "Invalid txid length".to_string())
 }
 
-/// Turn raw history rows into the display list.
-///
-/// This is the whole classification pipeline — summarize, suppress
-/// funding steps, classify, filter, sort, truncate — with no database
-/// access, so it can be exercised directly from `TxBase` / `TxOutput`
-/// values instead of through SQL fixtures. Library summaries and output reads
-/// provide local facts; completeness remains a separate library read. Migrated
-/// wallet fixtures cover their agreement and snapshot boundary, while synthetic
-/// fixtures exercise display classification independently.
-fn assemble_history(
-    bases: &[TxBase],
-    outputs_by_txid: &HashMap<Vec<u8>, Vec<TxOutput>>,
-    uuid_bytes: &[u8],
-    limit: Option<u32>,
-) -> Vec<TransactionInfo> {
-    let summaries: HashMap<Vec<u8>, ActivitySummary> = bases
-        .iter()
-        .map(|base| {
-            let outputs = outputs_by_txid
-                .get(&base.txid)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (
-                base.txid.clone(),
-                summarize_activity_outputs(base, outputs, uuid_bytes),
-            )
-        })
-        .collect();
-    let external_send_keys = build_external_send_keys(bases, &summaries);
+/// Turn history rows into the display list: pair funding steps, build each
+/// transaction's rows from its library activity, sort and truncate. No
+/// database access.
+fn assemble_history(bases: &[TxBase], limit: Option<u32>) -> Vec<TransactionInfo> {
+    let external_send_keys = build_external_send_keys(bases);
     let suppressed_funding_step_fees =
-        build_suppressed_funding_step_fees(bases, &summaries, &external_send_keys);
+        build_suppressed_funding_step_fees(bases, &external_send_keys);
 
     let bases_by_id: HashMap<i64, &TxBase> = bases
         .iter()
@@ -1210,7 +1056,6 @@ fn assemble_history(
         .collect();
     let mut visible = Vec::new();
     for base in bases {
-        let summary = summaries.get(&base.txid).cloned().unwrap_or_default();
         if suppressed_funding_step_fees
             .suppressed_funding_txids
             .contains(&base.transaction_id)
@@ -1218,7 +1063,7 @@ fn assemble_history(
             continue;
         }
 
-        let extra_sent_fee = if summary.has_external_transparent_send {
+        let extra_sent_fee = if base.history.funding_step.external_transparent_send {
             suppressed_funding_step_fees
                 .extra_fee_by_external_txid
                 .get(&base.transaction_id)
@@ -1228,7 +1073,7 @@ fn assemble_history(
             Fee::NotApplicable
         };
 
-        let mut rows = classify_history_tx(base, &summary, extra_sent_fee);
+        let mut rows = activity_rows(base, extra_sent_fee);
         if let Some(parent_id) = suppressed_funding_step_fees
             .funding_parent_by_external_txid
             .get(&base.transaction_id)
@@ -1442,220 +1287,12 @@ pub(crate) fn get_transaction_detail(
     let read_tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("SQL error: {e}"))?;
-    let mut detail =
-        read_transaction_detail(&read_tx, network, account, txid_hex, tx_kind, |base| {
-            attach_history_details(
-                &read_tx,
-                db_path,
-                network,
-                account,
-                std::slice::from_mut(base),
-            )
-        })?;
-    let (view, display_source) =
-        transparent_details_view(&read_tx, db_path, network, account, &detail.txid_hex)
-            .map_or((None, DisplaySource::Unknown), |(view, source)| {
-                (Some(view), source)
-            });
-    detail.transparent_details = view;
-    apply_display_source(&mut detail, display_source);
-    apply_display_recipient(&mut detail);
-    apply_display_receive_completion(&mut detail);
-    Ok(detail)
-}
-
-/// Who funded a transaction, as the transparent detail view says when the
-/// receipt's own reading of the raw transaction did not: validated display
-/// facts, or the view's reading of a stored raw transaction, which also knows
-/// P2SH and uncompressed-key spends.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DisplaySource {
-    /// The facts say nothing a receipt does not already show.
-    Unknown,
-    /// No transparent input: funded only from the shielded pools.
-    Shielded,
-    /// The first address-shaped input's address, which the account does not
-    /// own. Other inputs may have other addresses.
-    Address(String),
-}
-
-/// Fills in a receive's source from validated display facts when its raw
-/// transaction could not say: the shielded pool for a transaction with no
-/// transparent input, as the raw-transaction source reports it, or the
-/// funding address the publisher resolved. Only a receive whose source is
-/// still unknown changes; no account or funder name follows from the facts.
-fn apply_display_source(detail: &mut TransactionDetail, source: DisplaySource) {
-    if !matches!(detail.tx_kind.as_str(), "received" | "receiving")
-        || detail.source_address.is_some()
-    {
-        return;
-    }
-    match (detail.source_pool.as_deref(), source) {
-        (_, DisplaySource::Unknown) => {}
-        (Some("unknown"), DisplaySource::Shielded) => {
-            detail.source_pool = Some("shielded".to_string())
-        }
-        // A transparent source the receipt could not name keeps its pool and
-        // gains the address.
-        (Some("unknown" | "transparent"), DisplaySource::Address(address)) => {
-            detail.source_address = Some(address);
-            detail.source_pool = Some("transparent".to_string());
-        }
-        _ => {}
-    }
-}
-
-/// Names a send's recipient from its transparent detail view when the wallet
-/// recorded none, as for a send recovered privately.
-///
-/// Only when the view has no unresolved shared or mixed funding, lists every
-/// transparent output, and the account's
-/// balance moved by exactly the fee plus the outputs it does not own: then
-/// those outputs are the transaction's only payees, and no recipient the
-/// wallet cannot see (a shielded one) exists. One such output is the
-/// recipient. None means the account paid itself, and its one transparent
-/// address among the outputs is the destination. Two payees leave the
-/// recipient unestablished. An established recipient completes the receipt
-/// once the transaction's effects are settled
-/// ([`TransactionDetail::effects_settled`]): its payees are transparent
-/// outputs, which carry no memo. The balance alone does not settle it: until
-/// then an owned effect the wallet has not found can still change what the
-/// outputs account for, so the receipt names the recipient and stays
-/// provisional.
-fn apply_display_recipient(detail: &mut TransactionDetail) {
-    if detail.tx_kind != "sent" || detail.primary_address.is_some() || detail.fee.is_none() {
-        return;
-    }
-    let Some(rows) = display_accounted_rows(detail) else {
-        return;
-    };
-    let others: Vec<&TransparentRecipientRow> = rows.iter().filter(|row| !row.is_own).collect();
-    let recipient = match others.as_slice() {
-        [one] => one.address.clone(),
-        [] => {
-            let own: std::collections::BTreeSet<&str> = rows
-                .iter()
-                .filter_map(|row| row.address.as_deref())
-                .collect();
-            match own.into_iter().collect::<Vec<_>>().as_slice() {
-                [address] => Some((*address).to_owned()),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    if recipient.is_some() && detail.effects_settled {
-        detail.details_complete = true;
-        detail.provisional = false;
-    }
-    detail.primary_address = recipient;
-}
-
-/// The transparent view's rows when they account for the transaction's whole
-/// effect on the account: no shared or mixed funding is unresolved, every
-/// transparent output is listed, and the account's balance moved by exactly
-/// what they say. When the account paid
-/// (its fee is known), that is minus the fee and the outputs it does not
-/// own; when it paid nothing, it is the outputs it owns. Other funders can
-/// offset unseen payments without breaking this equality, so those omissions
-/// must keep attribution and completeness unresolved.
-fn display_accounted_rows(detail: &TransactionDetail) -> Option<&[TransparentRecipientRow]> {
-    let Some(TransparentDetailsView::Available {
-        rows,
-        output_count,
-        omissions,
-    }) = &detail.transparent_details
-    else {
-        return None;
-    };
-    if rows.is_empty()
-        || rows.len() != *output_count as usize
-        || omissions.iter().any(|omission| {
-            matches!(
-                omission.as_str(),
-                "shared_funding" | "shielded_and_transparent_funding"
-            )
-        })
-    {
-        return None;
-    }
-    let sum = |own: bool| -> i128 {
-        rows.iter()
-            .filter(|row| row.is_own == own)
-            .map(|row| i128::from(row.amount_zatoshi))
-            .sum()
-    };
-    let expected = match detail.fee {
-        Some(fee) => -(sum(false) + i128::from(fee)),
-        None => sum(true),
-    };
-    (i128::from(detail.account_balance_delta) == expected).then_some(rows.as_slice())
-}
-
-/// Completes a settled receive whose transparent details establish it: its
-/// effects are settled ([`TransactionDetail::effects_settled`]), its source is
-/// known (the shielded pool or an address), everything it shows is a
-/// transparent output, which carries no memo, and the rows account for its
-/// whole effect on the account ([`display_accounted_rows`]). The balance
-/// identity is necessary, not sufficient: an unsettled receive stays
-/// provisional however its rows balance.
-fn apply_display_receive_completion(detail: &mut TransactionDetail) {
-    let source_known =
-        detail.source_pool.as_deref() == Some("shielded") || detail.source_address.is_some();
-    if detail.tx_kind == "received"
-        && detail.effects_settled
-        && source_known
-        && !detail.outputs.is_empty()
-        && detail
-            .outputs
-            .iter()
-            .all(|output| output.pool == "transparent")
-        && display_accounted_rows(detail).is_some()
-    {
-        detail.details_complete = true;
-        detail.provisional = false;
-    }
-}
-
-/// Whether display facts establish that a transaction was funded only from
-/// the shielded pools: validated service facts (raw bytes already decided the
-/// source when present) for a non-coinbase transaction with no transparent
-/// input and a shielded component.
-fn display_facts_show_shielded_source(
-    details: &zcash_client_backend::data_api::transparent_ledger::TransparentDisplayDetails,
-) -> bool {
-    use zcash_client_backend::data_api::transparent_ledger::{
-        TransparentDisplaySource, TransparentDisplayViewSender,
-    };
-    matches!(details.source, TransparentDisplaySource::Display(_))
-        && details.sender == TransparentDisplayViewSender::Shielded
-}
-
-/// What the view says about who funded the transaction: the shielded pools
-/// ([`display_facts_show_shielded_source`]) or a funding address the account
-/// does not own, from display facts or a stored raw transaction. A source the
-/// receipt read from raw bytes itself takes precedence.
-fn display_facts_source(
-    details: &zcash_client_backend::data_api::transparent_ledger::TransparentDisplayDetails,
-) -> DisplaySource {
-    use zcash_client_backend::data_api::transparent_ledger::TransparentDisplayViewSender;
-    if display_facts_show_shielded_source(details) {
-        return DisplaySource::Shielded;
-    }
-    match &details.sender {
-        TransparentDisplayViewSender::Address {
-            address,
-            owned: false,
-        } => DisplaySource::Address(address.encoded.clone()),
-        _ => DisplaySource::Unknown,
-    }
+    read_transaction_detail(&read_tx, db_path, network, account, txid_hex, tx_kind)
 }
 
 /// The name a receipt uses for an omission.
-fn omission_name(
-    omission: &zcash_client_backend::data_api::transparent_ledger::TransparentDisplayOmission,
-) -> &'static str {
-    use zcash_client_backend::data_api::transparent_ledger::TransparentDisplayOmission as O;
+fn omission_name(omission: &TransparentDisplayOmission) -> &'static str {
+    use TransparentDisplayOmission as O;
     match omission {
         O::NonStandardSender => "non_standard_sender",
         O::MultipleSourceScripts => "multiple_source_scripts",
@@ -1666,43 +1303,21 @@ fn omission_name(
     }
 }
 
-/// Loop 4's view of `txid_hex` for `account`, and whether its facts show a
-/// shielded-only source ([`display_facts_show_shielded_source`]). A view that
-/// cannot be read is left out rather than failing the detail.
-fn transparent_details_view(
-    read_tx: &rusqlite::Connection,
-    db_path: &str,
-    network: WalletNetwork,
-    account: AccountUuid,
-    txid_hex: &str,
-) -> Option<(TransparentDetailsView, DisplaySource)> {
-    use zcash_client_backend::data_api::transparent_ledger::TransparentDisplayView;
-    let txid = hex::decode(txid_hex).ok()?;
-    // Funding omissions and output ownership must share the snapshot that
-    // supplied the receipt's account movement, fee and settled effects.
-    let db = wallet_db_on(read_tx, db_path, network);
-    let view = crate::wallet::sync_engine::transparent_details::detail_view(&db, account, &txid);
-    let view = match view {
-        Ok(view) => view?,
-        Err(_) => {
-            log::warn!("transaction detail: transparent details unreadable");
-            return None;
-        }
-    };
-    Some(match view {
+/// Loop 4's view of a transaction, as the receipt shows it.
+fn transparent_details_view(view: TransparentDisplayView) -> TransparentDetailsView {
+    match view {
         TransparentDisplayView::Available(details) => {
-            use zcash_client_backend::data_api::transparent_ledger::TransparentDisplaySource;
-            let source = display_facts_source(&details);
             // What the receipt does not show, whatever the source. A raw
             // transaction lists every output, so only display facts can omit
             // outputs; that is the one omission a public load fills in.
             let raw = !matches!(details.source, TransparentDisplaySource::Display(_));
             let mut omissions: Vec<String> = Vec::new();
             for omission in &details.omissions {
+                if raw && *omission == TransparentDisplayOmission::MoreThanTwoOutputs {
+                    continue;
+                }
                 let name = omission_name(omission);
-                if (raw && name == "more_than_two_outputs")
-                    || omissions.iter().any(|known| known == name)
-                {
+                if omissions.iter().any(|known| known == name) {
                     continue;
                 }
                 omissions.push(name.to_owned());
@@ -1717,89 +1332,76 @@ fn transparent_details_view(
                     is_own: output.owned,
                 })
                 .collect();
-            (
-                TransparentDetailsView::Available {
-                    rows,
-                    output_count: details.output_count,
-                    omissions,
-                },
-                source,
-            )
+            TransparentDetailsView::Available {
+                rows,
+                output_count: details.output_count,
+                omissions,
+            }
         }
-        TransparentDisplayView::Pending => {
-            (TransparentDetailsView::Pending, DisplaySource::Unknown)
-        }
-        TransparentDisplayView::Unavailable => {
-            (TransparentDetailsView::Unavailable, DisplaySource::Unknown)
-        }
-        TransparentDisplayView::NotCovered => {
-            (TransparentDetailsView::NotCovered, DisplaySource::Unknown)
-        }
-    })
+        TransparentDisplayView::Pending => TransparentDetailsView::Pending,
+        TransparentDisplayView::Unavailable => TransparentDetailsView::Unavailable,
+        TransparentDisplayView::NotCovered => TransparentDetailsView::NotCovered,
+    }
 }
 
-/// `get_transaction_detail` within an open read transaction. `attach_history`
-/// records the history view of the transaction on its base.
+/// `get_transaction_detail` within an open read transaction: the library's
+/// receipt of the transaction, with the outputs its `tx_kind` row counts.
 fn read_transaction_detail(
     read_tx: &rusqlite::Connection,
+    db_path: &str,
     network: WalletNetwork,
     account: AccountUuid,
     txid_hex: &str,
     tx_kind: &str,
-    attach_history: impl FnOnce(&mut TxBase) -> Result<(), String>,
 ) -> Result<TransactionDetail, String> {
     let uuid_bytes = account.expose_uuid().as_bytes().to_vec();
     let txid = hex::decode(txid_hex).map_err(|e| format!("Invalid txid: {e}"))?;
-    if txid.len() != 32 {
-        return Err("Invalid txid length".to_string());
-    }
+    let txid_id = txid_of(&txid)?;
 
-    let Some(mut base) = read_history_base_by_txid(read_tx, &uuid_bytes, &txid)? else {
+    let db = wallet_db_on(read_tx, db_path, network);
+    let Some(receipt) = db
+        .transaction_receipt(account, txid_id)
+        .map_err(|e| format!("Failed to read the receipt: {e}"))?
+    else {
         return Err("Transaction not found".to_string());
     };
-    attach_history(&mut base)?;
+    let TransactionReceipt {
+        details,
+        display,
+        attribution,
+    } = receipt;
+    let history = HistoryView::of(&details);
+
     let mut outputs = read_outputs_for_tx(read_tx, &uuid_bytes, &txid)?;
     outputs.sort_by(|a, b| {
         a.output_index
             .cmp(&b.output_index)
             .then_with(|| a.output_pool.cmp(&b.output_pool))
     });
-
-    let effects_settled = base.history.effects_settled
-        && base.mined_height.is_some()
-        && !outputs
-            .iter()
-            .any(|output| has_unknown_transparent_scope(output, uuid_bytes.as_slice()));
-    let shown = receipt_output_keys(&base, &outputs, uuid_bytes.as_slice(), tx_kind);
+    // A receipt shows exactly the outputs its Activity row counts.
+    let shown = receipt_outputs(&details.activity, tx_kind);
     let visible_outputs = outputs
         .iter()
-        .filter(|output| shown.contains(&output.key()))
+        .filter(|output| shown.iter().any(|key| output.is(key)))
         .collect::<Vec<_>>();
     let memo = visible_outputs
         .iter()
         .find_map(|output| decode_text_memo(output.memo.as_deref()));
-    let primary_address = if tx_kind == "sent" {
+    let received = matches!(tx_kind, "received" | "receiving");
+    let mut primary_address = if tx_kind == "sent" {
         visible_outputs
             .iter()
             .find_map(|output| output.detail_address(tx_kind))
     } else {
         None
     };
-    let source = if matches!(tx_kind, "received" | "receiving") && !visible_outputs.is_empty() {
-        let raw_tx = read_raw_transaction_for_tx(read_tx, &uuid_bytes, &txid)?;
-        Some(received_source_from_raw_transaction(
-            network,
-            raw_tx.as_deref(),
-        ))
-    } else {
-        None
-    };
-    let source_account_uuid = if matches!(tx_kind, "received" | "receiving") {
+    let source = (received && !visible_outputs.is_empty()).then_some(&attribution.source);
+    let source_account_uuid = if received {
         received_source_account(&visible_outputs)
     } else {
         None
     };
-    let outputs = visible_outputs
+    let detail_outputs = visible_outputs
         .into_iter()
         .map(|output| TransactionDetailOutput {
             address: output.detail_address(tx_kind),
@@ -1810,34 +1412,85 @@ fn read_transaction_detail(
         })
         .collect();
 
+    let mut details_complete = history.details_complete;
+    let mut provisional = history.provisional;
+    // A send the wallet recorded no recipient for: its transparent details
+    // can name the recipient, and complete the receipt once its effects are
+    // settled (`ReceiptAttribution::recipient`).
+    if tx_kind == "sent" && primary_address.is_none() {
+        if let Attribution::Established(recipient) = &attribution.recipient {
+            primary_address = Some(recipient.encoded.clone());
+            if attribution.recipient_completes {
+                details_complete = true;
+                provisional = false;
+            }
+        }
+    }
+    // A settled receive its transparent details account for is complete
+    // (`ReceiptAttribution::receive_completes`).
+    if tx_kind == "received" && attribution.receive_completes {
+        details_complete = true;
+        provisional = false;
+    }
+    let spent = details.account_movement.spent > 0;
+
     Ok(TransactionDetail {
-        txid_hex: hex::encode(&base.txid),
+        txid_hex: hex::encode(&txid),
         tx_kind: tx_kind.to_string(),
         primary_address,
-        source_address: source.as_ref().and_then(|s| s.address.clone()),
-        source_pool: source.map(|s| s.pool.to_string()),
+        source_address: source.and_then(|s| s.address.as_ref().map(|a| a.encoded.clone())),
+        source_pool: source.map(|s| source_pool_label(s.pool).to_string()),
         source_account_uuid,
         memo,
-        outputs,
-        details_complete: base.history.details_complete,
-        provisional: base.history.provisional,
-        effects_settled,
-        transparent_details: None,
-        account_balance_delta: base.account_balance_delta,
-        network_fee: base.history.whole_fee,
+        outputs: detail_outputs,
+        details_complete,
+        provisional,
+        effects_settled: attribution.effects_settled,
+        transparent_details: display.map(transparent_details_view),
+        account_balance_delta: i64::try_from(details.account_movement.net())
+            .map_err(|_| "Invalid account movement".to_string())?,
+        network_fee: details
+            .whole_fee
+            .filter(|_| spent)
+            .map(|fee| fee.into_u64()),
         // The account's fee, or the whole transaction's exact fee when the
-        // account's share is unknown (a private recovery). The display view's
-        // funding omissions separately prevent balance-only attribution.
-        fee: match base.history.fee {
-            Fee::Known(fee) => Some(fee),
-            Fee::Unknown | Fee::NotApplicable => base.history.whole_fee,
+        // account's share is not attributed (a private recovery).
+        fee: match details.fee {
+            FeeState::Known(fee) | FeeState::Unattributed { whole: fee } => Some(fee.into_u64()),
+            FeeState::Unknown | FeeState::NotApplicable => None,
         },
     })
 }
 
-struct TransactionSource {
-    address: Option<String>,
-    pool: &'static str,
+fn source_pool_label(pool: SourcePool) -> &'static str {
+    match pool {
+        SourcePool::Unknown => "unknown",
+        SourcePool::Shielded => "shielded",
+        SourcePool::Transparent => "transparent",
+    }
+}
+
+/// The outputs the row of `tx_kind` counts, which its receipt shows. A role
+/// the transaction has no row for shows none; a receive stays itself once it
+/// is mined.
+fn receipt_outputs<'a>(activity: &'a AccountActivity, tx_kind: &str) -> &'a [OutputRef] {
+    let received = matches!(tx_kind, "received" | "receiving");
+    match activity {
+        AccountActivity::Shielding { outputs, .. } if tx_kind == "shielded" => outputs,
+        AccountActivity::PoolMigration { outputs, .. } if tx_kind == "migration" => outputs,
+        AccountActivity::Outputs {
+            sent: Some(rows), ..
+        } if tx_kind == "sent" => &rows.outputs,
+        AccountActivity::Outputs {
+            received: Some(rows),
+            ..
+        }
+        | AccountActivity::InferredOutgoing {
+            received: Some(rows),
+            ..
+        } if received => &rows.outputs,
+        _ => &[],
+    }
 }
 
 /// The wallet account that sent the received outputs a receipt shows, from
@@ -1857,187 +1510,8 @@ fn received_source_account(outputs: &[&TxOutput]) -> Option<String> {
         .map(|uuid| uuid.to_string())
 }
 
-fn received_source_from_raw_transaction(
-    network: WalletNetwork,
-    raw_tx: Option<&[u8]>,
-) -> TransactionSource {
-    let Some(raw_tx) = raw_tx else {
-        return TransactionSource {
-            address: None,
-            pool: "unknown",
-        };
-    };
-
-    let Ok(tx) = Transaction::read(raw_tx, BranchId::Sapling) else {
-        return TransactionSource {
-            address: None,
-            pool: "unknown",
-        };
-    };
-
-    let Some(bundle) = tx.transparent_bundle() else {
-        return TransactionSource {
-            address: None,
-            pool: "shielded",
-        };
-    };
-
-    if bundle.vin.is_empty() {
-        return TransactionSource {
-            address: None,
-            pool: "shielded",
-        };
-    }
-
-    TransactionSource {
-        address: bundle.vin.iter().find_map(|input| {
-            transparent_source_address_from_script_sig(network, input.script_sig().0 .0.as_slice())
-        }),
-        pool: "transparent",
-    }
-}
-
-fn transparent_source_address_from_script_sig(
-    network: WalletNetwork,
-    script_sig: &[u8],
-) -> Option<String> {
-    let pubkey = parse_standard_p2pkh_pubkey_from_script_sig(script_sig)?;
-    let address = TransparentAddress::PublicKeyHash(transparent::util::hash160::hash(pubkey));
-    Some(zcash_keys::encoding::encode_transparent_address_p(
-        &network, &address,
-    ))
-}
-
-fn parse_standard_p2pkh_pubkey_from_script_sig(script_sig: &[u8]) -> Option<&[u8]> {
-    let pushes = parse_script_pushes(script_sig)?;
-    pushes
-        .into_iter()
-        .rev()
-        .find(|push| push.len() == 33 && matches!(push.first(), Some(0x02 | 0x03)))
-}
-
-fn parse_script_pushes(script: &[u8]) -> Option<Vec<&[u8]>> {
-    let mut pushes = Vec::new();
-    let mut index = 0;
-    while index < script.len() {
-        let opcode = script[index];
-        index += 1;
-
-        let len = match opcode {
-            0x01..=0x4b => opcode as usize,
-            0x4c => {
-                let len = *script.get(index)? as usize;
-                index += 1;
-                len
-            }
-            0x4d => {
-                let bytes = script.get(index..index + 2)?;
-                index += 2;
-                u16::from_le_bytes([bytes[0], bytes[1]]) as usize
-            }
-            _ => return None,
-        };
-
-        let data = script.get(index..index + len)?;
-        pushes.push(data);
-        index += len;
-    }
-
-    Some(pushes)
-}
-
-fn read_raw_transaction_for_tx(
-    conn: &rusqlite::Connection,
-    account_uuid: &[u8],
-    txid: &[u8],
-) -> Result<Option<Vec<u8>>, String> {
-    conn.query_row(
-        "SELECT raw FROM v_transactions \
-         WHERE account_uuid = ?1 AND txid = ?2 AND raw IS NOT NULL \
-         LIMIT 1",
-        rusqlite::params![account_uuid, txid],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| format!("Query error: {e}"))
-}
-
-fn read_history_base_by_txid(
-    conn: &rusqlite::Connection,
-    account_uuid: &[u8],
-    txid: &[u8],
-) -> Result<Option<TxBase>, String> {
-    let mut stmt = conn
-        .prepare(
-            r#"
-        SELECT
-            vt.txid,
-            COALESCE(tx.id_tx, -1) AS transaction_id,
-            vt.mined_height,
-            -- NULL when no scanned block or expiry height makes expiry comparable: pending.
-            COALESCE(vt.expired_unmined, 0) AS expired_unmined,
-            vt.account_balance_delta,
-            vt.fee_paid AS fee_paid,
-            COALESCE(vt.block_time, 0) AS block_time,
-            COALESCE(vt.total_spent, 0) AS total_spent,
-            COALESCE(vt.total_received, 0) AS total_received,
-            COALESCE(vt.is_shielding, 0) AS is_shielding,
-            vt.expiry_height,
-            COALESCE(vt.tx_index, -1) AS tx_index,
-            tx.created,
-            CAST(COALESCE(strftime('%s', tx.created), 0) AS INTEGER) AS created_time,
-            EXISTS (
-                SELECT 1
-                FROM transactions spent_tx
-                JOIN orchard_received_note_spends spent
-                    ON spent.transaction_id = spent_tx.id_tx
-                JOIN orchard_received_notes spent_note
-                    ON spent_note.id = spent.orchard_received_note_id
-                WHERE spent_tx.txid = vt.txid
-                  AND spent_note.note_version = ?3
-            ) AS spent_orchard_note
-        FROM v_transactions vt
-        LEFT JOIN transactions tx ON tx.txid = vt.txid
-        WHERE vt.account_uuid = ?1
-          AND vt.txid = ?2
-        LIMIT 1
-        "#,
-        )
-        .map_err(|e| format!("SQL error: {e}"))?;
-
-    let row = stmt
-        .query_row(
-            rusqlite::params![account_uuid, txid, ORCHARD_NOTE_VERSION],
-            |row| {
-                let fee = row.get::<_, Option<i64>>(5)?.map(i64::unsigned_abs);
-                Ok(TxBase {
-                    txid: row.get(0)?,
-                    transaction_id: row.get(1)?,
-                    mined_height: row.get(2)?,
-                    expired_unmined: row.get(3)?,
-                    account_balance_delta: row.get(4)?,
-                    fee,
-                    block_time: row.get::<_, i64>(6)?.unsigned_abs(),
-                    total_spent: row.get::<_, i64>(7)?.unsigned_abs(),
-                    total_received: row.get::<_, i64>(8)?.unsigned_abs(),
-                    is_shielding: row.get(9)?,
-                    expiry_height: row.get(10)?,
-                    tx_index: row.get(11)?,
-                    created: row.get(12)?,
-                    created_time: row.get::<_, i64>(13)?.unsigned_abs(),
-                    spent_orchard_note: row.get(14)?,
-                    history: HistoryCompleteness::unread(fee),
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    Ok(row)
-}
-
 /// Read the library-owned accounting projection through the caller's connection.
-/// Completeness and output reads must stay in the same transaction as this read.
+/// The history details read must stay in the same transaction as this read.
 fn read_history_bases(
     conn: &rusqlite::Connection,
     db_path: &str,
@@ -2058,117 +1532,18 @@ impl From<TransactionSummary> for TxBase {
             mined_height: summary.mined_height.map(u32::from),
             expired_unmined: summary.expired_unmined,
             account_balance_delta: summary.account_balance_delta,
-            fee: summary.fee,
             block_time: summary.block_time.unwrap_or(0),
             total_spent: summary.total_spent,
             total_received: summary.total_received,
-            is_shielding: summary.is_shielding,
             expiry_height: summary
                 .expiry_height
                 .map(|height| i64::from(u32::from(height))),
             tx_index: summary.tx_index.map(i64::from).unwrap_or(-1),
             created: summary.created,
             created_time: summary.created_time.map(i64::unsigned_abs).unwrap_or(0),
-            spent_orchard_note: summary.has_orchard_spend,
-            history: HistoryCompleteness::unread(summary.fee),
+            history: HistoryView::unread(summary.mined_height.is_some()),
         }
     }
-}
-
-fn read_history_outputs<'a>(
-    conn: &rusqlite::Connection,
-    account_uuid: &[u8],
-    txids: impl IntoIterator<Item = &'a [u8]>,
-) -> Result<HashMap<Vec<u8>, Vec<TxOutput>>, String> {
-    let mut seen = HashSet::<&[u8]>::new();
-    let txid_array: Array = Rc::new(
-        txids
-            .into_iter()
-            .filter(|txid| seen.insert(*txid))
-            .map(|txid| Value::Blob(txid.to_vec()))
-            .collect(),
-    );
-    if txid_array.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut stmt = conn
-        .prepare(
-            r#"
-        SELECT
-            txo.txid,
-            txo.output_pool,
-            txo.output_index,
-            txo.from_account_uuid,
-            txo.to_account_uuid,
-            txo.to_address,
-            (
-                SELECT sn.to_address
-                FROM sent_notes sn
-                JOIN transactions st ON st.id_tx = sn.transaction_id
-                JOIN accounts from_acc ON from_acc.id = sn.from_account_id
-                WHERE st.txid = txo.txid
-                  AND from_acc.uuid = ?1
-                  AND sn.output_pool = txo.output_pool
-                  AND sn.output_index = txo.output_index
-                  AND sn.to_address IS NOT NULL
-                LIMIT 1
-            ) AS sent_to_address,
-            NULL AS transparent_receiver_address,
-            (
-                SELECT a.key_scope
-                FROM accounts acc
-                JOIN addresses a ON a.account_id = acc.id
-                WHERE acc.uuid = txo.to_account_uuid
-                  AND (
-                      a.address = txo.to_address
-                      OR a.cached_transparent_receiver_address = txo.to_address
-                  )
-                LIMIT 1
-            ) AS to_key_scope,
-            txo.value,
-            txo.memo,
-            (
-                SELECT orn.note_version
-                FROM orchard_received_notes orn
-                WHERE txo.output_pool IN (3, 4)
-                  AND orn.transaction_id = txo.transaction_id
-                  AND orn.action_index = txo.output_index
-                LIMIT 1
-            ) AS note_version
-        FROM v_tx_outputs txo
-        JOIN rarray(?2) AS active_tx ON active_tx.value = txo.txid
-        WHERE txo.from_account_uuid = ?1
-           OR txo.to_account_uuid = ?1
-        "#,
-        )
-        .map_err(|e| format!("SQL error: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![account_uuid, txid_array], |row| {
-            Ok(TxOutput {
-                txid: row.get(0)?,
-                output_pool: row.get(1)?,
-                output_index: row.get(2)?,
-                from_account_uuid: row.get(3)?,
-                to_account_uuid: row.get(4)?,
-                to_address: row.get(5)?,
-                sent_to_address: row.get(6)?,
-                transparent_receiver_address: row.get(7)?,
-                to_key_scope: row.get(8)?,
-                value: row.get::<_, i64>(9)?.unsigned_abs(),
-                memo: row.get(10)?,
-                note_version: row.get(11)?,
-            })
-        })
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    let mut outputs = HashMap::<Vec<u8>, Vec<TxOutput>>::new();
-    for row in rows {
-        let output = row.map_err(|e| format!("Row error: {e}"))?;
-        outputs.entry(output.txid.clone()).or_default().push(output);
-    }
-    Ok(outputs)
 }
 
 fn read_outputs_for_tx(
@@ -2180,11 +1555,9 @@ fn read_outputs_for_tx(
         .prepare(
             r#"
         SELECT
-            txo.txid,
             txo.output_pool,
             txo.output_index,
             txo.from_account_uuid,
-            txo.to_account_uuid,
             txo.to_address,
             (
                 SELECT sn.to_address
@@ -2211,27 +1584,8 @@ fn read_outputs_for_tx(
                   AND a.cached_transparent_receiver_address IS NOT NULL
                 LIMIT 1
             ) AS transparent_receiver_address,
-            (
-                SELECT a.key_scope
-                FROM accounts acc
-                JOIN addresses a ON a.account_id = acc.id
-                WHERE acc.uuid = txo.to_account_uuid
-                  AND (
-                      a.address = txo.to_address
-                      OR a.cached_transparent_receiver_address = txo.to_address
-                  )
-                LIMIT 1
-            ) AS to_key_scope,
             txo.value,
-            txo.memo,
-            (
-                SELECT orn.note_version
-                FROM orchard_received_notes orn
-                WHERE txo.output_pool IN (3, 4)
-                  AND orn.transaction_id = txo.transaction_id
-                  AND orn.action_index = txo.output_index
-                LIMIT 1
-            ) AS note_version
+            txo.memo
         FROM v_tx_outputs txo
         WHERE txo.txid = ?2
           AND (
@@ -2245,162 +1599,20 @@ fn read_outputs_for_tx(
     let rows = stmt
         .query_map(rusqlite::params![account_uuid, txid], |row| {
             Ok(TxOutput {
-                txid: row.get(0)?,
-                output_pool: row.get(1)?,
-                output_index: row.get(2)?,
-                from_account_uuid: row.get(3)?,
-                to_account_uuid: row.get(4)?,
-                to_address: row.get(5)?,
-                sent_to_address: row.get(6)?,
-                transparent_receiver_address: row.get(7)?,
-                to_key_scope: row.get(8)?,
-                value: row.get::<_, i64>(9)?.unsigned_abs(),
-                memo: row.get(10)?,
-                note_version: row.get(11)?,
+                output_pool: row.get(0)?,
+                output_index: row.get(1)?,
+                from_account_uuid: row.get(2)?,
+                to_address: row.get(3)?,
+                sent_to_address: row.get(4)?,
+                transparent_receiver_address: row.get(5)?,
+                value: row.get::<_, i64>(6)?.unsigned_abs(),
+                memo: row.get(7)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
-}
-
-/// Whether `output` is an owned transparent output whose key scope the wallet
-/// does not know, so whether it is change or a receipt is unresolved.
-fn has_unknown_transparent_scope(output: &TxOutput, account_uuid: &[u8]) -> bool {
-    output.output_pool == TRANSPARENT_POOL
-        && output.to_account_uuid.as_deref() == Some(account_uuid)
-        && !matches!(output.to_key_scope, Some(-1..=2))
-}
-
-fn summarize_activity_outputs(
-    base: &TxBase,
-    outputs: &[TxOutput],
-    account_uuid: &[u8],
-) -> ActivitySummary {
-    let mut summary = ActivitySummary::default();
-    let pays_others = pays_others(outputs, account_uuid);
-    let recovered_self_transfer = recovered_transparent_self_transfer(base);
-
-    for output in outputs {
-        let from_own = output.from_account_uuid.as_deref() == Some(account_uuid);
-        let to_own = output.to_account_uuid.as_deref() == Some(account_uuid);
-        // Private output recovery can establish the receiver's scope before it
-        // links the sender. Only account-funded recovery justifies treating an
-        // unlinked owned output as self-payment/change rather than incoming.
-        let recovered_from_own = output.from_account_uuid.is_none()
-            && (base.history.inferred_outgoing.is_some() || recovered_self_transfer);
-
-        if has_unknown_transparent_scope(output, account_uuid) {
-            summary.unknown_transparent_scope = true;
-        }
-
-        if base.is_shielding {
-            if to_own && is_shielded_pool(output.output_pool) {
-                summary.shielded.add_output(output);
-            }
-            continue;
-        }
-
-        if from_own && to_own && base.spent_orchard_note && is_ironwood_output(output) {
-            summary.internal_ironwood_transition.add_output(output);
-            continue;
-        }
-
-        if output.output_pool == 0 && from_own && to_own {
-            summary.has_own_transparent_output = true;
-            summary.own_transparent_output_amount = summary
-                .own_transparent_output_amount
-                .saturating_add(output.value);
-        }
-
-        if output.output_pool == TRANSPARENT_POOL
-            && to_own
-            && (from_own || recovered_from_own)
-            && matches!(output.to_key_scope, Some(1) | Some(2))
-        {
-            summary.internal_transparent.add_output(output);
-            continue;
-        }
-
-        let visible_self_output = (from_own || (recovered_self_transfer && recovered_from_own))
-            && to_own
-            && is_user_visible_self_output(output);
-        let visible_sent = from_own && (!to_own || (visible_self_output && !pays_others));
-        let visible_sent =
-            visible_sent || (recovered_self_transfer && visible_self_output && !pays_others);
-        let visible_received = to_own && (!from_own || visible_self_output);
-
-        if visible_sent {
-            summary.sent.add_output(output);
-            if output.output_pool == 0 && !to_own {
-                summary.has_external_transparent_send = true;
-            }
-        }
-        if visible_received {
-            summary.received.add_output(output);
-            if output.output_pool == TRANSPARENT_POOL {
-                summary.received_transparent.add_output(output);
-            }
-        }
-    }
-
-    summary
-}
-
-/// An exact zero payment outside the account plus its fully attributed fee
-/// proves self-funding. It does not mean an external-scope self-payment is
-/// change: that payment still belongs in Activity as Sent and Received.
-fn recovered_transparent_self_transfer(base: &TxBase) -> bool {
-    let debit = base.account_balance_delta.unsigned_abs();
-    base.history.inferred_payment == Some(0)
-        && base.account_balance_delta < 0
-        && base.history.whole_fee == Some(debit)
-        && base.history.reconstruction_fee() == Fee::Known(debit)
-}
-
-/// Whether the account paid anyone else in the transaction. A self-payment
-/// then shows only as the receive it is: counting it in the sent row too
-/// would report the account's own funds as paid away (H09: a transparent
-/// input paying an external address and the account's own shielded address).
-/// Without another recipient, a self-payment is the whole payment and shows
-/// as both a send and a receive.
-fn pays_others(outputs: &[TxOutput], account_uuid: &[u8]) -> bool {
-    outputs.iter().any(|output| {
-        output.from_account_uuid.as_deref() == Some(account_uuid)
-            && output.to_account_uuid.as_deref() != Some(account_uuid)
-    })
-}
-
-/// The outputs a receipt of `tx_kind` shows: exactly those its Activity row
-/// counted, by the same classification, so a receipt never shows more than
-/// its row established. A role the transaction has no row for shows none.
-fn receipt_output_keys(
-    base: &TxBase,
-    outputs: &[TxOutput],
-    account_uuid: &[u8],
-    tx_kind: &str,
-) -> Vec<OutputKey> {
-    let summary = summarize_activity_outputs(base, outputs, account_uuid);
-    classify_history_tx(base, &summary, Fee::NotApplicable)
-        .into_iter()
-        .find(|row| same_activity_role(&row.info.tx_kind, tx_kind))
-        .map(|row| row.outputs)
-        .unwrap_or_default()
-}
-
-/// Whether two Activity roles are the same one: a receive stays itself
-/// once it is mined.
-fn same_activity_role(first: &str, second: &str) -> bool {
-    first == second
-        || matches!(
-            (first, second),
-            ("received", "receiving") | ("receiving", "received")
-        )
-}
-
-fn is_shielded_pool(output_pool: i64) -> bool {
-    matches!(output_pool, SAPLING_POOL | ORCHARD_POOL | IRONWOOD_POOL)
 }
 
 fn exact_output_pool_label(output_pool: i64) -> Option<&'static str> {
@@ -2422,28 +1634,6 @@ fn output_pool_label(output_pool: i64) -> &'static str {
     }
 }
 
-fn is_ironwood_output(output: &TxOutput) -> bool {
-    output.output_pool == IRONWOOD_POOL || output.note_version == Some(IRONWOOD_NOTE_VERSION)
-}
-
-fn is_user_visible_self_output(output: &TxOutput) -> bool {
-    let has_external_or_foreign_scope = matches!(output.to_key_scope, Some(0) | Some(-1));
-
-    match output.output_pool {
-        // Transparent self outputs are user-visible only when they land on a
-        // normal external/foreign receiver. Internal and ephemeral receivers
-        // are change/funding mechanics.
-        TRANSPARENT_POOL => has_external_or_foreign_scope,
-        // `is_change` is best-effort for wallet-owned outputs and can also be
-        // set on explicit self-transfers. Treat external/foreign receivers and
-        // sent-note recipients as visible; keep internal change hidden.
-        SAPLING_POOL | ORCHARD_POOL | IRONWOOD_POOL => {
-            has_external_or_foreign_scope || output.sent_to_address.is_some()
-        }
-        _ => false,
-    }
-}
-
 fn decode_text_memo(memo: Option<&[u8]>) -> Option<String> {
     let memo = memo?;
     let memo_bytes = MemoBytes::from_bytes(memo).ok()?;
@@ -2460,44 +1650,29 @@ fn decode_text_memo(memo: Option<&[u8]>) -> Option<String> {
     }
 }
 
-fn build_external_send_keys(
-    bases: &[TxBase],
-    summaries: &HashMap<Vec<u8>, ActivitySummary>,
-) -> HashSet<FundingStepMatchKey> {
-    let mut keys = HashSet::new();
+// ======================== TEX funding steps ========================
 
-    for base in bases {
-        let Some(summary) = summaries.get(&base.txid) else {
-            continue;
-        };
-        let Some(key) = external_send_key(base, summary) else {
-            continue;
-        };
-        keys.insert(key);
-    }
-
-    keys
+fn build_external_send_keys(bases: &[TxBase]) -> HashSet<FundingStepMatchKey> {
+    bases.iter().filter_map(external_send_key).collect()
 }
 
 fn build_suppressed_funding_step_fees(
     bases: &[TxBase],
-    summaries: &HashMap<Vec<u8>, ActivitySummary>,
     external_send_keys: &HashSet<FundingStepMatchKey>,
 ) -> SuppressedFundingStepFees {
     let mut funding_by_key: HashMap<FundingStepMatchKey, Vec<(i64, Fee)>> = HashMap::new();
     let mut external_by_key: HashMap<FundingStepMatchKey, Vec<i64>> = HashMap::new();
 
     for base in bases {
-        let summary = summaries.get(&base.txid).cloned().unwrap_or_default();
-        if let Some(key) = external_send_key(base, &summary) {
+        if let Some(key) = external_send_key(base) {
             external_by_key
                 .entry(key)
                 .or_default()
                 .push(base.transaction_id);
         }
 
-        if should_suppress_funding_step(base, &summary, external_send_keys) {
-            if let Some(key) = funding_step_key(base, &summary) {
+        if should_suppress_funding_step(base, external_send_keys) {
+            if let Some(key) = funding_step_key(base) {
                 funding_by_key
                     .entry(key)
                     .or_default()
@@ -2545,8 +1720,11 @@ fn build_suppressed_funding_step_fees(
     matched
 }
 
-fn external_send_key(base: &TxBase, summary: &ActivitySummary) -> Option<FundingStepMatchKey> {
-    if !summary.has_external_transparent_send || base.total_spent == 0 || base.transaction_id < 0 {
+fn external_send_key(base: &TxBase) -> Option<FundingStepMatchKey> {
+    if !base.history.funding_step.external_transparent_send
+        || base.total_spent == 0
+        || base.transaction_id < 0
+    {
         return None;
     }
 
@@ -2555,240 +1733,167 @@ fn external_send_key(base: &TxBase, summary: &ActivitySummary) -> Option<Funding
         .map(|created| (created.clone(), base.expiry_key(), base.total_spent))
 }
 
-fn funding_step_key(base: &TxBase, summary: &ActivitySummary) -> Option<FundingStepMatchKey> {
-    if summary.own_transparent_output_amount == 0 || base.transaction_id < 0 {
+fn funding_step_key(base: &TxBase) -> Option<FundingStepMatchKey> {
+    let own = base
+        .history
+        .funding_step
+        .own_transparent_outputs
+        .map_or(0, |value| value.into_u64());
+    if own == 0 || base.transaction_id < 0 {
         return None;
     }
 
-    base.created.as_ref().map(|created| {
-        (
-            created.clone(),
-            base.expiry_key(),
-            summary.own_transparent_output_amount,
-        )
-    })
+    base.created
+        .as_ref()
+        .map(|created| (created.clone(), base.expiry_key(), own))
+}
+
+/// The values of the visible outputs a transaction's sent and received rows
+/// count. Activity without such rows counts none.
+fn visible_output_amounts(activity: &AccountActivity) -> (u64, u64) {
+    let amount = |rows: &Option<ActivityOutputs>| rows.as_ref().map_or(0, |r| r.amount.into_u64());
+    match activity {
+        AccountActivity::Outputs { sent, received } => (amount(sent), amount(received)),
+        AccountActivity::InferredOutgoing { received, .. } => (0, amount(received)),
+        _ => (0, 0),
+    }
 }
 
 fn should_suppress_funding_step(
     base: &TxBase,
-    summary: &ActivitySummary,
     external_send_keys: &HashSet<FundingStepMatchKey>,
 ) -> bool {
-    !base.is_shielding
+    let activity = &base.history.activity;
+    !matches!(activity, AccountActivity::Shielding { .. })
         && base.total_spent > 0
         && base.total_received > 0
         && base.account_balance_delta <= 0
         && base.created.is_some()
-        && summary.sent.amount == 0
-        && summary.received.amount == 0
-        && summary.has_own_transparent_output
-        && funding_step_key(base, summary)
+        && visible_output_amounts(activity) == (0, 0)
+        && base.history.funding_step.own_transparent_outputs.is_some()
+        && funding_step_key(base)
             .map(|key| external_send_keys.contains(&key))
             .unwrap_or(false)
 }
 
-fn classify_history_tx(
-    base: &TxBase,
-    summary: &ActivitySummary,
-    extra_sent_fee: Fee,
-) -> Vec<ClassifiedTx> {
-    if base.is_shielding {
-        let amount = if summary.shielded.amount > 0 {
-            summary.shielded.amount
-        } else {
-            base.total_received
-        };
-        let mut row = build_classified_tx(base, "shielded", amount, "shielded", false, 0);
-        row.outputs = summary.shielded.outputs.clone();
-        return vec![row];
-    }
+// ======================== Activity rows ========================
 
-    if is_internal_ironwood_transition(base, summary) {
-        let mut row = build_classified_tx(
+/// The rows a transaction shows, from its library activity: Vizor's labels,
+/// received versus receiving, and the split into sent and received rows.
+fn activity_rows(base: &TxBase, extra_sent_fee: Fee) -> Vec<ClassifiedTx> {
+    let zat = Zatoshis::into_u64;
+    match base.activity().as_ref() {
+        AccountActivity::Shielding { amount, .. } => vec![build_classified_tx(
+            base,
+            "shielded",
+            zat(*amount),
+            "shielded",
+            false,
+            0,
+        )],
+        AccountActivity::PoolMigration { amount, .. } => vec![build_classified_tx(
             base,
             "migration",
-            summary.internal_ironwood_transition.amount,
+            zat(*amount),
             "ironwood",
             false,
             1,
-        );
-        row.outputs = summary.internal_ironwood_transition.outputs.clone();
-        return vec![row];
-    }
-
-    // Private recovery reconstructed the exact payment of a transparent-only
-    // debit the account fully funded, but not its recipients: no output it
-    // paid is visible, so the outputs it knows of are change and none of them
-    // is shown as a receive. The payment went to transparent outputs.
-    if let Some(payment) = base.history.inferred_payment {
-        if payment > 0 && base.account_balance_delta < 0 && summary.sent.output_count == 0 {
-            return vec![build_classified_tx(
-                base,
-                "sent",
-                payment,
-                "transparent",
-                true,
-                1,
-            )];
-        }
-        // Without a known visible self-payment, the only amount we can show
-        // for this recovered self-transfer is its fee.
-        let debit = base.account_balance_delta.unsigned_abs();
-        if payment == 0
-            && base.account_balance_delta < 0
-            && summary.sent.output_count == 0
-            && base.history.whole_fee == Some(debit)
-            && base.history.reconstruction_fee() == Fee::Known(debit)
-        {
-            let mut row = build_classified_tx(base, "sent", debit, "transparent", true, 1);
+        )],
+        // The exact payment of a transparent-only debit, without its
+        // recipients: the payment went to transparent outputs.
+        AccountActivity::InferredPayment { amount } => vec![build_classified_tx(
+            base,
+            "sent",
+            zat(*amount),
+            "transparent",
+            true,
+            1,
+        )],
+        // A recovered self-transfer shows only its fee.
+        AccountActivity::FeeOnly { fee } => {
+            let mut row = build_classified_tx(base, "sent", zat(*fee), "transparent", true, 1);
             row.info.amount_includes_fee = true;
-            return vec![row];
+            vec![row]
         }
-    }
-
-    // The library reconciled compact-scanned shielded effects and the Enhance fee.
-    // The residual includes owned transparent outputs. Exclude known internal
-    // change/funding, and show ordinary receipts separately from shielded change.
-    if let Some(outgoing) = base.history.inferred_outgoing {
-        if outgoing > 0 && summary.sent.output_count == 0 {
-            let visible_outgoing = outgoing.checked_sub(summary.internal_transparent.amount);
-            // A fully accounted funding step has no visible payment. Do not
-            // fall through and recreate it as a provisional fee-sized debit.
-            if visible_outgoing == Some(0) && summary.received_transparent.output_count == 0 {
-                return Vec::new();
-            }
-            // Inconsistent local evidence must not underflow or erase a debit.
-            let outgoing = visible_outgoing
-                .filter(|amount| *amount > 0)
-                .unwrap_or(outgoing);
-            // These are Activity amounts under the recovered funding convention,
-            // not proven payments. Complete owned effects and unambiguous output
-            // scopes establish the rows; missing payment details stay on the receipt.
-            let activity_settled = base.history.effects_settled
-                && base.mined_height.is_some()
-                && !summary.unknown_transparent_scope
-                && visible_outgoing
-                    .is_some_and(|value| value > 0 && value >= summary.received_transparent.amount);
-            let mut sent = build_classified_tx(base, "sent", outgoing, "transparent", true, 1);
-            sent.info.provisional = !activity_settled;
+        AccountActivity::HiddenFundingStep | AccountActivity::ChangeOnly => Vec::new(),
+        // Activity amounts under the recovered funding convention, not
+        // proven payments; missing payment details stay on the receipt.
+        AccountActivity::InferredOutgoing {
+            outgoing,
+            received,
+            settled,
+        } => {
+            let mut sent =
+                build_classified_tx(base, "sent", zat(*outgoing), "transparent", true, 1);
+            sent.info.provisional = !settled;
             sent.info.activity_pool = Some("transparent".to_string());
             let mut rows = vec![sent];
-            if summary.received_transparent.output_count > 0 {
-                let mut received = build_classified_tx(
+            if let Some(received) = received {
+                let mut row = build_classified_tx(
                     base,
                     receiving_tx_kind(base),
-                    summary.received_transparent.amount,
+                    zat(received.amount),
                     "transparent",
                     true,
                     2,
                 );
-                received.info.provisional = !activity_settled;
-                received.info.activity_pool = Some("transparent".to_string());
-                received.outputs = summary.received_transparent.outputs.clone();
-                rows.push(received);
+                row.info.provisional = !settled;
+                row.info.activity_pool = Some("transparent".to_string());
+                rows.push(row);
             }
-            return rows;
+            rows
         }
-    }
-
-    // Discovery found this debit but not where the value went. The outputs it
-    // knows of can only be change, so none of them is shown as a receive, and
-    // the net debit less any recorded fee is all that can be shown of the
-    // payment: it is provisional, not a payment amount. A visible sent output,
-    // even a zero-value memo-only one, is where the value went, and keeps its
-    // own row below.
-    if base.history.provisional && base.account_balance_delta < 0 && summary.sent.output_count == 0
-    {
-        let debit = base
-            .account_balance_delta
-            .unsigned_abs()
-            .saturating_sub(base.history.fee.known_or_zero());
-        let tx_kind = if debit > 0 { "sent" } else { "unknown" };
-        return vec![build_movement_debit_row(base, tx_kind, debit)];
-    }
-
-    // A visible output makes a row even at zero value: zero-value outputs are
-    // how memo-only payments travel.
-    let mut rows = Vec::new();
-    if summary.sent.output_count > 0 {
-        let mut row = build_classified_tx_with_fee(
-            base,
-            "sent",
-            summary.sent.amount,
-            summary.sent.display_pool(),
-            summary.sent.has_transparent,
-            1,
-            base.history.shown_fee().plus(extra_sent_fee),
-        );
-        row.info.activity_pool = Some(summary.sent.activity_pool().to_string());
-        row.outputs = summary.sent.outputs.clone();
-        rows.push(row);
-    }
-    // Before enhancement links our zero-value change to its send, the change
-    // looks like an external receipt, so a zero-value receipt needs a tx that
-    // spent nothing or also produced a sent row.
-    let zero_value_receipt_allowed = base.total_spent == 0 || summary.sent.output_count > 0;
-    if summary.received.amount > 0
-        || (summary.received.output_count > 0 && zero_value_receipt_allowed)
-    {
-        let mut row = build_classified_tx(
+        // A debit known only as a balance movement: not a payment amount.
+        AccountActivity::MovementDebit { amount } => {
+            let amount = zat(*amount);
+            let tx_kind = if amount > 0 { "sent" } else { "unknown" };
+            vec![build_movement_debit_row(base, tx_kind, amount)]
+        }
+        // A visible output makes a row even at zero value: zero-value outputs
+        // are how memo-only payments travel.
+        AccountActivity::Outputs { sent, received } => {
+            let mut rows = Vec::new();
+            if let Some(sent) = sent {
+                let pools = RowPools::of(&sent.outputs);
+                let mut row = build_classified_tx_with_fee(
+                    base,
+                    "sent",
+                    zat(sent.amount),
+                    pools.display_pool(),
+                    pools.transparent,
+                    1,
+                    base.history.shown_fee().plus(extra_sent_fee),
+                );
+                row.info.activity_pool = Some(pools.activity_pool().to_string());
+                rows.push(row);
+            }
+            if let Some(received) = received {
+                let pools = RowPools::of(&received.outputs);
+                let mut row = build_classified_tx(
+                    base,
+                    receiving_tx_kind(base),
+                    zat(received.amount),
+                    pools.display_pool(),
+                    pools.transparent,
+                    2,
+                );
+                row.info.activity_pool = Some(pools.activity_pool().to_string());
+                rows.push(row);
+            }
+            rows
+        }
+        AccountActivity::MovementCredit { amount } => vec![build_classified_tx(
             base,
             receiving_tx_kind(base),
-            summary.received.amount,
-            summary.received.display_pool(),
-            summary.received.has_transparent,
+            zat(*amount),
+            "unknown",
+            false,
             2,
-        );
-        row.info.activity_pool = Some(summary.received.activity_pool().to_string());
-        row.outputs = summary.received.outputs.clone();
-        rows.push(row);
-    }
-
-    if rows.is_empty() {
-        if base.mined_height.is_none() && base.account_balance_delta < 0 && base.total_spent > 0 {
-            let sent_amount = base
-                .account_balance_delta
-                .unsigned_abs()
-                .saturating_sub(base.history.fee.known_or_zero());
-            if sent_amount > 0 {
-                rows.push(build_movement_debit_row(base, "sent", sent_amount));
-                return rows;
-            }
-        }
-        if base.total_spent > 0 && base.total_received > 0 {
-            return rows;
-        }
-        if base.account_balance_delta > 0 {
-            rows.push(build_classified_tx(
-                base,
-                receiving_tx_kind(base),
-                base.account_balance_delta as u64,
-                "unknown",
-                false,
-                2,
-            ));
-        } else {
-            rows.push(build_classified_tx(base, "unknown", 0, "unknown", false, 3));
+        )],
+        AccountActivity::Unknown => {
+            vec![build_classified_tx(base, "unknown", 0, "unknown", false, 3)]
         }
     }
-
-    rows
-}
-
-/// Owned Ironwood outputs do not prove an internal migration when the library
-/// has reconciled a positive outgoing amount. They may instead be change from
-/// an Orchard-funded payment whose recipient details are still unavailable.
-fn is_internal_ironwood_transition(base: &TxBase, summary: &ActivitySummary) -> bool {
-    !base.is_shielding
-        && !base
-            .history
-            .inferred_outgoing
-            .is_some_and(|amount| amount > 0)
-        && base.spent_orchard_note
-        && base.total_spent > 0
-        && summary.internal_ironwood_transition.amount > 0
-        && summary.sent.amount == 0
-        && summary.received.amount == 0
 }
 
 fn receiving_tx_kind(base: &TxBase) -> &'static str {
@@ -2844,7 +1949,6 @@ fn build_classified_tx_with_fee(
 ) -> ClassifiedTx {
     let sort_timestamp = base.display_timestamp();
     ClassifiedTx {
-        outputs: Vec::new(),
         info: TransactionInfo {
             txid_hex: hex::encode(&base.txid),
             mined_height: base.mined_height.unwrap_or(0) as u64,
@@ -2875,11 +1979,45 @@ fn build_classified_tx_with_fee(
 }
 
 impl TxBase {
-    /// Records the history read's view of this transaction. A shielding is
-    /// inferred only where the payment details justify it.
-    fn attach_history(&mut self, history: HistoryCompleteness) {
-        self.is_shielding &= history.justifies_shielding();
-        self.history = history;
+    /// The library's activity, with the one rule that reads the mined height
+    /// re-applied where the row's mined height differs from the library's (a
+    /// Gift Card claim): an unmined debit with no visible output shows as a
+    /// movement debit, a mined one does not.
+    fn activity(&self) -> Cow<'_, AccountActivity> {
+        let history = &self.history;
+        let shown_mined = self.mined_height.is_some();
+        if shown_mined == history.mined {
+            return Cow::Borrowed(&history.activity);
+        }
+        let net = self.account_balance_delta;
+        let unmined_debit = (net < 0 && self.total_spent > 0)
+            .then(|| {
+                net.unsigned_abs()
+                    .saturating_sub(history.shown_fee().known_or_zero())
+            })
+            .filter(|amount| *amount > 0)
+            .and_then(|amount| Zatoshis::from_u64(amount).ok());
+        match (&history.activity, unmined_debit) {
+            // The library read the transaction as mined, so it skipped the rule.
+            (
+                AccountActivity::ChangeOnly
+                | AccountActivity::MovementCredit { .. }
+                | AccountActivity::Unknown,
+                Some(amount),
+            ) if !shown_mined => Cow::Owned(AccountActivity::MovementDebit { amount }),
+            // The library applied the rule (not the provisional debit rule,
+            // which does not read the mined height) to a row shown mined.
+            (AccountActivity::MovementDebit { .. }, _)
+                if shown_mined && !(history.provisional && net < 0) =>
+            {
+                Cow::Owned(if self.total_spent > 0 && self.total_received > 0 {
+                    AccountActivity::ChangeOnly
+                } else {
+                    AccountActivity::Unknown
+                })
+            }
+            (activity, _) => Cow::Borrowed(activity),
+        }
     }
 
     fn expiry_key(&self) -> i64 {
@@ -3197,6 +2335,7 @@ mod tests {
     //! first.
     use super::*;
     use tempfile::NamedTempFile;
+    use transparent::address::TransparentAddress;
 
     #[test]
     fn unavailable_wallet_balance_is_zero_but_not_available() {
@@ -3415,1615 +2554,8 @@ mod tests {
         );
     }
 
-    fn tx_base_for_history() -> TxBase {
-        TxBase {
-            txid: fake_txid(1).to_vec(),
-            transaction_id: 1,
-            mined_height: Some(121),
-            expired_unmined: false,
-            account_balance_delta: -625_000_000,
-            fee: Some(20_000),
-            block_time: 1_800_000_000,
-            total_spent: 625_000_000,
-            total_received: 0,
-            is_shielding: false,
-            expiry_height: Some(122),
-            tx_index: 0,
-            created: None,
-            created_time: 0,
-            spent_orchard_note: true,
-            history: HistoryCompleteness {
-                has_transparent_outputs: None,
-                details_complete: true,
-                classification: Some(HistoryClassification::Reconstructed),
-                provisional: false,
-                effects_settled: true,
-                fee: Fee::Known(20_000),
-                whole_fee: None,
-                inferred_payment: None,
-                inferred_outgoing: None,
-            },
-        }
-    }
-
-    #[test]
-    fn classify_internal_ironwood_transition_as_migration() {
-        let mut summary = ActivitySummary::default();
-        summary.internal_ironwood_transition.amount = 624_980_000;
-
-        for outgoing in [None, Some(0)] {
-            let mut base = tx_base_for_history();
-            base.history.inferred_outgoing = outgoing;
-            let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].info.tx_kind, "migration");
-            assert_eq!(rows[0].info.display_amount, 624_980_000);
-            assert_eq!(rows[0].info.display_pool, "ironwood");
-            assert_eq!(rows[0].info.activity_pool, None);
-        }
-    }
-
-    #[test]
-    fn classify_expired_internal_ironwood_transition_as_failed_migration() {
-        let mut base = tx_base_for_history();
-        base.mined_height = None;
-        base.expired_unmined = true;
-
-        let mut summary = ActivitySummary::default();
-        summary.internal_ironwood_transition.amount = 624_980_000;
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "migration");
-        assert!(rows[0].info.expired_unmined);
-        assert_eq!(rows[0].info.display_amount, 624_980_000);
-        assert_eq!(rows[0].info.display_pool, "ironwood");
-    }
-
-    #[test]
-    fn private_orchard_unshielding_with_ironwood_change_matches_public_activity() {
-        let account = test_account_uuid().as_bytes().to_vec();
-        // Ironwood notes occur both in the legacy Orchard representation and
-        // in the dedicated Ironwood pool. Neither representation proves that
-        // a transaction containing change was only an internal migration.
-        for change_pool in [ORCHARD_POOL, IRONWOOD_POOL] {
-            for owned_receipt in [false, true] {
-                let mut base = tx_base_for_history();
-                base.total_spent = 1_000_000;
-                base.total_received = 735_000 + if owned_receipt { 250_000 } else { 0 };
-                base.account_balance_delta = if owned_receipt { -15_000 } else { -265_000 };
-                base.attach_history(HistoryCompleteness {
-                    has_transparent_outputs: Some(true),
-                    details_complete: false,
-                    classification: Some(HistoryClassification::Provisional),
-                    provisional: true,
-                    effects_settled: false,
-                    fee: Fee::Unknown,
-                    whole_fee: Some(15_000),
-                    inferred_payment: None,
-                    inferred_outgoing: Some(250_000),
-                });
-                let change = TxOutput {
-                    txid: base.txid.clone(),
-                    output_pool: change_pool,
-                    output_index: 0,
-                    from_account_uuid: Some(account.clone()),
-                    to_account_uuid: Some(account.clone()),
-                    to_address: None,
-                    sent_to_address: None,
-                    transparent_receiver_address: None,
-                    to_key_scope: Some(1),
-                    value: 735_000,
-                    memo: None,
-                    note_version: Some(IRONWOOD_NOTE_VERSION),
-                };
-                let recipient = TxOutput {
-                    txid: base.txid.clone(),
-                    output_pool: TRANSPARENT_POOL,
-                    output_index: 0,
-                    from_account_uuid: Some(account.clone()),
-                    to_account_uuid: owned_receipt.then(|| account.clone()),
-                    to_address: None,
-                    sent_to_address: None,
-                    transparent_receiver_address: None,
-                    to_key_scope: Some(0),
-                    value: 250_000,
-                    memo: None,
-                    note_version: None,
-                };
-                let mut private_outputs = vec![change.clone()];
-                if owned_receipt {
-                    let mut receipt = recipient.clone();
-                    // Private address recovery observes our receipt without
-                    // recovering the transaction's outgoing recipient details.
-                    receipt.from_account_uuid = None;
-                    private_outputs.push(receipt);
-                }
-                let private_summary = summarize_activity_outputs(&base, &private_outputs, &account);
-                let private_rows = classify_history_tx(&base, &private_summary, Fee::NotApplicable);
-
-                base.history.inferred_outgoing = None;
-                base.history.provisional = false;
-                base.history.details_complete = true;
-                base.history.classification = Some(HistoryClassification::Reconstructed);
-                base.history.fee = Fee::Known(15_000);
-                let public_summary =
-                    summarize_activity_outputs(&base, &[change, recipient], &account);
-                let public_rows = classify_history_tx(&base, &public_summary, Fee::NotApplicable);
-
-                assert_eq!(private_rows.len(), if owned_receipt { 2 } else { 1 });
-                assert_eq!(private_rows.len(), public_rows.len());
-                assert_eq!(private_rows[0].info.tx_kind, "sent");
-                for (private, public) in private_rows.iter().zip(&public_rows) {
-                    assert_eq!(private.info.tx_kind, public.info.tx_kind);
-                    assert_eq!(private.info.display_amount, 250_000);
-                    assert_eq!(private.info.display_amount, public.info.display_amount);
-                    assert_eq!(private.info.activity_pool, public.info.activity_pool);
-                    assert_eq!(private.info.fee, 0);
-                    assert_eq!(private.info.fee_state, TransactionFeeState::Unknown);
-                    assert_eq!(public.info.fee, 15_000);
-                    assert_eq!(
-                        private.info.amount_includes_fee,
-                        public.info.amount_includes_fee
-                    );
-                    assert!(!private.info.amount_includes_fee);
-                    assert!(private.info.provisional);
-                    assert!(!private.info.details_complete);
-                }
-            }
-        }
-    }
-
-    /// A mined debit that discovery found without its payment details: the
-    /// account spent 1 ZEC and got 0.3 ZEC of change back.
-    fn provisional_debit() -> (TxBase, ActivitySummary) {
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.fee = None;
-        base.account_balance_delta = -70_000_000;
-        base.total_spent = 100_000_000;
-        base.total_received = 30_000_000;
-        base.attach_history(HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: true,
-            effects_settled: false,
-            fee: Fee::Unknown,
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        });
-        let mut summary = ActivitySummary::default();
-        // The change arrived on an address that reads as a receive.
-        summary.received.amount = 30_000_000;
-        summary.received.has_transparent = true;
-        (base, summary)
-    }
-
-    #[test]
-    fn compact_enhanced_outgoing_matches_public_activity_with_or_without_owned_receipt() {
-        for owned_receipt in [false, true] {
-            let (mut base, mut summary) = provisional_debit();
-            base.total_spent = 107_485_000;
-            base.total_received = 107_220_000 + if owned_receipt { 250_000 } else { 0 };
-            base.account_balance_delta = if owned_receipt { -15_000 } else { -265_000 };
-            base.history.whole_fee = Some(15_000);
-            base.history.inferred_outgoing = Some(250_000);
-            base.history.has_transparent_outputs = Some(true);
-            // Shielded change is visible in the unreconciled output summary too.
-            summary.received.amount = base.total_received;
-            if owned_receipt {
-                summary.received_transparent.amount = 250_000;
-                summary.received_transparent.output_count = 1;
-            }
-
-            let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-            assert_eq!(rows.len(), if owned_receipt { 2 } else { 1 });
-            assert_eq!(rows[0].info.tx_kind, "sent");
-            assert_eq!(rows[0].info.display_amount, 250_000);
-            assert_eq!(rows[0].info.activity_pool.as_deref(), Some("transparent"));
-            assert_eq!(rows[0].info.fee, 0);
-            assert_eq!(rows[0].info.fee_state, TransactionFeeState::Unknown);
-            assert!(!rows[0].info.amount_includes_fee);
-            assert!(rows[0].info.provisional);
-            assert!(!rows[0].info.details_complete);
-            if owned_receipt {
-                assert_eq!(rows[1].info.tx_kind, "received");
-                assert_eq!(rows[1].info.display_amount, 250_000);
-            }
-        }
-    }
-
-    #[test]
-    fn compact_enhanced_external_send_excludes_the_network_fee() {
-        let (mut base, summary) = provisional_debit();
-        base.account_balance_delta = -215_000;
-        base.history.whole_fee = Some(15_000);
-        base.history.inferred_outgoing = Some(200_000);
-        base.history.has_transparent_outputs = Some(true);
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "sent");
-        assert_eq!(rows[0].info.display_amount, 200_000);
-        assert_eq!(rows[0].info.fee, 0);
-        assert_eq!(rows[0].info.fee_state, TransactionFeeState::Unknown);
-        assert!(!rows[0].info.amount_includes_fee);
-    }
-
-    /// Read scopes through the production SQL reader, then run the complete
-    /// Activity pipeline. Synthetic outputs model restoration without a sender
-    /// link; public enhancement supplies that link on the very same outputs.
-    fn recovered_activity_fixture(
-        mut base: TxBase,
-        owned_outputs: &[(u64, Option<i64>)],
-        public: bool,
-    ) -> Vec<TransactionInfo> {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        insert_history_tx(
-            &db,
-            account,
-            &base.txid,
-            Some(121),
-            0,
-            Some(122),
-            base.account_balance_delta,
-            base.total_spent as i64,
-            base.total_received as i64,
-            false,
-            None,
-        );
-        for (index, &(value, scope)) in owned_outputs.iter().enumerate() {
-            insert_output_with_address(
-                &db,
-                &base.txid,
-                TRANSPARENT_POOL,
-                public.then_some(account),
-                Some(account),
-                value as i64,
-                false,
-                Some(&format!("synthetic-receiver-{index}")),
-                scope,
-            );
-        }
-        let conn = open_readonly_conn(db.path().to_str().unwrap()).unwrap();
-        let outputs =
-            read_history_outputs(&conn, account.as_bytes(), [base.txid.as_slice()]).unwrap();
-        if public {
-            base.history = HistoryCompleteness::complete_for(&base);
-        }
-        assemble_history(&[base], &outputs, account.as_bytes(), None)
-    }
-
-    fn compact_funding_base(amount: u64) -> TxBase {
-        let (mut base, _) = provisional_debit();
-        base.total_spent = 1_000_000 + amount + 15_000;
-        base.total_received = 1_000_000 + amount;
-        base.account_balance_delta = -15_000;
-        base.history.whole_fee = Some(15_000);
-        base.history.inferred_outgoing = Some(amount);
-        base.history.has_transparent_outputs = Some(true);
-        base
-    }
-
-    #[test]
-    fn recovered_activity_hides_funding_steps_like_public_without_created_metadata() {
-        for amount in [20_000, 110_000] {
-            for scope in [1, 2] {
-                let base = compact_funding_base(amount);
-                assert!(base.created.is_none());
-                let public =
-                    recovered_activity_fixture(base.clone(), &[(amount, Some(scope))], true);
-                let private = recovered_activity_fixture(base, &[(amount, Some(scope))], false);
-                assert!(public.is_empty());
-                assert!(
-                    private.is_empty(),
-                    "internal funding must not fall through to a debit"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn recovered_activity_preserves_external_self_payment_like_public() {
-        for scope in [0, -1] {
-            let base = compact_funding_base(250_000);
-            let public = recovered_activity_fixture(base.clone(), &[(250_000, Some(scope))], true);
-            let private = recovered_activity_fixture(base, &[(250_000, Some(scope))], false);
-            let signature = |rows: &[TransactionInfo]| {
-                rows.iter()
-                    .map(|row| {
-                        (
-                            row.tx_kind.clone(),
-                            row.display_amount,
-                            row.activity_pool.clone(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(signature(&private), signature(&public));
-            assert_eq!(private.len(), 2);
-            assert_eq!(private[0].display_amount, 250_000);
-            assert_eq!(private[1].display_amount, 250_000);
-            assert!(private
-                .iter()
-                .all(|row| row.provisional && !row.details_complete));
-        }
-    }
-
-    #[test]
-    fn recovered_activity_subtracts_only_known_internal_funding() {
-        let base = compact_funding_base(270_000);
-        let rows =
-            recovered_activity_fixture(base, &[(20_000, Some(2)), (250_000, Some(0))], false);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].tx_kind, "sent");
-        assert_eq!(rows[0].display_amount, 250_000);
-        assert_eq!(rows[1].tx_kind, "received");
-        assert_eq!(rows[1].display_amount, 250_000);
-
-        // The remainder can also be an external payment whose recipient is
-        // unavailable. It must survive removing the known change output.
-        let rows =
-            recovered_activity_fixture(compact_funding_base(220_000), &[(20_000, Some(1))], false);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].display_amount, 200_000);
-    }
-
-    #[test]
-    fn recovered_activity_does_not_hide_unknown_scope_or_erase_conflicting_debits() {
-        let mut base = compact_funding_base(20_000);
-        base.history.effects_settled = true;
-        let rows = recovered_activity_fixture(base.clone(), &[(20_000, None)], false);
-        assert_eq!(
-            rows.len(),
-            2,
-            "unknown scope does not prove internal funding"
-        );
-        assert_eq!(rows[0].display_amount, 20_000);
-        assert!(rows[0].provisional);
-        let rows = recovered_activity_fixture(base.clone(), &[(30_000, Some(2))], false);
-        assert_eq!(rows.len(), 1, "conflicting evidence cannot erase the debit");
-        assert_eq!(rows[0].display_amount, 20_000);
-        assert!(rows[0].provisional);
-        let rows = recovered_activity_fixture(base, &[(30_000, Some(0))], false);
-        assert_eq!(rows.len(), 2);
-        assert!(
-            rows.iter().all(|row| row.provisional),
-            "a receipt exceeding the residual conflicts with the funding convention"
-        );
-    }
-
-    #[test]
-    fn recovered_activity_keeps_unrelated_incoming_on_internal_receivers() {
-        let mut base = tx_base_for_history();
-        base.total_spent = 0;
-        base.total_received = 20_000;
-        base.account_balance_delta = 20_000;
-        base.history = HistoryCompleteness::unread(None);
-        let rows = recovered_activity_fixture(base, &[(20_000, Some(2))], false);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tx_kind, "received");
-        assert_eq!(rows[0].display_amount, 20_000);
-    }
-
-    #[test]
-    fn recovered_activity_restores_visible_transparent_self_transfer_instead_of_fee_only() {
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.total_spent = 110_000;
-        base.total_received = 100_000;
-        base.account_balance_delta = -10_000;
-        base.fee = Some(10_000);
-        base.history = HistoryCompleteness {
-            inferred_payment: Some(0),
-            whole_fee: Some(10_000),
-            fee: Fee::Known(10_000),
-            details_complete: false,
-            provisional: false,
-            effects_settled: true,
-            classification: None,
-            has_transparent_outputs: Some(true),
-            inferred_outgoing: None,
-        };
-        for scope in [0, -1] {
-            let public = recovered_activity_fixture(base.clone(), &[(100_000, Some(scope))], true);
-            let private =
-                recovered_activity_fixture(base.clone(), &[(100_000, Some(scope))], false);
-            assert_eq!(public.len(), 2);
-            assert_eq!(private.len(), 2);
-            for (actual, expected) in private.iter().zip(public.iter()) {
-                assert_eq!(actual.tx_kind, expected.tx_kind);
-                assert_eq!(actual.display_amount, expected.display_amount);
-                assert_eq!(actual.display_amount, 100_000);
-                assert!(!actual.amount_includes_fee);
-                assert!(!actual.details_complete);
-            }
-        }
-        // An owned internal receiver is still not an explicit self-payment.
-        let rows = recovered_activity_fixture(base, &[(100_000, Some(1))], false);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].display_amount, 10_000);
-        assert!(rows[0].amount_includes_fee);
-    }
-
-    /// A recovered self-payment to the account's own external address shows
-    /// as Sent and Received, and both receipts list it. Private recovery
-    /// links its receiver before its sender, so the receipt follows the row
-    /// rather than requiring a recorded sender.
-    #[test]
-    fn receipts_of_a_recovered_self_transfer_list_its_self_payment() {
-        let account = test_account_uuid().as_bytes().to_vec();
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.total_spent = 110_000;
-        base.total_received = 100_000;
-        base.account_balance_delta = -10_000;
-        base.fee = Some(10_000);
-        base.history = HistoryCompleteness {
-            inferred_payment: Some(0),
-            whole_fee: Some(10_000),
-            fee: Fee::Known(10_000),
-            details_complete: false,
-            provisional: false,
-            effects_settled: true,
-            classification: None,
-            has_transparent_outputs: Some(true),
-            inferred_outgoing: None,
-        };
-        let payment = TxOutput {
-            txid: base.txid.clone(),
-            output_pool: TRANSPARENT_POOL,
-            output_index: 0,
-            from_account_uuid: None,
-            to_account_uuid: Some(account.clone()),
-            to_address: None,
-            sent_to_address: None,
-            transparent_receiver_address: Some("synthetic-receiver".to_owned()),
-            to_key_scope: Some(0),
-            value: 100_000,
-            memo: None,
-            note_version: None,
-        };
-        let outputs = [payment];
-
-        let summary = summarize_activity_outputs(&base, &outputs, &account);
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(
-            rows.iter()
-                .map(|row| (row.info.tx_kind.as_str(), row.info.display_amount))
-                .collect::<Vec<_>>(),
-            [("sent", 100_000), ("received", 100_000)]
-        );
-        for kind in ["sent", "received"] {
-            assert_eq!(
-                receipt_output_keys(&base, &outputs, &account, kind),
-                [(TRANSPARENT_POOL, 0)],
-                "{kind}"
-            );
-        }
-        assert!(receipt_output_keys(&base, &outputs, &account, "shielded").is_empty());
-    }
-
-    /// The received row of a private outgoing transaction counts only the
-    /// account's transparent receipts. Its receipt lists the same outputs, not
-    /// the shielded change compact scanning found without a recorded sender.
-    #[test]
-    fn the_received_receipt_of_an_inferred_outgoing_transaction_omits_shielded_change() {
-        let account = test_account_uuid().as_bytes().to_vec();
-        let mut base = tx_base_for_history();
-        base.total_spent = 1_000_000;
-        base.total_received = 985_000;
-        base.account_balance_delta = -15_000;
-        base.attach_history(HistoryCompleteness {
-            has_transparent_outputs: Some(true),
-            details_complete: false,
-            classification: Some(HistoryClassification::Provisional),
-            provisional: true,
-            effects_settled: false,
-            fee: Fee::Unknown,
-            whole_fee: Some(15_000),
-            inferred_payment: None,
-            inferred_outgoing: Some(250_000),
-        });
-        let output = |pool, index, scope, value| TxOutput {
-            txid: base.txid.clone(),
-            output_pool: pool,
-            output_index: index,
-            from_account_uuid: None,
-            to_account_uuid: Some(account.clone()),
-            to_address: None,
-            sent_to_address: None,
-            transparent_receiver_address: None,
-            to_key_scope: Some(scope),
-            value,
-            memo: None,
-            note_version: None,
-        };
-        let outputs = [
-            output(ORCHARD_POOL, 0, 1, 735_000),
-            output(TRANSPARENT_POOL, 0, 0, 250_000),
-        ];
-
-        let summary = summarize_activity_outputs(&base, &outputs, &account);
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        let received = rows
-            .iter()
-            .find(|row| row.info.tx_kind == "received")
-            .expect("the transparent receipt has its row");
-        assert_eq!(received.info.display_amount, 250_000);
-        assert_eq!(
-            receipt_output_keys(&base, &outputs, &account, "received"),
-            [(TRANSPARENT_POOL, 0)]
-        );
-        // The sent row names no payee output, so its receipt lists none.
-        assert!(receipt_output_keys(&base, &outputs, &account, "sent").is_empty());
-    }
-
-    #[test]
-    fn a_provisional_debit_with_change_is_one_sent_row_not_a_receive() {
-        let (base, summary) = provisional_debit();
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(
-            info.display_amount, 70_000_000,
-            "the net debit, fee included"
-        );
-        assert_eq!(info.display_pool, "unknown", "no recipient is invented");
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert!(info.provisional);
-        assert!(!info.details_complete);
-    }
-
-    #[test]
-    fn a_provisional_debit_excludes_a_recorded_fee() {
-        let (mut base, summary) = provisional_debit();
-        base.history.fee = Fee::Known(10_000);
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.display_amount, 69_990_000);
-        assert_eq!(rows[0].info.fee_state, TransactionFeeState::Known);
-        assert_eq!(rows[0].info.fee, 10_000);
-    }
-
-    #[test]
-    fn a_provisional_fee_only_debit_stays_visible() {
-        let (mut base, _) = provisional_debit();
-        base.account_balance_delta = -10_000;
-        base.history.fee = Fee::Known(10_000);
-
-        let rows = classify_history_tx(&base, &ActivitySummary::default(), Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "unknown");
-        assert!(rows[0].info.provisional);
-    }
-
-    /// A locally built memo-only send is provisional until scanning settles its
-    /// effects, but its zero-value payment is known: it keeps its sent row
-    /// instead of becoming a net debit.
-    #[test]
-    fn a_provisional_zero_value_send_keeps_its_sent_row() {
-        let (mut base, _) = provisional_debit();
-        base.account_balance_delta = -10_000;
-        base.total_received = 90_000;
-        base.history.details_complete = true;
-        base.history.fee = Fee::Known(10_000);
-        let mut summary = ActivitySummary::default();
-        summary.sent.output_count = 1;
-        summary.sent.has_orchard = true;
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "sent");
-        assert_eq!(rows[0].info.display_amount, 0);
-        assert_eq!(rows[0].info.display_pool, "shielded");
-        assert_eq!(rows[0].info.fee, 10_000);
-        assert!(rows[0].info.provisional);
-    }
-
-    #[test]
-    fn a_complete_debit_with_change_keeps_its_classification() {
-        let (mut base, summary) = provisional_debit();
-        base.history = HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: true,
-            classification: Some(HistoryClassification::Reconstructed),
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        };
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "received");
-        assert!(!rows[0].info.provisional);
-    }
-
-    /// Private recovery's view of a transparent-only send the account fully
-    /// funded: the library reconstructed the exact payment from the recovered
-    /// metadata, and only the change is visible.
-    #[test]
-    fn a_recovered_send_with_change_is_its_exact_payment_not_a_receive() {
-        let (mut base, summary) = provisional_debit();
-        base.history = HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: None,
-            inferred_payment: Some(69_990_000),
-            inferred_outgoing: None,
-        };
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(info.display_amount, 69_990_000);
-        assert_eq!(info.display_pool, "transparent");
-        assert_eq!(info.fee_state, TransactionFeeState::Known);
-        assert_eq!(info.fee, 10_000);
-        assert!(!info.details_complete, "the recipients stay unknown");
-
-        // Without change it is still the payment, never an unknown zero.
-        base.history.inferred_payment = Some(base.account_balance_delta.unsigned_abs() - 10_000);
-        let rows = classify_history_tx(&base, &ActivitySummary::default(), Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "sent");
-        assert_eq!(rows[0].info.display_amount, 69_990_000);
-    }
-
-    /// A transparent-only self-transfer: the account spent 2 ZEC and every
-    /// output (1.2 ZEC and 0.7999 ZEC change) is its own, so its balance
-    /// changed by the fee alone.
-    fn self_transfer(history: HistoryCompleteness) -> (TxBase, ActivitySummary) {
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.fee = Some(10_000);
-        base.account_balance_delta = -10_000;
-        base.total_spent = 200_000_000;
-        base.total_received = 199_990_000;
-        base.attach_history(history);
-        let mut summary = ActivitySummary::default();
-        summary.received.amount = 199_990_000;
-        summary.received.output_count = 2;
-        summary.received.has_transparent = true;
-        (base, summary)
-    }
-
-    #[test]
-    fn a_recovered_self_transfer_is_its_network_fee() {
-        let (base, summary) = self_transfer(HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: Some(10_000),
-            inferred_payment: Some(0),
-            inferred_outgoing: None,
-        });
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(info.display_amount, 10_000);
-        assert_eq!(info.fee, 10_000);
-        assert_eq!(info.fee_state, TransactionFeeState::Known);
-        assert!(info.amount_includes_fee, "the whole movement is the fee");
-        assert_eq!(info.display_pool, "transparent");
-        assert!(info.is_transparent);
-        assert!(!info.provisional);
-    }
-
-    #[test]
-    fn a_public_self_transfer_keeps_its_classification() {
-        let (base, summary) = self_transfer(HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        });
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "received");
-        assert_eq!(info.display_amount, 199_990_000);
-        assert!(!info.amount_includes_fee);
-    }
-
-    #[test]
-    fn an_inexact_self_transfer_is_not_shown_as_its_fee() {
-        let received = |history| {
-            let (base, summary) = self_transfer(history);
-            let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].info.tx_kind, "received");
-            assert!(!rows[0].info.amount_includes_fee);
-        };
-        let exact = HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: Some(10_000),
-            inferred_payment: Some(0),
-            inferred_outgoing: None,
-        };
-        // No exact payment.
-        received(HistoryCompleteness {
-            inferred_payment: None,
-            inferred_outgoing: None,
-            ..exact
-        });
-        // No exact whole fee.
-        received(HistoryCompleteness {
-            whole_fee: None,
-            ..exact
-        });
-        // A whole fee that is not the movement.
-        received(HistoryCompleteness {
-            whole_fee: Some(20_000),
-            ..exact
-        });
-    }
-
-    #[test]
-    fn a_recovered_zero_payment_keeps_the_fee_not_a_false_receive() {
-        let (mut base, mut summary) = provisional_debit();
-        base.account_balance_delta = -10_000;
-        base.total_spent = 110_000;
-        base.total_received = 100_000;
-        base.history = HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: Some(10_000),
-            inferred_payment: Some(0),
-            inferred_outgoing: None,
-        };
-        summary.received.amount = 100_000;
-        summary.received.output_count = 1;
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1, "keep the transaction visible");
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(
-            info.display_amount, 10_000,
-            "returned funds are not a receipt"
-        );
-        assert!(info.amount_includes_fee, "the movement is the fee alone");
-        assert_eq!(info.display_pool, "transparent");
-        assert!(info.is_transparent);
-        assert_eq!(info.fee_state, TransactionFeeState::Known);
-        assert_eq!(info.fee, 10_000);
-        assert_eq!(info.account_balance_delta, -10_000);
-        assert!(!info.provisional);
-        assert!(!info.details_complete, "recipient details remain unknown");
-
-        // An explicitly recorded zero-value output still has its sent row.
-        summary.sent.output_count = 1;
-        summary.sent.has_transparent = true;
-        summary.received = ActivityAmounts::default();
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "sent");
-        assert_eq!(rows[0].info.display_amount, 0);
-        assert_eq!(rows[0].info.fee, 10_000);
-        assert!(!rows[0].info.amount_includes_fee);
-    }
-
-    #[test]
-    fn only_a_reconstructed_transparent_only_payment_is_inferred() {
-        use zcash_client_backend::data_api::transparent_ledger::{
-            AccountMovement, MetadataProvenance, TransactionMetadata, TransactionMetadataEvidence,
-        };
-        use zcash_protocol::value::Zatoshis;
-
-        let evidence = |has_shielded_components| TransactionMetadataEvidence {
-            metadata: TransactionMetadata {
-                fee: WholeTransactionFee::Exact(Zatoshis::from_u64(10_000).unwrap()),
-                transparent_input_count: 1,
-                has_shielded_components,
-            },
-            provenance: vec![MetadataProvenance {
-                source: vec![1],
-                revision: vec![2],
-                lineage: 0,
-            }],
-        };
-        let mut details = TransactionHistoryDetails {
-            has_transparent_outputs: None,
-            transaction_metadata: Some(evidence(false)),
-            whole_fee: None,
-            inferred_outgoing: None,
-            aggregate_payment: AggregatePayment::Exact(Zatoshis::from_u64(50_000).unwrap()),
-            account_movement: AccountMovement {
-                received: 40_000,
-                spent: 100_000,
-                complete: true,
-            },
-            txid: TxId::from_bytes([1; 32]),
-            mined_height: None,
-            effects: vec![],
-            payment_details: DetailCompleteness::Incomplete,
-            fee: FeeState::Known(Zatoshis::from_u64(10_000).unwrap()),
-            classification: HistoryClassification::Reconstructed,
-            pending_private_details: vec![],
-        };
-        assert_eq!(
-            HistoryCompleteness::of(&details).inferred_payment,
-            Some(50_000)
-        );
-
-        details.aggregate_payment = AggregatePayment::Exact(Zatoshis::ZERO);
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, Some(0));
-        details.aggregate_payment = AggregatePayment::Exact(Zatoshis::from_u64(50_000).unwrap());
-
-        // A local record's payment, a provisional one, public evidence, and
-        // shielded components are not a reconstructed transparent payment.
-        details.classification = HistoryClassification::LocalIntent;
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, None);
-        details.classification = HistoryClassification::Provisional;
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, None);
-        details.classification = HistoryClassification::Reconstructed;
-        details.transaction_metadata = None;
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, None);
-        details.transaction_metadata = Some(evidence(true));
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, None);
-        details.transaction_metadata = Some(evidence(false));
-        details.aggregate_payment = AggregatePayment::Partial(Zatoshis::from_u64(50_000).unwrap());
-        assert_eq!(HistoryCompleteness::of(&details).inferred_payment, None);
-    }
-
-    const WHOLE_FEE: u64 = 10_000;
-
-    /// The library's view of a mined transaction known only from private
-    /// recovery, as `provisional_debit` shows it: the account spent 1 ZEC of
-    /// transparent value and got 0.3 ZEC back, another party funded the
-    /// transaction's second input, and the recovered metadata carries `whole`.
-    /// The account's fee and the aggregate payment are unknown.
-    fn shared_funding_details(whole: WholeTransactionFee) -> TransactionHistoryDetails {
-        use zcash_client_backend::data_api::transparent_ledger::{
-            AccountMovement, MetadataProvenance, TransactionMetadata, TransactionMetadataEvidence,
-        };
-
-        TransactionHistoryDetails {
-            has_transparent_outputs: None,
-            transaction_metadata: Some(TransactionMetadataEvidence {
-                metadata: TransactionMetadata {
-                    fee: whole,
-                    transparent_input_count: 2,
-                    has_shielded_components: false,
-                },
-                provenance: vec![MetadataProvenance {
-                    source: vec![1],
-                    revision: vec![2],
-                    lineage: 0,
-                }],
-            }),
-            whole_fee: match whole {
-                WholeTransactionFee::Exact(fee) => Some(fee),
-                _ => None,
-            },
-            inferred_outgoing: None,
-            aggregate_payment: AggregatePayment::Unknown,
-            account_movement: AccountMovement {
-                received: 30_000_000,
-                spent: 100_000_000,
-                complete: true,
-            },
-            txid: TxId::from_bytes([1; 32]),
-            mined_height: Some(BlockHeight::from_u32(121)),
-            effects: vec![],
-            payment_details: DetailCompleteness::Incomplete,
-            fee: FeeState::Unknown,
-            classification: HistoryClassification::Provisional,
-            pending_private_details: vec![],
-        }
-    }
-
-    fn exact_whole_fee() -> WholeTransactionFee {
-        WholeTransactionFee::Exact(zcash_protocol::value::Zatoshis::from_u64(WHOLE_FEE).unwrap())
-    }
-
-    #[test]
-    fn enhance_shape_changes_only_the_movement_activity_pool() {
-        for outputs in [Some(true), Some(false), None] {
-            let mut details = shared_funding_details(exact_whole_fee());
-            details.has_transparent_outputs = outputs;
-            let (mut base, summary) = provisional_debit();
-            base.attach_history(HistoryCompleteness::of(&details));
-            let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-            let info = &rows[0].info;
-            assert_eq!(
-                info.activity_pool.as_deref(),
-                outputs.filter(|v| *v).map(|_| "transparent")
-            );
-            assert_eq!(info.display_pool, "unknown");
-            assert!(!info.is_transparent);
-            assert_eq!(info.display_amount, 70_000_000);
-            assert_eq!(info.account_balance_delta, -70_000_000);
-            assert_eq!(info.fee, 0);
-            assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-            assert!(info.amount_includes_fee);
-            assert!(info.provisional);
-            assert!(!info.details_complete);
-        }
-    }
-
-    /// D2: the exact whole fee is shown as the network fee, while the
-    /// account's movement stays its known received minus spent. The fee may
-    /// have been shared, so none of it is charged to the account.
-    #[test]
-    fn a_shared_funding_debit_keeps_its_unknown_account_fee() {
-        let details = shared_funding_details(exact_whole_fee());
-        let history = HistoryCompleteness::of(&details);
-        assert_eq!(
-            history.fee,
-            Fee::Unknown,
-            "the account's share stays unknown"
-        );
-        assert_eq!(history.whole_fee, Some(WHOLE_FEE));
-        assert_eq!(history.inferred_payment, None);
-
-        let (mut base, summary) = provisional_debit();
-        base.attach_history(history);
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(info.display_pool, "unknown");
-        assert_eq!(
-            -i128::from(info.display_amount),
-            details.account_movement.net(),
-            "the movement, with no fee charged"
-        );
-        assert_eq!(info.account_balance_delta, -70_000_000);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert!(
-            info.amount_includes_fee,
-            "the movement carries the account's unknown share of the fee"
-        );
-        assert_ne!(info.display_amount, info.fee, "a net change, not a fee");
-        assert!(info.provisional);
-        assert!(!info.details_complete);
-    }
-
-    /// The library's net reconstruction of a privately recovered mixed shielding
-    /// keeps the shielding, shows the whole fee, and charges and infers nothing.
-    #[test]
-    fn a_net_reconstructed_shielding_is_shown_without_attributing_its_fee() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        if let Some(evidence) = details.transaction_metadata.as_mut() {
-            evidence.metadata.has_shielded_components = true;
-        }
-        details.payment_details = DetailCompleteness::Complete;
-        details.classification = HistoryClassification::NetReconstructed;
-        let history = HistoryCompleteness::of(&details);
-        assert!(history.justifies_shielding());
-        assert_eq!(history.fee, Fee::Unknown);
-        assert_eq!(history.whole_fee, Some(WHOLE_FEE));
-        assert_eq!(history.inferred_payment, None);
-        assert_eq!(history.shown_fee(), Fee::Unknown);
-    }
-
-    /// Only a complete, final history justifies a shielding: a net
-    /// reconstruction without its payment details, a provisional history with
-    /// them, and an unread one do not.
-    #[test]
-    fn only_complete_final_histories_justify_a_shielding() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        if let Some(evidence) = details.transaction_metadata.as_mut() {
-            evidence.metadata.has_shielded_components = true;
-        }
-        details.classification = HistoryClassification::NetReconstructed;
-        details.payment_details = DetailCompleteness::Incomplete;
-        assert!(!HistoryCompleteness::of(&details).justifies_shielding());
-
-        details.payment_details = DetailCompleteness::Complete;
-        details.classification = HistoryClassification::Provisional;
-        assert!(!HistoryCompleteness::of(&details).justifies_shielding());
-
-        assert!(!HistoryCompleteness::unread(Some(WHOLE_FEE)).justifies_shielding());
-
-        // A net reconstruction never charges the whole fee to the account, and
-        // a shielding row built from it shows the receipt, not the movement.
-        details.classification = HistoryClassification::NetReconstructed;
-        let history = HistoryCompleteness::of(&details);
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.fee = None;
-        base.is_shielding = true;
-        base.account_balance_delta = -(WHOLE_FEE as i64);
-        base.total_spent = 100_000_000;
-        base.total_received = 100_000_000 - WHOLE_FEE;
-        base.attach_history(history);
-        assert!(base.is_shielding);
-        let mut summary = ActivitySummary::default();
-        summary.shielded.amount = base.total_received;
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "shielded");
-        assert_eq!(info.display_amount, 100_000_000 - WHOLE_FEE);
-        assert_eq!(info.account_balance_delta, -(WHOLE_FEE as i64));
-        assert_eq!(info.fee, 0);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert!(!info.amount_includes_fee);
-        assert!(!info.provisional);
-        assert!(info.details_complete);
-
-        // Without the SQL shielding candidate, a net reconstruction alone
-        // makes nothing a shielding.
-        let mut base = tx_base_for_history();
-        base.is_shielding = false;
-        base.attach_history(history);
-        assert!(!base.is_shielding);
-    }
-
-    #[test]
-    fn a_recovered_shielding_keeps_its_unknown_account_fee() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        if let Some(evidence) = details.transaction_metadata.as_mut() {
-            evidence.metadata.transparent_input_count = 1;
-            evidence.metadata.has_shielded_components = true;
-        }
-        details.payment_details = DetailCompleteness::Complete;
-        details.classification = HistoryClassification::Reconstructed;
-
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.fee = None;
-        base.is_shielding = true;
-        base.account_balance_delta = -(WHOLE_FEE as i64);
-        base.total_spent = 100_000_000;
-        base.total_received = 100_000_000 - WHOLE_FEE;
-        base.attach_history(HistoryCompleteness::of(&details));
-        let mut summary = ActivitySummary::default();
-        summary.shielded.amount = base.total_received;
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "shielded");
-        assert_eq!(info.display_amount, 100_000_000 - WHOLE_FEE);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert!(
-            !info.amount_includes_fee,
-            "a complete shielding shows what arrived, fee excluded"
-        );
-    }
-
-    /// Without either transaction metadata or a reconciled whole fee, a
-    /// public row has no network fee to show. The account's fee stays unknown.
-    #[test]
-    fn a_public_debit_without_whole_fee_keeps_its_unknown_fee() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        details.transaction_metadata = None;
-        details.whole_fee = None;
-        let (mut base, summary) = provisional_debit();
-        let before = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        base.attach_history(HistoryCompleteness::of(&details));
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let (info, before) = (&rows[0].info, &before[0].info);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert_eq!(
-            (&info.tx_kind, info.display_amount, &info.display_pool),
-            (&before.tx_kind, before.display_amount, &before.display_pool)
-        );
-        assert!(!info.amount_includes_fee, "no fee is shown to include");
-    }
-
-    #[test]
-    fn a_public_debit_keeps_its_unknown_share_despite_an_exact_whole_fee() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        details.transaction_metadata = None;
-        let history = HistoryCompleteness::of(&details);
-        assert_eq!(
-            history.fee,
-            Fee::Unknown,
-            "the account's share stays unknown"
-        );
-
-        let (mut base, summary) = provisional_debit();
-        base.attach_history(history);
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(info.display_amount, 70_000_000);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert!(
-            info.amount_includes_fee,
-            "the movement was not reduced by an unknown fee share"
-        );
-    }
-
-    #[test]
-    fn receipt_carries_network_fee_without_promoting_account_attribution() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xE2);
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            None,
-            -70_000_000,
-            100_000_000,
-            30_000_000,
-            false,
-            None,
-        );
-        let conn = open_readonly_conn(db.path().to_str().unwrap()).unwrap();
-        let detail = read_transaction_detail(
-            &conn,
-            WalletNetwork::Test,
-            AccountUuid::from_uuid(account),
-            &hex::encode(txid),
-            "sent",
-            |base| {
-                base.attach_history(HistoryCompleteness::of(&shared_funding_details(
-                    exact_whole_fee(),
-                )));
-                assert_eq!(base.history.shown_fee(), Fee::Unknown);
-                assert!(!base.history.details_complete);
-                assert!(base.history.provisional);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(detail.network_fee, Some(WHOLE_FEE));
-        assert_eq!(detail.account_balance_delta, -70_000_000);
-        assert!(!detail.details_complete);
-        assert!(detail.provisional);
-    }
-
-    #[test]
-    fn a_whole_fee_never_replaces_an_unknown_account_fee() {
-        let shown = |whole, fee| {
-            let mut details = shared_funding_details(whole);
-            details.fee = fee;
-            HistoryCompleteness::of(&details).shown_fee()
-        };
-        let known = |fee| FeeState::Known(zcash_protocol::value::Zatoshis::from_u64(fee).unwrap());
-
-        assert_eq!(shown(exact_whole_fee(), FeeState::Unknown), Fee::Unknown);
-        // Unknown metadata stays unknown, and coinbase's not-applicable whole
-        // fee proves nothing about an account that spent.
-        assert_eq!(
-            shown(WholeTransactionFee::Unknown, FeeState::Unknown),
-            Fee::Unknown
-        );
-        assert_eq!(
-            shown(WholeTransactionFee::NotApplicable, FeeState::Unknown),
-            Fee::Unknown
-        );
-        // An account that provably spent nothing paid no fee, and an account
-        // fee the wallet recorded is the one shown.
-        assert_eq!(
-            shown(exact_whole_fee(), FeeState::NotApplicable),
-            Fee::NotApplicable
-        );
-        assert_eq!(shown(exact_whole_fee(), known(4_000)), Fee::Known(4_000));
-    }
-
-    /// A self-shield known only from private recovery, before its payment
-    /// details arrive: the account's whole balance change is the network
-    /// fee, so the row's amount is that fee and includes it.
-    #[test]
-    fn a_recovered_self_shield_movement_is_its_whole_fee() {
-        let mut details = shared_funding_details(exact_whole_fee());
-        if let Some(evidence) = details.transaction_metadata.as_mut() {
-            evidence.metadata.transparent_input_count = 1;
-            evidence.metadata.has_shielded_components = true;
-        }
-        details.account_movement.received = 100_000_000 - WHOLE_FEE;
-
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.fee = None;
-        base.is_shielding = true;
-        base.account_balance_delta = -(WHOLE_FEE as i64);
-        base.total_spent = 100_000_000;
-        base.total_received = 100_000_000 - WHOLE_FEE;
-        base.attach_history(HistoryCompleteness::of(&details));
-        assert!(
-            !base.is_shielding,
-            "incomplete details justify no shielding"
-        );
-
-        // The shielded output is internal change, so none of it is visible.
-        let rows = classify_history_tx(&base, &ActivitySummary::default(), Fee::NotApplicable);
-
-        assert_eq!(rows.len(), 1);
-        let info = &rows[0].info;
-        assert_eq!(info.tx_kind, "sent");
-        assert_eq!(info.display_amount, WHOLE_FEE);
-        assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-        assert_eq!(info.fee, 0);
-        assert!(info.amount_includes_fee);
-        assert!(info.provisional);
-    }
-
-    /// An unmined debit with no visible output shows the same movement as a
-    /// provisional one, so the same facts mark its amount. That holds with
-    /// complete details too (a reorged recovered transaction whose outputs
-    /// are all internal change): the row still shows the movement.
-    #[test]
-    fn an_unmined_movement_debit_includes_the_whole_fee() {
-        for details_complete in [false, true] {
-            let (mut base, _) = provisional_debit();
-            base.mined_height = None;
-            base.history = HistoryCompleteness {
-                details_complete,
-                has_transparent_outputs: None,
-                provisional: false,
-                effects_settled: true,
-                classification: details_complete.then_some(HistoryClassification::Reconstructed),
-                fee: Fee::Unknown,
-                whole_fee: Some(WHOLE_FEE),
-                inferred_payment: None,
-                inferred_outgoing: None,
-            };
-
-            let rows = classify_history_tx(&base, &ActivitySummary::default(), Fee::NotApplicable);
-
-            assert_eq!(rows.len(), 1, "details_complete: {details_complete}");
-            let info = &rows[0].info;
-            assert_eq!(info.tx_kind, "sent");
-            assert_eq!(info.display_amount, 70_000_000);
-            assert_eq!(info.fee, 0);
-            assert_eq!(info.fee_state, TransactionFeeState::Unknown);
-            assert!(
-                info.amount_includes_fee,
-                "details_complete: {details_complete}"
-            );
-        }
-    }
-
-    /// Only a balance movement shown with the whole fee includes it: a
-    /// recorded account fee was subtracted, a visible or reconstructed
-    /// payment excludes the fee, and without metadata no fee is shown.
-    #[test]
-    fn only_a_movement_shown_with_the_whole_fee_includes_it() {
-        let whole = HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: true,
-            effects_settled: false,
-            fee: Fee::Unknown,
-            whole_fee: Some(WHOLE_FEE),
-            inferred_payment: None,
-            inferred_outgoing: None,
-        };
-        let (_, change) = provisional_debit();
-        let flags = |history: HistoryCompleteness, summary: &ActivitySummary| {
-            let (mut base, _) = provisional_debit();
-            base.history = history;
-            classify_history_tx(&base, summary, Fee::NotApplicable)
-                .iter()
-                .map(|row| row.info.amount_includes_fee)
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(flags(whole, &change), [true]);
-        assert_eq!(
-            flags(
-                HistoryCompleteness {
-                    fee: Fee::Known(4_000),
-                    ..whole
-                },
-                &change
-            ),
-            [false],
-            "a recorded account fee"
-        );
-        assert_eq!(
-            flags(
-                HistoryCompleteness {
-                    whole_fee: None,
-                    ..whole
-                },
-                &change
-            ),
-            [false],
-            "public evidence"
-        );
-        assert_eq!(
-            flags(
-                HistoryCompleteness {
-                    inferred_payment: Some(69_990_000),
-                    inferred_outgoing: None,
-                    ..whole
-                },
-                &change
-            ),
-            [false],
-            "a reconstructed payment"
-        );
-        let mut paid = change.clone();
-        paid.sent.amount = 60_000_000;
-        paid.sent.output_count = 1;
-        paid.sent.has_orchard = true;
-        assert_eq!(flags(whole, &paid), [false, false], "a visible payment");
-        // A mined debit with complete details and no visible output is never
-        // shown as its movement: its outputs are internal change, with no
-        // receipt to stand in for them.
-        let complete_mined = flags(
-            HistoryCompleteness {
-                has_transparent_outputs: None,
-                details_complete: true,
-                classification: Some(HistoryClassification::Reconstructed),
-                provisional: false,
-                ..whole
-            },
-            &ActivitySummary::default(),
-        );
-        assert!(
-            !complete_mined.contains(&true),
-            "a mined complete debit: {complete_mined:?}"
-        );
-    }
-
-    #[test]
-    fn local_history_with_incomplete_effects_stays_provisional_until_scanned() {
-        use zcash_client_backend::data_api::transparent_ledger::{
-            AccountMovement, AggregatePayment, EffectCompleteness, PoolEffect,
-        };
-        use zcash_protocol::{value::Zatoshis, PoolType};
-
-        // Local construction knows the payment, but scanning still has to
-        // discover the receipt to the account's own external shielded address.
-        let mut details = TransactionHistoryDetails {
-            has_transparent_outputs: None,
-            transaction_metadata: None,
-            whole_fee: None,
-            inferred_outgoing: None,
-            aggregate_payment: AggregatePayment::Exact(Zatoshis::from_u64(50_000).unwrap()),
-            account_movement: AccountMovement {
-                received: 140_000,
-                spent: 200_000,
-                complete: false,
-            },
-            txid: TxId::from_bytes([1; 32]),
-            mined_height: None,
-            effects: vec![PoolEffect {
-                pool: PoolType::SAPLING,
-                received: Zatoshis::from_u64(140_000).unwrap(),
-                spent: Zatoshis::from_u64(200_000).unwrap(),
-                completeness: EffectCompleteness::Incomplete,
-            }],
-            payment_details: DetailCompleteness::Complete,
-            fee: FeeState::Known(Zatoshis::from_u64(10_000).unwrap()),
-            classification: HistoryClassification::LocalIntent,
-            pending_private_details: vec![],
-        };
-        let pending = HistoryCompleteness::of(&details);
-        assert!(pending.details_complete);
-        assert!(pending.provisional);
-        assert_eq!(pending.fee, Fee::Known(10_000));
-
-        let mut base = tx_base_for_history();
-        base.attach_history(pending);
-        let mut summary = ActivitySummary::default();
-        summary.sent.amount = 50_000;
-        summary.sent.output_count = 1;
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].info.details_complete);
-        assert!(rows[0].info.provisional);
-
-        details.effects[0].received = Zatoshis::from_u64(190_000).unwrap();
-        details.effects[0].completeness = EffectCompleteness::Complete;
-        let scanned = HistoryCompleteness::of(&details);
-        assert!(scanned.details_complete);
-        assert!(!scanned.provisional);
-        assert_eq!(scanned.fee, pending.fee);
-    }
-
-    #[test]
-    fn history_mapping_keeps_public_discovery_settled_and_provisional_classification() {
-        use zcash_client_backend::data_api::transparent_ledger::{
-            AccountMovement, AggregatePayment, EffectCompleteness, PoolEffect,
-        };
-        use zcash_protocol::{value::Zatoshis, PoolType};
-
-        let mut details = TransactionHistoryDetails {
-            has_transparent_outputs: None,
-            transaction_metadata: None,
-            whole_fee: None,
-            inferred_outgoing: None,
-            aggregate_payment: AggregatePayment::Unknown,
-            account_movement: AccountMovement {
-                received: 0,
-                spent: 0,
-                complete: true,
-            },
-            txid: TxId::from_bytes([1; 32]),
-            mined_height: None,
-            effects: vec![
-                PoolEffect {
-                    pool: PoolType::SAPLING,
-                    received: Zatoshis::ZERO,
-                    spent: Zatoshis::ZERO,
-                    completeness: EffectCompleteness::Complete,
-                },
-                PoolEffect {
-                    pool: PoolType::Transparent,
-                    received: Zatoshis::ZERO,
-                    spent: Zatoshis::ZERO,
-                    completeness: EffectCompleteness::PublicDiscovery,
-                },
-            ],
-            payment_details: DetailCompleteness::Complete,
-            fee: FeeState::NotApplicable,
-            classification: HistoryClassification::Reconstructed,
-            pending_private_details: vec![],
-        };
-        for classification in [
-            HistoryClassification::LocalIntent,
-            HistoryClassification::Reconstructed,
-            HistoryClassification::Provisional,
-        ] {
-            details.classification = classification;
-            for completeness in [
-                EffectCompleteness::Complete,
-                EffectCompleteness::PublicDiscovery,
-                EffectCompleteness::Incomplete,
-            ] {
-                // The unsettled effect need not be the first one.
-                details.effects[1].completeness = completeness;
-                let mapped = HistoryCompleteness::of(&details);
-                assert_eq!(mapped.effects_settled, completeness.is_settled());
-                assert_eq!(
-                    mapped.provisional,
-                    classification == HistoryClassification::Provisional
-                        || completeness == EffectCompleteness::Incomplete,
-                    "{classification:?} with {completeness:?}"
-                );
-                assert!(mapped.details_complete);
-                assert_eq!(mapped.fee, Fee::NotApplicable);
-            }
-        }
-
-        // A missing memo alone does not make settled effects provisional.
-        details.classification = HistoryClassification::Reconstructed;
-        details.effects[1].completeness = EffectCompleteness::PublicDiscovery;
-        details.payment_details = DetailCompleteness::Incomplete;
-        details.fee = FeeState::Unknown;
-        let mapped = HistoryCompleteness::of(&details);
-        assert!(!mapped.details_complete);
-        assert!(!mapped.provisional);
-        assert_eq!(mapped.fee, Fee::Unknown);
-    }
-
-    #[test]
-    fn shielding_is_inferred_only_from_complete_details() {
-        let mut base = tx_base_for_history();
-        base.is_shielding = true;
-        base.attach_history(HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: false,
-            classification: None,
-            provisional: true,
-            effects_settled: false,
-            fee: Fee::Unknown,
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        });
-        assert!(!base.is_shielding);
-
-        let mut base = tx_base_for_history();
-        base.is_shielding = true;
-        base.attach_history(HistoryCompleteness {
-            has_transparent_outputs: None,
-            details_complete: true,
-            classification: Some(HistoryClassification::Reconstructed),
-            provisional: false,
-            effects_settled: true,
-            fee: Fee::Known(10_000),
-            whole_fee: None,
-            inferred_payment: None,
-            inferred_outgoing: None,
-        });
-        assert!(base.is_shielding);
-    }
-
-    #[test]
-    fn an_unknown_fee_is_never_zero() {
-        let mut base = tx_base_for_history();
-        base.spent_orchard_note = false;
-        base.history.fee = Fee::Unknown;
-        let mut summary = ActivitySummary::default();
-        summary.sent.amount = 5_000_000;
-        summary.sent.output_count = 1;
-        summary.sent.has_orchard = true;
-
-        let rows = classify_history_tx(&base, &summary, Fee::NotApplicable);
-        assert_eq!(rows[0].info.fee_state, TransactionFeeState::Unknown);
-
-        // A funding step whose fee is unknown makes the combined fee unknown.
-        base.history.fee = Fee::Known(10_000);
-        let rows = classify_history_tx(&base, &summary, Fee::Unknown);
-        assert_eq!(rows[0].info.fee_state, TransactionFeeState::Unknown);
-        let rows = classify_history_tx(&base, &summary, Fee::Known(5_000));
-        assert_eq!(rows[0].info.fee_state, TransactionFeeState::Known);
-        assert_eq!(rows[0].info.fee, 15_000);
-    }
-
-    #[test]
-    fn unread_history_is_provisional() {
-        let mut base = tx_base_for_history();
-        base.is_shielding = true;
-        base.attach_history(HistoryCompleteness::unread(Some(10_000)));
-        assert!(base.history.provisional);
-        assert!(!base.history.details_complete);
-        assert!(!base.is_shielding);
-        assert_eq!(base.history.fee, Fee::Known(10_000));
-        assert_eq!(HistoryCompleteness::unread(None).fee, Fee::Unknown);
-    }
-
     pub(super) fn fake_raw() -> Vec<u8> {
         vec![0xDE, 0xAD, 0xBE, 0xEF]
-    }
-
-    fn transparent_source_raw_tx() -> Vec<u8> {
-        hex::decode(
-            "0400008085202f8901aee37187e843da597683c26c01457f5fd3b1a038996ef74dc8d60d483aaf395a000000006b483045022100874c70db77ea9e93f75cc83a9e141e17c8eb97588e29fe4e307631fdde4f162a02203493df62d648cd86a1189eaf9bcafc652bc14c5df02519d9e45e25b32aaffb5b012102106a2dcaaac2ae3b24358a03f4264e05db420c5b090399bc23885fa02fef7716ffffffff02764e1900000000001976a914fb451987556f7a19b726966ee6cff917e0bb3bfb88ac560ca400000000001976a9141634f5ff0b8f6603a17570436d6c12a91f4b1fed88ac00000000000000000000000000000000000000",
-        )
-        .unwrap()
     }
 
     fn transparent_source_test_address() -> String {
@@ -5043,79 +2575,6 @@ mod tests {
     }
 
     #[test]
-    fn history_exposes_activity_pools_without_changing_legacy_grouping() {
-        let cases: &[(&[i64], &str, &str)] = &[
-            (&[TRANSPARENT_POOL], "transparent", "transparent"),
-            (&[SAPLING_POOL], "sapling", "shielded"),
-            (&[ORCHARD_POOL], "orchard", "shielded"),
-            (&[IRONWOOD_POOL], "ironwood", "ironwood"),
-            (&[SAPLING_POOL, ORCHARD_POOL], "mixed", "shielded"),
-            (&[ORCHARD_POOL, IRONWOOD_POOL], "mixed", "mixed"),
-            (&[TRANSPARENT_POOL, SAPLING_POOL], "mixed", "mixed"),
-            (&[TRANSPARENT_POOL, IRONWOOD_POOL], "mixed", "mixed"),
-        ];
-        for &(pools, activity_pool, legacy_pool) in cases {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let txid = fake_txid(0xB0);
-            let amount = pools.len() as i64 * 100_000;
-            insert_history_tx(
-                &db,
-                account,
-                &txid,
-                Some(1_000_000),
-                1,
-                None,
-                0,
-                amount,
-                amount,
-                false,
-                None,
-            );
-            for &pool in pools {
-                insert_output_with_address(
-                    &db,
-                    &txid,
-                    pool,
-                    Some(account),
-                    Some(account),
-                    100_000,
-                    false,
-                    Some("self-address"),
-                    Some(0),
-                );
-            }
-            let rows = history_from_fixture(
-                db.path().to_str().unwrap(),
-                WalletNetwork::Test,
-                None,
-                &account.to_string(),
-            )
-            .unwrap();
-            assert_eq!(rows.len(), 2, "pools: {pools:?}");
-            assert_eq!(rows[0].tx_kind, "sent");
-            assert_eq!(rows[1].tx_kind, "received");
-            for row in rows {
-                assert_eq!(row.activity_pool.as_deref(), Some(activity_pool));
-                assert_eq!(row.display_pool, legacy_pool);
-                assert_eq!(row.display_amount, amount as u64);
-            }
-        }
-    }
-
-    #[test]
-    fn history_unknown_pool_fallback_has_no_exact_activity_pool() {
-        let mut base = tx_base_for_history();
-        base.total_spent = 0;
-        base.account_balance_delta = 50_000;
-        let rows = classify_history_tx(&base, &ActivitySummary::default(), Fee::NotApplicable);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].info.tx_kind, "received");
-        assert_eq!(rows[0].info.display_pool, "unknown");
-        assert_eq!(rows[0].info.activity_pool, None);
-    }
-
-    #[test]
     fn received_transparent_output_detail_returns_bare_t_address() {
         // The wallet stores the account UA in `to_address` for a received
         // transparent output; `transparent_receiver_address` holds the bare
@@ -5127,18 +2586,14 @@ mod tests {
         let ua = "u1qexampleunifiedaddressexampleunifiedaddress".to_string();
 
         let transparent_received = TxOutput {
-            txid: vec![0u8; 32],
             output_pool: 0,
             output_index: 0,
             from_account_uuid: None,
-            to_account_uuid: Some(test_account_uuid().as_bytes().to_vec()),
             to_address: Some(ua.clone()),
             sent_to_address: None,
             transparent_receiver_address: Some(t_addr.clone()),
-            to_key_scope: Some(0),
             value: 1_000_000,
             memo: None,
-            note_version: None,
         };
         assert_eq!(
             transparent_received.detail_address("received"),
@@ -5151,18 +2606,14 @@ mod tests {
 
         // Shielded receives (pool 2) still surface their stored address.
         let shielded_received = TxOutput {
-            txid: vec![0u8; 32],
             output_pool: 2,
             output_index: 0,
             from_account_uuid: None,
-            to_account_uuid: Some(test_account_uuid().as_bytes().to_vec()),
             to_address: Some(ua.clone()),
             sent_to_address: None,
             transparent_receiver_address: None,
-            to_key_scope: Some(0),
             value: 1_000_000,
             memo: None,
-            note_version: None,
         };
         assert_eq!(shielded_received.detail_address("received"), Some(ua));
     }
@@ -5282,15 +2733,6 @@ mod tests {
         .unwrap();
     }
 
-    fn set_history_tx_raw(db: &NamedTempFile, account: uuid::Uuid, txid: &[u8], raw: &[u8]) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        conn.execute(
-            "UPDATE v_transactions SET raw = ?1 WHERE account_uuid = ?2 AND txid = ?3",
-            rusqlite::params![raw, account.as_bytes().as_slice(), txid],
-        )
-        .unwrap();
-    }
-
     fn ensure_account_row(conn: &rusqlite::Connection, account: uuid::Uuid) -> i64 {
         conn.execute(
             "INSERT OR IGNORE INTO accounts (uuid) VALUES (?1)",
@@ -5303,28 +2745,6 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
-    }
-
-    fn insert_output(
-        db: &NamedTempFile,
-        txid: &[u8],
-        output_pool: i64,
-        from_account: Option<uuid::Uuid>,
-        to_account: Option<uuid::Uuid>,
-        value: i64,
-        is_change: bool,
-    ) -> i64 {
-        insert_output_with_address(
-            db,
-            txid,
-            output_pool,
-            from_account,
-            to_account,
-            value,
-            is_change,
-            None,
-            None,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5422,61 +2842,6 @@ mod tests {
         output_index
     }
 
-    fn insert_received_note_version(
-        db: &NamedTempFile,
-        txid: &[u8],
-        output_index: i64,
-        note_version: i64,
-    ) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        let transaction_id = conn
-            .query_row(
-                "SELECT id_tx FROM transactions WHERE txid = ?1",
-                rusqlite::params![txid],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
-        conn.execute(
-            "INSERT INTO orchard_received_notes (
-                 transaction_id, action_index, note_version
-             ) VALUES (?1, ?2, ?3)",
-            rusqlite::params![transaction_id, output_index, note_version],
-        )
-        .unwrap();
-    }
-
-    fn insert_spent_note_version(db: &NamedTempFile, txid: &[u8], note_version: i64) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        let transaction_id = conn
-            .query_row(
-                "SELECT id_tx FROM transactions WHERE txid = ?1",
-                rusqlite::params![txid],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
-        conn.execute(
-            "INSERT INTO transactions (txid) VALUES (randomblob(32))",
-            [],
-        )
-        .unwrap();
-        let source_transaction_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO orchard_received_notes (
-                 transaction_id, action_index, note_version
-             ) VALUES (?1, 0, ?2)",
-            rusqlite::params![source_transaction_id, note_version],
-        )
-        .unwrap();
-        let note_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO orchard_received_note_spends (
-                 orchard_received_note_id, transaction_id
-             ) VALUES (?1, ?2)",
-            rusqlite::params![note_id, transaction_id],
-        )
-        .unwrap();
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn insert_sent_note(
         db: &NamedTempFile,
@@ -5516,25 +2881,6 @@ mod tests {
             ],
         )
         .unwrap();
-    }
-
-    fn set_cached_transparent_receiver_address(
-        db: &NamedTempFile,
-        account: uuid::Uuid,
-        address: &str,
-        transparent_address: &str,
-    ) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        let account_id = ensure_account_row(&conn, account);
-        let changed = conn
-            .execute(
-                "UPDATE addresses
-                 SET cached_transparent_receiver_address = ?3
-                 WHERE account_id = ?1 AND address = ?2",
-                rusqlite::params![account_id, address, transparent_address],
-            )
-            .unwrap();
-        assert_eq!(changed, 1);
     }
 
     #[test]
@@ -5702,100 +3048,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(got, 2);
-    }
-
-    fn mark_expired_unmined(db: &NamedTempFile, txid: &[u8]) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        conn.execute(
-            "UPDATE v_transactions SET expired_unmined = 1 WHERE txid = ?1",
-            rusqlite::params![txid],
-        )
-        .unwrap();
-    }
-
-    fn clear_tx_index(db: &NamedTempFile, txid: &[u8]) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        conn.execute(
-            "UPDATE v_transactions SET tx_index = NULL WHERE txid = ?1",
-            rusqlite::params![txid],
-        )
-        .unwrap();
-    }
-
-    fn set_history_fee(db: &NamedTempFile, txid: &[u8], fee_paid: i64) {
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        conn.execute(
-            "UPDATE v_transactions SET fee_paid = ?2 WHERE txid = ?1",
-            rusqlite::params![txid, fee_paid],
-        )
-        .unwrap();
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn insert_zip320_history_pair(
-        db: &NamedTempFile,
-        account: uuid::Uuid,
-        funding_step: &[u8],
-        external_send: &[u8],
-        created: &str,
-        funding_tx_index: i64,
-        external_tx_index: i64,
-        expiry_height: i64,
-        funding_amount: i64,
-        funding_fee: i64,
-        external_fee: i64,
-    ) {
-        let send_amount = funding_amount - external_fee;
-
-        insert_history_tx(
-            db,
-            account,
-            funding_step,
-            None,
-            funding_tx_index,
-            Some(expiry_height),
-            -funding_fee,
-            funding_amount + funding_fee,
-            funding_amount,
-            false,
-            Some(created),
-        );
-        set_history_fee(db, funding_step, funding_fee);
-        insert_output_with_address(
-            db,
-            funding_step,
-            0,
-            Some(account),
-            Some(account),
-            funding_amount,
-            false,
-            Some("t-ephemeral"),
-            Some(2),
-        );
-
-        insert_history_tx(
-            db,
-            account,
-            external_send,
-            None,
-            external_tx_index,
-            Some(expiry_height),
-            -funding_amount,
-            funding_amount,
-            0,
-            false,
-            Some(created),
-        );
-        set_history_fee(db, external_send, external_fee);
-        insert_output(
-            db,
-            external_send,
-            0,
-            Some(account),
-            None,
-            send_amount,
-            false,
-        );
     }
 
     fn set_account_birthday(db: &NamedTempFile, account: uuid::Uuid, birthday_height: i64) {
@@ -6095,11 +3347,9 @@ mod tests {
         assert!(got > 3_999_000_000, "{got}");
     }
 
-    /// Read `TxBase` from a synthetic `v_transactions` table.
-    ///
-    /// Synthetic classification fixtures do not have the library's note schema.
-    /// Real-schema tests separately compare the library projection with this view.
-    fn read_history_bases_via_v_transactions(
+    /// Read `TxBase` from `v_transactions`, to compare with the library's
+    /// summaries.
+    pub(super) fn read_history_bases_via_v_transactions(
         conn: &rusqlite::Connection,
         account_uuid: &[u8],
     ) -> Result<Vec<TxBase>, String> {
@@ -6139,96 +3389,28 @@ mod tests {
             .map_err(|e| format!("SQL error: {e}"))?;
 
         let rows = stmt
-            .query_map(
-                rusqlite::params![account_uuid, ORCHARD_NOTE_VERSION],
-                |row| {
-                    let fee = row.get::<_, Option<i64>>(5)?.map(i64::unsigned_abs);
-                    Ok(TxBase {
-                        txid: row.get(0)?,
-                        transaction_id: row.get(1)?,
-                        mined_height: row.get(2)?,
-                        expired_unmined: row.get(3)?,
-                        account_balance_delta: row.get(4)?,
-                        fee,
-                        block_time: row.get::<_, i64>(6)?.unsigned_abs(),
-                        total_spent: row.get::<_, i64>(7)?.unsigned_abs(),
-                        total_received: row.get::<_, i64>(8)?.unsigned_abs(),
-                        is_shielding: row.get(9)?,
-                        expiry_height: row.get(10)?,
-                        tx_index: row.get(11)?,
-                        created: row.get(12)?,
-                        created_time: row.get::<_, i64>(13)?.unsigned_abs(),
-                        spent_orchard_note: row.get(14)?,
-                        history: HistoryCompleteness::unread(fee),
-                    })
-                },
-            )
+            .query_map(rusqlite::params![account_uuid, 2], |row| {
+                let mined_height: Option<u32> = row.get(2)?;
+                Ok(TxBase {
+                    txid: row.get(0)?,
+                    transaction_id: row.get(1)?,
+                    mined_height,
+                    expired_unmined: row.get(3)?,
+                    account_balance_delta: row.get(4)?,
+                    block_time: row.get::<_, i64>(6)?.unsigned_abs(),
+                    total_spent: row.get::<_, i64>(7)?.unsigned_abs(),
+                    total_received: row.get::<_, i64>(8)?.unsigned_abs(),
+                    expiry_height: row.get(10)?,
+                    tx_index: row.get(11)?,
+                    created: row.get(12)?,
+                    created_time: row.get::<_, i64>(13)?.unsigned_abs(),
+                    history: HistoryView::unread(mined_height.is_some()),
+                })
+            })
             .map_err(|e| format!("Query error: {e}"))?;
 
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Row error: {e}"))
-    }
-
-    /// `get_transaction_detail` over a synthetic fixture, which has no ledger
-    /// facts: the transaction is treated as completely known.
-    fn detail_from_fixture(
-        db_path: &str,
-        network: WalletNetwork,
-        account_uuid: &str,
-        txid_hex: &str,
-        tx_kind: &str,
-    ) -> Result<TransactionDetail, String> {
-        let account = parse_account_uuid(account_uuid)?;
-        let conn = open_readonly_conn(db_path)?;
-        let read_tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("SQL error: {e}"))?;
-        read_transaction_detail(&read_tx, network, account, txid_hex, tx_kind, |base| {
-            base.attach_history(HistoryCompleteness::complete_for(base));
-            Ok(())
-        })
-    }
-
-    /// `get_transaction_history` with its bases read from the synthetic
-    /// `v_transactions` fixture instead of the library summary API.
-    ///
-    /// Everything else is production code: the real
-    /// `read_history_outputs` and the real `assemble_history`. The fixture has
-    /// no ledger facts, so every transaction is treated as completely known,
-    /// as for a wallet that built or fully enhanced it.
-    fn history_from_fixture(
-        db_path: &str,
-        _network: WalletNetwork,
-        limit: Option<u32>,
-        account_uuid: &str,
-    ) -> Result<Vec<TransactionInfo>, String> {
-        let uuid = uuid::Uuid::parse_str(account_uuid).map_err(|e| format!("Invalid UUID: {e}"))?;
-        let uuid_bytes = uuid.as_bytes().to_vec();
-
-        let conn = open_readonly_conn(db_path)?;
-        let read_tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("SQL error: {e}"))?;
-        let mut bases = read_history_bases_via_v_transactions(&read_tx, &uuid_bytes)?;
-        if bases.is_empty() {
-            return Ok(Vec::new());
-        }
-        for base in &mut bases {
-            base.attach_history(HistoryCompleteness::complete_for(base));
-        }
-        let outputs_by_txid = read_history_outputs(
-            &read_tx,
-            &uuid_bytes,
-            bases.iter().map(|base| base.txid.as_slice()),
-        )?;
-        drop(read_tx);
-
-        Ok(assemble_history(
-            &bases,
-            &outputs_by_txid,
-            &uuid_bytes,
-            limit,
-        ))
     }
 
     /// Pin the batched balance read to the single-account one.
@@ -6364,3017 +3546,6 @@ mod tests {
         assert!(compared > 0, "{db_path} has no history rows to compare");
     }
 
-    /// Old `read_history_outputs` filter: DISTINCT txid from
-    /// `v_transactions` for the active account. Kept only as the
-    /// equivalence oracle for the `rarray(bases)` path.
-    fn read_history_outputs_via_v_transactions_distinct(
-        conn: &rusqlite::Connection,
-        account_uuid: &[u8],
-    ) -> Result<HashMap<Vec<u8>, Vec<TxOutput>>, String> {
-        let mut stmt = conn
-            .prepare(
-                r#"
-            SELECT
-                txo.txid,
-                txo.output_pool,
-                txo.output_index,
-                txo.from_account_uuid,
-                txo.to_account_uuid,
-                txo.to_address,
-                (
-                    SELECT sn.to_address
-                    FROM sent_notes sn
-                    JOIN transactions st ON st.id_tx = sn.transaction_id
-                    JOIN accounts from_acc ON from_acc.id = sn.from_account_id
-                    WHERE st.txid = txo.txid
-                      AND from_acc.uuid = ?1
-                      AND sn.output_pool = txo.output_pool
-                      AND sn.output_index = txo.output_index
-                      AND sn.to_address IS NOT NULL
-                    LIMIT 1
-                ) AS sent_to_address,
-                NULL AS transparent_receiver_address,
-                (
-                    SELECT a.key_scope
-                    FROM accounts acc
-                    JOIN addresses a ON a.account_id = acc.id
-                    WHERE acc.uuid = txo.to_account_uuid
-                      AND (
-                          a.address = txo.to_address
-                          OR a.cached_transparent_receiver_address = txo.to_address
-                      )
-                    LIMIT 1
-                ) AS to_key_scope,
-                txo.value,
-                txo.memo,
-                (
-                    SELECT orn.note_version
-                    FROM orchard_received_notes orn
-                    WHERE txo.output_pool IN (3, 4)
-                      AND orn.transaction_id = txo.transaction_id
-                      AND orn.action_index = txo.output_index
-                    LIMIT 1
-                ) AS note_version
-            FROM v_tx_outputs txo
-            JOIN (
-                SELECT DISTINCT txid
-                FROM v_transactions
-                WHERE account_uuid = ?1
-            ) active_tx ON active_tx.txid = txo.txid
-            WHERE txo.from_account_uuid = ?1
-               OR txo.to_account_uuid = ?1
-            "#,
-            )
-            .map_err(|e| format!("SQL error: {e}"))?;
-
-        let rows = stmt
-            .query_map(rusqlite::params![account_uuid], |row| {
-                Ok(TxOutput {
-                    txid: row.get(0)?,
-                    output_pool: row.get(1)?,
-                    output_index: row.get(2)?,
-                    from_account_uuid: row.get(3)?,
-                    to_account_uuid: row.get(4)?,
-                    to_address: row.get(5)?,
-                    sent_to_address: row.get(6)?,
-                    transparent_receiver_address: row.get(7)?,
-                    to_key_scope: row.get(8)?,
-                    value: row.get::<_, i64>(9)?.unsigned_abs(),
-                    memo: row.get(10)?,
-                    note_version: row.get(11)?,
-                })
-            })
-            .map_err(|e| format!("Query error: {e}"))?;
-
-        let mut outputs = HashMap::<Vec<u8>, Vec<TxOutput>>::new();
-        for row in rows {
-            let output = row.map_err(|e| format!("Row error: {e}"))?;
-            outputs.entry(output.txid.clone()).or_default().push(output);
-        }
-        Ok(outputs)
-    }
-
-    fn distinct_v_transactions_txids(
-        conn: &rusqlite::Connection,
-        account_uuid: &[u8],
-    ) -> Result<HashSet<Vec<u8>>, String> {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT txid FROM v_transactions WHERE account_uuid = ?1")
-            .map_err(|e| format!("SQL error: {e}"))?;
-        let rows = stmt
-            .query_map(rusqlite::params![account_uuid], |row| row.get(0))
-            .map_err(|e| format!("Query error: {e}"))?;
-        rows.collect::<Result<HashSet<_>, _>>()
-            .map_err(|e| format!("Row error: {e}"))
-    }
-
-    fn sorted_history_outputs(outputs: &HashMap<Vec<u8>, Vec<TxOutput>>) -> Vec<TxOutput> {
-        let mut flat: Vec<TxOutput> = outputs.values().flatten().cloned().collect();
-        flat.sort_by(|a, b| {
-            (
-                &a.txid,
-                a.output_pool,
-                a.output_index,
-                &a.from_account_uuid,
-                &a.to_account_uuid,
-                a.value,
-            )
-                .cmp(&(
-                    &b.txid,
-                    b.output_pool,
-                    b.output_index,
-                    &b.from_account_uuid,
-                    &b.to_account_uuid,
-                    b.value,
-                ))
-        });
-        flat
-    }
-
-    #[test]
-    fn history_outputs_rarray_matches_v_transactions_distinct_txids() {
-        // `read_history_outputs` binds txids from `read_history_bases`
-        // via `rarray` instead of re-deriving
-        // `SELECT DISTINCT txid FROM v_transactions`. These setups pin
-        // that the two filters stay row-identical.
-        struct Case {
-            name: &'static str,
-            setup: fn(&NamedTempFile, uuid::Uuid, uuid::Uuid),
-        }
-
-        let cases = [
-            Case {
-                name: "empty",
-                setup: |_, _, _| {},
-            },
-            Case {
-                name: "one_received",
-                setup: |db, account, _| {
-                    let txid = fake_txid(0x01);
-                    insert_history_tx(
-                        db,
-                        account,
-                        &txid,
-                        Some(100),
-                        0,
-                        None,
-                        1_000_000,
-                        0,
-                        1_000_000,
-                        false,
-                        Some("2026-01-01T00:00:00Z"),
-                    );
-                    insert_output(db, &txid, 3, None, Some(account), 1_000_000, false);
-                },
-            },
-            Case {
-                name: "many_mixed",
-                setup: |db, account, _| {
-                    for (i, (pool, delta, spent, received, from_self, to_self)) in [
-                        (3_i64, 500_000_i64, 0_i64, 500_000_i64, false, true),
-                        (3, -400_000, 400_000, 0, true, false),
-                        (0, -250_000, 250_000, 0, true, false),
-                        (3, 0, 100_000, 100_000, true, true),
-                        (4, 75_000, 0, 75_000, false, true),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        let txid = fake_txid(0x10 + i as u8);
-                        insert_history_tx(
-                            db,
-                            account,
-                            &txid,
-                            Some(200 + i as i64),
-                            i as i64,
-                            None,
-                            delta,
-                            spent,
-                            received,
-                            false,
-                            Some("2026-01-02T00:00:00Z"),
-                        );
-                        // Fat raw must not change the output filter set.
-                        set_history_tx_raw(db, account, &txid, &vec![0xAB; 64 * (i + 1)]);
-                        let from = from_self.then_some(account);
-                        let to = to_self.then_some(account);
-                        insert_output(db, &txid, pool, from, to, received.max(spent), false);
-                        if from_self && to_self {
-                            insert_output(db, &txid, pool, Some(account), None, 1, true);
-                        }
-                    }
-                },
-            },
-            Case {
-                name: "other_account_only",
-                setup: |db, _, other| {
-                    let txid = fake_txid(0x20);
-                    insert_history_tx(
-                        db,
-                        other,
-                        &txid,
-                        Some(300),
-                        0,
-                        None,
-                        2_000_000,
-                        0,
-                        2_000_000,
-                        false,
-                        None,
-                    );
-                    insert_output(db, &txid, 3, None, Some(other), 2_000_000, false);
-                },
-            },
-            Case {
-                name: "mixed_accounts",
-                setup: |db, account, other| {
-                    let ours = fake_txid(0x30);
-                    let theirs = fake_txid(0x31);
-                    insert_history_tx(
-                        db,
-                        account,
-                        &ours,
-                        Some(400),
-                        0,
-                        None,
-                        3_000_000,
-                        0,
-                        3_000_000,
-                        false,
-                        None,
-                    );
-                    insert_output(db, &ours, 3, None, Some(account), 3_000_000, false);
-                    insert_history_tx(
-                        db,
-                        other,
-                        &theirs,
-                        Some(401),
-                        0,
-                        None,
-                        4_000_000,
-                        0,
-                        4_000_000,
-                        false,
-                        None,
-                    );
-                    insert_output(db, &theirs, 3, None, Some(other), 4_000_000, false);
-                },
-            },
-            Case {
-                name: "tx_without_outputs",
-                setup: |db, account, _| {
-                    insert_history_tx(
-                        db,
-                        account,
-                        &fake_txid(0x40),
-                        Some(500),
-                        0,
-                        None,
-                        0,
-                        0,
-                        0,
-                        false,
-                        None,
-                    );
-                },
-            },
-            Case {
-                name: "duplicate_v_transactions_rows",
-                setup: |db, account, _| {
-                    let txid = fake_txid(0x50);
-                    insert_history_tx(
-                        db,
-                        account,
-                        &txid,
-                        Some(600),
-                        0,
-                        None,
-                        1_000_000,
-                        0,
-                        1_000_000,
-                        false,
-                        None,
-                    );
-                    // Second view row for the same account+txid: DISTINCT
-                    // collapses it; rarray dedupes the same way so the
-                    // joined output rows stay identical.
-                    let conn = rusqlite::Connection::open(db.path()).unwrap();
-                    conn.execute(
-                        "INSERT INTO v_transactions (
-                             account_uuid, txid, raw, mined_height, expired_unmined,
-                             account_balance_delta, fee_paid, block_time, total_spent,
-                             total_received, is_shielding, expiry_height, tx_index
-                         ) VALUES (?1, ?2, NULL, 600, 0, 1_000_000, 0, 0, 0, 1_000_000, 0, NULL, 0)",
-                        rusqlite::params![account.as_bytes().as_slice(), txid.as_slice()],
-                    )
-                    .unwrap();
-                    insert_output(db, &txid, 3, None, Some(account), 1_000_000, false);
-                },
-            },
-        ];
-
-        for case in cases {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let other = second_test_account_uuid();
-            (case.setup)(&db, account, other);
-
-            let conn = open_readonly_conn(db.path().to_str().unwrap()).unwrap();
-            let account_bytes = account.as_bytes().as_slice();
-            // Bases come from the fixture oracle, not the library API:
-            // this case is about the outputs filter, and the synthetic
-            // schema cannot feed the library query. Real-schema tests cover
-            // the summary adapter's agreement with `v_transactions`.
-            let bases = read_history_bases_via_v_transactions(&conn, account_bytes).unwrap();
-            let base_txids: HashSet<Vec<u8>> = bases.iter().map(|base| base.txid.clone()).collect();
-            let distinct_txids = distinct_v_transactions_txids(&conn, account_bytes).unwrap();
-            assert_eq!(
-                base_txids, distinct_txids,
-                "{}: bases txids must equal DISTINCT v_transactions.txid",
-                case.name
-            );
-
-            let via_rarray = read_history_outputs(
-                &conn,
-                account_bytes,
-                bases.iter().map(|base| base.txid.as_slice()),
-            )
-            .unwrap();
-            let via_view =
-                read_history_outputs_via_v_transactions_distinct(&conn, account_bytes).unwrap();
-            assert_eq!(
-                sorted_history_outputs(&via_rarray),
-                sorted_history_outputs(&via_view),
-                "{}: rarray(bases) outputs must match DISTINCT v_transactions join",
-                case.name
-            );
-        }
-    }
-
-    #[test]
-    fn history_suppresses_funding_step_after_limit_filtering() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let external_send = fake_txid(0xA1);
-        let funding_step = fake_txid(0xA2);
-        let created = "2026-04-28T13:03:00Z";
-
-        insert_history_tx(
-            &db,
-            account,
-            &funding_step,
-            None,
-            2,
-            Some(1_000_100),
-            -40_000,
-            18_302_101,
-            18_262_101,
-            false,
-            Some(created),
-        );
-        set_history_fee(&db, &funding_step, 40_000);
-        insert_output_with_address(
-            &db,
-            &funding_step,
-            0,
-            Some(account),
-            Some(account),
-            10_010_000,
-            false,
-            Some("t-ephemeral"),
-            Some(2),
-        );
-
-        insert_history_tx(
-            &db,
-            account,
-            &external_send,
-            None,
-            1,
-            Some(1_000_100),
-            -10_010_000,
-            10_010_000,
-            0,
-            false,
-            Some(created),
-        );
-        set_history_fee(&db, &external_send, 10_000);
-        insert_output(
-            &db,
-            &external_send,
-            0,
-            Some(account),
-            None,
-            10_000_000,
-            false,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(external_send));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 10_000_000);
-        assert_eq!(got[0].fee, 50_000);
-        assert_eq!(got[0].funding_parent_txid, Some(hex::encode(funding_step)));
-        assert_eq!(got[0].funding_parent_mined_height, Some(0));
-        assert_eq!(got[0].funding_parent_expired, Some(false));
-        let conn = rusqlite::Connection::open(db.path()).unwrap();
-        conn.execute(
-            "UPDATE v_transactions SET mined_height = 100 WHERE txid = ?1",
-            rusqlite::params![funding_step],
-        )
-        .unwrap();
-        let confirmed = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Main,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-        assert_eq!(confirmed[0].funding_parent_mined_height, Some(100));
-        conn.execute(
-            "UPDATE v_transactions SET mined_height = NULL, expired_unmined = 1 WHERE txid = ?1",
-            rusqlite::params![funding_step],
-        )
-        .unwrap();
-        let expired = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Main,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-        assert_eq!(expired[0].funding_parent_expired, Some(true));
-    }
-
-    #[test]
-    fn history_pairs_suppressed_funding_fees_by_transparent_amount() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let external_send_a = fake_txid(0xA3);
-        let funding_step_a = fake_txid(0xA4);
-        let external_send_b = fake_txid(0xA5);
-        let funding_step_b = fake_txid(0xA6);
-        let created = "2026-04-28T13:03:00Z";
-
-        insert_zip320_history_pair(
-            &db,
-            account,
-            &funding_step_a,
-            &external_send_a,
-            created,
-            4,
-            3,
-            1_000_100,
-            10_010_000,
-            40_000,
-            10_000,
-        );
-        insert_zip320_history_pair(
-            &db,
-            account,
-            &funding_step_b,
-            &external_send_b,
-            created,
-            2,
-            1,
-            1_000_100,
-            20_015_000,
-            50_000,
-            15_000,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-
-        let row_a = got
-            .iter()
-            .find(|tx| tx.txid_hex == hex::encode(external_send_a))
-            .unwrap();
-        assert_eq!(row_a.tx_kind, "sent");
-        assert_eq!(row_a.display_amount, 10_000_000);
-        assert_eq!(row_a.fee, 50_000);
-
-        let row_b = got
-            .iter()
-            .find(|tx| tx.txid_hex == hex::encode(external_send_b))
-            .unwrap();
-        assert_eq!(row_b.tx_kind, "sent");
-        assert_eq!(row_b.display_amount, 20_000_000);
-        assert_eq!(row_b.fee, 65_000);
-    }
-
-    #[test]
-    fn history_pairs_same_amount_funding_fees_by_insert_order() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let external_send_a = fake_txid(0xA7);
-        let funding_step_a = fake_txid(0xA8);
-        let external_send_b = fake_txid(0xA9);
-        let funding_step_b = fake_txid(0xAA);
-        let created = "2026-04-28T13:03:00Z";
-
-        insert_zip320_history_pair(
-            &db,
-            account,
-            &funding_step_a,
-            &external_send_a,
-            created,
-            4,
-            3,
-            1_000_100,
-            10_010_000,
-            40_000,
-            10_000,
-        );
-        insert_zip320_history_pair(
-            &db,
-            account,
-            &funding_step_b,
-            &external_send_b,
-            created,
-            2,
-            1,
-            1_000_100,
-            10_010_000,
-            50_000,
-            10_000,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-
-        let row_a = got
-            .iter()
-            .find(|tx| tx.txid_hex == hex::encode(external_send_a))
-            .unwrap();
-        assert_eq!(row_a.tx_kind, "sent");
-        assert_eq!(row_a.display_amount, 10_000_000);
-        assert_eq!(row_a.fee, 50_000);
-
-        let row_b = got
-            .iter()
-            .find(|tx| tx.txid_hex == hex::encode(external_send_b))
-            .unwrap();
-        assert_eq!(row_b.tx_kind, "sent");
-        assert_eq!(row_b.display_amount, 10_000_000);
-        assert_eq!(row_b.fee, 60_000);
-    }
-
-    #[test]
-    fn history_splits_same_account_transparent_self_send() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let self_tx = fake_txid(0xB1);
-
-        insert_history_tx(
-            &db,
-            account,
-            &self_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -40_000,
-            18_302_101,
-            18_262_101,
-            false,
-            Some("2026-04-28T13:03:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            0,
-            Some(account),
-            Some(account),
-            18_262_101,
-            false,
-            Some("t-self"),
-            Some(0),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 18_262_101);
-        assert_eq!(got[0].display_pool, "transparent");
-        assert_eq!(got[1].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 18_262_101);
-        assert_eq!(got[1].display_pool, "transparent");
-    }
-
-    #[test]
-    fn history_classifies_orchard_to_ironwood_internal_transition_as_migration() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let migration_tx = fake_txid(0xB5);
-
-        insert_history_tx(
-            &db,
-            account,
-            &migration_tx,
-            None,
-            1,
-            Some(1_000_100),
-            -20_000,
-            625_000_000,
-            624_980_000,
-            false,
-            Some("2026-06-08T22:45:02Z"),
-        );
-        let output_index = insert_output_with_address_and_memo(
-            &db,
-            &migration_tx,
-            3,
-            Some(account),
-            Some(account),
-            624_980_000,
-            true,
-            None,
-            Some(1),
-            None,
-        );
-        insert_received_note_version(&db, &migration_tx, output_index, IRONWOOD_NOTE_VERSION);
-        insert_spent_note_version(&db, &migration_tx, ORCHARD_NOTE_VERSION);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(migration_tx));
-        assert_eq!(got[0].tx_kind, "migration");
-        assert_eq!(got[0].display_amount, 624_980_000);
-        assert_eq!(got[0].display_pool, "ironwood");
-    }
-
-    #[test]
-    fn history_classifies_pool_4_internal_transition_as_migration() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let migration_tx = fake_txid(0xB6);
-
-        insert_history_tx(
-            &db,
-            account,
-            &migration_tx,
-            None,
-            1,
-            Some(1_000_100),
-            -20_000,
-            625_000_000,
-            624_980_000,
-            false,
-            Some("2026-06-08T22:45:02Z"),
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &migration_tx,
-            IRONWOOD_POOL,
-            Some(account),
-            Some(account),
-            624_980_000,
-            true,
-            None,
-            Some(1),
-            None,
-        );
-        insert_spent_note_version(&db, &migration_tx, ORCHARD_NOTE_VERSION);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(migration_tx));
-        assert_eq!(got[0].tx_kind, "migration");
-        assert_eq!(got[0].display_amount, 624_980_000);
-        assert_eq!(got[0].display_pool, "ironwood");
-    }
-
-    #[test]
-    fn history_treats_send_to_other_local_account_as_sent() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let other_account = second_test_account_uuid();
-        let txid = fake_txid(0xB2);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -5_000_000,
-            5_000_000,
-            0,
-            false,
-            Some("2026-04-28T14:03:00Z"),
-        );
-        insert_output(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            Some(other_account),
-            5_000_000,
-            false,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(txid));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 5_000_000);
-    }
-
-    #[test]
-    fn history_treats_receive_from_other_local_account_as_received() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let other_account = second_test_account_uuid();
-        let txid = fake_txid(0xB3);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            5_000_000,
-            0,
-            5_000_000,
-            false,
-            Some("2026-04-28T14:04:00Z"),
-        );
-        insert_output(
-            &db,
-            &txid,
-            0,
-            Some(other_account),
-            Some(account),
-            5_000_000,
-            false,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(txid));
-        assert_eq!(got[0].tx_kind, "received");
-        assert_eq!(got[0].display_amount, 5_000_000);
-    }
-
-    #[test]
-    fn history_splits_same_account_shielded_self_send_and_hides_change() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let self_tx = fake_txid(0xC0);
-
-        insert_history_tx(
-            &db,
-            account,
-            &self_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            17_252_101,
-            17_237_101,
-            false,
-            Some("2026-04-28T16:32:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-self"),
-            Some(0),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            3,
-            Some(account),
-            Some(account),
-            16_237_101,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 1_000_000);
-        assert_eq!(got[0].display_pool, "shielded");
-        assert_eq!(got[1].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 1_000_000);
-        assert_eq!(got[1].display_pool, "shielded");
-    }
-
-    #[test]
-    fn history_uses_sent_note_when_self_send_key_scope_is_unresolved() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let self_tx = fake_txid(0xC7);
-
-        insert_history_tx(
-            &db,
-            account,
-            &self_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            1_015_000,
-            1_000_000,
-            false,
-            Some("2026-04-28T16:36:00Z"),
-        );
-        let output_index = insert_output_with_address(
-            &db,
-            &self_tx,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-self-unresolved"),
-            None,
-        );
-        insert_sent_note(
-            &db,
-            &self_tx,
-            3,
-            output_index,
-            account,
-            Some(account),
-            Some("u-self-unresolved"),
-            1_000_000,
-            None,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 1_000_000);
-        assert_eq!(got[0].display_pool, "shielded");
-        assert_eq!(got[1].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 1_000_000);
-        assert_eq!(got[1].display_pool, "shielded");
-    }
-
-    #[test]
-    fn history_preserves_mixed_pool_for_visible_self_outputs() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let self_tx = fake_txid(0xC6);
-
-        insert_history_tx(
-            &db,
-            account,
-            &self_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            6_115_000,
-            6_100_000,
-            false,
-            Some("2026-04-28T16:40:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            0,
-            Some(account),
-            Some(account),
-            100_000,
-            true,
-            Some("t-self"),
-            Some(0),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-self"),
-            Some(0),
-        );
-        insert_output_with_address(
-            &db,
-            &self_tx,
-            3,
-            Some(account),
-            Some(account),
-            5_000_000,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 1_100_000);
-        assert_eq!(got[0].display_pool, "mixed");
-        assert_eq!(got[1].txid_hex, hex::encode(self_tx));
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 1_100_000);
-        assert_eq!(got[1].display_pool, "mixed");
-    }
-
-    /// H09: one transparent input pays an external transparent address and
-    /// the account's own shielded address. The sent row is the external
-    /// payment only; the shielded output is the account's receive, not money
-    /// paid away (the app showed −1.9998 for a 1.2998 payment).
-    #[test]
-    fn history_mixed_pool_payment_excludes_the_accounts_own_output() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let tx = fake_txid(0xC9);
-
-        // 2.0 in; 1.29985 to B (external t), 0.7 to the account's own
-        // external UA (Orchard), 0.00015 fee.
-        insert_history_tx(
-            &db,
-            account,
-            &tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -130_000_000,
-            200_000_000,
-            70_000_000,
-            false,
-            None,
-        );
-        insert_output_with_address(
-            &db,
-            &tx,
-            0,
-            Some(account),
-            None,
-            129_985_000,
-            false,
-            Some("t-external-b"),
-            None,
-        );
-        insert_output_with_address(
-            &db,
-            &tx,
-            3,
-            Some(account),
-            Some(account),
-            70_000_000,
-            false,
-            Some("u-own-external"),
-            Some(0),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 129_985_000);
-        assert_eq!(got[0].display_pool, "transparent");
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 70_000_000);
-        assert_eq!(got[1].display_pool, "shielded");
-
-        let detail = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(tx),
-            "sent",
-        )
-        .unwrap();
-        assert_eq!(detail.outputs.len(), 1, "the sent detail lists only B");
-        assert_eq!(detail.outputs[0].amount_zatoshi, 129_985_000);
-    }
-
-    /// The H09 shape with the shielded output paid to another wallet account:
-    /// that output is money the sender paid away, so it stays in the sender's
-    /// sent row, and the other account shows it as its receive.
-    #[test]
-    fn history_mixed_pool_payment_to_another_account_stays_sent() {
-        let db = fresh_history_db();
-        let sender = test_account_uuid();
-        let recipient = second_test_account_uuid();
-        let tx = fake_txid(0xCA);
-
-        insert_history_tx(
-            &db,
-            sender,
-            &tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -200_000_000,
-            200_000_000,
-            0,
-            false,
-            None,
-        );
-        {
-            // The recipient's row of the same transaction.
-            let conn = rusqlite::Connection::open(db.path()).unwrap();
-            ensure_account_row(&conn, recipient);
-            conn.execute(
-                "INSERT INTO v_transactions (
-                     account_uuid, txid, raw, mined_height, expired_unmined,
-                     account_balance_delta, fee_paid, block_time, total_spent,
-                     total_received, is_shielding, expiry_height, tx_index
-                 ) VALUES (?1, ?2, NULL, 1000000, 0, 70000000, 0, 0, 0, 70000000, 0, 1000100, 1)",
-                rusqlite::params![recipient.as_bytes().as_slice(), &tx[..]],
-            )
-            .unwrap();
-        }
-        insert_output_with_address(
-            &db,
-            &tx,
-            0,
-            Some(sender),
-            None,
-            129_985_000,
-            false,
-            Some("t-external-b"),
-            None,
-        );
-        insert_output_with_address(
-            &db,
-            &tx,
-            3,
-            Some(sender),
-            Some(recipient),
-            70_000_000,
-            false,
-            Some("u-recipient-external"),
-            Some(0),
-        );
-
-        let path = db.path().to_str().unwrap();
-        let sent =
-            history_from_fixture(path, WalletNetwork::Test, None, &sender.to_string()).unwrap();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].tx_kind, "sent");
-        assert_eq!(sent[0].display_amount, 199_985_000);
-        assert_eq!(sent[0].display_pool, "mixed");
-
-        let received =
-            history_from_fixture(path, WalletNetwork::Test, None, &recipient.to_string()).unwrap();
-        assert_eq!(received.len(), 1);
-        assert_eq!(received[0].tx_kind, "received");
-        assert_eq!(received[0].display_amount, 70_000_000);
-        assert_eq!(received[0].display_pool, "shielded");
-    }
-
-    #[test]
-    fn history_hides_change_only_internal_tx() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let change_only_tx = fake_txid(0xC3);
-
-        insert_history_tx(
-            &db,
-            account,
-            &change_only_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            17_252_102,
-            17_242_102,
-            false,
-            Some("2026-04-28T15:43:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &change_only_tx,
-            3,
-            Some(account),
-            Some(account),
-            7_242_102,
-            true,
-            Some("u-change-1"),
-            Some(1),
-        );
-        insert_output_with_address(
-            &db,
-            &change_only_tx,
-            3,
-            Some(account),
-            Some(account),
-            10_000_000,
-            true,
-            Some("u-change-2"),
-            Some(1),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert!(got.is_empty());
-    }
-
-    #[test]
-    fn history_keeps_shielding_tx_as_single_shielded_row() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let shielding_tx = fake_txid(0xC4);
-
-        insert_history_tx(
-            &db,
-            account,
-            &shielding_tx,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            10_010_000,
-            10_000_000,
-            true,
-            Some("2026-04-28T15:44:00Z"),
-        );
-        insert_output(
-            &db,
-            &shielding_tx,
-            3,
-            Some(account),
-            Some(account),
-            10_000_000,
-            true,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(shielding_tx));
-        assert_eq!(got[0].tx_kind, "shielded");
-        assert_eq!(got[0].display_amount, 10_000_000);
-        assert_eq!(got[0].display_pool, "shielded");
-    }
-
-    #[test]
-    fn history_sent_to_transparent_excludes_shielded_change() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xC5);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            1_265_000,
-            1_150_000,
-            false,
-            Some("2026-04-28T16:45:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            Some(account),
-            150_000,
-            false,
-            Some("t-ephemeral"),
-            Some(2),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            None,
-            100_000,
-            false,
-            Some("t-recipient"),
-            None,
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 100_000);
-        assert_eq!(got[0].display_pool, "transparent");
-    }
-
-    #[test]
-    fn detail_sent_row_returns_recipient_address_and_memo() {
-        for (output_pool, label, activity_pool, uses_orchard) in [
-            (SAPLING_POOL, "shielded", "sapling", false),
-            (ORCHARD_POOL, "shielded", "orchard", true),
-            (IRONWOOD_POOL, "ironwood", "ironwood", true),
-        ] {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let txid = fake_txid(0xD1);
-
-            insert_history_tx(
-                &db,
-                account,
-                &txid,
-                Some(1_000_000),
-                1,
-                Some(1_000_100),
-                -1_010_000,
-                1_010_000,
-                0,
-                false,
-                Some("2026-04-28T17:00:00Z"),
-            );
-            insert_output_with_address_and_memo(
-                &db,
-                &txid,
-                output_pool,
-                Some(account),
-                None,
-                1_000_000,
-                false,
-                Some("u-recipient"),
-                None,
-                Some(b"hello from activity"),
-            );
-
-            let got = detail_from_fixture(
-                db.path().to_str().unwrap(),
-                WalletNetwork::Test,
-                &account.to_string(),
-                &hex::encode(txid),
-                "sent",
-            )
-            .unwrap();
-
-            assert_eq!(got.txid_hex, hex::encode(txid));
-            assert_eq!(got.tx_kind, "sent");
-            assert_eq!(got.primary_address.as_deref(), Some("u-recipient"));
-            assert_eq!(got.memo.as_deref(), Some("hello from activity"));
-            assert_eq!(got.outputs.len(), 1);
-            assert_eq!(got.outputs[0].address.as_deref(), Some("u-recipient"));
-            assert_eq!(got.outputs[0].amount_zatoshi, 1_000_000);
-            assert_eq!(got.outputs[0].pool, label);
-            assert_eq!(got.outputs[0].activity_pool.as_deref(), Some(activity_pool));
-            assert_eq!(got.outputs[0].uses_orchard_receiver, uses_orchard);
-        }
-    }
-
-    fn zero_value_history(db: &NamedTempFile, account: uuid::Uuid) -> Vec<TransactionInfo> {
-        history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap()
-    }
-
-    fn zero_value_detail(
-        db: &NamedTempFile,
-        account: uuid::Uuid,
-        txid: &[u8],
-        tx_kind: &str,
-    ) -> TransactionDetail {
-        detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            tx_kind,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn history_shows_zero_value_receipt_and_its_memo() {
-        for (mined_height, tx_kind) in [(Some(1_000_000), "received"), (None, "receiving")] {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let txid = fake_txid(0xE1);
-
-            insert_history_tx(
-                &db,
-                account,
-                &txid,
-                mined_height,
-                1,
-                Some(1_000_100),
-                0,
-                0,
-                0,
-                false,
-                None,
-            );
-            insert_output_with_address_and_memo(
-                &db,
-                &txid,
-                ORCHARD_POOL,
-                None,
-                Some(account),
-                0,
-                false,
-                Some("u-own"),
-                Some(0),
-                Some(b"memo-only payment"),
-            );
-
-            let got = zero_value_history(&db, account);
-            assert_eq!(got.len(), 1);
-            assert_eq!(got[0].tx_kind, tx_kind);
-            assert_eq!(got[0].display_amount, 0);
-            assert_eq!(got[0].display_pool, "shielded");
-
-            let detail = zero_value_detail(&db, account, &txid, tx_kind);
-            assert_eq!(detail.memo.as_deref(), Some("memo-only payment"));
-            assert_eq!(detail.outputs.len(), 1);
-            assert_eq!(detail.outputs[0].amount_zatoshi, 0);
-        }
-    }
-
-    #[test]
-    fn history_shows_zero_value_receipt_without_text_memo() {
-        for (output_pool, memo, pool_label) in [
-            (ORCHARD_POOL, None, "shielded"),
-            (ORCHARD_POOL, Some(&[0xFF_u8][..]), "shielded"),
-            (TRANSPARENT_POOL, None, "transparent"),
-        ] {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let txid = fake_txid(0xE2);
-
-            insert_history_tx(
-                &db,
-                account,
-                &txid,
-                Some(1_000_000),
-                1,
-                Some(1_000_100),
-                0,
-                0,
-                0,
-                false,
-                None,
-            );
-            insert_output_with_address_and_memo(
-                &db,
-                &txid,
-                output_pool,
-                None,
-                Some(account),
-                0,
-                false,
-                Some("own-address"),
-                Some(0),
-                memo,
-            );
-
-            let got = zero_value_history(&db, account);
-            assert_eq!(got.len(), 1);
-            assert_eq!(got[0].tx_kind, "received");
-            assert_eq!(got[0].display_amount, 0);
-            assert_eq!(got[0].display_pool, pool_label);
-            assert_eq!(
-                zero_value_detail(&db, account, &txid, "received").memo,
-                None
-            );
-        }
-    }
-
-    #[test]
-    fn history_shows_zero_value_send_and_its_memo() {
-        for with_change in [true, false] {
-            let db = fresh_history_db();
-            let account = test_account_uuid();
-            let txid = fake_txid(0xE3);
-            let (total_spent, change) = if with_change {
-                (100_000, 90_000)
-            } else {
-                (10_000, 0)
-            };
-
-            insert_history_tx(
-                &db,
-                account,
-                &txid,
-                Some(1_000_000),
-                1,
-                Some(1_000_100),
-                -10_000,
-                total_spent,
-                change,
-                false,
-                Some("2026-09-29T09:00:00Z"),
-            );
-            set_history_fee(&db, &txid, 10_000);
-            insert_output_with_address_and_memo(
-                &db,
-                &txid,
-                ORCHARD_POOL,
-                Some(account),
-                None,
-                0,
-                false,
-                Some("u-recipient"),
-                None,
-                Some(b"memo-only payment"),
-            );
-            if with_change {
-                insert_output_with_address(
-                    &db,
-                    &txid,
-                    ORCHARD_POOL,
-                    Some(account),
-                    Some(account),
-                    change,
-                    true,
-                    Some("u-change"),
-                    Some(1),
-                );
-            }
-
-            let got = zero_value_history(&db, account);
-            assert_eq!(got.len(), 1, "with_change={with_change}");
-            assert_eq!(got[0].tx_kind, "sent");
-            assert_eq!(got[0].display_amount, 0);
-            assert_eq!(got[0].display_pool, "shielded");
-            assert_eq!(got[0].fee, 10_000);
-
-            let detail = zero_value_detail(&db, account, &txid, "sent");
-            assert_eq!(detail.primary_address.as_deref(), Some("u-recipient"));
-            assert_eq!(detail.memo.as_deref(), Some("memo-only payment"));
-            assert_eq!(detail.outputs.len(), 1);
-            assert_eq!(detail.outputs[0].amount_zatoshi, 0);
-        }
-    }
-
-    #[test]
-    fn history_splits_zero_value_memo_to_self() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xE4);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            100_000,
-            90_000,
-            false,
-            Some("2026-09-29T09:00:00Z"),
-        );
-        set_history_fee(&db, &txid, 10_000);
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            ORCHARD_POOL,
-            Some(account),
-            Some(account),
-            0,
-            true,
-            Some("u-self"),
-            Some(0),
-            Some(b"note to self"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            ORCHARD_POOL,
-            Some(account),
-            Some(account),
-            90_000,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-
-        let got = zero_value_history(&db, account);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 0);
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[1].display_amount, 0);
-    }
-
-    #[test]
-    fn history_keeps_unenhanced_zero_value_change_unknown() {
-        // Before enhancement our zero-value change has no sent-note link, so
-        // it arrives with no sender like an external receipt.
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xE5);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -100_000,
-            100_000,
-            0,
-            false,
-            None,
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            ORCHARD_POOL,
-            None,
-            Some(account),
-            0,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-
-        let got = zero_value_history(&db, account);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].tx_kind, "unknown");
-    }
-
-    #[test]
-    fn history_omits_unmatched_funding_step() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xE6);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            None,
-            1,
-            Some(1_000_100),
-            -10_000,
-            1_010_000,
-            1_000_000,
-            false,
-            Some("2026-09-29T09:00:00Z"),
-        );
-        set_history_fee(&db, &txid, 10_000);
-        insert_output_with_address(
-            &db,
-            &txid,
-            TRANSPARENT_POOL,
-            Some(account),
-            Some(account),
-            1_000_000,
-            false,
-            Some("t-ephemeral"),
-            Some(2),
-        );
-
-        assert!(zero_value_history(&db, account).is_empty());
-    }
-
-    #[test]
-    fn detail_sent_to_transparent_prefers_external_recipient_over_shielded_change() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD7);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            1_265_000,
-            1_150_000,
-            false,
-            Some("2026-04-28T17:05:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            Some(account),
-            150_000,
-            false,
-            Some("t-ephemeral"),
-            Some(2),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            None,
-            100_000,
-            false,
-            Some("t-recipient"),
-            None,
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "sent",
-        )
-        .unwrap();
-
-        assert_eq!(got.primary_address.as_deref(), Some("t-recipient"));
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(got.outputs[0].address.as_deref(), Some("t-recipient"));
-        assert_eq!(got.outputs[0].amount_zatoshi, 100_000);
-        assert_eq!(got.outputs[0].pool, "transparent");
-    }
-
-    #[test]
-    fn detail_sent_to_own_transparent_receiver_uses_sent_note_address() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD8);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            None,
-            1,
-            Some(1_000_100),
-            -15_000,
-            6_980_000,
-            6_965_000,
-            false,
-            Some("2026-05-15T06:11:44Z"),
-        );
-        let recipient_output_index = insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            Some(account),
-            1_200_000,
-            false,
-            Some("u-merged-own-transparent-receiver"),
-            Some(0),
-        );
-        set_cached_transparent_receiver_address(
-            &db,
-            account,
-            "u-merged-own-transparent-receiver",
-            "t-recipient",
-        );
-        insert_sent_note(
-            &db,
-            &txid,
-            0,
-            recipient_output_index,
-            account,
-            None,
-            Some("t-recipient"),
-            1_200_000,
-            None,
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            5_765_000,
-            true,
-            None,
-            None,
-            Some(&[0xF6]),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "sent",
-        )
-        .unwrap();
-
-        assert_eq!(got.primary_address.as_deref(), Some("t-recipient"));
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(got.outputs[0].address.as_deref(), Some("t-recipient"));
-        assert_eq!(got.outputs[0].amount_zatoshi, 1_200_000);
-        assert_eq!(got.outputs[0].pool, "transparent");
-    }
-
-    #[test]
-    fn detail_sent_to_transparent_pool_prefers_cached_transparent_receiver() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD9);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -15_000,
-            18_990_000,
-            18_975_000,
-            false,
-            Some("2026-05-14T13:14:15Z"),
-        );
-        let recipient_output_index = insert_output_with_address(
-            &db,
-            &txid,
-            0,
-            Some(account),
-            Some(account),
-            11_000_000,
-            false,
-            Some("u-known-receiver"),
-            Some(0),
-        );
-        set_cached_transparent_receiver_address(
-            &db,
-            account,
-            "u-known-receiver",
-            "t-known-receiver",
-        );
-        insert_sent_note(
-            &db,
-            &txid,
-            0,
-            recipient_output_index,
-            account,
-            None,
-            Some("u-known-receiver"),
-            11_000_000,
-            None,
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            7_975_000,
-            true,
-            None,
-            None,
-            Some(&[0xF6]),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "sent",
-        )
-        .unwrap();
-
-        assert_eq!(got.primary_address.as_deref(), Some("t-known-receiver"));
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(got.outputs[0].address.as_deref(), Some("t-known-receiver"));
-        assert_eq!(got.outputs[0].amount_zatoshi, 11_000_000);
-        assert_eq!(got.outputs[0].pool, "transparent");
-    }
-
-    #[test]
-    fn detail_received_row_does_not_invent_from_address() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD2);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            Some("2026-04-28T17:01:00Z"),
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            None,
-            Some(account),
-            2_000_000,
-            false,
-            Some("u-my-receiver"),
-            Some(0),
-            Some(b"incoming memo"),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap();
-
-        assert_eq!(got.tx_kind, "received");
-        assert_eq!(got.primary_address, None);
-        assert_eq!(got.source_address, None);
-        assert_eq!(got.source_pool.as_deref(), Some("unknown"));
-        assert_eq!(got.source_account_uuid, None, "no recorded sender");
-        assert_eq!(got.memo.as_deref(), Some("incoming memo"));
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(got.outputs[0].address.as_deref(), Some("u-my-receiver"));
-    }
-
-    fn display_details(
-        coinbase: bool,
-        input_count: u32,
-        shielded: bool,
-        raw: bool,
-    ) -> zcash_client_backend::data_api::transparent_ledger::TransparentDisplayDetails {
-        use zcash_client_backend::data_api::transparent_ledger::{
-            TransparentDisplayDetails, TransparentDisplayProvenance, TransparentDisplaySource,
-            TransparentDisplayViewSender, WholeTransactionFee,
-        };
-        TransparentDisplayDetails {
-            outputs: Vec::new(),
-            output_count: 0,
-            omissions: Vec::new(),
-            sender: if coinbase {
-                TransparentDisplayViewSender::Coinbase
-            } else if input_count == 0 && shielded {
-                TransparentDisplayViewSender::Shielded
-            } else {
-                TransparentDisplayViewSender::NonStandard
-            },
-            coinbase,
-            fee: WholeTransactionFee::Unknown,
-            input_count,
-            shielded,
-            source: if raw {
-                TransparentDisplaySource::RawTransaction
-            } else {
-                TransparentDisplaySource::Display(TransparentDisplayProvenance {
-                    shard_id: 0,
-                    revision: 0,
-                    map_sha256: [0; 32],
-                    looked_up_height: zcash_protocol::consensus::BlockHeight::from_u32(1),
-                })
-            },
-        }
-    }
-
-    #[test]
-    fn display_facts_show_a_shielded_source_only_when_conclusive() {
-        assert!(display_facts_show_shielded_source(&display_details(
-            false, 0, true, false
-        )));
-        for (coinbase, inputs, shielded, raw, why) in [
-            (true, 0, true, false, "coinbase"),
-            (false, 1, true, false, "a transparent input"),
-            (false, 0, false, false, "no shielded component"),
-            (false, 0, true, true, "raw bytes already decided the source"),
-        ] {
-            assert!(
-                !display_facts_show_shielded_source(&display_details(
-                    coinbase, inputs, shielded, raw
-                )),
-                "{why}"
-            );
-        }
-    }
-
-    #[test]
-    fn shared_or_mixed_funding_keeps_receipt_attribution_incomplete() {
-        for omission in ["shared_funding", "shielded_and_transparent_funding"] {
-            for received in [false, true] {
-                // A foreign input of 50,000 can pay an unseen shielded output
-                // of 50,000 without changing the equality for this account:
-                // its debit still matches its transparent outputs and fee.
-                let mut detail = TransactionDetail {
-                    network_fee: None,
-                    txid_hex: String::new(),
-                    tx_kind: if received { "received" } else { "sent" }.to_owned(),
-                    primary_address: None,
-                    source_address: Some("t1funder".to_owned()),
-                    source_pool: Some("transparent".to_owned()),
-                    source_account_uuid: None,
-                    memo: None,
-                    outputs: if received {
-                        vec![TransactionDetailOutput {
-                            address: Some("t1self".to_owned()),
-                            amount_zatoshi: 100_000,
-                            pool: "transparent".to_owned(),
-                            activity_pool: None,
-                            uses_orchard_receiver: false,
-                        }]
-                    } else {
-                        Vec::new()
-                    },
-                    details_complete: false,
-                    provisional: true,
-                    // Settled, so only the funding omission keeps it open.
-                    effects_settled: true,
-                    transparent_details: Some(TransparentDetailsView::Available {
-                        rows: vec![TransparentRecipientRow {
-                            output_index: 0,
-                            address: Some(if received { "t1self" } else { "t1payee" }.to_owned()),
-                            amount_zatoshi: 100_000,
-                            is_own: received,
-                        }],
-                        output_count: 1,
-                        omissions: vec![omission.to_owned()],
-                    }),
-                    account_balance_delta: if received { -10_000 } else { -110_000 },
-                    fee: Some(10_000),
-                };
-                apply_display_recipient(&mut detail);
-                apply_display_receive_completion(&mut detail);
-                assert_eq!(
-                    detail.primary_address, None,
-                    "{omission}, received={received}"
-                );
-                assert!(!detail.details_complete, "{omission}, received={received}");
-                assert!(detail.provisional, "{omission}, received={received}");
-            }
-        }
-    }
-
-    #[test]
-    fn display_recipient_names_the_only_payee_of_a_private_send() {
-        let row = |index: u32, address: &str, amount: u64, own: bool| TransparentRecipientRow {
-            output_index: index,
-            address: Some(address.to_owned()),
-            amount_zatoshi: amount,
-            is_own: own,
-        };
-        let detail = |kind: &str,
-                      rows: Vec<TransparentRecipientRow>,
-                      count: u32,
-                      delta: i64,
-                      fee: Option<u64>| {
-            TransactionDetail {
-                network_fee: None,
-                txid_hex: String::new(),
-                tx_kind: kind.to_owned(),
-                primary_address: None,
-                source_address: None,
-                source_pool: None,
-                source_account_uuid: None,
-                memo: None,
-                outputs: Vec::new(),
-                details_complete: false,
-                provisional: true,
-                effects_settled: true,
-                transparent_details: Some(TransparentDetailsView::Available {
-                    rows,
-                    output_count: count,
-                    omissions: Vec::new(),
-                }),
-                account_balance_delta: delta,
-                fee,
-            }
-        };
-        let to = |mut d: TransactionDetail| {
-            let recorded = d.primary_address.is_some();
-            apply_display_recipient(&mut d);
-            // An established recipient, and only that, completes and settles
-            // the receipt.
-            let established = !recorded && d.primary_address.is_some();
-            assert_eq!(
-                (d.details_complete, d.provisional),
-                (established, !established)
-            );
-            d.primary_address
-        };
-        // Unshielding to the account's own address: the balance moved by the fee only.
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1self", 1_000_000, true)],
-                1,
-                -15_000,
-                Some(15_000)
-            ))
-            .as_deref(),
-            Some("t1self")
-        );
-        // A regular send, and a zcashd send with transparent change.
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1payee", 50_000, false)],
-                1,
-                -60_000,
-                Some(10_000)
-            ))
-            .as_deref(),
-            Some("t1payee")
-        );
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![
-                    row(0, "t1payee", 50_000, false),
-                    row(1, "t1change", 7_000, true)
-                ],
-                2,
-                -60_000,
-                Some(10_000)
-            ))
-            .as_deref(),
-            Some("t1payee")
-        );
-        // Value the listed outputs do not account for went to an unseen payee.
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1change", 7_000, true)],
-                1,
-                -60_000,
-                Some(10_000)
-            )),
-            None
-        );
-        // Two payees, outputs beyond the listed two, or an unknown fee.
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1a", 25_000, false), row(1, "t1b", 25_000, false)],
-                2,
-                -60_000,
-                Some(10_000)
-            )),
-            None
-        );
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1payee", 50_000, false)],
-                3,
-                -60_000,
-                Some(10_000)
-            )),
-            None
-        );
-        assert_eq!(
-            to(detail(
-                "sent",
-                vec![row(0, "t1payee", 50_000, false)],
-                1,
-                -60_000,
-                None
-            )),
-            None
-        );
-        // A recorded recipient and other kinds stay as they are.
-        let mut recorded = detail(
-            "sent",
-            vec![row(0, "t1payee", 50_000, false)],
-            1,
-            -60_000,
-            Some(10_000),
-        );
-        recorded.primary_address = Some("u-recorded".to_owned());
-        assert_eq!(to(recorded).as_deref(), Some("u-recorded"));
-        // The only payee of an unsettled send is named, but the receipt
-        // stays provisional and incomplete: the balance can still change.
-        let mut unsettled = detail(
-            "sent",
-            vec![row(0, "t1payee", 50_000, false)],
-            1,
-            -60_000,
-            Some(10_000),
-        );
-        unsettled.effects_settled = false;
-        apply_display_recipient(&mut unsettled);
-        assert_eq!(unsettled.primary_address.as_deref(), Some("t1payee"));
-        assert!(!unsettled.details_complete);
-        assert!(unsettled.provisional);
-        assert_eq!(
-            to(detail(
-                "received",
-                vec![row(0, "t1self", 5, true)],
-                1,
-                5,
-                None
-            )),
-            None
-        );
-    }
-
-    #[test]
-    fn display_details_complete_a_receive_they_account_for() {
-        let own = |amount: u64| TransparentRecipientRow {
-            output_index: 0,
-            address: Some("t1self".to_owned()),
-            amount_zatoshi: amount,
-            is_own: true,
-        };
-        let receive = |source_pool: Option<&str>,
-                       source_address: Option<&str>,
-                       pool: &str,
-                       delta: i64,
-                       fee: Option<u64>| TransactionDetail {
-            network_fee: None,
-            txid_hex: String::new(),
-            tx_kind: "received".to_owned(),
-            primary_address: None,
-            source_address: source_address.map(str::to_owned),
-            source_pool: source_pool.map(str::to_owned),
-            source_account_uuid: None,
-            memo: None,
-            outputs: vec![TransactionDetailOutput {
-                address: Some("t1self".to_owned()),
-                amount_zatoshi: 1_000_000,
-                pool: pool.to_owned(),
-                activity_pool: None,
-                uses_orchard_receiver: false,
-            }],
-            details_complete: false,
-            provisional: true,
-            effects_settled: true,
-            transparent_details: Some(TransparentDetailsView::Available {
-                rows: vec![own(1_000_000)],
-                output_count: 1,
-                omissions: Vec::new(),
-            }),
-            account_balance_delta: delta,
-            fee,
-        };
-        // The balance identity is necessary, not sufficient: each receive is
-        // read unsettled and settled, and only a settled one completes.
-        let settled = |make: &dyn Fn() -> TransactionDetail| {
-            let mut unsettled = make();
-            unsettled.effects_settled = false;
-            apply_display_receive_completion(&mut unsettled);
-            assert!(
-                !unsettled.details_complete && unsettled.provisional,
-                "an unsettled receive stays provisional"
-            );
-            let mut d = make();
-            apply_display_receive_completion(&mut d);
-            assert_eq!(d.details_complete, !d.provisional);
-            d.details_complete
-        };
-        // The receive leg of an unshielding to the account's own address.
-        assert!(settled(&|| receive(
-            Some("shielded"),
-            None,
-            "transparent",
-            -15_000,
-            Some(15_000)
-        )));
-        // A receive from another wallet's address, the account paying nothing.
-        assert!(settled(&|| receive(
-            Some("transparent"),
-            Some("t1funder"),
-            "transparent",
-            1_000_000,
-            None
-        )));
-        // An owned effect the rows do not show, an unknown source, a shielded
-        // output (its memo is unknown privately).
-        assert!(!settled(&|| receive(
-            Some("transparent"),
-            Some("t1funder"),
-            "transparent",
-            1_500_000,
-            None
-        )));
-        assert!(!settled(&|| receive(
-            Some("unknown"),
-            None,
-            "transparent",
-            1_000_000,
-            None
-        )));
-        assert!(!settled(&|| receive(
-            Some("shielded"),
-            None,
-            "orchard",
-            -15_000,
-            Some(15_000)
-        )));
-    }
-
-    #[test]
-    fn display_source_pool_only_fills_an_unknown_receive_source() {
-        let detail = |tx_kind: &str, address: Option<&str>, pool: Option<&str>| TransactionDetail {
-            network_fee: None,
-            txid_hex: String::new(),
-            tx_kind: tx_kind.to_string(),
-            primary_address: None,
-            source_address: address.map(str::to_string),
-            source_pool: pool.map(str::to_string),
-            source_account_uuid: None,
-            memo: None,
-            outputs: Vec::new(),
-            details_complete: false,
-            provisional: false,
-            effects_settled: false,
-            transparent_details: None,
-            account_balance_delta: 0,
-            fee: None,
-        };
-        let pool_after = |mut detail: TransactionDetail, shielded: bool| {
-            let source = if shielded {
-                DisplaySource::Shielded
-            } else {
-                DisplaySource::Unknown
-            };
-            apply_display_source(&mut detail, source);
-            detail.source_pool
-        };
-        assert_eq!(
-            pool_after(detail("received", None, Some("unknown")), true).as_deref(),
-            Some("shielded")
-        );
-        assert_eq!(
-            pool_after(detail("received", None, Some("unknown")), false).as_deref(),
-            Some("unknown")
-        );
-        // The raw transaction's source wins.
-        assert_eq!(
-            pool_after(detail("received", None, Some("transparent")), true).as_deref(),
-            Some("transparent")
-        );
-        assert_eq!(
-            pool_after(detail("received", Some("t-sender"), Some("unknown")), true).as_deref(),
-            Some("unknown")
-        );
-        // Only receives have a source, and only one with received outputs.
-        assert_eq!(pool_after(detail("sent", None, None), true), None);
-        assert_eq!(pool_after(detail("received", None, None), true), None);
-
-        // A funding address the publisher resolved fills an unknown source
-        // the same way, and never overrides one the raw transaction gave.
-        let mut filled = detail("received", None, Some("unknown"));
-        apply_display_source(&mut filled, DisplaySource::Address("t1sender".into()));
-        assert_eq!(
-            (
-                filled.source_address.as_deref(),
-                filled.source_pool.as_deref()
-            ),
-            (Some("t1sender"), Some("transparent"))
-        );
-        let mut kept = detail("received", Some("t1raw"), Some("transparent"));
-        apply_display_source(&mut kept, DisplaySource::Address("t1sender".into()));
-        assert_eq!(kept.source_address.as_deref(), Some("t1raw"));
-        let mut sent = detail("sent", None, Some("unknown"));
-        apply_display_source(&mut sent, DisplaySource::Address("t1sender".into()));
-        assert_eq!(sent.source_address, None);
-        // A transparent source the receipt could not name (a P2SH or
-        // uncompressed-key spend) gains the view's address.
-        let mut named = detail("received", None, Some("transparent"));
-        apply_display_source(&mut named, DisplaySource::Address("t3sender".into()));
-        assert_eq!(
-            (
-                named.source_address.as_deref(),
-                named.source_pool.as_deref()
-            ),
-            (Some("t3sender"), Some("transparent"))
-        );
-        // A shielded source never becomes a transparent one.
-        let mut shielded = detail("received", None, Some("shielded"));
-        apply_display_source(&mut shielded, DisplaySource::Address("t1sender".into()));
-        assert_eq!(shielded.source_address, None);
-    }
-
-    /// A receive whose outputs the wallet recorded as sent: `outputs` lists
-    /// each received output with the account `sent_notes` names, if any.
-    fn received_source_account_fixture(outputs: &[(i64, Option<uuid::Uuid>)]) -> TransactionDetail {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD3);
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            Some("2026-04-28T17:01:00Z"),
-        );
-        for (index, (output_pool, from)) in outputs.iter().enumerate() {
-            insert_output_with_address(
-                &db,
-                &txid,
-                *output_pool,
-                *from,
-                Some(account),
-                1_000_000,
-                false,
-                Some(&format!("t-my-receiver-{index}")),
-                Some(0),
-            );
-        }
-        detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn detail_received_row_names_the_recorded_sending_account() {
-        let other = uuid::Uuid::from_u128(0x11);
-        // An unshielding from another account of this wallet: no raw
-        // transaction, so no source address or pool, only the account the
-        // wallet recorded as sending the output.
-        let got = received_source_account_fixture(&[(TRANSPARENT_POOL, Some(other))]);
-        let other_string = other.to_string();
-        assert_eq!(
-            got.source_account_uuid.as_deref(),
-            Some(other_string.as_str())
-        );
-        assert_eq!(got.source_address, None, "an account is not an address");
-        assert_eq!(got.source_pool.as_deref(), Some("unknown"));
-    }
-
-    #[test]
-    fn detail_received_row_needs_one_recorded_sender_for_every_output() {
-        let other = uuid::Uuid::from_u128(0x11);
-        let third = uuid::Uuid::from_u128(0x12);
-        // An output with no recorded sender leaves the source unknown.
-        let partial = received_source_account_fixture(&[
-            (TRANSPARENT_POOL, Some(other)),
-            (ORCHARD_POOL, None),
-        ]);
-        assert_eq!(partial.outputs.len(), 2);
-        assert_eq!(partial.source_account_uuid, None);
-        // Outputs recorded as sent by different accounts name neither.
-        let mixed = received_source_account_fixture(&[
-            (TRANSPARENT_POOL, Some(other)),
-            (ORCHARD_POOL, Some(third)),
-        ]);
-        assert_eq!(mixed.outputs.len(), 2);
-        assert_eq!(mixed.source_account_uuid, None);
-    }
-
-    #[test]
-    fn detail_received_transparent_output_surfaces_bare_t_address() {
-        // End-to-end guard for BUG-1: a received transparent output stores the
-        // account unified address in to_address, but the detail must surface
-        // the bare t-address (the cached transparent receiver). Exercises the
-        // read_outputs_for_tx subquery + the detail_address received pool-0
-        // branch together (the standalone detail_address unit test only covers
-        // the in-memory half).
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD3);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            Some("2026-06-20T10:00:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            0, // transparent pool
-            None,
-            Some(account),
-            2_000_000,
-            false,
-            Some("u-my-receiver"),
-            Some(0),
-        );
-        set_cached_transparent_receiver_address(&db, account, "u-my-receiver", "t-my-receiver");
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap();
-
-        assert_eq!(got.tx_kind, "received");
-        assert_eq!(got.outputs.len(), 1);
-        // The fix: the bare t-address, not the unified address.
-        assert_eq!(got.outputs[0].address.as_deref(), Some("t-my-receiver"));
-        assert_eq!(got.outputs[0].pool, "transparent");
-    }
-
-    #[test]
-    fn detail_received_row_recovers_transparent_source_from_raw_tx() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD7);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            Some("2026-04-28T17:01:00Z"),
-        );
-        let raw = transparent_source_raw_tx();
-        set_history_tx_raw(&db, account, &txid, &raw);
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            None,
-            Some(account),
-            2_000_000,
-            false,
-            Some("u-my-receiver"),
-            Some(0),
-            Some(b"incoming memo"),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap();
-
-        let expected_source = transparent_source_test_address();
-        assert_eq!(got.primary_address, None);
-        assert_eq!(
-            got.source_address.as_deref(),
-            Some(expected_source.as_str())
-        );
-        assert_eq!(got.source_pool.as_deref(), Some("transparent"));
-        assert_eq!(got.outputs.len(), 1);
-    }
-
-    #[test]
-    fn detail_receiving_row_uses_received_outputs() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD6);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            None,
-            1,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            None,
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            None,
-            Some(account),
-            2_000_000,
-            false,
-            Some("u-my-pending-receiver"),
-            Some(0),
-            Some(b"pending incoming memo"),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "receiving",
-        )
-        .unwrap();
-
-        assert_eq!(got.tx_kind, "receiving");
-        assert_eq!(got.primary_address, None);
-        assert_eq!(got.source_address, None);
-        assert_eq!(got.source_pool.as_deref(), Some("unknown"));
-        assert_eq!(got.memo.as_deref(), Some("pending incoming memo"));
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(
-            got.outputs[0].address.as_deref(),
-            Some("u-my-pending-receiver")
-        );
-    }
-
-    #[test]
-    fn detail_separates_same_account_self_send_by_kind() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD3);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            1_010_000,
-            1_000_000,
-            false,
-            Some("2026-04-28T17:02:00Z"),
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-self"),
-            Some(0),
-            Some(b"self memo"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            500_000,
-            true,
-            Some("u-change"),
-            Some(1),
-        );
-
-        let sent = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "sent",
-        )
-        .unwrap();
-        let received = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "received",
-        )
-        .unwrap();
-
-        assert_eq!(sent.primary_address.as_deref(), Some("u-self"));
-        assert_eq!(sent.memo.as_deref(), Some("self memo"));
-        assert_eq!(sent.outputs.len(), 1);
-        assert_eq!(sent.outputs[0].amount_zatoshi, 1_000_000);
-        assert_eq!(received.primary_address, None);
-        assert_eq!(received.memo.as_deref(), Some("self memo"));
-        assert_eq!(received.outputs.len(), 1);
-        assert_eq!(received.outputs[0].amount_zatoshi, 1_000_000);
-    }
-
-    #[test]
-    fn detail_hides_change_only_outputs_and_empty_memos() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD4);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            1_010_000,
-            1_000_000,
-            false,
-            Some("2026-04-28T17:03:00Z"),
-        );
-        insert_output_with_address_and_memo(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-change"),
-            Some(1),
-            Some(&[0xF6]),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "sent",
-        )
-        .unwrap();
-
-        assert_eq!(got.primary_address, None);
-        assert_eq!(got.memo, None);
-        assert!(got.outputs.is_empty());
-    }
-
-    #[test]
-    fn detail_shielding_row_has_no_primary_address() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD5);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -10_000,
-            1_010_000,
-            1_000_000,
-            true,
-            Some("2026-04-28T17:04:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &txid,
-            3,
-            Some(account),
-            Some(account),
-            1_000_000,
-            true,
-            Some("u-shielded-self"),
-            Some(0),
-        );
-
-        let got = detail_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            &account.to_string(),
-            &hex::encode(txid),
-            "shielded",
-        )
-        .unwrap();
-
-        assert_eq!(got.tx_kind, "shielded");
-        assert_eq!(got.primary_address, None);
-        assert_eq!(got.outputs.len(), 1);
-        assert_eq!(got.outputs[0].amount_zatoshi, 1_000_000);
-    }
-
-    #[test]
-    fn history_sorts_by_display_timestamp_before_limit() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let older_failed = fake_txid(0xC1);
-        let newer_self_send = fake_txid(0xC2);
-
-        insert_history_tx(
-            &db,
-            account,
-            &older_failed,
-            None,
-            2,
-            Some(1_000_100),
-            -10_010_000,
-            10_010_000,
-            0,
-            false,
-            Some("2026-04-28T13:04:00Z"),
-        );
-        mark_expired_unmined(&db, &older_failed);
-        insert_output(
-            &db,
-            &older_failed,
-            0,
-            Some(account),
-            None,
-            10_000_000,
-            false,
-        );
-
-        insert_history_tx(
-            &db,
-            account,
-            &newer_self_send,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            -40_000,
-            17_040_000,
-            17_000_000,
-            false,
-            Some("2026-04-28T16:32:00Z"),
-        );
-        insert_output_with_address(
-            &db,
-            &newer_self_send,
-            0,
-            Some(account),
-            Some(account),
-            17_000_000,
-            false,
-            Some("t-newer-self"),
-            Some(0),
-        );
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 3);
-        assert_eq!(got[0].txid_hex, hex::encode(newer_self_send));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[1].txid_hex, hex::encode(newer_self_send));
-        assert_eq!(got[1].tx_kind, "received");
-        assert_eq!(got[2].txid_hex, hex::encode(older_failed));
-        assert!(got[2].expired_unmined);
-
-        let limited = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].txid_hex, hex::encode(newer_self_send));
-        assert_eq!(limited[0].tx_kind, "sent");
-    }
-
-    #[test]
-    fn history_prioritizes_unmined_receiving_rows() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let confirmed = fake_txid(0xE1);
-        let pending = fake_txid(0xE2);
-
-        insert_history_tx(
-            &db,
-            account,
-            &confirmed,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            1_000_000,
-            0,
-            1_000_000,
-            false,
-            Some("2026-04-28T16:32:00Z"),
-        );
-        insert_output(&db, &confirmed, 3, None, Some(account), 1_000_000, false);
-
-        insert_history_tx(
-            &db,
-            account,
-            &pending,
-            None,
-            0,
-            Some(1_000_100),
-            2_000_000,
-            0,
-            2_000_000,
-            false,
-            None,
-        );
-        insert_output(&db, &pending, 3, None, Some(account), 2_000_000, false);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(pending));
-        assert_eq!(got[0].tx_kind, "receiving");
-        assert_eq!(got[0].mined_height, 0);
-        assert_eq!(got[0].display_amount, 2_000_000);
-    }
-
-    #[test]
-    fn history_prioritizes_active_unmined_sent_rows() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let confirmed = fake_txid(0xE3);
-        let pending = fake_txid(0xE4);
-
-        insert_history_tx(
-            &db,
-            account,
-            &confirmed,
-            Some(1_000_000),
-            1,
-            Some(1_000_100),
-            1_000_000,
-            0,
-            1_000_000,
-            false,
-            Some("2026-04-28T16:32:00Z"),
-        );
-        insert_output(&db, &confirmed, 3, None, Some(account), 1_000_000, false);
-
-        insert_history_tx(
-            &db,
-            account,
-            &pending,
-            None,
-            0,
-            Some(1_000_100),
-            -1_010_000,
-            1_010_000,
-            0,
-            false,
-            None,
-        );
-        insert_output(&db, &pending, 3, Some(account), None, 1_000_000, false);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            Some(1),
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(pending));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].mined_height, 0);
-        assert_eq!(got[0].display_amount, 1_000_000);
-    }
-
     /// `expired_unmined` is SQL NULL for an unmined transaction whose expiry
     /// cannot be compared to a scanned height: no `blocks` rows yet (a
     /// hardware wallet that broadcasts before its first scan, as the Ledger
@@ -9431,78 +3602,6 @@ mod tests {
             assert_eq!(history[0].mined_height, 0);
             assert!(!history[0].expired_unmined, "expiry {expiry_height:?}");
         }
-    }
-
-    #[test]
-    fn history_accepts_unmined_tx_with_null_tx_index() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD1);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            None,
-            0,
-            Some(1_000_100),
-            -10_010_000,
-            10_010_000,
-            0,
-            false,
-            Some("2026-04-28T13:04:00Z"),
-        );
-        clear_tx_index(&db, &txid);
-        insert_output(&db, &txid, 0, Some(account), None, 10_000_000, false);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(txid));
-        assert_eq!(got[0].tx_kind, "sent");
-    }
-
-    #[test]
-    fn history_shows_unmined_sent_when_output_metadata_missing() {
-        let db = fresh_history_db();
-        let account = test_account_uuid();
-        let txid = fake_txid(0xD2);
-
-        insert_history_tx(
-            &db,
-            account,
-            &txid,
-            None,
-            0,
-            Some(1_000_100),
-            -10_010_000,
-            10_010_000,
-            9_000_000,
-            false,
-            Some("2026-04-28T13:04:00Z"),
-        );
-        set_history_fee(&db, &txid, 10_000);
-        insert_output(&db, &txid, 3, Some(account), Some(account), 9_000_000, true);
-
-        let got = history_from_fixture(
-            db.path().to_str().unwrap(),
-            WalletNetwork::Test,
-            None,
-            &account.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].txid_hex, hex::encode(txid));
-        assert_eq!(got[0].tx_kind, "sent");
-        assert_eq!(got[0].display_amount, 10_000_000);
-        assert_eq!(got[0].mined_height, 0);
     }
 
     #[test]
@@ -9731,5 +3830,284 @@ mod tests {
         let db = fresh_db();
         let got = get_resubmittable_txs(db.path().to_str().unwrap(), 1_000_000).unwrap();
         assert!(got.is_empty());
+    }
+
+    // ======================== Rows from the library's activity ========================
+    //
+    // The library decides what a transaction shows (`AccountActivity`); these
+    // cover what Vizor keeps: labels, received versus receiving, the split
+    // into rows, TEX funding-step pairing, the Gift Card mined height, and
+    // the outputs a receipt lists.
+
+    fn zats(value: u64) -> Zatoshis {
+        Zatoshis::from_u64(value).unwrap()
+    }
+
+    fn output_ref(pool: PoolType, index: u32) -> OutputRef {
+        OutputRef { pool, index }
+    }
+
+    fn rows_of(amount: u64, outputs: &[OutputRef]) -> Option<ActivityOutputs> {
+        Some(ActivityOutputs {
+            amount: zats(amount),
+            outputs: outputs.to_vec(),
+        })
+    }
+
+    /// A settled, complete transaction showing `activity`.
+    fn activity_base(
+        transaction_id: i64,
+        tag: u8,
+        account_balance_delta: i64,
+        spent: u64,
+        received: u64,
+        fee: FeeState,
+        activity: AccountActivity,
+    ) -> TxBase {
+        TxBase {
+            txid: fake_txid(tag).to_vec(),
+            transaction_id,
+            mined_height: Some(1_000_000),
+            expired_unmined: false,
+            account_balance_delta,
+            block_time: 1_700_000_000,
+            total_spent: spent,
+            total_received: received,
+            expiry_height: Some(1_000_100),
+            tx_index: transaction_id,
+            created: None,
+            created_time: 0,
+            history: HistoryView {
+                has_transparent_outputs: None,
+                details_complete: true,
+                provisional: false,
+                fee,
+                activity,
+                funding_step: FundingStepEvidence::default(),
+                mined: true,
+            },
+        }
+    }
+
+    /// A TEX payment as the wallet builds it: a funding step paying the
+    /// account's ephemeral transparent address, then the payment spending it.
+    /// Both are unmined and created together.
+    fn tex_pair(
+        funding_id: i64,
+        payment_id: i64,
+        amount: u64,
+        funding_fee: u64,
+        payment_fee: u64,
+    ) -> [TxBase; 2] {
+        let unmined_created = |mut base: TxBase| {
+            base.mined_height = None;
+            base.history.mined = false;
+            base.block_time = 0;
+            base.created = Some("2026-04-28T13:03:00Z".to_string());
+            base
+        };
+        let mut funding = unmined_created(activity_base(
+            funding_id,
+            funding_id as u8,
+            -(funding_fee as i64),
+            amount + funding_fee,
+            amount,
+            FeeState::Known(zats(funding_fee)),
+            AccountActivity::ChangeOnly,
+        ));
+        funding.history.funding_step.own_transparent_outputs = Some(zats(amount));
+        let mut payment = unmined_created(activity_base(
+            payment_id,
+            payment_id as u8,
+            -(amount as i64),
+            amount,
+            0,
+            FeeState::Known(zats(payment_fee)),
+            AccountActivity::Outputs {
+                sent: rows_of(
+                    amount - payment_fee,
+                    &[output_ref(PoolType::Transparent, 0)],
+                ),
+                received: None,
+            },
+        ));
+        payment.history.funding_step.external_transparent_send = true;
+        [funding, payment]
+    }
+
+    #[test]
+    fn funding_steps_pair_with_their_payment_by_transparent_amount() {
+        let [funding_a, payment_a] = tex_pair(1, 2, 10_010_000, 40_000, 10_000);
+        let [funding_b, payment_b] = tex_pair(3, 4, 20_015_000, 50_000, 15_000);
+        let bases = [
+            funding_a.clone(),
+            payment_a.clone(),
+            funding_b,
+            payment_b.clone(),
+        ];
+
+        let got = assemble_history(&bases, None);
+
+        assert_eq!(got.len(), 2);
+        let row_a = got
+            .iter()
+            .find(|tx| tx.txid_hex == hex::encode(&payment_a.txid))
+            .unwrap();
+        assert_eq!(row_a.tx_kind, "sent");
+        assert_eq!(row_a.display_amount, 10_000_000);
+        assert_eq!(row_a.fee, 50_000);
+        assert_eq!(
+            row_a.funding_parent_txid.as_deref(),
+            Some(hex::encode(&funding_a.txid).as_str())
+        );
+        let row_b = got
+            .iter()
+            .find(|tx| tx.txid_hex == hex::encode(&payment_b.txid))
+            .unwrap();
+        assert_eq!(row_b.display_amount, 20_000_000);
+        assert_eq!(row_b.fee, 65_000);
+    }
+
+    #[test]
+    fn an_unmatched_funding_step_is_not_hidden_by_pairing() {
+        let [funding, _] = tex_pair(1, 2, 10_010_000, 40_000, 10_000);
+        let mut funding_only = funding.clone();
+        // Without its payment, the funding step shows what the library
+        // decided for it, here nothing.
+        assert!(assemble_history(std::slice::from_ref(&funding_only), None).is_empty());
+        funding_only.history.activity = AccountActivity::MovementDebit { amount: zats(1) };
+        let got = assemble_history(&[funding_only], None);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].tx_kind, "sent");
+    }
+
+    #[test]
+    fn a_gift_card_mined_height_reapplies_the_unmined_debit_rule() {
+        // The library read the claim as mined: its change-only outputs show no row.
+        let mut claim = activity_base(
+            1,
+            0xC1,
+            -5_000,
+            105_000,
+            100_000,
+            FeeState::Known(zats(1_000)),
+            AccountActivity::ChangeOnly,
+        );
+        claim.created = Some("2026-04-28T13:03:00Z".to_string());
+        assert!(assemble_history(std::slice::from_ref(&claim), None).is_empty());
+        // Vizor's claim record has no mined height: an unmined debit shows
+        // its movement less the known fee.
+        claim.mined_height = None;
+        let got = assemble_history(std::slice::from_ref(&claim), None);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].tx_kind, "sent");
+        assert_eq!(got[0].display_amount, 4_000);
+
+        // The reverse: the library applied the rule to an unmined read, and
+        // the claim record shows it mined.
+        let mut mined = claim.clone();
+        mined.history.mined = false;
+        mined.history.activity = AccountActivity::MovementDebit {
+            amount: zats(4_000),
+        };
+        mined.mined_height = Some(1_000_000);
+        assert!(assemble_history(&[mined.clone()], None).is_empty());
+        // A provisional debit's row does not depend on the mined height.
+        mined.history.provisional = true;
+        assert_eq!(assemble_history(&[mined], None).len(), 1);
+    }
+
+    #[test]
+    fn activity_variants_map_to_vizor_rows() {
+        let base = |activity| {
+            activity_base(
+                1,
+                0xC2,
+                -30_000,
+                30_000,
+                0,
+                FeeState::Known(zats(10_000)),
+                activity,
+            )
+        };
+        let rows = |activity| assemble_history(&[base(activity)], None);
+
+        let fee_only = rows(AccountActivity::FeeOnly { fee: zats(10_000) });
+        assert_eq!(fee_only[0].tx_kind, "sent");
+        assert_eq!(fee_only[0].display_amount, 10_000);
+        assert!(fee_only[0].amount_includes_fee);
+
+        let inferred = rows(AccountActivity::InferredOutgoing {
+            outgoing: zats(20_000),
+            received: rows_of(5_000, &[output_ref(PoolType::Transparent, 1)]),
+            settled: false,
+        });
+        assert_eq!(inferred.len(), 2);
+        assert_eq!(inferred[0].tx_kind, "sent");
+        assert_eq!(inferred[0].display_amount, 20_000);
+        assert_eq!(inferred[0].activity_pool.as_deref(), Some("transparent"));
+        assert!(inferred[0].provisional);
+        assert_eq!(inferred[1].tx_kind, "received");
+        assert_eq!(inferred[1].display_amount, 5_000);
+
+        let unknown_debit = rows(AccountActivity::MovementDebit { amount: zats(0) });
+        assert_eq!(unknown_debit[0].tx_kind, "unknown");
+
+        let mixed = rows(AccountActivity::Outputs {
+            sent: rows_of(
+                20_000,
+                &[
+                    output_ref(PoolType::Transparent, 0),
+                    output_ref(PoolType::ORCHARD, 0),
+                ],
+            ),
+            received: rows_of(0, &[output_ref(PoolType::IRONWOOD, 1)]),
+        });
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(mixed[0].display_pool, "mixed");
+        assert!(mixed[0].is_transparent);
+        assert_eq!(mixed[0].fee, 10_000);
+        assert_eq!(mixed[1].tx_kind, "received");
+        assert_eq!(mixed[1].display_pool, "ironwood");
+        assert_eq!(mixed[1].activity_pool.as_deref(), Some("ironwood"));
+
+        let migration = rows(AccountActivity::PoolMigration {
+            amount: zats(20_000),
+            outputs: vec![output_ref(PoolType::IRONWOOD, 0)],
+        });
+        assert_eq!(migration[0].tx_kind, "migration");
+        assert_eq!(migration[0].display_pool, "ironwood");
+
+        assert!(rows(AccountActivity::HiddenFundingStep).is_empty());
+        assert_eq!(rows(AccountActivity::Unknown)[0].tx_kind, "unknown");
+    }
+
+    #[test]
+    fn a_receipt_lists_exactly_its_rows_outputs() {
+        let sent = [output_ref(PoolType::Transparent, 0)];
+        let received = [output_ref(PoolType::ORCHARD, 1)];
+        let outputs = AccountActivity::Outputs {
+            sent: rows_of(1, &sent),
+            received: rows_of(1, &received),
+        };
+        assert_eq!(receipt_outputs(&outputs, "sent"), &sent);
+        assert_eq!(receipt_outputs(&outputs, "received"), &received);
+        assert_eq!(receipt_outputs(&outputs, "receiving"), &received);
+        assert!(receipt_outputs(&outputs, "shielded").is_empty());
+
+        let inferred = AccountActivity::InferredOutgoing {
+            outgoing: zats(1),
+            received: rows_of(1, &sent),
+            settled: true,
+        };
+        assert!(receipt_outputs(&inferred, "sent").is_empty());
+        assert_eq!(receipt_outputs(&inferred, "received"), &sent);
+
+        let shielding = AccountActivity::Shielding {
+            amount: zats(1),
+            outputs: received.to_vec(),
+        };
+        assert_eq!(receipt_outputs(&shielding, "shielded"), &received);
+        assert!(receipt_outputs(&shielding, "received").is_empty());
     }
 }
