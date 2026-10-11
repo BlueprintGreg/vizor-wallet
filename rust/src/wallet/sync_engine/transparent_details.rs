@@ -832,13 +832,16 @@ pub(crate) fn enhance_publicly(
         .build()
         .map_err(|error| format!("tokio: {error}"))?;
     let raw = runtime.block_on(async {
-        let transport = super::lwd::open_isolated_lwd_transport(lightwalletd_url)
-            .await
-            .map_err(|error| format!("lightwalletd unavailable ({error})"))?;
-        let mut client = CompactTxStreamerClient::new(transport.clone());
+        // Account deletion and wallet reset wait for this load, so a Tor
+        // route still bootstrapping must not hold them for its deadline.
+        let transport =
+            super::lwd::open_isolated_lwd_transport_until(lightwalletd_url, || load.cancelled())
+                .await;
         if load.cancelled() {
             return Err(CANCELLED.to_owned());
         }
+        let transport = transport.map_err(|error| format!("lightwalletd unavailable ({error})"))?;
+        let mut client = CompactTxStreamerClient::new(transport.clone());
         TransparentLookupGate::user_requested(db_path)
             .with_transport(transport)
             .transaction(&mut client, txid)
