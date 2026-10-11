@@ -340,10 +340,14 @@ class NativeWorkerLifecycle:
             raise
 
     def retained_resources(self):
-        """Report state kept by unfinished cases; listing grants no cleanup authority."""
+        """Report state kept by unfinished cases; listing grants no cleanup authority.
+
+        A completed case is listed only while its mutable workspace outlives a
+        failed worker, as after a close that could not remove it.
+        """
         retained = []
         for case in self._cases:
-            if case._completed:
+            if case._completed and (self._failure is None or not os.path.lexists(case.mutable_directory)):
                 continue
             native = not case._native_finalized
             retained.append({"namespace": case.case.workspace.namespace,

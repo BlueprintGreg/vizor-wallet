@@ -37,6 +37,13 @@ RUNTIME_KEYS = frozenset({
     "ZCASH_E2E_VOTE_VALIDATOR_HASH", "ZCASH_E2E_REUSE_MIGRATED_WALLET",
 })
 PORT_NAMES = ("pir", "api", "rpc", "gateway", "p2p", "grpc", "pprof")
+# Below the case's mutable directory: PIR tiers and nf-server's multi-GiB
+# tier1.precompute cache. Worker close removes them after a passed case;
+# retain() keeps them with the rest of a failed case's workspace.
+PIR_DATA_DIRECTORY = "voting-pir-data"
+# The exported snapshot stays in evidence; pir-export and nf-server read
+# private copies beside the tiers.
+SNAPSHOT_FILES = ("nullifiers.bin", "nullifiers.dataset.json", "nullifiers.checkpoint")
 
 
 def _sha(path: Path) -> str:
@@ -143,7 +150,8 @@ class NativeVotingServices:
         self.state = session.case.workspace.root / "voting"
         self.log_dir = self.state / "logs"
         self.config = self.state / "config"
-        self.pir_data = self.state / "pir-data"
+        self.snapshot = self.state / "pir-snapshot"
+        self.pir_data = session.mutable_directory / PIR_DATA_DIRECTORY
         self.vote_home = self.state / "vote-home"
         self.shims = self.state / "shims"
         self.temp = self.state / "tmp"
@@ -239,7 +247,7 @@ class NativeVotingServices:
 
     def start(self, snapshot_height: int, lightwalletd_url: str, deadline_ns: int,
               slow_helper: bool = False, *, vote_window_seconds: int = 7200) -> dict[str, str]:
-        if self.started or self.closed or self.state.exists():
+        if self.started or self.closed or self.state.exists() or self.pir_data.exists():
             raise RunnerError("voting service state is single-use and must initially be absent")
         if type(snapshot_height) is not int or snapshot_height < 500:
             raise RunnerError("voting snapshot must follow actual Ironwood migration")
@@ -252,7 +260,7 @@ class NativeVotingServices:
         self.slow_helper = slow_helper
         self._remaining()
         self.state.mkdir(mode=0o700)
-        for directory in (self.log_dir, self.config, self.pir_data, self.shims, self.temp):
+        for directory in (self.log_dir, self.config, self.snapshot, self.pir_data, self.shims, self.temp):
             directory.mkdir(mode=0o700)
         try:
             self.artifact.verify_unchanged()
@@ -265,13 +273,16 @@ class NativeVotingServices:
             self._run("nullifier-export", [sys.executable, str(self.root / "scripts/e2e/export-regtest-ironwood-nullifiers.py"),
                 "--grpcurl", str(self.grpcurl), "--proto-dir", str(self.root / "protos"), "--endpoint", endpoint,
                 "--activation-height", "500", "--snapshot-height", str(snapshot_height),
-                "--output", str(self.pir_data / "nullifiers.bin")])
-            nullifiers = self.pir_data / "nullifiers.bin"
+                "--output", str(self.snapshot / "nullifiers.bin")])
+            nullifiers = self.snapshot / "nullifiers.bin"
             if nullifiers.stat().st_size == 0 or nullifiers.stat().st_size % 32:
                 raise RunnerError("actual migrated voting snapshot has no valid Ironwood nullifiers")
-            write_json(self.pir_data / "nullifiers.dataset.json", {"zcash_network": "test", "nullifier_pool": "ironwood", "dataset_version": 2})
-            (self.pir_data / "nullifiers.checkpoint").write_bytes(struct.pack("<QQ", snapshot_height, nullifiers.stat().st_size))
-            self._run("pir-export", [str(self.binaries["pir-export"]), "--nullifiers", str(nullifiers),
+            write_json(self.snapshot / "nullifiers.dataset.json", {"zcash_network": "test", "nullifier_pool": "ironwood", "dataset_version": 2})
+            (self.snapshot / "nullifiers.checkpoint").write_bytes(struct.pack("<QQ", snapshot_height, nullifiers.stat().st_size))
+            for name in SNAPSHOT_FILES:
+                with (self.pir_data / name).open("xb") as output:
+                    output.write((self.snapshot / name).read_bytes())
+            self._run("pir-export", [str(self.binaries["pir-export"]), "--nullifiers", str(self.pir_data / "nullifiers.bin"),
                 "--checkpoint", str(self.pir_data / "nullifiers.checkpoint"), "--output-dir", str(self.pir_data)])
             self._spawn("pir-server", [str(self.binaries["nf-server"]), "serve", "--zcash-network", "test",
                 "--port", str(self.ports["pir"]), "--pir-data-dir", str(self.pir_data), "--lwd-url", lightwalletd_url,

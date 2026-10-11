@@ -1,11 +1,15 @@
 """Real Git archives, original children/files/leases; compiler/service transport modeled."""
+import base64
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -558,6 +562,112 @@ class VotingOracleTests(unittest.TestCase):
             finally:
                 os.close(descriptor)
         case.close()  # Join the test's original writer before releasing its leases.
+
+
+class VotingStateLayoutTests(unittest.TestCase):
+    """Real case directories; exporters, nf-server and the vote chain are modeled."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="voting-layout-model-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.evidence = self.root/"evidence/e2e/vizor_a1b2c3d4e5_w0_1"
+        self.mutable = self.root/"workspace/vizor_a1b2c3d4e5_w0_1"
+        for path in (self.evidence, self.mutable, self.root/"sdk"):
+            path.mkdir(mode=0o700, parents=True)
+        manifest = json.dumps({"worker_id":0, "run_id":"a1b2c3d4e5"})
+        session = object.__new__(VOTE.NativeWorkerCase)
+        session._finished, session._front, session.mutable_directory = False, Mock(), self.mutable
+        session.verify_owned = lambda: None
+        session.case = Mock(workspace=Mock(root=self.evidence,
+            launch_environment=Mock(return_value={"VIZOR_E2E_CASE_MANIFEST":manifest})))
+        artifact = object.__new__(BUILD.ProducedVotingArtifacts)
+        artifact.verify_unchanged = lambda: None
+        artifact.sdk = self.root/"sdk"
+        artifact.binaries = {name:self.root/name for name in
+                             ("svoted", "voting-config", "pir-export", "nf-server", "create-round")}
+        self.services = VOTE.NativeVotingServices(session, artifact, self.root, sys.executable, threading.Event())
+        self.commands = {}
+        self.served_height = 510
+
+    def start(self):
+        services = self.services
+
+        def run(name, command, *, cwd=None, extra_env=None):
+            self.commands[name] = command
+            if name == "nullifier-export":
+                Path(command[command.index("--output")+1]).write_bytes(b"n"*32)
+            elif name == "pir-export":
+                output = Path(command[command.index("--output-dir")+1])
+                for tier, size in (("tier0.bin", 16), ("tier1.bin", 64), ("pir_root.json", 8)):
+                    (output/tier).write_bytes(b"t"*size)
+            return ""
+
+        def spawn(name, command, ports):
+            self.commands[name] = command
+            if name == "pir-server":  # nf-server writes its index and cache into --pir-data-dir.
+                data = Path(command[command.index("--pir-data-dir")+1])
+                (data/"nullifiers.index").write_bytes(b"i"*16)
+                (data/"tier1.precompute").write_bytes(b"p"*4096)
+
+        def get(url):
+            if url.endswith("/root"):
+                return {"height":self.served_height, "nullifier_pool":"ironwood", "dataset_version":2}
+            if url.endswith("/rounds/active"):
+                return {"round":{"vote_round_id":base64.b64encode(b"\x01"*32).decode(), "ea_pk":"model"}}
+            if url.endswith("/commit"):
+                return {"result":{"signed_header":{"header":{"chain_id":"svote-1", "validators_hash":"A"*64}}}}
+            raise AssertionError(url)
+
+        def signed_config(round_id, ea_pk):
+            (services.config/"static-voting-config.json").write_text("{}")
+
+        lease = Mock(ports={name:40000+index for index, name in enumerate(VOTE.PORT_NAMES)})
+        with patch.object(VOTE, "lease_native_ports", return_value=lease), \
+             patch.object(services, "_run", side_effect=run), \
+             patch.object(services, "_spawn", side_effect=spawn), \
+             patch.object(services, "_get", side_effect=get), \
+             patch.object(services, "_signed_config", side_effect=signed_config), \
+             patch.object(services, "_ready"), patch.object(services, "_patch_bindings"), \
+             patch.object(services, "_check_processes"):
+            return services.start(510, "http://127.0.0.1:29067", time.monotonic_ns()+60*10**9)
+
+    def test_pir_tiers_and_precompute_cache_stay_out_of_case_evidence(self):
+        self.start()
+        pir, snapshot = self.mutable/VOTE.PIR_DATA_DIRECTORY, self.evidence/"voting/pir-snapshot"
+        self.assertEqual(self.services.pir_data, pir)
+        self.assertEqual(sorted(path.name for path in snapshot.iterdir()), sorted(VOTE.SNAPSHOT_FILES))
+        self.assertEqual((snapshot/"nullifiers.checkpoint").read_bytes(), struct.pack("<QQ", 510, 32))
+        for name in VOTE.SNAPSHOT_FILES:
+            self.assertEqual((pir/name).read_bytes(), (snapshot/name).read_bytes())
+        exported = self.commands["pir-export"]
+        for flag in ("--nullifiers", "--checkpoint", "--output-dir"):
+            self.assertTrue(Path(exported[exported.index(flag)+1]).is_relative_to(pir))
+        served = self.commands["pir-server"]
+        self.assertEqual(served[served.index("--pir-data-dir")+1], str(pir))
+        self.assertTrue((pir/"tier1.precompute").exists())
+        names = {path.name for path in self.evidence.rglob("*")}
+        self.assertFalse(names & {"pir-data", "tier0.bin", "tier1.bin", "tier1.precompute", "nullifiers.index"})
+        for name in ("pir-root.json", "ports.json", "runtime.json"):
+            self.assertTrue((self.evidence/"voting"/name).exists(), name)
+
+    def test_existing_mutable_pir_directory_is_never_adopted(self):
+        stale = self.mutable/VOTE.PIR_DATA_DIRECTORY
+        stale.mkdir(mode=0o700)
+        (stale/"tier1.precompute").write_bytes(b"stale")
+        with self.assertRaisesRegex(VOTE.RunnerError, "single-use"):
+            self.start()
+        self.assertFalse((self.evidence/"voting").exists())
+        self.assertEqual((stale/"tier1.precompute").read_bytes(), b"stale")
+        self.assertEqual(self.commands, {})
+
+    def test_failed_start_keeps_snapshot_and_mutable_pir_data(self):
+        self.served_height = 511
+        with self.assertRaisesRegex(VOTE.RunnerError, "exact real migration snapshot"):
+            self.start()
+        self.assertTrue(self.services.closed)
+        self.assertTrue((self.evidence/"voting/pir-snapshot/nullifiers.bin").exists())
+        self.assertTrue((self.mutable/VOTE.PIR_DATA_DIRECTORY/"tier1.precompute").exists())
 
 
 if __name__ == "__main__":

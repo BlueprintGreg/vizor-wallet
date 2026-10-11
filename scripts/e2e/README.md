@@ -512,9 +512,23 @@ both require a nonempty real commitment tree. No assertion result is mocked.
 
 Each invocation builds the SDK services, PIR tools and round-creation test once
 from these exact source commits, sharing only the joined executable publication
-and immutable SDK scripts. Every case retains separate vote home, keys, PIR
+and immutable SDK scripts. Every case owns a separate vote home, keys, PIR
 dataset, chain, wallet and service-port locks. Locks remain through listener
 handoff and release only after original service groups/output capture join.
+The exported nullifier snapshot (`voting/pir-snapshot/`), the served PIR root
+(`voting/pir-root.json`) and `voting/participation-proof.json` are case
+evidence. The PIR tier files and the `tier1.precompute` cache that the pinned
+`nf-server` writes into its data directory (about 3.4 GiB per case) are
+mutable service data, next to private copies of the snapshot, in the case's
+`native-workers/<run>-w<worker>/workspace/<namespace>/voting-pir-data`. Worker
+close removes them after a passed case. It refuses group- or other-writable
+entries, so voting cases pass only under a umask that clears those bits, such
+as the default 022. A failed or cancelled case keeps them with the rest of its
+workspace and records its path under `retained`, as does a case whose worker
+close could not remove them; a runner killed mid-case leaves them without a
+result. They go with the dead run's folder (`native-prune.py --folders`), which
+stays while a retained macOS namespace of that run still needs the signed
+cleanup helper.
 Clients use loopback URLs; the pinned upstream `nf-server` itself listens on
 all interfaces because that revision exposes no bind-address option. This is
 mutable-state isolation, not a network sandbox. Cleanup uncertainty fails and

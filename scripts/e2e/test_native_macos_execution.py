@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     import native_macos_execution as EXECUTE
+    import native_voting as VOTE
     import test_native_worker_lifecycle as FIXTURES
 finally:
     sys.path.pop(0)
@@ -199,7 +200,9 @@ class VotingRestartExecutionTests(unittest.TestCase):
         self.addCleanup(self.model.doCleanups)
         self.session = self.model.session
         self.started = self.closed = False
-        self.failure = False
+        self.failure = self.verify_failure = False
+        self.pir = self.session.mutable_directory/VOTE.PIR_DATA_DIRECTORY
+        self.snapshot = self.session.case.workspace.root/"voting/pir-snapshot"
         test = self
 
         class Services:
@@ -215,11 +218,18 @@ class VotingRestartExecutionTests(unittest.TestCase):
                 test.started = True
                 if test.failure:
                     raise RuntimeError("original service startup failed")
+                # The real services' layout: snapshot in evidence, tiers/cache in the mutable tree.
+                test.snapshot.mkdir(mode=0o700, parents=True)
+                (test.snapshot/"nullifiers.bin").write_bytes(b"n"*32)
+                test.pir.mkdir(mode=0o700)
+                (test.pir/"tier1.precompute").write_bytes(b"p"*4096)
 
             def environment(self):
                 return {"ZCASH_E2E_VOTE_ROUND_ID":"a"*64}
 
             def verify(self):
+                if test.verify_failure:
+                    raise EXECUTE.runtime.RunnerError("modeled vote left the commitment tree empty")
                 return {"modeled_transport":True}
 
             def close(self):
@@ -258,6 +268,39 @@ class VotingRestartExecutionTests(unittest.TestCase):
             self.execute()
         self.assertTrue(self.closed)
         self.session.retain(timeout=3)
+
+    def test_passed_case_drops_pir_cache_with_its_workspace_and_keeps_snapshot(self):
+        self.execute()
+        self.assertTrue((self.pir/"tier1.precompute").exists())  # Nothing removes it before close.
+        self.session.close(timeout=3)
+        self.model.worker.close()
+        self.assertFalse(self.pir.exists())
+        self.assertEqual((self.snapshot/"nullifiers.bin").read_bytes(), b"n"*32)
+        self.assertEqual(self.model.worker.retained_resources(), [])
+
+    def test_pir_cache_that_worker_close_cannot_remove_is_reported(self):
+        self.execute()
+        self.session.close(timeout=3)
+        # As written under umask 002: owned-tree removal refuses group-writable files.
+        (self.pir/"tier1.precompute").chmod(0o664)
+        with self.assertRaisesRegex(RuntimeError, "original owned regular identity"):
+            self.model.worker.close()
+        self.assertEqual((self.pir/"tier1.precompute").read_bytes(), b"p"*4096)
+        retained = self.model.worker.retained_resources()
+        self.assertEqual([(item["workspace"], item["docker"], item["simulator"], item["macos_support"],
+                           item["port_locks_held"]) for item in retained],
+                         [(str(self.session.mutable_directory), None, None, None, False)])
+
+    def test_failed_vote_retains_pir_cache_and_reports_its_workspace(self):
+        self.verify_failure = True
+        with self.assertRaisesRegex(EXECUTE.runtime.RunnerError, "commitment tree empty"):
+            self.execute()
+        self.assertTrue(self.closed)
+        self.model.worker.retain(timeout=3)
+        self.assertEqual((self.pir/"tier1.precompute").read_bytes(), b"p"*4096)
+        self.assertTrue((self.snapshot/"nullifiers.bin").exists())
+        retained = self.model.worker.retained_resources()
+        self.assertEqual([item["workspace"] for item in retained], [str(self.session.mutable_directory)])
 
 
 if __name__ == "__main__":
