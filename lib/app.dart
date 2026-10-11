@@ -349,9 +349,8 @@ Future<void> applyEnhancePirPolicy(
   await (prepareCompanions ?? prepareTransparentRecoveryCompanions)();
 }
 
-/// Deletes companion directories that belong to no current wallet and, in a
-/// build with the private transparent recovery flag, keeps the current
-/// wallet's out of device backups before Rust writes into it.
+/// Deletes companion directories that belong to no current wallet and keeps
+/// the current wallet's out of device backups before Rust writes into it.
 ///
 /// Best effort: a failure is logged and startup continues. A leftover
 /// directory is swept on a later launch, and the backup mark is set again at

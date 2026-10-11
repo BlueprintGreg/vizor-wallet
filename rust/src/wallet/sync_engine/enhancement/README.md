@@ -430,10 +430,12 @@ until an account is promoted.
 - **Trusted qualification (D1).** The source settles a `Ready` batch
   (`RecoverySource::apply`): the transparent PIR source hands it to the
   adapter's `settle_latest`, which applies the commits in order, each
-  in its own library transaction, then acknowledges the batch. The wallet
-  write lock is held across that whole call, as the adapter asks, so a
-  foreground wallet write waits for the batch being settled; no lock is held
-  across a source call or any network request. Under `PrivateRequired`, on the
+  in its own library transaction, then acknowledges the batch. Each commit,
+  and then the acknowledgment, takes the wallet write lock on its own through
+  the settlement gate (`SettlementGate` in `transparent_ledger/pir.rs`), which
+  steps aside for at most 250 ms while another writer waits and stops the
+  batch between commits on exit, so a foreground wallet write waits at most one
+  commit. No lock is held across a source call or any network request. Under `PrivateRequired`, on the
   handle and durably, a trusted source's commits are applied with
   `Trust::Trusted` (`qualify_and_apply_transparent_ledger_commit`), which
   qualifies the exact revision, supersedes its source's older provisional
@@ -790,8 +792,9 @@ trusted, since every commit comes from the configured origin.
   the quarantine survives the forget, so turning them back on reports
   `Stopped(Quarantined)` again. Deleting and re-importing the account clears
   it, because the re-imported account has new sources. The
-  library's `docs/transparent-pir-private-recovery.md`, at the pinned
-  revision, lists the accepted limitations and outstanding release gates.
+  library's `docs/transparent-pir-wallet-integration.md`, at the pinned
+  revision, describes the integration contract, including what remains
+  visible and trusted (section 7).
 - **Import account discovery.** A recovery-phrase import checks the first
   transparent address of accounts 1 to 20 for history from the rounded
   birthday. When the transparent policy withholds that lookup, at the start or
@@ -1093,24 +1096,26 @@ there is no separate release gate.
 
 The eight patched library crates (now including `zakura-pir-enhance`) and the
 `zakura-pir-transparent` adapter share one wallet-libraries revision,
-`bfbb4f4a59d70040ac385133bd8c032fce5be5c5` on main
-([PR #137](https://github.com/zakura-core/wallet-libraries/pull/137), Enhance
-queries over only the rows a domain can hold, after
-[PR #140](https://github.com/zakura-core/wallet-libraries/pull/140), the same for
-a growing Transparent tail's pages, and
-[PR #139](https://github.com/zakura-core/wallet-libraries/pull/139), import-time
-account discovery, and
-[PR #138](https://github.com/zakura-core/wallet-libraries/pull/138), gated
-settlement). Main also carries
-[PR #133](https://github.com/zakura-core/wallet-libraries/pull/133), which
-switches the Transparent, Enhance and Status clients to dithered 44-bit native
-queries, [PR #134](https://github.com/zakura-core/wallet-libraries/pull/134)
-(forget transparent ledger facts under `Public`),
-[PR #135](https://github.com/zakura-core/wallet-libraries/pull/135),
-[PR #129](https://github.com/zakura-core/wallet-libraries/pull/129) (declared re-cuts)
-and [PR #132](https://github.com/zakura-core/wallet-libraries/pull/132),
-which removes the unused `PrivateShadow` ledger mode on top of
-[PR #130](https://github.com/zakura-core/wallet-libraries/pull/130).
+`ad963341be56f5e72ad98d3d042067ab03c08153` on main
+([PR #153](https://github.com/zakura-core/wallet-libraries/pull/153), discovery that continues past its budget and the in-process shard
+service under `testing`). Since the previous pin at [PR #137](https://github.com/zakura-core/wallet-libraries/pull/137) (Enhance queries
+over only the rows a domain can hold), main has added [PR #152](https://github.com/zakura-core/wallet-libraries/pull/152) (rewound
+receives stay pending, deferrals carry the policy generation), [PR #151](https://github.com/zakura-core/wallet-libraries/pull/151)
+(unused transparent-recovery API removed), [PR #147](https://github.com/zakura-core/wallet-libraries/pull/147) (account activity,
+unattributed fees and the receipt read), [PR #150](https://github.com/zakura-core/wallet-libraries/pull/150) (forget refuses a policy
+changed since it began), [PR #149](https://github.com/zakura-core/wallet-libraries/pull/149) (interrupted settlements skip, policy changes
+stop, timed-out lookups back off), [PR #148](https://github.com/zakura-core/wallet-libraries/pull/148) (a rewound private receive stays
+pending), [PR #146](https://github.com/zakura-core/wallet-libraries/pull/146) (the recovery pass driver), [PR #144](https://github.com/zakura-core/wallet-libraries/pull/144) (typed transparent
+authority refusals and the ordered private-recovery forget), [PR #145](https://github.com/zakura-core/wallet-libraries/pull/145) (the
+txid detail run driver and preferred receipts) and the transparent-ledger
+renames (activation, recovery suspension, address watch sets). Earlier, main
+carried [PR #140](https://github.com/zakura-core/wallet-libraries/pull/140) (the same row-bounded queries for a growing Transparent
+tail's pages), [PR #139](https://github.com/zakura-core/wallet-libraries/pull/139) (import-time account discovery), [PR #138](https://github.com/zakura-core/wallet-libraries/pull/138) (gated
+settlement, one commit at a time), [PR #133](https://github.com/zakura-core/wallet-libraries/pull/133), which switches the Transparent,
+Enhance and Status clients to dithered 44-bit native queries, [PR #134](https://github.com/zakura-core/wallet-libraries/pull/134)
+(forget transparent ledger facts under `Public`), [PR #135](https://github.com/zakura-core/wallet-libraries/pull/135),
+[PR #129](https://github.com/zakura-core/wallet-libraries/pull/129) (declared re-cuts) and [PR #132](https://github.com/zakura-core/wallet-libraries/pull/132), which removes the unused
+`PrivateShadow` ledger mode on top of [PR #130](https://github.com/zakura-core/wallet-libraries/pull/130).
 Enhance and Transparent uploads need servers at wallet-pir `0f89fbe0` or later,
 which accept a selection over only a growing domain's or tail's leading rows as
 well as the 49-bit and 44-bit full queries; Status needs `06a972db` or later.
