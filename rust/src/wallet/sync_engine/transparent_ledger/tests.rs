@@ -2016,6 +2016,66 @@ async fn the_followup_reports_an_update_after_recovery() {
 }
 
 #[tokio::test]
+async fn the_followup_retires_a_cached_receive_address_recovery_funded() {
+    use crate::wallet::sync_engine::transparent_followup;
+    use crate::wallet::transparent_receive_cache;
+
+    let mut wallet = wallet();
+    let _mode = activate(&mut wallet).await;
+    let funded = external(&wallet, 0).encode(&NETWORK);
+    let cached = |wallet: &Wallet| {
+        transparent_receive_cache::get_clean_address(&wallet.path, NETWORK, &wallet.uuid).unwrap()
+    };
+    let progress = |_: SyncProgressEvent| {};
+    let completed = (u64::from(TIP), u64::from(TIP) + 1);
+    // The sync refreshes the cache when it completes, before recovery runs.
+    transparent_receive_cache::refresh_all_from_wallet_db(&wallet.path, NETWORK, Some(completed.0))
+        .unwrap();
+    assert_eq!(cached(&wallet).as_deref(), Some(funded.as_str()));
+
+    // Recovery that finds nothing leaves the address on offer.
+    let empty = FixtureSource::new(main_hash);
+    empty.trust();
+    transparent_followup(
+        1,
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        &empty,
+        Some(wallet.account),
+        &|| false,
+        &progress,
+        completed,
+    )
+    .await;
+    assert_eq!(cached(&wallet).as_deref(), Some(funded.as_str()));
+
+    // Recovery that finds funds there retires it.
+    let funded_source = funded_source(&wallet);
+    transparent_followup(
+        1,
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        &funded_source,
+        Some(wallet.account),
+        &|| false,
+        &progress,
+        completed,
+    )
+    .await;
+    assert_eq!(
+        balance(&wallet, &wallet.uuid).transparent_authority,
+        TransparentBalanceAuthority::Current
+    );
+    let next = cached(&wallet).expect("the cache offers the next unused address");
+    assert_ne!(next, funded);
+    assert_eq!(next, external(&wallet, 1).encode(&NETWORK));
+}
+
+#[tokio::test]
 async fn a_background_sync_skips_the_recovery_followup() {
     use crate::wallet::sync_engine::{runs_transparent_followup, transparent_followup};
 

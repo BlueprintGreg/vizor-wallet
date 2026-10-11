@@ -4635,22 +4635,7 @@ async fn run_sync_impl(
         final_scanned_height,
         final_tip_height,
     );
-    match transparent_receive_cache::refresh_all_from_wallet_db(
-        db_data_path,
-        network,
-        Some(final_scanned_height),
-    ) {
-        Ok(refreshed) => log::info!(
-            "[{}] sync: refreshed transparent receive cache ({} accounts)",
-            elapsed(),
-            refreshed
-        ),
-        Err(e) => log::warn!(
-            "[{}] sync: transparent receive cache refresh failed: {}",
-            elapsed(),
-            e
-        ),
-    }
+    refresh_transparent_receive_cache(db_data_path, network, final_scanned_height);
     with_wallet_db_write_lock("sync_engine.mark_sync_completed", || {
         mark_sync_completed(db_data_path, final_tip_height)
     })
@@ -4859,15 +4844,16 @@ async fn run_sync_impl(
 }
 
 /// Runs private transparent recovery once a sync has completed and reported
-/// completion at `completed` (scanned height, chain tip), then reports a
-/// [`SyncEventKind::FollowupUpdated`] event so the UI re-reads the balances
-/// and shielding state the run may have restored.
+/// completion at `completed` (scanned height, chain tip), then refreshes the
+/// transparent receive cache and reports a
+/// [`SyncEventKind::FollowupUpdated`] event so the UI re-reads the balances,
+/// shielding state and receive address the run may have changed.
 ///
 /// Recovery keeps its own progress in the library and never fails the sync:
 /// errors and outcomes are only logged. With private queries off, the policy
 /// captures `Public`, so the run returns before any read, and nothing is
-/// reported; nor is it when
-/// the run exited.
+/// refreshed or reported; nor is it when the run exited, whose next sync
+/// refreshes the cache before recovering again.
 ///
 /// A background preparation sync (`running_mode` 2) skips the run entirely:
 /// it holds the global sync guard, so a foreground sync requested meanwhile
@@ -4920,7 +4906,36 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             error
         ),
     }
+    // The sync refreshed the receive cache before recovery ran, and recovery
+    // may have recorded receipts at addresses the cache lists as unused.
+    refresh_transparent_receive_cache(db_data_path, network, completed.0);
     progress_fn(followup_updated_event(completed));
+}
+
+/// Rewrites every account's transparent receive cache from the wallet DB as
+/// of `scanned_height`, so the receive screen never offers an address the
+/// wallet has seen funds at. Failures are logged; a later sync retries.
+fn refresh_transparent_receive_cache(
+    db_data_path: &str,
+    network: WalletNetwork,
+    scanned_height: u64,
+) {
+    match transparent_receive_cache::refresh_all_from_wallet_db(
+        db_data_path,
+        network,
+        Some(scanned_height),
+    ) {
+        Ok(refreshed) => log::info!(
+            "[{}] sync: refreshed transparent receive cache ({} accounts)",
+            elapsed(),
+            refreshed
+        ),
+        Err(e) => log::warn!(
+            "[{}] sync: transparent receive cache refresh failed: {}",
+            elapsed(),
+            e
+        ),
+    }
 }
 
 /// Whether a sync running in `running_mode` runs private transparent
