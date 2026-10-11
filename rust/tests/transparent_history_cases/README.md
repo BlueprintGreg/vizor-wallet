@@ -103,9 +103,11 @@ chain changes (declared in `cases.rs`'s `run`, kinds in `report.rs`'s
   `import_software_wallet_with_account_discovery`. Discovery runs once at the
   default budget and once with `ZCASH_E2E_REGTEST_DISCOVERY_MAX_QUERIES=1`
   (debug builds on regtest under the harness switch only), where account 1's
-  pages stop the first pass; both must find exactly the funded accounts, the
-  budgeted one in more passes, and the restored accounts' balances must be
-  current and match zcashd's address index.
+  pages stop the first pass; both must find exactly the funded accounts, and
+  the restored accounts' balances must be current and match zcashd's address
+  index. A complete pass always does the same private work, so the budgeted
+  run must differ from the default in manifests, setups or queries: a pass
+  its budget stopped, which only the library's continuation completes.
 
 N_toggle, N_restart and N_discover are of kind `harness`: their premise is a
 toggle, a process or a discovery the oracle cannot observe, so the harness
