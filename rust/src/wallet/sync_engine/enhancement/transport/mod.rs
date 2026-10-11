@@ -166,10 +166,9 @@ async fn regtest_loopback_response(
         .header(http::header::CONTENT_TYPE, "application/octet-stream")
         .body(Full::new(Bytes::from(body)))
         .map_err(|error| SyncError::parse(format!("build loopback request: {error}")))?;
-    direct
-        .request(request)
-        .await
-        .map_err(|error| RoutedHttpError::Failed(SyncError::net(format!("loopback request failed: {error}"))))
+    direct.request(request).await.map_err(|error| {
+        RoutedHttpError::Failed(SyncError::net(format!("loopback request failed: {error}")))
+    })
 }
 
 /// Validated before route selection, so a plaintext endpoint is rejected on

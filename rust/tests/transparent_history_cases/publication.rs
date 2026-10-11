@@ -68,20 +68,18 @@ use transparent_filter::{
 };
 use transparent_shard::build::build_shard;
 use transparent_shard::display::{DisplaySealParams, TXID_2K};
-use transparent_shard::txid::{DisplayEntry, DisplayFacts, DisplayOutput};
 use transparent_shard::layout::{Geometry, RECENT_4K};
 use transparent_shard::manifest::{
     ManifestLayout, ManifestOccupancy, ManifestSeal, ShardManifest, TableGeometry, SCHEMA,
 };
+use transparent_shard::txid::{DisplayEntry, DisplayFacts, DisplayOutput};
 use transparent_shard_server::assignment::WorkerRole;
 use transparent_shard_server::display::{
     live::{DisplayCommand, DisplayLive, DisplayPublication},
     service::DisplayRuntime,
     synth,
 };
-use transparent_shard_server::service::{
-    router, ReadinessMode, ServiceConfig, ServiceState,
-};
+use transparent_shard_server::service::{router, ReadinessMode, ServiceConfig, ServiceState};
 use transparent_shard_server::shardset::{ShardSet, DEFAULT_RETAIN_REVISIONS};
 
 use crate::chain::rpc_at;
@@ -290,8 +288,7 @@ impl Publisher {
         for height in from..=tip {
             let hash = self.block_hash(height);
             let block = self.rpc("getblock", json!([hash, 2]));
-            let (events, display, txids) =
-                block_events(&block, height as u32, &mut chain.prevouts);
+            let (events, display, txids) = block_events(&block, height as u32, &mut chain.prevouts);
             chain.blocks.push(BlockEvents {
                 height,
                 hash,
@@ -517,7 +514,9 @@ fn carries(watched: &(HashSet<Vec<u8>>, HashSet<Vec<u8>>), bytes: &[u8]) -> bool
 /// its hex forms.
 fn carries_sized(watched: &(HashSet<Vec<u8>>, HashSet<Vec<u8>>), bytes: &[u8], len: usize) -> bool {
     bytes.windows(len).any(|window| watched.0.contains(window))
-        || bytes.windows(2 * len).any(|window| watched.1.contains(window))
+        || bytes
+            .windows(2 * len)
+            .any(|window| watched.1.contains(window))
 }
 
 /// `path` with shard ids, revisions and segments elided.

@@ -34,12 +34,9 @@ struct Shown {
 }
 
 fn shown(db_path: &str, account_uuid: &str) -> Shown {
-    let balance = sync_api::get_balance(
-        db_path.into(),
-        REGTEST_NETWORK.into(),
-        account_uuid.into(),
-    )
-    .expect("get_balance");
+    let balance =
+        sync_api::get_balance(db_path.into(), REGTEST_NETWORK.into(), account_uuid.into())
+            .expect("get_balance");
     let mut rows: Vec<_> = sync_api::get_transaction_history(
         db_path.into(),
         REGTEST_NETWORK.into(),

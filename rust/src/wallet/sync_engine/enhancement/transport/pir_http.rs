@@ -595,10 +595,12 @@ mod tests {
         let runtime = runtime();
         let exit = || false;
         assert!(!regtest_loopback("http://127.0.0.1:8080"));
-        assert!(
-            RoutedExchange::transparent("http://127.0.0.1:8080", &exit, runtime.handle().clone())
-                .is_err()
-        );
+        assert!(RoutedExchange::transparent(
+            "http://127.0.0.1:8080",
+            &exit,
+            runtime.handle().clone()
+        )
+        .is_err());
     }
 
     /// A release build ignores the regtest harness's switch even when it is
@@ -609,7 +611,9 @@ mod tests {
     #[test]
     fn release_builds_ignore_the_regtest_switch() {
         use crate::wallet::network::WalletNetwork;
-        use crate::wallet::sync_engine::enhancement::{regtest_private_e2e, select_transparent_mode};
+        use crate::wallet::sync_engine::enhancement::{
+            regtest_private_e2e, select_transparent_mode,
+        };
         use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
         std::env::set_var("ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT", "1");
         std::env::set_var("VIZOR_TRANSPARENT_PIR_URL", "http://127.0.0.1:8080");
