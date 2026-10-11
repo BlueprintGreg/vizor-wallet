@@ -808,6 +808,51 @@ void main() {
   });
 
   group('turning private queries off', () {
+    testWidgets('overlapping confirmations both turn private queries off', (
+      tester,
+    ) async {
+      final enhancePir = _RecordingToggle(true);
+      final confirmations = <Completer<bool>>[];
+      await tester.binding.setSurfaceSize(const Size(1512, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _settingsHarness(
+          enhancePirEnabled: true,
+          extraOverrides: [
+            enhancePirProvider.overrideWith(() => enhancePir),
+            privateQueriesTurnOffConfirmerProvider.overrideWithValue((_) {
+              final result = Completer<bool>();
+              confirmations.add(result);
+              return result.future;
+            }),
+          ],
+        ),
+      );
+      await tester.pump();
+      final toggle = find.byKey(const ValueKey('settings_enhance_pir_toggle'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pump();
+      await tester.tap(toggle);
+      await tester.pump();
+      expect(confirmations, hasLength(2));
+
+      confirmations.first.complete(true);
+      await tester.pumpAndSettle();
+      confirmations.last.complete(true);
+      await tester.pumpAndSettle();
+
+      expect(enhancePir.requests, [false, false]);
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('settings_enhance_pir_status')),
+            )
+            .data,
+        'Off',
+      );
+    });
+
     Future<_RecordingToggle> pumpToggle(
       WidgetTester tester, {
       required bool enabled,
@@ -1223,14 +1268,16 @@ class _RecordingToggle extends EnhancePirNotifier {
 
   final bool enabled;
   int toggles = 0;
+  final requests = <bool>[];
 
   @override
   bool build() => enabled;
 
   @override
-  Future<void> toggle() async {
+  Future<void> set(bool enabled) async {
     toggles++;
-    state = !state;
+    requests.add(enabled);
+    state = enabled;
   }
 }
 

@@ -74,10 +74,15 @@ class _Store implements EnhancePirPreferenceStore {
   bool? value;
   bool fail = false;
   bool failEnabled = false;
+  bool failRead = false;
   Completer<void>? pending;
   List<String>? events;
   @override
-  Future<bool?> readEnabled() async => value;
+  Future<bool?> readEnabled() async {
+    if (failRead) throw StateError('read failed');
+    return value;
+  }
+
   @override
   Future<void> writeEnabled(bool enabled) async {
     if (pending != null) await pending!.future;
@@ -505,6 +510,92 @@ void main() {
   // Previously a failed raise rolled the shielded setting back off. The
   // shielded setting now stays where the user put it; the startup and sync
   // raise paths retry the transparent raise.
+  test('a failed enable save restores native background recovery', () async {
+    final events = <String>[];
+    final store = _Store()
+      ..value = false
+      ..failEnabled = true;
+    final reconciler = _Reconciler();
+    final container = setup(
+      store,
+      _Sync()..gate.complete(),
+      background: _Background(events),
+      reconciler: reconciler,
+    );
+    addTearDown(container.dispose);
+
+    await container.read(enhancePirProvider.notifier).set(true);
+
+    expect(events, ['native:true', 'native:false']);
+    expect(store.value, isFalse);
+    expect(api.values, isEmpty);
+    expect(reconciler.calls, isEmpty);
+    expect(container.read(enhancePirProvider), isFalse);
+    expect(
+      container.read(enhancePirTransitionProvider),
+      kEnhancePirUnchangedMessage,
+    );
+  });
+
+  for (final failure in ['read', 'marker', 'native']) {
+    test(
+      'wallet reset policy restoration reports a $failure failure',
+      () async {
+        final events = <String>[];
+        final store = _Store()
+          ..value = false
+          ..failRead = failure == 'read';
+        final optOut = _OptOut()
+          ..value = true
+          ..failClear = failure == 'marker';
+        final background = _Background(events)
+          ..failDisable = failure == 'native';
+        final container = setup(
+          store,
+          _Sync()..gate.complete(),
+          initialEnabled: true,
+          optOut: optOut,
+          background: background,
+        );
+        addTearDown(container.dispose);
+        container.read(transparentOptOutPendingProvider.notifier).update(true);
+
+        await expectLater(
+          container.read(enhancePirProvider.notifier).restoreAfterWalletReset(),
+          throwsStateError,
+        );
+
+        expect(container.read(enhancePirProvider), isTrue);
+        expect(container.read(transparentOptOutPendingProvider), isTrue);
+        expect(store.value, isFalse);
+        expect(api.values, isEmpty);
+        expect(events, isEmpty);
+      },
+    );
+  }
+
+  for (final available in [false, true]) {
+    test(
+      'wallet reset applies the private default only when available ($available)',
+      () async {
+        final container = setup(
+          _Store(),
+          _Sync()..gate.complete(),
+          background: _Background(<String>[]),
+          extra: [enhancePirAvailableProvider.overrideWithValue(available)],
+        );
+        addTearDown(container.dispose);
+        await container
+            .read(enhancePirProvider.notifier)
+            .restoreAfterWalletReset();
+
+        expect(container.read(enhancePirProvider), available);
+        expect(api.values, [available]);
+        expect(container.read(transparentOptOutPendingProvider), isFalse);
+      },
+    );
+  }
+
   test(
     'a failed raise on enable keeps private queries on and reports it',
     () async {

@@ -37,6 +37,7 @@ import '../rust/api/voting.dart' as rust_voting;
 import '../rust/api/wallet.dart' as rust_wallet;
 import 'account_models.dart';
 import 'app_security_provider.dart';
+import 'enhance_pir_provider.dart';
 import 'public_details_loads_provider.dart';
 import 'network_privacy_provider.dart';
 import 'rpc_endpoint_failover_provider.dart';
@@ -2072,9 +2073,9 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       } catch (e, st) {
         recordError('secure storage wipe', e, st);
       }
-      // Private queries are install-scoped and are deliberately NOT
-      // cleared here: it lives outside the secure-store bucket the wipe above
-      // destroyed, so the next wallet starts on the route the user chose. The
+      // The saved Private queries choice is install-scoped and survives this
+      // wipe. After the reset succeeds, its runtime is reapplied below and the
+      // deleted wallet's pending transition is cleared. The
       // Tor route preference below is the opposite case — it is removed as
       // anti-forensics, because it is durable evidence of Tor use.
       final privacyRuntime = ref.read(networkPrivacyRuntimeProvider);
@@ -2098,6 +2099,16 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       Error.throwWithStackTrace(
         WalletResetException(cause: error, dbDeleted: dbDeleted),
         firstStackTrace ?? StackTrace.current,
+      );
+    }
+    try {
+      await ref.read(enhancePirProvider.notifier).restoreAfterWalletReset();
+    } catch (e, st) {
+      // The database is gone, but onboarding must wait until the old wallet's
+      // runtime policy is replaced by the saved choice. A retry can finish it.
+      Error.throwWithStackTrace(
+        WalletResetException(cause: e, dbDeleted: dbDeleted),
+        st,
       );
     }
     // Clear the account state BEFORE flipping security back to locked: the

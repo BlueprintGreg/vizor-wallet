@@ -1719,9 +1719,9 @@ class _RecordingToggle extends EnhancePirNotifier {
   bool build() => enabled;
 
   @override
-  Future<void> toggle() async {
+  Future<void> set(bool enabled) async {
     toggles++;
-    state = !state;
+    state = enabled;
   }
 }
 

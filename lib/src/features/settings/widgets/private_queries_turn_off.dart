@@ -54,12 +54,14 @@ Future<bool> confirmPrivateQueriesTurnOff(BuildContext context) async {
 /// Toggles private queries, first confirming a turn-off that would send the
 /// wallet's transparent lookups to the server.
 Future<void> togglePrivateQueries(BuildContext context, WidgetRef ref) async {
-  if (ref.read(privateQueriesControlEnabledProvider) &&
-      !await _confirmTurnOff(context, ref)) {
+  final enabled = !ref.read(privateQueriesControlEnabledProvider);
+  if (!enabled && !await _confirmTurnOff(context, ref)) {
     return;
   }
   if (!context.mounted) return;
-  await ref.read(enhancePirProvider.notifier).toggle();
+  // A second confirmation may finish after the first has applied its change.
+  // Apply the choice the user confirmed, regardless of the current state.
+  await ref.read(enhancePirProvider.notifier).set(enabled);
 }
 
 Future<bool> _confirmTurnOff(BuildContext context, WidgetRef ref) async {

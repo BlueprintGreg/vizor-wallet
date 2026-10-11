@@ -231,7 +231,18 @@ class EnhancePirNotifier extends Notifier<bool> {
     final store = ref.read(enhancePirPreferenceStoreProvider);
     final reconcile = ref.read(transparentPolicyReconcilerProvider);
     await ref.read(enhancePirBackgroundSinkProvider)(true);
-    await store.writeEnabled(true);
+    try {
+      await store.writeEnabled(true);
+    } catch (_) {
+      // The native value changed before the save. Restore it too when the
+      // saved choice and foreground runtime remain unchanged.
+      try {
+        await ref.read(enhancePirBackgroundSinkProvider)(state);
+      } catch (error) {
+        log('Could not restore private background recovery: $error');
+      }
+      rethrow;
+    }
     rust_sync.setEnhancePirEnabled(enabled: true);
     rust_sync.setEnhancePirPreferenceConfirmed(confirmed: true);
     state = true;
@@ -312,6 +323,27 @@ class EnhancePirNotifier extends Notifier<bool> {
       log('Could not clear the private queries opt-out marker: $error');
     }
     ref.read(transparentOptOutPendingProvider.notifier).update(false);
+  }
+
+  /// Reapplies the install's saved choice after a full wallet reset succeeds.
+  /// Call while the reset still owns the wallet mutation and native work is
+  /// paused. The old wallet's pending opt-out is cleared without reconciling
+  /// any database, so it cannot govern the next wallet. Storage or native
+  /// failures throw; the reset must remain retryable until this completes.
+  Future<void> restoreAfterWalletReset() async {
+    final saved = await ref
+        .read(enhancePirPreferenceStoreProvider)
+        .readEnabled();
+    final enabled = (saved ?? true) && ref.read(enhancePirAvailableProvider);
+    await ref.read(transparentOptOutStoreProvider).writePending(false);
+    await ref.read(enhancePirBackgroundSinkProvider)(enabled);
+    rust_sync.setEnhancePirEnabled(enabled: enabled);
+    rust_sync.setEnhancePirPreferenceConfirmed(confirmed: saved != null);
+    state = enabled;
+    TransparentPolicyStartup.current = const TransparentPolicyStartup();
+    ref.read(transparentOptOutPendingProvider.notifier).update(false);
+    ref.read(walletTransparentPrivateProvider.notifier).update(false);
+    ref.read(enhancePirTransitionProvider.notifier).update(null);
   }
 
   bool get _controlEnabled =>
