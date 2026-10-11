@@ -61,13 +61,15 @@ class SharedPreferencesEnhancePirStore implements EnhancePirPreferenceStore {
   }
 }
 
-/// Install-scoped marker of an explicit private queries opt-out whose
+/// Marker of an explicit private queries opt-out whose
 /// transparent lowering has not finished yet.
 ///
 /// Written before the wallet's durable transparent policy is lowered and
 /// cleared only once the lowering succeeded, so an opt-out the app did not
 /// live to finish is retried at the next launch. Kept beside the preference,
-/// outside the secure-store bucket a wallet reset wipes, for the same reason.
+/// outside the secure-store bucket so it survives a crash. It belongs to the
+/// current wallet and is cleared after a successful full reset; the saved
+/// install preference continues to govern the replacement wallet.
 const kTransparentOptOutPendingKey = 'zcash_transparent_opt_out_pending';
 
 abstract interface class TransparentOptOutStore {
