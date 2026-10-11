@@ -73,6 +73,45 @@ private profile replaces N_cut and N_utxo_fail, whose requests it never
 makes, with **N_lag** (the publication 60 blocks behind the tip, H12's
 activity unpublished) and **N_pir_fail** (every private query answered 500).
 
+Private-only variants, run after H13 so no earlier checkpoint sees their
+chain changes (declared in `cases.rs`'s `run`, kinds in `report.rs`'s
+`VARIANT_KINDS`):
+
+- **N_lag_settled**, **N_pir_fail_settled** (H13, checkpoint
+  `h13_recovered`): N_lag and N_pir_fail settled once their fault clears;
+  the oracle holds them to the chain's ledger, UTXO set and balance with
+  current authority.
+- **N_spend** (H07, checkpoint `spend`): a fresh private restore shields both
+  accounts' recovered transparent funds and sends 1 ZEC from A1 to B through
+  `shield()`/`send()`; each is mined, and the oracle checks H07's activity and
+  every account check. Its transactions carry `links.built_by = "N_spend"`,
+  so the profiles hold N_spend to what it built as they hold R.
+- **N_toggle** (H13, `toggle`): a public restore (private queries off), raised
+  with `reconcile_transparent_policy(.., true)`, synced, lowered with `false`,
+  synced. The proxy's transparent-subject requests stop at the raise and
+  resume after the lowering; authority is `last_known` right after the raise
+  and `current` once each mode has synced; lowering removes only facts
+  private recovery alone found, and the wallet tables then equal the
+  pre-raise public dump (`VizorWallet::transparent_facts`).
+- **N_restart** (H13, `restart`): a recovered private restore, one block
+  past its ledger, synced by a fresh process (this binary's `restart_child`)
+  that never sets the private-queries preference. Every account must stay
+  private and stopped as not selected, with no transparent subject sent.
+- **N_discover** (H03, `discover`): a new seed whose ZIP 32 accounts 1, 2
+  and 6 hold only transparent funds (account 1 has four receives), restored
+  through `discover_software_wallet_import_accounts` and
+  `import_software_wallet_with_account_discovery`. Discovery runs once at the
+  default budget and once with `ZCASH_E2E_REGTEST_DISCOVERY_MAX_QUERIES=1`
+  (debug builds on regtest under the harness switch only), where account 1's
+  pages stop the first pass; both must find exactly the funded accounts, the
+  budgeted one in more passes, and the restored accounts' balances must be
+  current and match zcashd's address index.
+
+N_toggle, N_restart and N_discover are of kind `harness`: their premise is a
+toggle, a process or a discovery the oracle cannot observe, so the harness
+asserts them and records a report the gate reads like the oracle's
+(`Suite::verdict`).
+
 ## Independence rules
 
 - Expected values come only from zcashd (verbose transactions, prevouts via

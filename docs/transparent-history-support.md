@@ -10,7 +10,24 @@ measured by the H01-H13 suite on an isolated regtest chain, in two layers:
 - the desktop app layer (`integration_test/regtest_transparent_history_cases_test.dart`,
   the macOS app), in both modes.
 
-Latest runs: 2026-10-10, Rust layer only, branch `claude/tpir-private-history`
+Latest runs: 2026-10-11, Rust layer only, branch `claude/tpir-private-history`
+at `c8c55feb9` (on #839 `4c7382d04`), with the five private-only variants
+(see Private-only variants). Same verdicts: private passes all 13 cases, now
+including every new variant; public fails only on G2, G4 and G5, and runs none
+of the new variants.
+
+| Run | Output | Time | Exit |
+|---|---|---|---|
+| Public, Rust layer | `public-2` | 401 s (with a rebuild) | 101 (G2, G4, G5) |
+| Private, Rust layer | `private-2` | 1,142 s (with a rebuild) | 0 |
+
+These ran on a host without Docker access: the harness's `docker` commands
+went to a local stand-in that runs the zcashd (v6.20.0) and lightwalletd
+(v0.4.19) binaries extracted from the same pinned image digests, natively,
+with the same ports, configuration and data directory. Nothing in the
+repository changed for it.
+
+Previous runs: 2026-10-10, Rust layer only, branch `claude/tpir-private-history`
 restacked on #839 `b7f8d4cc7`, wallet-libraries `bfbb4f4a`, wallet-pir
 `9d2cbda0`. The private profile now also serves txid display PIR, so private
 receipts fill their transparent details as production does. Both profiles
@@ -126,13 +143,68 @@ another party funded (#876).
 | H13 Incomplete coverage | - | - | - | N_cut: fail (G5)<br>N_pre: pass<br>N_utxo_fail: pass | - | - | - | - | N_lag: pass<br>N_pir_fail: pass<br>N_pre: pass | - |
 
 **Gate verdicts**
-- **Private Rust layer:** all 13 cases pass, in every variant, including N_seq.
+- **Private Rust layer:** all 13 cases pass, in every variant, including N_seq and the private-only variants (see Private-only variants).
 - **Public Rust layer:** H01-H04 and H06-H11 pass. H05 (G2), H12 (G4) and H13's N_cut (G5) fail.
 - **Negative controls:** in every run, all four make the comparison fail, as required. They are a wrong fee, a wrong input count, an omitted ledger event and a wrong ownership mapping.
 - **N_seq:** in both profiles it passes or fails exactly where N does. Adding an account to a synced wallet changes nothing either suite checks.
 - **Private app layer:** all 48 rows pass. The unmined H12 receive is optional and is not shown. Private recovery reads mined blocks, and the mempool observer matches shielded outputs only (`rust/src/wallet/sync_engine/mempool.rs`).
 - **Public app layer:** 46 of 49 rows pass. The 3 failures are H12 rows the restored wallet does not have (G4).
 - **Shared funding (H05) in the app:** the app layer checks that a row exists, that its receipt labels the movement as a net change and shows the whole fee. The Rust layer checks its amount.
+
+## Private-only variants
+
+Run in the private profile only, after H13, so they change no chain an
+earlier checkpoint reads. Measured in `private-2`.
+
+| Variant | Case | Checked by | Result |
+|---|---|---|---|
+| N_lag_settled, N_pir_fail_settled | H13 | oracle (`h13_recovered`) | pass: once the lag or the failing queries clear, each restore settles to current authority and the chain's ledger, UTXO set and balance |
+| N_spend | H07 | oracle (`spend`) | pass: a private restore shields both accounts' recovered transparent funds and sends 1 ZEC from A1 to B; all mined, H07's rows and every account check match |
+| N_toggle | H13 | harness (`toggle`) | pass, with one deviation from the expected sequence (below) |
+| N_restart | H13 | harness (`restart`) | pass |
+| N_discover | H03 | harness (`discover`) | pass |
+
+**N_toggle.** A public restore of both seeds, raised to private recovery and
+lowered again through `reconcile_transparent_policy`:
+- public sync: 82 lightwalletd requests, 68 with a transparent subject;
+  from the raise to the lowering: 8, none with one; after the lowering: 16,
+  8 with one;
+- right after the raise both accounts read `last_known`, keeping the public
+  amount; after the private sync, `current` and private;
+- private recovery alone found 4 facts the public wallet lacked: H12's
+  conflicted funding receive (1.1 ZEC at height 224) and the conflicting
+  spend of it (225), each output or spend and its transaction, which a
+  public restore misses (G4). The lowering removed exactly those 4 and
+  nothing the public wallet held, and after public lookups the wallet held
+  the same 94 facts as before the raise.
+- **Deviation:** right after the lowering, before any sync, both accounts
+  read `current`, not `last_known`: the library restores the public evidence
+  the raise kept. The amounts equal the public balances from before the
+  raise, so nothing private leaks into them, but they are as old as that
+  evidence (see Open questions). The harness accepts `current` there only at
+  that exact amount.
+
+**N_restart.** A recovered private restore, the chain one block past its
+ledger, synced three times by a fresh process that never set the
+private-queries preference: both accounts stay private and read `stopped`
+(`not_selected`) with their last known amounts; 15 lightwalletd requests,
+none with a transparent subject, and no transparent PIR query. With the tip
+unmoved the private ledger still covers it and authority stays `current`
+(the first run, `private-1`, which did not mine first).
+
+**N_discover.** Discovery at the default budget took 2 shard-map fetches, 6
+directory and 1 page query; at a query budget of 1, 4 shard-map fetches, 6
+directory and no page query: account 1's pages stopped a pass, and the
+continuation asked about the rest. Both found exactly accounts 1, 2 and 6.
+The import and the private sync sent lightwalletd 10 requests, none with a
+transparent subject, and each account's transparent balance was current and
+matched zcashd's address index.
+
+The Dart side of N_restart is in `test/providers/enhance_pir_provider_test.dart`
+("a launch over a durably private wallet"): an unreadable saved preference is
+private for the launch and unconfirmed; a missing one is a fresh install's,
+which bootstrap records as off. Neither reconciles the wallet's policy, so a
+durably private wallet is never lowered at startup.
 
 ## Fee presentation
 
@@ -264,6 +336,20 @@ shared the machine, stopped when the oracle crashed deriving H12's pending
 checkpoint (`Chain.raw` returned `None` for a txid from zcashd's address
 index). The cause is not established. It has not recurred, and it is not
 fixed.
+
+## Open questions
+
+- **Authority right after lowering.** Lowering a private wallet reports its
+  kept public evidence as `current` before any public lookup runs, while a
+  raise reports `last_known` until private recovery covers the tip. After a
+  long private period that public amount can be stale (an outside spend would
+  not show until the next sync). Whether lowering should also start at
+  `last_known` is a product decision; the harness records the current
+  behaviour.
+- **A missing preference over a private wallet.** A missing saved preference
+  becomes off at bootstrap, so a durably private wallet then reads `stopped`
+  (`not_selected`) until private queries are turned on or the opt-out is
+  finished in Settings. It is never lowered silently.
 
 ## Limits
 
