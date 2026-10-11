@@ -51,7 +51,7 @@ use crate::wallet::block_times::{self, BlockTimePoint};
 use crate::wallet::db::{wallet_db_on, with_wallet_db_write_lock, WalletDatabase};
 use crate::wallet::keys::parse_account_uuid;
 use crate::wallet::network::WalletNetwork;
-use crate::wallet::sync_engine::enhancement::selects_private_recovery;
+use crate::wallet::sync_engine::enhancement::private_queries_active;
 use crate::wallet::sync_engine::transparent_ledger::{recovery_hold, HoldCause};
 
 use super::{open_readonly_conn, open_wallet_db, open_wallet_db_for_read};
@@ -107,9 +107,10 @@ pub(crate) enum TransparentStopReason {
     Withdrawn,
     /// Recovery stalled in consecutive runs. The account is held.
     Stalled,
-    /// The wallet durably requires private recovery, which this build does
-    /// not run. Turning off private queries restores public lookups.
-    NotSelected,
+    /// The wallet durably requires private recovery while private queries are
+    /// off: turning them off did not finish. Turning them off again lowers the
+    /// policy and restores public lookups.
+    OptOutUnfinished,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,9 +293,8 @@ pub(crate) fn read_wallet_balances(
     db.transactionally(|db| {
         let durable = db.applied_transparent_policy()?.mode;
         let private = durable == TransparentLedgerMode::PrivateRequired;
-        // No run recovers a private wallet in a build that does not select
-        // private recovery.
-        let not_selected = private && !selects_private_recovery(db_path, network);
+        // No run recovers a private wallet while private queries are off.
+        let opt_out_unfinished = private && !private_queries_active(db_path, network);
         let summary = db.get_wallet_summary(crate::wallet::confirmations_policy())?;
 
         let Some(summary) = summary else {
@@ -329,7 +329,8 @@ pub(crate) fn read_wallet_balances(
                 )?;
                 let (mut status, transparent) = ledger_transparent_balance(&snapshot, private);
                 if status.authority != TransparentBalanceAuthority::Current {
-                    if let Some(reason) = transparent_stop_reason(db_path, &snapshot, not_selected)
+                    if let Some(reason) =
+                        transparent_stop_reason(db_path, &snapshot, opt_out_unfinished)
                     {
                         status.authority = TransparentBalanceAuthority::Stopped;
                         status.stop = Some(reason);
@@ -384,12 +385,12 @@ fn ledger_transparent_balance<A>(
 
 /// Why private recovery will not restore authority to the account of
 /// `snapshot`, which has none, or `None` while recovery may still restore it.
-/// `not_selected` is whether this build leaves the durably private wallet
-/// unrecovered.
+/// `opt_out_unfinished` is whether private queries are off while the wallet
+/// durably requires private recovery, which then never runs.
 fn transparent_stop_reason(
     db_path: &str,
     snapshot: &TransparentLedgerSnapshot<AccountUuid>,
-    not_selected: bool,
+    opt_out_unfinished: bool,
 ) -> Option<TransparentStopReason> {
     if snapshot
         .blockers
@@ -404,7 +405,7 @@ fn transparent_stop_reason(
             HoldCause::Stalled => TransparentStopReason::Stalled,
         });
     }
-    not_selected.then_some(TransparentStopReason::NotSelected)
+    opt_out_unfinished.then_some(TransparentStopReason::OptOutUnfinished)
 }
 
 // ======================== Transaction Enhancement Requests ========================

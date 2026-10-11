@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `api_proposal_result`, `catch`, `enhance_pir_enabled`, `fetch_block_time`, `migration_status_from_balance`, `parse_network_and_migrate`, `payment_link_batch_pairs`, `run_full_sync_internal`, `to_wallet_action_sigs`, `to_wallet_migration_schedule`, `to_wallet_signed_messages`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `MempoolObserverState`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`
 
 /// Set the desired sync mode. 0=none, 1=foreground, 2=background.
 /// The running sync loop checks this each batch and exits if mismatched.
@@ -55,6 +55,18 @@ Future<ApiAppliedTransparentPolicy?> reconcileTransparentPolicy({
   dbPath: dbPath,
   network: network,
   privateQueries: privateQueries,
+);
+
+/// The wallet's durable transparent policy, read without changing or creating
+/// anything; `None` when there is no wallet. Startup uses it to show a saved
+/// `false` on a wallet that still requires private recovery as the
+/// unfinished opt-out it is, so one toggle governs both.
+Future<ApiAppliedTransparentPolicy?> readTransparentPolicy({
+  required String dbPath,
+  required String network,
+}) => RustLib.instance.api.crateApiSyncReadTransparentPolicy(
+  dbPath: dbPath,
+  network: network,
 );
 
 /// Start a full sync. Streams progress events to Dart via StreamSink.
@@ -1566,6 +1578,58 @@ enum ApiTransparentLedgerMode {
 
   /// Public transparent lookups are forbidden.
   privateRequired,
+}
+
+/// An error from a call whose failures the app acts on. Its Dart
+/// `toString()` is the message, so existing message handling still works.
+class ApiWalletError implements FrbException {
+  final ApiWalletErrorCode code;
+  final String message;
+
+  const ApiWalletError({required this.code, required this.message});
+
+  @override
+  String toString() => message;
+
+  @override
+  int get hashCode => code.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ApiWalletError &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          message == other.message;
+}
+
+/// What the app should do about a failure, beyond showing its message.
+///
+/// Decisions such as keeping a signed transaction for a retry read this code,
+/// never the message, so rewording a message cannot change them.
+enum ApiWalletErrorCode {
+  /// Nothing more than the message.
+  other,
+
+  /// Nothing was sent and the signed transaction is kept: private recovery
+  /// is catching up, or the wallet was busy. Offer to send the same
+  /// signatures again after sync.
+  retryAfterRecovery,
+
+  /// Transparent broadcast authority refused the transaction for good
+  /// before anything was sent.
+  authorityRefused,
+
+  /// The checkpointed Ledger operation can never be broadcast and has been
+  /// discarded.
+  ledgerOperationTerminal,
+
+  /// Private recovery has not yet covered the transparent funds.
+  recoveryIncomplete,
+
+  /// The wallet still requires private recovery while Private queries is
+  /// off: turning it off did not finish.
+  optOutUnfinished,
 }
 
 class BlockMetaInfo {
@@ -3320,9 +3384,10 @@ enum TransparentStopReason {
   /// Recovery stalled repeatedly.
   stalled,
 
-  /// The wallet requires private recovery, which this build does not run.
-  /// Turning off private queries restores public lookups.
-  notSelected,
+  /// The wallet requires private recovery while private queries are off:
+  /// turning them off did not finish. Turning them off again restores public
+  /// lookups.
+  optOutUnfinished,
 }
 
 class TxDataRequest {

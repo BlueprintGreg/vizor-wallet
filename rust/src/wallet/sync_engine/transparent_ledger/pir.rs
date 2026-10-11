@@ -516,7 +516,7 @@ pub(crate) fn remove_companions(db_path: &str, account_uuid: &str) -> Result<(),
 
 /// Deletes the companions of accounts the wallet at `db_path` no longer has,
 /// so a removal that failed after an account was deleted converges at the
-/// next sync start whether or not private recovery is still selected.
+/// next sync start whether or not private queries are still on.
 ///
 /// A companion in use is left for a later sweep, and an unreadable account
 /// list deletes nothing; see [`CompanionDir::retain`].

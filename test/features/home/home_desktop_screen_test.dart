@@ -1184,7 +1184,7 @@ void main() {
           hasAccountScopedData: true,
           orchardBalance: BigInt.from(14_312_000_000),
           transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
-          transparentStop: rust_sync.TransparentStopReason.notSelected,
+          transparentStop: rust_sync.TransparentStopReason.optOutUnfinished,
           transparentPrivate: true,
           spendableBalance: BigInt.from(14_312_000_000),
           totalBalance: BigInt.from(14_312_000_000),
@@ -1205,7 +1205,7 @@ void main() {
     final hint = tester.widget<AppTooltip>(
       find.byKey(const ValueKey('home_transparent_balance_hint')),
     );
-    expect(hint.message, contains('Turn off Private queries'));
+    expect(hint.message, contains('Turn it off again'));
   });
 
   testWidgets('Ledger hardware account opens direct shielding approval', (

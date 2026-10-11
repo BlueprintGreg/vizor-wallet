@@ -1049,7 +1049,7 @@ async fn private_queries_discloses_nothing_before_it_raises_the_wallet() {
     assert_eq!(before.mode, TransparentLedgerMode::Public);
 
     // Private queries on, the preference unread.
-    let _mode = test_mode::select(&path, TransparentLedgerMode::PrivateRequired, false);
+    let _mode = test_mode::set_with(&path, TransparentLedgerMode::PrivateRequired, false);
     let selected = EnhancementPolicy::for_preference(MAIN, true);
     assert_eq!(
         selected.transparent_mode(),

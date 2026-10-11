@@ -24,9 +24,9 @@ use zakura_pir_transparent::{
 use zcash_client_backend::data_api::{
     transparent_ledger::{
         TransparentDetailOutcome, TransparentDetailRead, TransparentDisplayFacts,
-        TransparentDisplayOutput,
-        TransparentDisplayProvenance, TransparentDisplaySender, TransparentDisplaySource,
-        TransparentDisplayView, TransparentLedgerMode, TransparentLedgerWrite,
+        TransparentDisplayOutput, TransparentDisplayProvenance, TransparentDisplaySender,
+        TransparentDisplaySource, TransparentDisplayView, TransparentLedgerMode,
+        TransparentLedgerWrite,
     },
     WalletRead,
 };
@@ -788,10 +788,11 @@ async fn public_enhance_does_not_recreate_a_reset_wallet() {
 
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
     let account = fixture.account;
-    let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
-            .await
-            .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        super::enhance_publicly(&path, MAIN, &url, account, txid)
+    })
+    .await
+    .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
     assert!(result.is_err(), "{result:?}");
     for file in &wallet_files {
@@ -876,10 +877,11 @@ async fn public_enhance_rejects_a_second_connection_policy_change() {
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
     let account = fixture.account;
-    let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
-            .await
-            .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        super::enhance_publicly(&path, MAIN, &url, account, txid)
+    })
+    .await
+    .unwrap();
     assert!(changed.load(Ordering::SeqCst), "policy did not change");
     assert!(result.is_err(), "a stale-generation load succeeded");
     assert_eq!(lwd.count("/GetTransaction"), 1);
@@ -913,10 +915,11 @@ async fn a_cancelled_public_enhance_stores_nothing() {
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
     let account = fixture.account;
-    let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
-            .await
-            .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        super::enhance_publicly(&path, MAIN, &url, account, txid)
+    })
+    .await
+    .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
     assert!(result.is_err(), "a cancelled load succeeded");
     assert_eq!(
@@ -999,10 +1002,11 @@ async fn public_enhance_does_not_store_into_a_replacement_with_the_same_accounts
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
     let account = fixture.account;
-    let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
-            .await
-            .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        super::enhance_publicly(&path, MAIN, &url, account, txid)
+    })
+    .await
+    .unwrap();
     assert!(replaced.load(Ordering::SeqCst), "replacement did not occur");
     assert_eq!(lwd.count("/GetTransaction"), 1);
     assert!(result.is_err(), "a load of the replaced wallet succeeded");

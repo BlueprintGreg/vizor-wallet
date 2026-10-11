@@ -49,7 +49,7 @@ use crate::wallet::{
     db::{open_wallet_raw_conn_with_timeout, WaitingWriter, READ_DB_BUSY_TIMEOUT},
     network::WalletNetwork,
     sync_engine::{
-        enhancement::{selects_private_recovery, transparent_ledger_mode_for},
+        enhancement::{private_queries_active, transparent_ledger_mode_for},
         transparent_ledger::recovery_hold,
         Dispatched,
     },
@@ -311,8 +311,8 @@ fn is_busy(error: &rusqlite::Error) -> bool {
 }
 
 /// Whether a refusal pending on `accounts` is only private recovery catching
-/// up with the wallet's latest block: this build recovers the wallet
-/// privately, the policy requires it, and no owning account is held. The
+/// up with the wallet's latest block: private queries are on, so recovery
+/// runs, the policy requires it, and no owning account is held. The
 /// library decides the input and ledger conditions in the read that refused;
 /// a hold lives only in this process.
 fn catching_up(
@@ -322,7 +322,7 @@ fn catching_up(
     mode: TransparentLedgerMode,
 ) -> bool {
     mode == TransparentLedgerMode::PrivateRequired
-        && selects_private_recovery(db_path, network)
+        && private_queries_active(db_path, network)
         && accounts
             .iter()
             .all(|owner| recovery_hold(db_path, *owner).is_none())

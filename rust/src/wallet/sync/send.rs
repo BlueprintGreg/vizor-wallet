@@ -102,10 +102,11 @@ use crate::wallet::db::{
     open_wallet_db_readonly_with_timeout, open_wallet_raw_conn_with_timeout,
     with_wallet_db_write_lock, READ_DB_BUSY_TIMEOUT,
 };
+use crate::wallet::failure::{FailureCode, WalletFailure};
 use crate::wallet::keys::parse_account_uuid;
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine;
-use crate::wallet::sync_engine::enhancement::selects_private_recovery;
+use crate::wallet::sync_engine::enhancement::private_queries_active;
 use crate::wallet::{confirmations_policy, payment_link_claim_confirmations_policy};
 
 mod gift_card_input;
@@ -1193,7 +1194,7 @@ pub(crate) fn get_shield_transparent_status(
             can_shield: false,
             fee_zatoshi: 0,
             shielded_zatoshi: 0,
-            reason,
+            reason: reason.message,
         }),
     }
 }
@@ -1277,7 +1278,7 @@ pub(crate) async fn create_shield_transparent_pczt(
     lightwalletd_url: &str,
     network: WalletNetwork,
     account_uuid: &str,
-) -> Result<ShieldTransparentPcztResult, String> {
+) -> Result<ShieldTransparentPcztResult, WalletFailure> {
     let live_expiry_height = {
         let tip = sync_engine::latest_block_for_transaction(lightwalletd_url, network)
             .await
@@ -1300,7 +1301,7 @@ fn create_shield_transparent_pczt_with_expiry(
     network: WalletNetwork,
     account_uuid: &str,
     expiry_height: Option<BlockHeight>,
-) -> Result<ShieldTransparentPcztResult, String> {
+) -> Result<ShieldTransparentPcztResult, WalletFailure> {
     use zcash_client_backend::data_api::wallet::create_pczt_from_proposal as zcb_create_pczt;
 
     let shielding_threshold = shielding_threshold()?;
@@ -1371,7 +1372,7 @@ pub(crate) async fn shield_transparent_balance(
     network: WalletNetwork,
     account_uuid: &str,
     seed: SecretVec<u8>,
-) -> Result<ShieldTransparentResult, String> {
+) -> Result<ShieldTransparentResult, WalletFailure> {
     let shielding_threshold = shielding_threshold()?;
     let live_expiry_height = {
         let tip = sync_engine::latest_block_for_transaction(lightwalletd_url, network)
@@ -3774,12 +3775,12 @@ pub(crate) const TRANSPARENT_RECOVERY_INCOMPLETE: &str =
     "Transparent recovery is incomplete; transparent funds are unavailable until it completes";
 
 /// Why shielding is unavailable for a wallet that durably requires private
-/// transparent recovery in a build that does not run it: no recovery will
-/// complete, and only turning off private queries restores public lookups.
-/// Shares no phrase with [`TRANSPARENT_RECOVERY_INCOMPLETE`], so the app tells
-/// the two apart.
-pub(crate) const TRANSPARENT_RECOVERY_NOT_SELECTED: &str =
-    "Private transparent recovery is not selected; turn off private queries to use transparent funds";
+/// transparent recovery while private queries are off: turning them off did
+/// not finish, so no recovery will complete, and only turning them off again
+/// restores public lookups. Shares no phrase with
+/// [`TRANSPARENT_RECOVERY_INCOMPLETE`], so the app tells the two apart.
+pub(crate) const PRIVATE_QUERIES_OPT_OUT_UNFINISHED: &str =
+    "Turning off private queries did not finish; turn private queries off again to use transparent funds";
 
 /// Spendable transparent balances by receiver for shielding at `target`, in
 /// the wallet at `db_path`.
@@ -3789,14 +3790,14 @@ pub(crate) const TRANSPARENT_RECOVERY_NOT_SELECTED: &str =
 /// balances are summed from the library's gated selector, which admits only
 /// outputs its private authority covers. With no current authority, shielding
 /// reports recovery as incomplete rather than a zero balance, or as not
-/// available when this build does not recover the wallet privately.
+/// unfinished when private queries are off and no recovery will run.
 fn transparent_shielding_balances(
     db: &WalletDatabase,
     db_path: &str,
     network: WalletNetwork,
     account: AccountUuid,
     target: TargetHeight,
-) -> Result<TransparentBalances, String> {
+) -> Result<TransparentBalances, WalletFailure> {
     let confirmations = ConfirmationsPolicy::MIN;
     match db.get_transparent_balances(account, target, confirmations) {
         Ok(balances) => return Ok(balances),
@@ -3807,20 +3808,25 @@ fn transparent_shielding_balances(
                 db.transparent_ledger_mode(),
                 Ok(TransparentLedgerMode::PrivateRequired)
             ) => {}
-        Err(e) => return Err(format!("Failed to get transparent balances: {e}")),
+        Err(e) => return Err(format!("Failed to get transparent balances: {e}").into()),
     }
     let snapshot = db
         .transparent_ledger_snapshot(account, confirmations)
         .map_err(|e| format!("Failed to read transparent ledger: {e}"))?;
     if snapshot.authority != TransparentAuthority::Private {
-        // A private handle here comes from this build's selection or from
-        // from the wallet's durable `PrivateRequired`, which reads honor.
-        return Err(if selects_private_recovery(db_path, network) {
-            TRANSPARENT_RECOVERY_INCOMPLETE
+        // A private handle here comes from private queries being on, or from
+        // the wallet's durable `PrivateRequired`, which reads honor.
+        return Err(if private_queries_active(db_path, network) {
+            WalletFailure::coded(
+                FailureCode::RecoveryIncomplete,
+                TRANSPARENT_RECOVERY_INCOMPLETE,
+            )
         } else {
-            TRANSPARENT_RECOVERY_NOT_SELECTED
-        }
-        .into());
+            WalletFailure::coded(
+                FailureCode::OptOutUnfinished,
+                PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+            )
+        });
     }
     let receivers = db
         .get_transparent_receivers(account, true, true)
@@ -3867,7 +3873,7 @@ fn build_shielding_proposal(
     network: WalletNetwork,
     account_id: AccountUuid,
     shielding_threshold: Zatoshis,
-) -> Result<(Proposal<WalletFeeRule, Infallible>, Zatoshis), String> {
+) -> Result<(Proposal<WalletFeeRule, Infallible>, Zatoshis), WalletFailure> {
     let chain_height = db
         .chain_height()
         .map_err(|e| format!("Failed to read chain height: {e}"))?
@@ -3888,13 +3894,13 @@ fn build_shielding_proposal(
     if crate::wallet::keys::hardware_signer_kind(account.source())
         == Some(crate::wallet::keys::HardwareSignerKind::Ledger)
     {
-        return build_ledger_shielding_round(
+        return Ok(build_ledger_shielding_round(
             db,
             network,
             account_id,
             shielding_threshold,
             &from_addrs,
-        );
+        )?);
     }
 
     let (change_strategy, input_selector) = zip317_helper::<WalletDatabase>(None, false);

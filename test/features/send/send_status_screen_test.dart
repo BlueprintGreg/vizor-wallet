@@ -870,8 +870,11 @@ void main() {
     testWidgets(
       'Keystone $addressType recovery retries the same signed payload',
       (tester) async {
-        rustApi.storeError = Exception(
-          'hardware_recovery_retryable: Hardware transaction is awaiting mined-state recovery; retry after sync',
+        rustApi.storeError = const ApiWalletError(
+          code: ApiWalletErrorCode.retryAfterRecovery,
+          message:
+              'Hardware transaction is awaiting mined-state recovery; retry '
+              'after sync',
         );
         final args = _reviewArgs(
           addressType: addressType,

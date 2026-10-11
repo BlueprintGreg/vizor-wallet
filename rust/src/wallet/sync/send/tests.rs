@@ -3915,6 +3915,7 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
         create_shield_transparent_pczt_with_expiry(path, network, &uuid, None)
             .err()
             .unwrap()
+            .message
             .contains("incomplete")
     );
     assert!(get_ledger_shielding_progress(path, network, &uuid)
@@ -4109,12 +4110,15 @@ fn durable_private_transparent_policy_blocks_shielding_and_survives_startup() {
     };
 
     // The handle opened before the transition resolves under it, as a fresh
-    // handle does: this build does not run private recovery, so shielding is
-    // refused and says so.
+    // handle does: private queries are off, so no private recovery runs, and
+    // shielding is refused and says so.
     let error = build_shielding_proposal(&mut db, path, network, id, threshold).unwrap_err();
     assert_eq!(
         error,
-        crate::wallet::sync::send::TRANSPARENT_RECOVERY_NOT_SELECTED
+        crate::wallet::failure::WalletFailure::coded(
+            crate::wallet::failure::FailureCode::OptOutUnfinished,
+            crate::wallet::sync::send::PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+        )
     );
     let utxo = WalletTransparentOutput::from_parts(
         OutPoint::new([0xaa; 32], 0),
@@ -4140,16 +4144,19 @@ fn durable_private_transparent_policy_blocks_shielding_and_survives_startup() {
     assert!(error.contains(DISCOVERY_FORBIDDEN), "{error}");
 
     // Startup migration keeps the stricter policy. A fresh handle honors it
-    // instead of failing on the conflict, and shielding stays refused. This
-    // build does not run private recovery, so the refusal says so instead of
-    // promising a recovery that will not come.
+    // instead of failing on the conflict, and shielding stays refused. With
+    // private queries off no private recovery runs, so the refusal says so
+    // instead of promising a recovery that will not come.
     keys::ensure_db_initialized(path, network).unwrap();
     assert_eq!(policy(&conn), (2, 0, 1));
     let mut reopened = open_wallet_db(path, network).unwrap();
     let error = build_shielding_proposal(&mut reopened, path, network, id, threshold).unwrap_err();
     assert_eq!(
         error,
-        crate::wallet::sync::send::TRANSPARENT_RECOVERY_NOT_SELECTED
+        crate::wallet::failure::WalletFailure::coded(
+            crate::wallet::failure::FailureCode::OptOutUnfinished,
+            crate::wallet::sync::send::PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+        )
     );
     assert_eq!(policy(&conn), (2, 0, 1));
 }
