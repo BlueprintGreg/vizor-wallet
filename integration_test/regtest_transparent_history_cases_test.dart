@@ -125,6 +125,11 @@ Future<void> _importSeed(
     await tapAppWidget(tester, const ValueKey('sidebar_accounts_add'));
   }
   await tapAppButton(tester, const ValueKey('welcome_import_wallet_button'));
+  // Import starts by choosing a method: the secret passphrase, not hardware.
+  await tapAppButton(
+    tester,
+    const ValueKey('desktop_import_secret_passphrase_card'),
+  );
   // The import screen can render its field before it accepts input; retry.
   for (var attempt = 0; ; attempt++) {
     await tester.pump(const Duration(milliseconds: 500));

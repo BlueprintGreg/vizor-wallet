@@ -298,39 +298,34 @@ def request_policy(context, alice_addresses, related_txids):
 
 
 def fee_presentations(facts, effect, states):
-    """How the receipt of an honestly incomplete row may show its fee, so it
-    appears once. A row of a spend shows the account's movement with nothing
-    subtracted (its own fee share is unknown), so a shown whole fee is part of
-    that amount:
+    """How the receipt of a spend may show its amount and fee, so the fee
+    appears once (#839 `30d252d06`, transaction_completeness.dart):
 
-    * `fee_only`: an established transparent self-transfer whose movement is
-      the whole fee: one "Network fee" line, and no amount or "Tx fee" line;
-    * `net_change`: the whole fee is shown and the movement is more than it,
-      or equal to it in a transaction with shielded components (a shield,
-      self-unshield or TEX leg 1, whose role regtest cannot establish): the
-      amount reads "Net change (includes network fee)" and "Tx fee" shows the
-      whole fee;
-    * `separate`: no whole fee is shown: an "Amount" line.
+    * `net_change`: a balance movement, labelled "Net change": a fee-only
+      self-transfer (one line, no fee line), or a movement whose payment role
+      is not established (its fee line, when shown, is the whole fee or
+      "Unknown");
+    * `separate`: an established payment: an "Amount" line and a "Tx fee"
+      line.
 
-    A fee state that may be known or unknown allows the presentation of
-    either. None when the account spent nothing."""
+    A movement `row_uncertain` judges unestablished may still be established
+    by txid display facts, which name its payees, so it may show either. None
+    when the account spent nothing."""
     if not states:
         return None
-    # "Network fee" alone is an established transparent self-transfer
-    # (vizor-wallet 4db46f38f, transaction_completeness.dart): transparent
-    # only, every input the account's. A movement equal to the whole fee in a
-    # transaction with shielded components stays a provisional net change:
-    # the shielding or self-move that would replace it needs Enhance evidence,
-    # which regtest does not have.
     fee_only = (
-        facts.get("fee") is not None
+        "known" in states
+        and facts.get("fee") is not None
         and abs(effect["delta"]) == facts["fee"]
         and not facts["has_shielded"]
         and bool(effect["owned_input_count"])
         and effect["owned_input_count"] == len(facts["inputs"])
     )
-    shown = ["fee_only" if fee_only else "net_change"] if "known" in states else []
-    return shown + (["separate"] if "unknown" in states else [])
+    if fee_only:
+        return ["net_change"]
+    if row_uncertain(facts, effect):
+        return ["net_change", "separate"]
+    return ["separate"]
 
 
 def incomplete_ui_row(record, facts, effect, account, context):
@@ -349,7 +344,8 @@ def incomplete_ui_row(record, facts, effect, account, context):
         "txid": bytes.fromhex(record["txid"])[::-1].hex(),
         "role": None,
         "optional": any(rows == [] for rows in row_sets or []),
-        "details_incomplete": True,
+        # Txid display facts may complete it.
+        "details_incomplete": None,
         "row_incomplete": row_uncertain(facts, effect),
         "status": "Completed",
         "block_time": facts["block_time"],
@@ -411,9 +407,22 @@ def ui_rows(context):
                 # excludes the fee: a sent row's receipt has an "Amount" line
                 # and a separate "Tx fee". A receive (a self-transfer's leg)
                 # has no fee presentation, as everywhere else.
+                # Txid display facts name a fully funded transparent send's
+                # payee, so its receipt is complete. A self-transfer pays the
+                # account itself: either leg may stay marked until both
+                # settle.
                 for row in shown:
-                    row = dict(row, details_incomplete=True, row_incomplete=False)
-                    if row["role"] == "sent":
+                    sent = row["role"] == "sent"
+                    row = dict(
+                        row,
+                        details_incomplete=(
+                            False
+                            if sent and record["intent"] != "self_transfer"
+                            else None
+                        ),
+                        row_incomplete=False,
+                    )
+                    if sent:
                         row["fee_presentations"] = ["separate"]
                     rows.append(row)
             else:
