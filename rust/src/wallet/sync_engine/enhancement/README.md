@@ -803,7 +803,10 @@ trusted, since every commit comes from the configured origin.
   after a batch of accounts with no history). Only a complete answer counts. A
   pass its query or byte budget stopped keeps what it confirmed, and another
   pass asks about the rest, so one heavily used address cannot exhaust the
-  check; an outage, a lagging publication, the 300 s deadline or anything else
+  check. Debug builds on regtest under `ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT`
+  read `ZCASH_E2E_REGTEST_DISCOVERY_MAX_QUERIES` and `..._MAX_SHARDS`, which
+  lower one pass's budgets so the transparent history harness reaches that
+  stop on a small chain; release builds never read them. An outage, a lagging publication, the 300 s deadline or anything else
   fails the import with a retry message, never a shorter list. Into an
   existing wallet the message also names the Settings toggle; a first wallet
   has no Settings yet. The
