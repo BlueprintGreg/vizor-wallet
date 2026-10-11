@@ -743,7 +743,7 @@ void main() {
           overrides: [
             appBootstrapProvider.overrideWithValue(
               _bootstrapWith(
-                _stoppedSnapshot(rust_sync.TransparentStopReason.notSelected),
+                _stoppedSnapshot(rust_sync.TransparentStopReason.optOutUnfinished),
               ),
             ),
             accountProvider.overrideWith(_Accounts.new),
@@ -764,7 +764,7 @@ void main() {
         // A public policy stops no account; a private one keeps its reason.
         expect(
           initial.transparentStop,
-          private ? rust_sync.TransparentStopReason.notSelected : null,
+          private ? rust_sync.TransparentStopReason.optOutUnfinished : null,
           reason: '$mode',
         );
         // The amount still waits for a fresh read either way.
@@ -786,7 +786,7 @@ void main() {
           overrides: [
             appBootstrapProvider.overrideWithValue(
               _bootstrapWith(
-                _stoppedSnapshot(rust_sync.TransparentStopReason.notSelected),
+                _stoppedSnapshot(rust_sync.TransparentStopReason.optOutUnfinished),
               ),
             ),
             accountProvider.overrideWith(_Accounts.new),
@@ -801,7 +801,7 @@ void main() {
         expect(initial.transparentPrivate, isTrue);
         expect(
           initial.transparentStop,
-          rust_sync.TransparentStopReason.notSelected,
+          rust_sync.TransparentStopReason.optOutUnfinished,
         );
       },
     );
