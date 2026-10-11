@@ -127,6 +127,27 @@ its outbox checkpoint or first broadcast. After that boundary the address may be
 known to the network and stays reserved. A reservation that did reach the
 network but was never mined still counts toward the ten.
 
+## Private queries
+
+Everything above describes public lookups. With Private queries on, the wallet
+sends lightwalletd no transparent address, outpoint or txid, and transparent
+funds come from the transparent PIR service instead (see
+`rust/src/wallet/sync_engine/enhancement/README.md`, "Transparent policy gate"
+and the recovery sections after it):
+
+- Private coverage starts at each account's birthday, not at height zero. No
+  height-zero first lookup is sent, so outputs received before the birthday are
+  not recovered privately.
+- The UTXO refresh, the deferred inactive-account refresh and the internal
+  address schedule above do not run. The `.receive.redb` completion maps are
+  neither read for a lookup nor advanced, and their recorded heights, like queued
+  history ranges, stay as they were for a later public pass.
+- Ledger accounts are paused: recovery from the birthday would miss their
+  earlier history, and their public discovery is withheld. Their transparent
+  balance reports `Stopped(Ledger)` until Private queries is turned off.
+- Turning Private queries off resumes public lookups for every transparent
+  address of every account on the next sync.
+
 ## Limits
 
 This searches addresses already generated within the wallet's supported gap

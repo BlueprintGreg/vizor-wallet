@@ -25,8 +25,6 @@ const _rowHeight = 44.0;
 class MobileNetworkPrivacyCard extends ConsumerWidget {
   const MobileNetworkPrivacyCard({super.key});
 
-  /// Whether this build's private queries also recover transparent funds.
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
