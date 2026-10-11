@@ -36,7 +36,8 @@ impl Scope {
     }
 }
 
-/// One BIP 44 account (`m/44'/1'/0'`) of a runtime mnemonic.
+/// One BIP 44 account (`m/44'/1'/0'`, or another index through
+/// [`Party::sibling`]) of a runtime mnemonic.
 pub struct Party {
     /// Fixture label: `A0`, `A1`, `B`, `C`.
     pub name: &'static str,
@@ -48,11 +49,26 @@ pub struct Party {
 
 impl Party {
     pub fn generate(name: &'static str, wallet: &'static str) -> Self {
-        let mnemonic = wallet_api::generate_mnemonic();
+        Self::at_account(name, wallet, wallet_api::generate_mnemonic(), 0)
+    }
+
+    /// ZIP 32 account `account` (`m/44'/1'/account'`) of this party's seed:
+    /// the account a recovery-phrase import's discovery probes.
+    pub fn sibling(&self, name: &'static str, account: u32) -> Self {
+        Self::at_account(name, self.wallet, self.mnemonic.clone(), account)
+    }
+
+    fn at_account(
+        name: &'static str,
+        wallet: &'static str,
+        mnemonic: String,
+        account: u32,
+    ) -> Self {
         let seed = bip0039::Mnemonic::<bip0039::English>::from_phrase(&mnemonic)
             .expect("generated mnemonic")
             .to_seed("");
-        let account_key = AccountPrivKey::from_seed(&NETWORK, &seed, zip32::AccountId::ZERO)
+        let account_id = zip32::AccountId::try_from(account).expect("a ZIP 32 account index");
+        let account_key = AccountPrivKey::from_seed(&NETWORK, &seed, account_id)
             .expect("transparent account key");
         Party {
             name,

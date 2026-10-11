@@ -36,6 +36,33 @@ pub struct RequestRecord {
     pub fault: Option<String>,
 }
 
+/// lightwalletd methods that name a transparent subject: an address, or a
+/// txid (`GetTransaction`).
+pub const TRANSPARENT_SUBJECT_METHODS: &[&str] = &[
+    "GetAddressUtxos",
+    "GetAddressUtxosStream",
+    "GetTaddressTxids",
+    "GetTaddressTransactions",
+    "GetTaddressBalance",
+    "GetTaddressBalanceStream",
+    "GetTransaction",
+];
+
+impl RequestRecord {
+    /// Whether this request names a transparent subject to lightwalletd.
+    pub fn names_transparent_subject(&self) -> bool {
+        TRANSPARENT_SUBJECT_METHODS.contains(&self.method.as_str())
+    }
+}
+
+/// How many of `requests` name a transparent subject.
+pub fn transparent_subject_count(requests: &[RequestRecord]) -> usize {
+    requests
+        .iter()
+        .filter(|r| r.names_transparent_subject())
+        .count()
+}
+
 #[derive(Default)]
 struct Faults {
     /// Cut every `GetTaddressTxids` response after this many messages.
