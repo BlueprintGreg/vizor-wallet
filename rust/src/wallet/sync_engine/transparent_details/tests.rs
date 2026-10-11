@@ -723,7 +723,8 @@ async fn private_required_public_enhance_only_on_consent() {
     assert_eq!(lwd.count("/GetTransaction"), 0, "loop 4 stays private");
 
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
-    tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, txid))
+    let account = fixture.account;
+    tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
         .await
         .unwrap()
         .unwrap();
@@ -786,8 +787,9 @@ async fn public_enhance_does_not_recreate_a_reset_wallet() {
     .await;
 
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
+    let account = fixture.account;
     let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, txid))
+        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
             .await
             .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
@@ -811,6 +813,7 @@ async fn public_enhance_api_rejects_missing_storage_before_dispatch() {
             db_path,
             "main".to_owned(),
             url,
+            uuid::Uuid::nil().to_string(),
             hex::encode([0xab; 32]),
         )
     })
@@ -818,6 +821,29 @@ async fn public_enhance_api_rejects_missing_storage_before_dispatch() {
     .unwrap();
     assert!(result.is_err(), "{result:?}");
     assert!(!path.exists(), "the API recreated missing storage");
+    assert_eq!(lwd.count("/GetTransaction"), 0);
+}
+
+/// The wallet, not the caller, decides what a public load may reveal: a txid
+/// the account holds no transparent part of is refused before any request,
+/// so an arbitrary txid never reaches lightwalletd.
+#[tokio::test(flavor = "multi_thread")]
+async fn public_enhance_sends_nothing_for_a_transaction_the_account_does_not_hold() {
+    let fixture = wallet();
+    let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
+    let (path, url, uuid) = (fixture.path.clone(), lwd.url.clone(), fixture.uuid.clone());
+    let result = tokio::task::spawn_blocking(move || {
+        crate::api::sync::enhance_transaction_publicly(
+            path,
+            "main".to_owned(),
+            url,
+            uuid,
+            hex::encode([0xcd; 32]),
+        )
+    })
+    .await
+    .unwrap();
+    assert!(result.is_err(), "{result:?}");
     assert_eq!(lwd.count("/GetTransaction"), 0);
 }
 
@@ -849,8 +875,9 @@ async fn public_enhance_rejects_a_second_connection_policy_change() {
     )
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
+    let account = fixture.account;
     let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, txid))
+        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
             .await
             .unwrap();
     assert!(changed.load(Ordering::SeqCst), "policy did not change");
@@ -885,8 +912,9 @@ async fn a_cancelled_public_enhance_stores_nothing() {
     )
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
+    let account = fixture.account;
     let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, txid))
+        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
             .await
             .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
@@ -937,8 +965,9 @@ async fn public_enhance_does_not_store_into_a_replacement_with_the_same_accounts
     )
     .await;
     let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
+    let account = fixture.account;
     let result =
-        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, txid))
+        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid))
             .await
             .unwrap();
     assert!(replaced.load(Ordering::SeqCst), "replacement did not occur");
