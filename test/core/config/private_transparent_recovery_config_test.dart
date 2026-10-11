@@ -8,5 +8,17 @@ void main() {
       privateQueriesDescription(base),
       '$base $kPrivateTransparentRecoverySettingsCopy',
     );
+    expect(
+      kPrivateTransparentRecoverySettingsCopy,
+      contains('account birthday'),
+    );
+    expect(
+      kPrivateTransparentRecoverySettingsCopy,
+      contains('first transparent or shielded activity'),
+    );
+    expect(
+      kPrivateTransparentRecoverySettingsCopy,
+      isNot(contains('not recovered')),
+    );
   });
 }

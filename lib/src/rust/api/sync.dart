@@ -3308,9 +3308,6 @@ enum TransparentStopReason {
   /// An integrity failure quarantined the account's evidence.
   quarantined,
 
-  /// A Ledger account, which private recovery does not cover.
-  ledger,
-
   /// Legacy public evidence the private ledger cannot explain.
   legacyDiscrepancy,
 

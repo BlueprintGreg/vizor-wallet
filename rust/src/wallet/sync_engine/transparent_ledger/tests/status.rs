@@ -120,8 +120,8 @@ async fn held_accounts_report_their_stop_reason() {
 
     // Not yet recovered: recovery may still restore authority.
     assert_eq!(stop(&wallet.uuid), None);
-    // Ledger accounts are paused under `PrivateRequired`.
-    assert_eq!(stop(&ledger_uuid), Some(TransparentStopReason::Ledger));
+    // Ledger accounts wait for the same recovery as software and Keystone.
+    assert_eq!(stop(&ledger_uuid), None);
 
     for (cause, reason) in [
         (

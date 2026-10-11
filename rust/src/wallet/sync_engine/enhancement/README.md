@@ -491,9 +491,10 @@ until an account is promoted.
   complete ledger cannot explain (`LegacyDiscrepancy`), or three stalled runs
   since the last complete one hold the account for an hour. Holds live in
   memory, so a restart retries once, and turning private queries off drops
-  them with the facts they were held over. Held and quarantined accounts, and under
-  `PrivateRequired` Ledger accounts, are skipped without a source call. The
-  balance read reports why as the account's stop reason.
+  them with the facts they were held over. Held and quarantined accounts are
+  skipped without a source call; the balance read reports the stop reason.
+  Ledger, Keystone and software accounts otherwise recover from their stored
+  birthday.
 - **Raise and confirmation.** Private queries off captures `Public`, so `run`
   returns `NotEnabled` before any read. Under a captured `PrivateRequired` it
   first raises a weaker durable policy behind the policy fence, only while
@@ -511,8 +512,8 @@ until an account is promoted.
   shielding state without counting a second completion. Its errors are
   logged and never fail the sync. It does not touch UTXO refresh, the
   `.receive.redb` cache, or the shielded checkpoints. While public lookups
-  are withheld, Ledger discovery counts as ready, so a paused Ledger account
-  never holds back a sync.
+  are withheld, public Ledger discovery counts as ready; private coverage
+  determines transparent balance and spending authority instead.
 - **Diagnostics.** Logs carry variant, cause and blocker names, counts and
   lag. Rejection payloads, which name addresses and outpoints, are never
   logged. Candidate amounts from `transparent_candidate_recovery` are
@@ -780,7 +781,8 @@ trusted, since every commit comes from the configured origin.
   hardware transaction stored after a block landed loses its PCZT recipient and
   memo details to the fallback store. Software proposals are built and stored
   under one write lock, which the tip update also takes, so they have no such
-  window. Ledger accounts are `Stopped(Ledger)`. Nothing clears a quarantine,
+  window. All account kinds recover from their stored birthday, which must precede
+  their first transparent or shielded activity. Nothing clears a quarantine,
   and it covers only the account whose evidence it involves: every source id
   hashes the account's companion binding, so no other account, including one
   added later, shares a quarantined source. Turning Private queries off makes

@@ -666,8 +666,6 @@ pub enum TransparentBalanceAuthority {
 pub enum TransparentStopReason {
     /// An integrity failure quarantined the account's evidence.
     Quarantined,
-    /// A Ledger account, which private recovery does not cover.
-    Ledger,
     /// Legacy public evidence the private ledger cannot explain.
     LegacyDiscrepancy,
     /// The service withdrew a publication the account was recovered from.
@@ -964,7 +962,6 @@ pub fn get_balance(
         };
         let transparent_stop = b.transparent_stop.map(|reason| match reason {
             wallet_sync::TransparentStopReason::Quarantined => TransparentStopReason::Quarantined,
-            wallet_sync::TransparentStopReason::Ledger => TransparentStopReason::Ledger,
             wallet_sync::TransparentStopReason::LegacyDiscrepancy => {
                 TransparentStopReason::LegacyDiscrepancy
             }

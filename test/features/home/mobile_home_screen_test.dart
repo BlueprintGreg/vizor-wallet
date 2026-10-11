@@ -2521,7 +2521,7 @@ void main() {
           orchardBalance: BigInt.from(14312000000),
           transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
           transparentLastKnownBalance: BigInt.from(242000000),
-          transparentStop: rust_sync.TransparentStopReason.ledger,
+          transparentStop: rust_sync.TransparentStopReason.legacyDiscrepancy,
           transparentPrivate: true,
         ),
       ),
@@ -2540,7 +2540,10 @@ void main() {
     final hint = tester.widget<AppTooltip>(
       find.byKey(const ValueKey('mobile_home_transparent_balance_hint')),
     );
-    expect(hint.message, contains('Ledger transparent funds'));
+    expect(
+      hint.message,
+      contains("Earlier public records don't match private recovery"),
+    );
     expect(hint.tapToShow, isTrue);
   });
 

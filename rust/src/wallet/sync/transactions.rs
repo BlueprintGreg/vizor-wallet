@@ -49,7 +49,7 @@ use zcash_protocol::{
 
 use crate::wallet::block_times::{self, BlockTimePoint};
 use crate::wallet::db::{wallet_db_on, with_wallet_db_write_lock, WalletDatabase};
-use crate::wallet::keys::{hardware_signer_kind, parse_account_uuid, HardwareSignerKind};
+use crate::wallet::keys::parse_account_uuid;
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::selects_private_recovery;
 use crate::wallet::sync_engine::transparent_ledger::{recovery_hold, HoldCause};
@@ -99,9 +99,6 @@ pub(crate) enum TransparentStopReason {
     /// An integrity failure quarantined the account or a source of its
     /// evidence. Nothing clears a quarantine yet.
     Quarantined,
-    /// A Ledger account under `PrivateRequired`. Recovery from its birthday
-    /// would miss earlier history, so it is not recovered privately.
-    Ledger,
     /// Legacy public evidence that the complete private ledger cannot explain
     /// blocks promotion. The account is held.
     LegacyDiscrepancy,
@@ -332,8 +329,7 @@ pub(crate) fn read_wallet_balances(
                 )?;
                 let (mut status, transparent) = ledger_transparent_balance(&snapshot, private);
                 if status.authority != TransparentBalanceAuthority::Current {
-                    if let Some(reason) =
-                        transparent_stop_reason(&*db, db_path, &snapshot, not_selected)?
+                    if let Some(reason) = transparent_stop_reason(db_path, &snapshot, not_selected)
                     {
                         status.authority = TransparentBalanceAuthority::Stopped;
                         status.stop = Some(reason);
@@ -390,37 +386,25 @@ fn ledger_transparent_balance<A>(
 /// `snapshot`, which has none, or `None` while recovery may still restore it.
 /// `not_selected` is whether this build leaves the durably private wallet
 /// unrecovered.
-fn transparent_stop_reason<W>(
-    db: &W,
+fn transparent_stop_reason(
     db_path: &str,
     snapshot: &TransparentLedgerSnapshot<AccountUuid>,
     not_selected: bool,
-) -> Result<Option<TransparentStopReason>, W::Error>
-where
-    W: WalletRead<AccountId = AccountUuid>,
-{
+) -> Option<TransparentStopReason> {
     if snapshot
         .blockers
         .contains(&RecoveryBlocker::RecoverySuspended)
     {
-        return Ok(Some(TransparentStopReason::Quarantined));
-    }
-    // The coordinator pauses Ledger accounts under `PrivateRequired`.
-    if snapshot.mode == TransparentLedgerMode::PrivateRequired
-        && db.get_account(snapshot.account)?.is_some_and(|account| {
-            hardware_signer_kind(account.source()) == Some(HardwareSignerKind::Ledger)
-        })
-    {
-        return Ok(Some(TransparentStopReason::Ledger));
+        return Some(TransparentStopReason::Quarantined);
     }
     if let Some(cause) = recovery_hold(db_path, snapshot.account) {
-        return Ok(Some(match cause {
+        return Some(match cause {
             HoldCause::Withdrawn(_) | HoldCause::Unreconciled => TransparentStopReason::Withdrawn,
             HoldCause::LegacyDiscrepancy => TransparentStopReason::LegacyDiscrepancy,
             HoldCause::Stalled => TransparentStopReason::Stalled,
-        }));
+        });
     }
-    Ok(not_selected.then_some(TransparentStopReason::NotSelected))
+    not_selected.then_some(TransparentStopReason::NotSelected)
 }
 
 // ======================== Transaction Enhancement Requests ========================

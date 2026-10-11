@@ -324,7 +324,7 @@ void main() {
     expect(note, findsOneWidget);
     expect(find.textContaining('suspended'), findsNothing);
     expect(find.textContaining('transparent funds'), findsOneWidget);
-    expect(find.textContaining('Ledger transparent funds'), findsOneWidget);
+    expect(find.textContaining('from the account birthday'), findsOneWidget);
   });
 
   for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
