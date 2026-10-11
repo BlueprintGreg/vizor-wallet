@@ -145,6 +145,7 @@ class AppSyncSnapshot {
     required this.ironwoodBalance,
     required this.orchardLockedBalance,
     required this.transparentPendingBalance,
+    this.transparentLockedBalance,
     this.transparentAuthority = rust_sync.TransparentBalanceAuthority.current,
     this.transparentLastKnownBalance,
     this.transparentStop,
@@ -172,6 +173,9 @@ class AppSyncSnapshot {
   final BigInt ironwoodBalance;
   final BigInt orchardLockedBalance;
   final BigInt transparentPendingBalance;
+
+  /// See `SyncState.transparentLockedBalance`; `null` is none.
+  final BigInt? transparentLockedBalance;
 
   /// See `SyncState.transparentAuthority`.
   final rust_sync.TransparentBalanceAuthority transparentAuthority;
@@ -833,6 +837,7 @@ Future<AppSyncSnapshot> _loadInitialSyncSnapshot({
       ironwoodBalance: balance.ironwood,
       orchardLockedBalance: balance.orchardLocked,
       transparentPendingBalance: balance.transparentPending,
+      transparentLockedBalance: balance.transparentLocked,
       transparentAuthority: balance.transparentAuthority,
       transparentLastKnownBalance: balance.transparentLastKnown,
       transparentStop: balance.transparentStop,
