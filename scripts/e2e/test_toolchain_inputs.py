@@ -32,7 +32,8 @@ class BuildEnvironmentTests(unittest.TestCase):
                  "TMPDIR":"/model/tmp", "SSH_AUTH_SOCK":"/model/agent", "CARGO_REGISTRY_TOKEN":"model",
                  "CARGO_REGISTRY_SECRET_KEY":"model", "CARGO_REGISTRIES_MODEL_CREDENTIAL_PROVIDER":"model",
                  "GOAUTH":"netrc", "RUSTUP_NETRC":"model", "SWIFTPM_REGISTRY_PASSWORD":"model",
-                 "BUNDLE_LOGIN":"model", "GEM_HOST_API_KEY":"model", "CMAKE_PRIVATE_KEY":"model"}
+                 "BUNDLE_LOGIN":"model", "GEM_HOST_API_KEY":"model", "CMAKE_PRIVATE_KEY":"model",
+                 "TARGET_PKG_CONFIG_PASSWORD":"model", "MODEL_TOKEN_STATIC":"model"}
         hashed, report = INPUTS.build_environment_inputs({**self.environment, **noise})
         self.assertEqual(hashed, self.hashed())
         self.assertEqual(report, {"hashed_names":sorted(self.environment), "excluded_names":sorted(noise),
@@ -45,7 +46,12 @@ class BuildEnvironmentTests(unittest.TestCase):
                      "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "DEVELOPER_DIR", "LANG", "LC_ALL", "HOME",
                      "PKG_CONFIG_PATH", "CMAKE_TOOLCHAIN_FILE", "AWS_LC_SYS_NO_ASM", "GEM_HOME",
                      "COCOAPODS_DISABLE_STATS", "SWIFT_EXEC", "DYLD_LIBRARY_PATH", "VIZOR_RUST_TOOLCHAIN",
-                     "VIZOR_E2E_CACHE_ENV"):
+                     "VIZOR_E2E_CACHE_ENV",
+                     # pkg-config's prefixed, target-suffixed and per-library forms; ICU4X baked data.
+                     "HOST_PKG_CONFIG", "HOST_PKG_CONFIG_PATH", "TARGET_PKG_CONFIG_PATH",
+                     "PKG_CONFIG_PATH_aarch64-apple-darwin", "PKG_CONFIG_PATH_aarch64_apple_darwin",
+                     "LIBLZMA_STATIC", "LIBLZMA_DYNAMIC", "LIBLZMA_NO_PKG_CONFIG", "LZMA_API_STATIC",
+                     "ICU4X_DATA_DIR"):
             with self.subTest(name=name):
                 self.assertNotEqual(self.hashed(**{name:"FIRST"}), self.hashed(**{name:"SECOND"}))
 
@@ -60,14 +66,20 @@ class BuildEnvironmentTests(unittest.TestCase):
         self.assertNotIn("UNSET_MODEL", hashed)
         self.assertEqual(report["requested_extra_names"], ["MODEL_TOKEN", "OTHER_SWIFT_FLAGS", "UNSET_MODEL"])
 
-    def test_requested_names_must_be_exact_identifiers(self):
-        for value in ("1MODEL", "MODEL-NAME", "MODEL_*", "MODEL=VALUE", "MODEL;OTHER"):
+    def test_requested_names_must_be_exact_names(self):
+        for value in ("1MODEL", "-MODEL", ".MODEL", "MODEL_*", "MODEL=VALUE", "MODEL;OTHER"):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(INPUTS.ToolInputError, "VIZOR_E2E_CACHE_ENV"):
                     INPUTS.build_environment_inputs({"VIZOR_E2E_CACHE_ENV":value})
         self.assertEqual(INPUTS.requested_environment_names({"VIZOR_E2E_CACHE_ENV":" A,B\n_C ,A,, "}),
                          ("A", "B", "_C"))
         self.assertEqual(INPUTS.requested_environment_names({}), ())
+        # Target-suffixed names keep their '-' and '.', and listing them hashes them.
+        names = ("CXXSTDLIB_aarch64-apple-darwin", "MODEL.NAME")
+        hashed, report = INPUTS.build_environment_inputs({"VIZOR_E2E_CACHE_ENV":" ".join(names),
+                                                          **{name:"model" for name in names}})
+        self.assertLessEqual(set(names), set(hashed))
+        self.assertEqual(report["requested_extra_names"], sorted(names))
 
     def test_producer_owned_names_stay_excluded_even_when_requested(self):
         hashed, report = INPUTS.build_environment_inputs({**self.environment,

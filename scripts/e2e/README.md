@@ -276,8 +276,11 @@ oracle and the original three confirmation blocks. Startup recovery retains
 the actual first-stream stall, healthy retry and persisted completed status.
 Evidence stays in `.regtest-logs/native-suite-<id>/`. Each repetition's
 `run.json` is a schema-2 report accepted by the existing `--failed-from` selector;
-`summary.json` records the batch/build counts and which environment names the
-build keys hashed, never their values. Failed cases keep state/logs,
+`summary.json` records the batch/build counts and, as `build_environment`, the
+names of the invoking environment that the cache-key rule hashes or skips,
+never their values; the signer and voting keys add or drop the variables they
+set themselves (see [Build environment in cache keys](#build-environment-in-cache-keys)).
+Failed cases keep state/logs,
 and uncertain cleanup remains failure. SIGINT, SIGTERM and SIGHUP (a closed
 terminal) cancel cooperatively: cancellation stops owned children and new
 assignment without terminating ordinary wallet processes. A SIGHUP that was
@@ -1410,11 +1413,16 @@ and child processes still read the complete environment; only the key narrows.
   `XCODE_XCCONFIG_FILE`, `VIZOR_RUST_TOOLCHAIN`, `BUILD_TAGS`, `MAKEFLAGS`,
   `MFLAGS`, `MAKEFILES`, the `CPATH` include and `LIBRARY_PATH` family,
   `PROTOC`, `PROTOC_INCLUDE`, `CROSS_COMPILE`, `CRATE_CC_NO_DEFAULTS`,
-  `CXXSTDLIB`, `NVCC`, `SYSROOT`, `RING_PREGENERATE_ASM` and the Flutter
-  `xcode_backend` variables that `Generated.xcconfig` can leave unset;
+  `CXXSTDLIB`, `NVCC`, `SYSROOT`, `RING_PREGENERATE_ASM`, `ICU4X_DATA_DIR`
+  and the Flutter `xcode_backend` variables that `Generated.xcconfig` can
+  leave unset;
 - whole-name families: `CARGO_*`, `RUST*`, compiler, archiver and linker
   selectors and `*FLAGS` with optional `HOST_`/`TARGET_` prefixes and target
-  suffixes, `*_DEPLOYMENT_TARGET`, `CMAKE*`, `AWS_LC_*`, `PKG_CONFIG*`,
+  suffixes, `*_DEPLOYMENT_TARGET`, `CMAKE*`, `AWS_LC_*`, `PKG_CONFIG*` with
+  the same prefixes and target suffixes (such as
+  `PKG_CONFIG_PATH_aarch64-apple-darwin`), any `*_STATIC`, `*_DYNAMIC` or
+  `*_NO_PKG_CONFIG` name (pkg-config's per-library switches such as
+  `LIBLZMA_STATIC`, and `LZMA_API_STATIC`),
   `LIBSQLITE3_*`, `SQLITE_*`, `ZSTD_SYS_*`, Go settings (`GO*` without an
   underscore), `CGO_*`, `FLUTTER_*`,
   `PUB_*`, Ruby and CocoaPods (`GEM_*`, `RUBY*`, `RBENV_*`, `BUNDLE_*`,
@@ -1427,14 +1435,18 @@ entries that are not existing directories, resolving symlinks and keeping the
 first occurrence of each directory, so duplicates and missing directories do
 not start a new entry while lookup order still does. Each producer also leaves
 out the variables it sets per case: `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS`
-for the signer, plus `CGO_LDFLAGS` and `GOMAXPROCS` for voting.
+for the signer, plus `CGO_LDFLAGS` and `GOMAXPROCS` for voting. The signer
+also hashes the `RUSTC`, `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` it
+sets, and voting hashes its own `GOFLAGS` in place of an inherited one.
 
 If a build reads a variable these rules miss, such as an Xcode build-setting
 name exported in the shell, list it in `VIZOR_E2E_CACHE_ENV`: exact names
 separated by commas or whitespace, for example
-`VIZOR_E2E_CACHE_ENV=OTHER_SWIFT_FLAGS`. Listed names are added to every key,
-even names that look like credentials, except the per-case names above.
-Patterns are not accepted, and an
+`VIZOR_E2E_CACHE_ENV=OTHER_SWIFT_FLAGS`. A name starts with a letter or `_`
+and may then contain letters, digits, `_`, `.` and `-`, so a target-suffixed
+name such as `CXXSTDLIB_aarch64-apple-darwin` can be listed. Listed names are
+added to every key, even names that look like credentials, except the per-case
+names above. Patterns are not accepted, and an
 invalid name stops the run before it writes anything. The variable itself is
 hashed, so changing the list starts new entries. Until a missed variable is
 listed, changing it can reuse an entry built with its old value.
@@ -1444,7 +1456,11 @@ those digests are the key inputs. Short values such as `LANG` are easy to
 guess from an unsalted digest, so manifests are private developer state, not
 something to publish. `summary.json` and stdout record `build_environment`
 for the invoking environment: `hashed_names`, `excluded_names` and
-`requested_extra_names`, as names only, never values or digests.
+`requested_extra_names`, as names only, never values or digests. The native
+cohort keys hash exactly those `hashed_names`; the signer and voting keys add
+and drop the producer variables above. Voting's actual key names are in
+`builds.voting_proof.cache_inputs.environment_names`; the signer's are not
+reported.
 
 ```bash
 python3.11 -B -m unittest scripts/e2e/test_toolchain_inputs.py scripts/e2e/test_native_build_cache.py scripts/e2e/test_funder_cache.py scripts/e2e/test_native_voting.py scripts/e2e/test_native_macos_suite.py

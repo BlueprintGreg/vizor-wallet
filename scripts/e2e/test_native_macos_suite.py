@@ -645,13 +645,17 @@ class SuiteTests(unittest.TestCase):
         self.assertFalse((self.root/".regtest-logs").exists())
 
     def test_invalid_cache_environment_names_are_rejected_before_writes(self):
-        for value in ("1MODEL", "MODEL-NAME", "MODEL_*"):
+        for value in ("1MODEL", "-MODEL", "MODEL_*"):
             with self.subTest(value=value), patch.dict(SUITE.os.environ, {"VIZOR_E2E_CACHE_ENV":value}), \
                  patch.object(SUITE.sys,"platform","darwin"):
                 with self.assertRaisesRegex(ValueError,"VIZOR_E2E_CACHE_ENV"):
                     SUITE.validate_options(self.args,self.scenarios)
                 with self.assertRaisesRegex(ValueError,"VIZOR_E2E_CACHE_ENV"):
                     SUITE.run_native_suite(self.args,self.catalog,self.scenarios,{},source_root=self.root)
+        # A target-suffixed name is still one exact name.
+        with patch.dict(SUITE.os.environ, {"VIZOR_E2E_CACHE_ENV":"CXXSTDLIB_aarch64-apple-darwin"}), \
+             patch.object(SUITE.sys,"platform","darwin"):
+            SUITE.validate_options(self.args,self.scenarios)
         self.assertFalse((self.root/".regtest-logs").exists())
 
     def test_summary_names_the_build_environment_without_values_or_digests(self):

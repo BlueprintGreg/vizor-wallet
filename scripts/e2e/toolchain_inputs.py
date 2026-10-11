@@ -193,14 +193,17 @@ _BUILD_ENVIRONMENT_NAMES = frozenset({
     "VIZOR_RUST_TOOLCHAIN", "BUILD_TAGS", "MAKEFLAGS", "MFLAGS", "MAKEFILES", "CPATH",
     "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "OBJCPLUS_INCLUDE_PATH",
     "LIBRARY_PATH", "PROTOC", "PROTOC_INCLUDE", "CROSS_COMPILE", "CRATE_CC_NO_DEFAULTS",
-    "CXXSTDLIB", "NVCC", "SYSROOT", "RING_PREGENERATE_ASM",
+    "CXXSTDLIB", "NVCC", "SYSROOT", "RING_PREGENERATE_ASM", "ICU4X_DATA_DIR",
     # Flutter's xcode_backend reads these when Generated.xcconfig leaves them unset.
     "LOCAL_ENGINE", "LOCAL_ENGINE_HOST", "EXTRA_FRONT_END_OPTIONS", "EXTRA_GEN_SNAPSHOT_OPTIONS",
     "FLAVOR", "SPLIT_DEBUG_INFO", "DISABLE_PORT_PUBLICATION", "FRONTEND_SERVER_STARTER_PATH",
     _CACHE_ENVIRONMENT})
 _BUILD_ENVIRONMENT_PATTERN = re.compile(
     r"CARGO_\w+|RUST\w*|(?:(?:HOST|TARGET)_)?(?:CC|CXX|FC|AR|LD|AS|RANLIB|[A-Z]*FLAGS)(?:_[A-Za-z0-9_.-]+)?"
-    r"|[A-Z]+_DEPLOYMENT_TARGET|CMAKE\w*|AWS_LC_\w+|PKG_CONFIG\w*|LIBSQLITE3_\w+|SQLITE_\w+|ZSTD_SYS_\w+"
+    r"|[A-Z]+_DEPLOYMENT_TARGET|CMAKE\w*|AWS_LC_\w+|LIBSQLITE3_\w+|SQLITE_\w+|ZSTD_SYS_\w+"
+    # pkg-config also reads HOST_/TARGET_ and target-suffixed forms, and per-library
+    # <LIB>_STATIC, <LIB>_DYNAMIC and <LIB>_NO_PKG_CONFIG switches (LZMA_API_STATIC alike).
+    r"|(?:(?:HOST|TARGET)_)?PKG_CONFIG\w*(?:_[A-Za-z0-9_.-]+)?|[A-Z0-9_]+_(?:STATIC|DYNAMIC|NO_PKG_CONFIG)"
     r"|GO[A-Z0-9]*|CGO_\w+|FLUTTER_\w+|PUB_\w+|GEM_\w+|RUBY\w*|RBENV_\w+|BUNDLE_\w+|COCOAPODS_\w+|CP_\w+"
     r"|SWIFT\w*|DYLD_\w+")
 # Credentials never change compiled bytes; hashing them only records digests.
@@ -209,10 +212,14 @@ _CREDENTIAL_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|NETRC|LOGIN|A
 
 
 def requested_environment_names(environment):
-    """Exact extra key names from VIZOR_E2E_CACHE_ENV, never patterns."""
+    """Exact extra key names from VIZOR_E2E_CACHE_ENV, never patterns.
+
+    Target-suffixed names such as CXXSTDLIB_aarch64-apple-darwin keep their
+    '-' and '.'; '*', '=' and ';' are never part of a name.
+    """
     names = tuple(dict.fromkeys(name for name in re.split(r"[\s,]+", environment.get(_CACHE_ENVIRONMENT, ""))
                                 if name))
-    if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names):
+    if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", name) for name in names):
         raise ToolInputError(_CACHE_ENVIRONMENT+" must list exact environment variable names")
     return names
 
