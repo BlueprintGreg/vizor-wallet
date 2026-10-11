@@ -179,7 +179,7 @@ void main() {
                 if (calls == 1) {
                   return const SendBroadcastOutcome(
                     phase: SendBroadcastPhase.failed,
-                    proposalConsumed: true,
+                    proposalConsumed: false,
                     canRetryBroadcast: true,
                     error:
                         'Wait for wallet sync, then retry this signed transaction.',
@@ -214,6 +214,42 @@ void main() {
       expect(rustApi.discardCalls, isEmpty);
     },
   );
+
+  testWidgets('leaving a Keystone retry releases the retained signed batch '
+      'once', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        keystone: KeystoneBroadcastArgs(
+          reviewArgs: _args,
+          pcztWithProofs: const [
+            [3, 3, 3],
+          ],
+          pcztWithSignatures: const [
+            [9, 9],
+          ],
+        ),
+        broadcastRunner: _runner(
+          Future.value(
+            const SendBroadcastOutcome(
+              phase: SendBroadcastPhase.failed,
+              proposalConsumed: false,
+              canRetryBroadcast: true,
+              error:
+                  'Wait for wallet sync, then retry this signed transaction.',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    // Kept for a retry while the receipt stays open.
+    expect(find.text('Retry'), findsOneWidget);
+    expect(rustApi.discardCalls, isEmpty);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(rustApi.discardCalls, [(BigInt.one, 'flow-1')]);
+  });
 
   testWidgets('sending phase shows the spinner state with no exit button', (
     tester,

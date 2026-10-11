@@ -643,6 +643,8 @@ class SendBroadcastOutcome {
 
   /// Rust retained the validated signed batch and its proposal for another
   /// attempt. Retry must reuse the same payload rather than create a new send.
+  /// The proposal is then not consumed: a caller that leaves without retrying
+  /// releases it, which Rust ignores once a submission has started.
   final bool canRetryBroadcast;
   final String? txid;
   final String? statusMessage;
@@ -803,6 +805,21 @@ Future<SendBroadcastOutcome> _runSendBroadcast({
     proposalConsumed: proposalConsumed,
   );
 
+  /// The outcome when the signed Keystone batch stays retained for a retry.
+  /// The batch is the caller's again: a retry reuses it, and leaving, now or
+  /// later, releases it. Rust keeps the inputs locked through that release
+  /// once a submission has started.
+  Future<SendBroadcastOutcome> retainedForRetry(String error) async {
+    proposalReleased = false;
+    if (await abortRequested()) return aborted();
+    return SendBroadcastOutcome(
+      phase: SendBroadcastPhase.failed,
+      proposalConsumed: false,
+      canRetryBroadcast: true,
+      error: error,
+    );
+  }
+
   try {
     secretGuard = LinuxSecretOperationGuard(
       store: ref.read(linuxSecretOperationStoreProvider),
@@ -821,6 +838,11 @@ Future<SendBroadcastOutcome> _runSendBroadcast({
         if (await abortRequested()) return aborted();
         final downloadConfirmed = await confirmSaplingParamsDownload();
         if (!downloadConfirmed) {
+          if (keystone?.isRecoveryRetry ?? false) {
+            return await retainedForRetry(
+              'Proof parameters are required to retry this signed transaction.',
+            );
+          }
           if (await abortRequested()) return aborted();
           if (!proposalReleased) {
             if (ledger != null) {
@@ -843,10 +865,8 @@ Future<SendBroadcastOutcome> _runSendBroadcast({
           return SendBroadcastOutcome(
             phase: SendBroadcastPhase.failed,
             proposalConsumed: proposalConsumed,
-            canRetryBroadcast: keystone?.isRecoveryRetry ?? false,
-            error: keystone?.isRecoveryRetry == true
-                ? 'Proof parameters are required to retry this signed transaction.'
-                : 'Sending was cancelled before proving parameters were downloaded.',
+            error:
+                'Sending was cancelled before proving parameters were downloaded.',
           );
         }
 
@@ -1144,6 +1164,7 @@ Future<SendBroadcastOutcome> _runSendBroadcast({
     final message = canRetryBroadcast
         ? 'Wait for wallet sync, then retry this signed transaction.'
         : friendlyBroadcastError(e.toString());
+    if (canRetryBroadcast) return await retainedForRetry(message);
     if (await abortRequested()) return aborted();
     if (!proposalReleased) {
       proposalConsumed = await discardSendProposal(
