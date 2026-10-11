@@ -567,6 +567,9 @@ mod tests {
 
     /// Debug builds admit plain HTTP only to an exact loopback origin, and
     /// only under the regtest harness's switch, which unit tests never set.
+    /// Release builds compile none of it; see
+    /// `release_builds_ignore_the_regtest_switch`.
+    #[cfg(debug_assertions)]
     #[test]
     fn only_an_exact_loopback_origin_may_be_plain_http() {
         for origin in [
@@ -596,6 +599,43 @@ mod tests {
             RoutedExchange::transparent("http://127.0.0.1:8080", &exit, runtime.handle().clone())
                 .is_err()
         );
+    }
+
+    /// A release build ignores the regtest harness's switch even when it is
+    /// set: regtest selects public recovery, has no transparent PIR origin,
+    /// and a loopback origin is refused as plain HTTP. Runs only under
+    /// `cargo test --release`, where setting the switch affects no other test.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_builds_ignore_the_regtest_switch() {
+        use crate::wallet::network::WalletNetwork;
+        use crate::wallet::sync_engine::enhancement::{regtest_private_e2e, select_transparent_mode};
+        use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
+        std::env::set_var("ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT", "1");
+        std::env::set_var("VIZOR_TRANSPARENT_PIR_URL", "http://127.0.0.1:8080");
+        assert!(!regtest_private_e2e(WalletNetwork::Regtest));
+        assert_eq!(
+            select_transparent_mode(WalletNetwork::Regtest, true),
+            TransparentLedgerMode::Public
+        );
+        assert_eq!(
+            crate::wallet::sync_engine::transparent_details::source::txid_origin(
+                WalletNetwork::Regtest
+            ),
+            None
+        );
+        let runtime = runtime();
+        let exit = || false;
+        for origin in ["http://127.0.0.1:8080", "http://[::1]:8080"] {
+            assert!(
+                RoutedExchange::transparent(origin, &exit, runtime.handle().clone()).is_err(),
+                "accepted {origin}"
+            );
+            assert!(
+                RoutedExchange::txid(origin, &exit, runtime.handle().clone()).is_err(),
+                "accepted {origin}"
+            );
+        }
     }
 
     #[test]
