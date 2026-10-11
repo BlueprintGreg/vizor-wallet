@@ -16,8 +16,8 @@ Vizor's private mode against a correct publisher, not the production one.
 This module post-processes the public profile's expectations; it adds no
 chain facts. Per (tx, account, variant), for variants with complete evidence:
 
-* the reference wallet's own transactions (R and O, built by R) keep the
-  public expectation: R stored them when it built them;
+* a variant's own transactions keep the public expectation: it stored them
+  when it built them (R and O for R's, N_spend for its shields and send);
 * exact: transparent receives (TPIR has every owned output) keep the public
   rows;
 * exact amount and fee, details incomplete: the account spent, the
@@ -38,7 +38,9 @@ chain facts. Per (tx, account, variant), for variants with complete evidence:
   is shielded only and no other Alice account owns a script in it.
 
 Incomplete-evidence variants (N_pre, and the faults N_lag and N_pir_fail)
-keep the public honesty constraints. Fault variants assert no spendable claim
+keep the public honesty constraints. Once their faults clear, the settled
+restores (N_lag_settled, N_pir_fail_settled) are held to the chain's ledger,
+UTXO set and balance with current authority. Fault variants assert no spendable claim
 from incomplete evidence; private sync reports success by design and states
 transparent authority separately, so there is no synchronized-claim check.
 
@@ -96,10 +98,12 @@ KEPT_CONSTRAINTS = (
 variant_kind = public.variant_kind
 
 
-def built_by_reference(record):
-    """Whether the reference wallet R built this transaction. The gift-card
-    claim is V-built by the card's own claim wallet, not by R."""
-    return record["builder"] == "V" and record["intent"] != "gift_card_claim"
+def retains(record, variant):
+    """Whether `variant` built this transaction, so stored it when it did: R
+    and O for R's own, or the variant the manifest names (N_spend). The
+    gift-card claim is V-built by the card's own claim wallet, never by the
+    variant observed."""
+    return record["intent"] != "gift_card_claim" and public.retains(record, variant)
 
 
 def owns_script(effect):
@@ -252,7 +256,7 @@ def activity(context):
         facts = context["facts"][item["txid"]]
         effect = context["effects"][f"{item['txid']}:{item['account']}"]
         kind = variant_kind(cases, item["variant"])
-        retained = item["variant"] in RETAINED and built_by_reference(record)
+        retained = retains(record, item["variant"])
         unknown = item["row_sets"] is None and any(
             c["name"] == "absent_or_unconfirmed" for c in item["constraints"]
         )
