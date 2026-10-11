@@ -49,18 +49,14 @@ class LinuxKeyringState {
 }
 
 /// Another wallet mutation (a reset, an account deletion, or the private
-/// queries toggle) is already running.
+/// queries toggle), or on Linux a keyring recovery, is already running. Thrown
+/// on every platform.
 class WalletMutationBusyException implements Exception {
   const WalletMutationBusyException();
 
   @override
   String toString() =>
       'Finish the current wallet operation before starting another.';
-}
-
-/// A Linux wallet mutation, or a keyring recovery, is already running.
-class LinuxWalletMutationBusyException extends WalletMutationBusyException {
-  const LinuxWalletMutationBusyException();
 }
 
 enum _RecoveryAction { retry, cancel, disposed }
@@ -238,7 +234,7 @@ class LinuxKeyringCoordinator extends ChangeNotifier {
       return action();
     }
     if (_hasPendingMutation || (isEnabled && _state.isWaiting)) {
-      throw const LinuxWalletMutationBusyException();
+      throw const WalletMutationBusyException();
     }
     final owner = Object();
     _mutationOwner = owner;

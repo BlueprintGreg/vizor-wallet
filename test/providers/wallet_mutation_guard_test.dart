@@ -41,7 +41,7 @@ void main() {
         runWithSyncPausedForAccountMutation(capturedRef, () async {
           events.add('unexpected mutation');
         }),
-        throwsA(isA<LinuxWalletMutationBusyException>()),
+        throwsA(isA<WalletMutationBusyException>()),
       );
       expect(events, isEmpty);
     } finally {

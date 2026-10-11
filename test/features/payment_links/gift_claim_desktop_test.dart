@@ -908,7 +908,7 @@ void main() {
       expect(keyring.hasPendingMutation, isTrue);
       await expectLater(
         keyring.runMutation(() async => fail('interleaved wallet mutation')),
-        throwsA(isA<LinuxWalletMutationBusyException>()),
+        throwsA(isA<WalletMutationBusyException>()),
       );
       preparation.complete();
       await tester.pumpAndSettle();
