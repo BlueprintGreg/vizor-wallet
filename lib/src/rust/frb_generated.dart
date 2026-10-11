@@ -450,6 +450,7 @@ abstract class RustLibApi extends BaseApi {
     required String dbPath,
     required String network,
     required String lightwalletdUrl,
+    required String accountUuid,
     required String txidHex,
   });
 
@@ -3995,6 +3996,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String dbPath,
     required String network,
     required String lightwalletdUrl,
+    required String accountUuid,
     required String txidHex,
   }) {
     return handler.executeNormal(
@@ -4004,6 +4006,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(dbPath, serializer);
           sse_encode_String(network, serializer);
           sse_encode_String(lightwalletdUrl, serializer);
+          sse_encode_String(accountUuid, serializer);
           sse_encode_String(txidHex, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -4017,7 +4020,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiSyncEnhanceTransactionPubliclyConstMeta,
-        argValues: [dbPath, network, lightwalletdUrl, txidHex],
+        argValues: [dbPath, network, lightwalletdUrl, accountUuid, txidHex],
         apiImpl: this,
       ),
     );
@@ -4026,7 +4029,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSyncEnhanceTransactionPubliclyConstMeta =>
       const TaskConstMeta(
         debugName: "enhance_transaction_publicly",
-        argNames: ["dbPath", "network", "lightwalletdUrl", "txidHex"],
+        argNames: [
+          "dbPath",
+          "network",
+          "lightwalletdUrl",
+          "accountUuid",
+          "txidHex",
+        ],
       );
 
   @override
