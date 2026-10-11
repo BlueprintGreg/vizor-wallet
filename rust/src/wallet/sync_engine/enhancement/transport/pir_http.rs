@@ -612,14 +612,14 @@ mod tests {
     fn release_builds_ignore_the_regtest_switch() {
         use crate::wallet::network::WalletNetwork;
         use crate::wallet::sync_engine::enhancement::{
-            regtest_private_e2e, select_transparent_mode,
+            regtest_private_e2e, transparent_mode_for_preference,
         };
         use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
         std::env::set_var("ZCASH_E2E_REGTEST_PRIVATE_TRANSPARENT", "1");
         std::env::set_var("VIZOR_TRANSPARENT_PIR_URL", "http://127.0.0.1:8080");
         assert!(!regtest_private_e2e(WalletNetwork::Regtest));
         assert_eq!(
-            select_transparent_mode(WalletNetwork::Regtest, true),
+            transparent_mode_for_preference(WalletNetwork::Regtest, true),
             TransparentLedgerMode::Public
         );
         assert_eq!(
