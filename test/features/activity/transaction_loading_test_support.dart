@@ -26,24 +26,27 @@ import '../../figma_compare/figma_compare_font_loader.dart';
 const _txid =
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-rust_sync.TransactionInfo _tx({String kind = 'received', int height = 100}) =>
-    rust_sync.TransactionInfo(
-      amountIncludesFee: false,
-      detailsComplete: true,
-      feeState: rust_sync.TransactionFeeState.known,
-      provisional: false,
-      txidHex: _txid,
-      txKind: kind,
-      minedHeight: BigInt.from(height),
-      expiredUnmined: false,
-      accountBalanceDelta: 0,
-      fee: BigInt.zero,
-      blockTime: BigInt.from(1764150000),
-      createdTime: BigInt.from(1764150000),
-      isTransparent: false,
-      displayAmount: BigInt.from(100000000),
-      displayPool: 'shielded',
-    );
+rust_sync.TransactionInfo _tx({
+  String kind = 'received',
+  int height = 100,
+  int amount = 1,
+}) => rust_sync.TransactionInfo(
+  amountIncludesFee: false,
+  detailsComplete: true,
+  feeState: rust_sync.TransactionFeeState.known,
+  provisional: false,
+  txidHex: _txid,
+  txKind: kind,
+  minedHeight: BigInt.from(height),
+  expiredUnmined: false,
+  accountBalanceDelta: 0,
+  fee: BigInt.zero,
+  blockTime: BigInt.from(1764150000),
+  createdTime: BigInt.from(1764150000),
+  isTransparent: false,
+  displayAmount: BigInt.from(amount * 100000000),
+  displayPool: 'shielded',
+);
 
 rust_sync.TransactionDetail _detail(String memo, {String kind = 'received'}) =>
     rust_sync.TransactionDetail(
@@ -356,6 +359,46 @@ void transactionLoadingTests({required bool mobile}) {
       },
     );
   }
+
+  testWidgets('a refresh follows the shown leg of a two-row transaction', (
+    tester,
+  ) async {
+    // Private recovery can report a sent and a received row for one txid,
+    // the sent row first.
+    SyncState legs({required int sent, required int received}) => SyncState(
+      accountUuid: 'account-1',
+      hasAccountScopedData: true,
+      percentage: 1,
+      recentTransactions: [
+        _tx(kind: 'sent', amount: sent),
+        _tx(amount: received),
+      ],
+    );
+    final sync = FakeSyncNotifier(legs(sent: 1, received: 1));
+    var reads = 0;
+    await _pump(
+      tester,
+      mobile: mobile,
+      sync: sync,
+      history: (_) async {
+        reads++;
+        return [_tx()];
+      },
+    );
+    final initialReads = reads;
+
+    // Only the shown received leg changes: the receipt reloads.
+    sync.emit(legs(sent: 1, received: 2));
+    await tester.pump();
+    await tester.pump();
+    expect(reads, initialReads + 1);
+
+    // Only the other leg changes: nothing to reload.
+    sync.emit(legs(sent: 2, received: 2));
+    await tester.pump();
+    await tester.pump();
+    expect(reads, initialReads + 1);
+  });
 
   testWidgets('an older history refresh cannot overwrite the latest result', (
     tester,
