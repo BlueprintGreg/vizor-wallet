@@ -1939,7 +1939,7 @@ void main() {
       ..checkpointError = const ApiWalletError(
         code: ApiWalletErrorCode.ledgerOperationTerminal,
         message:
-            'Ledger signed operation cannot be retried with different data',
+            'Ledger operation op-1 is already checkpointed with different data',
       );
     var signerCalls = 0;
 

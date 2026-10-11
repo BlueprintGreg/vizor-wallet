@@ -5649,7 +5649,7 @@ fn wire__crate__api__ledger__ledger_checkpoint_signed_operation_impl(
             let api_pczt_with_signatures_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, String>((move || {
+                transform_result_sse::<_, crate::api::sync::ApiWalletError>((move || {
                     let output_ok = crate::api::ledger::ledger_checkpoint_signed_operation(
                         api_db_path,
                         api_network,
@@ -5698,7 +5698,7 @@ fn wire__crate__api__ledger__ledger_checkpoint_signed_operation_batch_impl(
             let api_pczt_with_signatures = <Vec<Vec<u8>>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
-                transform_result_sse::<_, String>((move || {
+                transform_result_sse::<_, crate::api::sync::ApiWalletError>((move || {
                     let output_ok = crate::api::ledger::ledger_checkpoint_signed_operation_batch(
                         api_db_path,
                         api_network,

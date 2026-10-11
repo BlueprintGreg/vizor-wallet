@@ -7119,7 +7119,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_ledger_signed_operation,
-          decodeErrorData: sse_decode_String,
+          decodeErrorData: sse_decode_api_wallet_error,
         ),
         constMeta: kCrateApiLedgerLedgerCheckpointSignedOperationConstMeta,
         argValues: [
@@ -7185,7 +7185,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_ledger_signed_operation,
-          decodeErrorData: sse_decode_String,
+          decodeErrorData: sse_decode_api_wallet_error,
         ),
         constMeta: kCrateApiLedgerLedgerCheckpointSignedOperationBatchConstMeta,
         argValues: [

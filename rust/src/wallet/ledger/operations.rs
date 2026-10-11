@@ -117,7 +117,7 @@ pub(crate) fn checkpoint(
     external_ref: Option<&str>,
     proof_pczt: &[u8],
     signature_pczt: &[u8],
-) -> Result<SignedOperationMetadata, String> {
+) -> Result<SignedOperationMetadata, WalletFailure> {
     checkpoint_batch(
         db_path,
         network,
@@ -139,7 +139,7 @@ pub(crate) fn checkpoint_batch(
     external_ref: Option<&str>,
     proof_pczts: &[Vec<u8>],
     signature_pczts: &[Vec<u8>],
-) -> Result<SignedOperationMetadata, String> {
+) -> Result<SignedOperationMetadata, WalletFailure> {
     validate_identifier("operation ID", operation_id)?;
     validate_identifier("account UUID", account_uuid)?;
     let operation_kind = OperationKind::parse(kind)?;
@@ -210,9 +210,15 @@ pub(crate) fn checkpoint_batch(
                     |row| row.get(0),
                 )
                 .map_err(|e| format!("Verify repeated Ledger checkpoint: {e}"))?;
+            // Another signed transaction already holds this operation ID.
+            // Saving these signatures again can never succeed, so the caller
+            // must stop offering retries rather than loop on the same refusal.
             if !exact_match {
-                return Err(format!(
-                    "Ledger operation {operation_id} is already checkpointed with different data"
+                return Err(WalletFailure::coded(
+                    FailureCode::LedgerOperationTerminal,
+                    format!(
+                        "Ledger operation {operation_id} is already checkpointed with different data"
+                    ),
                 ));
             }
         }
@@ -1067,7 +1073,8 @@ mod tests {
             &signature,
         )
         .unwrap_err();
-        assert!(error.contains("expiry mismatch"));
+        assert!(error.message.contains("expiry mismatch"));
+        assert_eq!(error.code, None);
     }
 
     #[test]
@@ -1090,8 +1097,38 @@ mod tests {
             &different_signature,
         )
         .unwrap_err();
-        assert!(error.contains("different data"));
+        assert!(error.message.contains("different data"));
         assert_eq!(list(db_path, WalletNetwork::Main, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_conflict_with_different_data_is_terminal() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db_path = file.path().to_str().unwrap();
+        let saved = checkpoint_test_operation(db_path, "op-1", "send");
+
+        let (different_proof, different_signature, _) = signed_pczt(1_234_501);
+        let conflict = || {
+            checkpoint(
+                db_path,
+                WalletNetwork::Main,
+                "op-1",
+                "account-1",
+                "send",
+                None,
+                &different_proof,
+                &different_signature,
+            )
+            .unwrap_err()
+        };
+        // The app stops offering "Retry saving" on this code: a retry repeats
+        // the same refusal and must leave the saved transaction untouched.
+        assert_eq!(conflict().code, Some(FailureCode::LedgerOperationTerminal));
+        assert_eq!(conflict().code, Some(FailureCode::LedgerOperationTerminal));
+        assert_eq!(
+            list(db_path, WalletNetwork::Main, None).unwrap(),
+            vec![saved]
+        );
     }
 
     #[test]
@@ -1110,6 +1147,7 @@ mod tests {
             &signature,
         )
         .unwrap_err()
+        .message
         .contains("require an external reference"));
         assert!(checkpoint(
             db_path,
@@ -1122,6 +1160,7 @@ mod tests {
             &signature,
         )
         .unwrap_err()
+        .message
         .contains("must not have"));
     }
 
@@ -1157,7 +1196,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("Validate Ledger signed checkpoint"));
+        assert!(error.message.contains("Validate Ledger signed checkpoint"));
         assert!(
             list(file.path().to_str().unwrap(), WalletNetwork::Main, None,)
                 .unwrap()
