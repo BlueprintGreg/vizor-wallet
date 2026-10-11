@@ -2995,8 +2995,7 @@ Future<void> clearTorPrivacyStateForReset({
   required Future<void> Function() switchRouteToDirect,
   void Function()? onSavedRouteCleared,
   Future<String> Function() resolveTorDirectory = getTorDataDirectoryPath,
-  Future<SharedPreferences> Function() openPreferences =
-      SharedPreferences.getInstance,
+  Future<bool> Function() removeSavedRoute = _removeSavedTorRoute,
 }) async {
   try {
     await switchRouteToDirect();
@@ -3008,14 +3007,18 @@ Future<void> clearTorPrivacyStateForReset({
     log('resetWallet: tor data directory cleanup failed: $e\n$st');
   }
   try {
-    final preferences = await openPreferences();
-    if (!await preferences.remove(kTorEnabledPreferenceKey)) {
+    if (!await removeSavedRoute()) {
       throw StateError('Could not remove the Tor preference.');
     }
     onSavedRouteCleared?.call();
   } catch (e, st) {
     log('resetWallet: tor route preference cleanup failed: $e\n$st');
   }
+}
+
+Future<bool> _removeSavedTorRoute() async {
+  final preferences = await SharedPreferences.getInstance();
+  return preferences.remove(kTorEnabledPreferenceKey);
 }
 
 @visibleForTesting

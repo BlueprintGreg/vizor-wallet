@@ -477,44 +477,67 @@ void main() {
     addTearDown(() {
       if (torDirectory.existsSync()) torDirectory.deleteSync(recursive: true);
     });
-    var savedRouteCleared = false;
 
     await clearTorPrivacyStateForReset(
       switchRouteToDirect: () async {},
-      onSavedRouteCleared: () => savedRouteCleared = true,
       resolveTorDirectory: () async => torDirectory.path,
-      openPreferences: () async => throw StateError('preferences unavailable'),
+      removeSavedRoute: () async => throw StateError('preferences unavailable'),
     );
 
     expect(torDirectory.existsSync(), isFalse);
-    // The saved Tor route is still on disk, so it must still be published.
-    expect(savedRouteCleared, isFalse);
   });
 
-  test(
-    'wallet reset reports the saved route cleared only once removed',
-    () async {
-      SharedPreferences.setMockInitialValues({kTorEnabledPreferenceKey: true});
-      addTearDown(() => SharedPreferences.setMockInitialValues({}));
-      final torDirectory = Directory.systemTemp.createTempSync(
-        'vizor-tor-reset',
-      );
-      addTearDown(() {
-        if (torDirectory.existsSync()) torDirectory.deleteSync(recursive: true);
-      });
-      var savedRouteCleared = 0;
+  // The saved Tor route stays on disk unless removal is confirmed, so it must
+  // stay published: a removal that throws or reports false leaves it in place.
+  for (final (description, removeSavedRoute)
+      in <(String, Future<bool> Function())>[
+        ('throws', () async => throw StateError('write failed')),
+        ('reports false', () async => false),
+      ]) {
+    test(
+      'wallet reset keeps the saved route when removal $description',
+      () async {
+        final torDirectory = Directory.systemTemp.createTempSync(
+          'vizor-tor-reset',
+        );
+        addTearDown(() {
+          if (torDirectory.existsSync()) {
+            torDirectory.deleteSync(recursive: true);
+          }
+        });
+        var savedRouteCleared = 0;
 
-      await clearTorPrivacyStateForReset(
-        switchRouteToDirect: () async {},
-        onSavedRouteCleared: () => savedRouteCleared++,
-        resolveTorDirectory: () async => torDirectory.path,
-      );
+        await clearTorPrivacyStateForReset(
+          switchRouteToDirect: () async {},
+          onSavedRouteCleared: () => savedRouteCleared++,
+          resolveTorDirectory: () async => torDirectory.path,
+          removeSavedRoute: removeSavedRoute,
+        );
 
-      final preferences = await SharedPreferences.getInstance();
-      expect(preferences.getBool(kTorEnabledPreferenceKey), isNull);
-      expect(savedRouteCleared, 1);
-    },
-  );
+        expect(savedRouteCleared, 0);
+      },
+    );
+  }
+
+  test('wallet reset reports the saved route cleared once removed', () async {
+    SharedPreferences.setMockInitialValues({kTorEnabledPreferenceKey: true});
+    addTearDown(() => SharedPreferences.setMockInitialValues({}));
+    final torDirectory = Directory.systemTemp.createTempSync('vizor-tor-reset');
+    addTearDown(() {
+      if (torDirectory.existsSync()) torDirectory.deleteSync(recursive: true);
+    });
+    var savedRouteCleared = 0;
+
+    await clearTorPrivacyStateForReset(
+      switchRouteToDirect: () async {},
+      onSavedRouteCleared: () => savedRouteCleared++,
+      resolveTorDirectory: () async => torDirectory.path,
+    );
+
+    final preferences = await SharedPreferences.getInstance();
+    expect(preferences.getBool(kTorEnabledPreferenceKey), isNull);
+    expect(savedRouteCleared, 1);
+  });
 
   test('wallet link duplicate import errors are recognized', () {
     expect(
@@ -555,50 +578,47 @@ void main() {
     );
   });
 
-  test(
-    'wallet reset keeps the install-scoped private recovery setting',
-    () async {
-      FlutterSecureStorage.setMockInitialValues({});
-      final supportDirectory = Directory.systemTemp.createTempSync(
-        'vizor-enhance-pir-reset',
-      );
-      addTearDown(() {
-        if (supportDirectory.existsSync()) {
-          supportDirectory.deleteSync(recursive: true);
-        }
-      });
-      const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+  test('wallet reset keeps the install-scoped private recovery setting', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final supportDirectory = Directory.systemTemp.createTempSync(
+      'vizor-enhance-pir-reset',
+    );
+    addTearDown(() {
+      if (supportDirectory.existsSync()) {
+        supportDirectory.deleteSync(recursive: true);
+      }
+    });
+    const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, (call) async {
+          if (call.method == 'getApplicationSupportDirectory') {
+            return supportDirectory.path;
+          }
+          throw MissingPluginException('Unexpected path provider call.');
+        });
+    addTearDown(() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(pathProvider, (call) async {
-            if (call.method == 'getApplicationSupportDirectory') {
-              return supportDirectory.path;
-            }
-            throw MissingPluginException('Unexpected path provider call.');
-          });
-      addTearDown(() {
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(pathProvider, null);
-      });
+          .setMockMethodCallHandler(pathProvider, null);
+    });
 
-      final container = ProviderContainer(
-        overrides: [
-          appBootstrapProvider.overrideWithValue(
-            _bootstrapWithAccounts(enhancePirEnabled: true),
-          ),
-        ],
-      );
-      addTearDown(container.dispose);
-      await container.read(accountProvider.future);
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(
+          _bootstrapWithAccounts(enhancePirEnabled: true),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(accountProvider.future);
 
-      expect(container.read(enhancePirProvider), isTrue);
-      await container.read(accountProvider.notifier).resetWallet();
+    expect(container.read(enhancePirProvider), isTrue);
+    await container.read(accountProvider.notifier).resetWallet();
 
-      // The preference lives outside the wiped secure-store bucket, so neither
-      // the published state nor the Rust route is touched by the reset.
-      expect(container.read(enhancePirProvider), isTrue);
-      expect(_rustApi.enhancePirEnabledValues, isEmpty);
-    },
-  );
+    // The preference lives outside the wiped secure-store bucket, so neither
+    // the published state nor the Rust route is touched by the reset.
+    expect(container.read(enhancePirProvider), isTrue);
+    expect(_rustApi.enhancePirEnabledValues, isEmpty);
+  });
 
   test('private recovery ignores stale enabled state off mainnet', () {
     final container = ProviderContainer(
