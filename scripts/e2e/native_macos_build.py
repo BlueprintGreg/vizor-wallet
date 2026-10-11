@@ -70,9 +70,10 @@ def build_native_macos_cohort(case, *, source_root, flutter, timeout=1200.0, can
         checkout_lease.__enter__()
         # Git excludes generated build trees while including current untracked
         # sources. This is checked-source continuity, not hermetic provenance.
+        # Cohort targets import only test/support from test/, not unit tests.
         members = "".join(command(["/usr/bin/git", "-C", str(root), "ls-files",
             "--cached", "--others", "--exclude-standard", "-z", "--", "lib",
-            "integration_test", "test", "rust", "rust_builder", "macos", "assets",
+            "integration_test", "test/support", "rust", "rust_builder", "macos", "assets",
             "scripts/e2e/native-cleanup", "third_party", "pubspec.yaml", "pubspec.lock", ".fvmrc"]))
         paths = [root / name for name in members.rstrip("\n\0").split("\0")
                  if name and name != "macos/Podfile.lock"]

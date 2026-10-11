@@ -13,6 +13,7 @@ import e2e_runtime as runtime
 import native_ios_build as BUILD
 from native_case_lifecycle import NativeCaseLifecycle
 from native_workspace import prepare_native_case_workspace
+from test_native_macos_build import CHECKOUT, covered, dart_import_closure
 
 
 class BuildTests(unittest.TestCase):
@@ -61,7 +62,7 @@ class BuildTests(unittest.TestCase):
         if "ls-files" in arguments:
             requested = arguments[arguments.index("--")+1:]
             files = ("lib/app.dart", "ios/Runner.xcodeproj/project.pbxproj", "test/support/legacy_payment_link.dart")
-            return runtime.CommandResult(0,("\0".join(name for name in files if name.split("/")[0] in requested)+"\0",))
+            return runtime.CommandResult(0,("\0".join(name for name in files if covered(name, requested))+"\0",))
         if "--config-only" in arguments:
             (self.source/"ios/Pods").mkdir(exist_ok=True)
             project = self.source/"ios/Runner.xcodeproj/project.pbxproj"
@@ -248,8 +249,19 @@ class BuildTests(unittest.TestCase):
         self.build()
         listing = next(args for args in self.commands if "ls-files" in args)
         requested = listing[listing.index("--")+1:]
-        self.assertEqual(requested, ["lib", "integration_test", "test", "rust", "rust_builder", "ios",
+        self.assertEqual(requested, ["lib", "integration_test", "test/support", "rust", "rust_builder", "ios",
                                      "assets", "third_party", "pubspec.yaml", "pubspec.lock", ".fvmrc"])
+
+    def test_source_inventory_covers_every_file_the_actual_cohort_target_imports(self):
+        self.build()
+        listing = next(args for args in self.commands if "ls-files" in args)
+        requested = listing[listing.index("--")+1:]
+        configure = next(args for args in self.commands if "--target" in args)
+        closure = dart_import_closure(CHECKOUT, configure[configure.index("--target")+1])
+        self.assertIn("integration_test/support/mobile_regtest_flow.dart", closure)
+        self.assertEqual(sorted(path for path in closure if not covered(path, requested)), [])
+        self.assertEqual(sorted(path for path in closure if path.startswith("test/")
+                                and not path.startswith("test/support/")), [])
 
     def test_cache_hit_captures_only_the_cohort_copy(self):
         leases = []

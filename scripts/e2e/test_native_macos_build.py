@@ -1,6 +1,8 @@
 """Real private source files; modeled SDK commands/signatures/native artifacts."""
 from pathlib import Path
 import os
+import posixpath
+import re
 import sys
 import tempfile
 import threading
@@ -13,6 +15,34 @@ import e2e_runtime as runtime
 import native_macos_build as BUILD
 from native_case_lifecycle import NativeCaseLifecycle
 from native_workspace import prepare_native_case_workspace
+
+CHECKOUT = Path(__file__).resolve().parents[2]
+_DIRECTIVE = re.compile(r"""^\s*(?:import|export|part)\s+(['"])([^'"]+)\1((?:\s+if\s*\([^)]*\)\s*(['"])[^'"]+\4)*)""",
+                        re.M)
+
+
+def covered(name, pathspec):
+    """Git directory pathspec semantics for the modeled ls-files listing."""
+    return any(name == path or name.startswith(path+"/") for path in pathspec)
+
+
+def dart_import_closure(root, entry):
+    """First-party Dart files an entry point compiles, conditional imports included."""
+    package = "package:"+re.search(r"^name:\s*(\S+)", (root/"pubspec.yaml").read_text(), re.M).group(1)+"/"
+    closure, pending = set(), [entry]
+    while pending:
+        name = pending.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        text = re.sub(r"(?m)//.*$", "", re.sub(r"/\*.*?\*/", "", (root/name).read_text(), flags=re.S))
+        for match in _DIRECTIVE.finditer(text):
+            for uri in (match.group(2), *re.findall(r"""if\s*\([^)]*\)\s*['"]([^'"]+)['"]""", match.group(3))):
+                if uri.startswith(package):
+                    pending.append("lib/"+uri.removeprefix(package))
+                elif ":" not in uri:
+                    pending.append(posixpath.normpath(posixpath.join(posixpath.dirname(name), uri)))
+    return closure
 
 
 class BuildTests(unittest.TestCase):
@@ -49,7 +79,7 @@ class BuildTests(unittest.TestCase):
         if "ls-files" in arguments:
             requested = arguments[arguments.index("--")+1:]
             files = ("lib/app.dart", "macos/Runner.xcodeproj/project.pbxproj", "test/support/legacy_payment_link.dart")
-            return runtime.CommandResult(0,("\0".join(name for name in files if name.split("/")[0] in requested)+"\0",))
+            return runtime.CommandResult(0,("\0".join(name for name in files if covered(name, requested))+"\0",))
         if "--target" in arguments:
             self.native_arguments = arguments
             # Reproduce the SDK's same-content metadata rewrite.
@@ -130,6 +160,17 @@ class BuildTests(unittest.TestCase):
         with patch.object(BUILD.cache,"collect_native_cache_inputs",side_effect=inputs):
             with self.assertRaisesRegex(RuntimeError,"cache lookup boundary"):
                 self.build(cache_root=self.root/"cache")
+
+    def test_source_inventory_covers_every_file_the_actual_cohort_target_imports(self):
+        self.build()
+        listing = next(args for args in self.commands if "ls-files" in args)
+        requested = listing[listing.index("--")+1:]
+        target = self.native_arguments[self.native_arguments.index("--target")+1]
+        closure = dart_import_closure(CHECKOUT, target)
+        self.assertIn("test/support/legacy_payment_link.dart", closure)
+        self.assertEqual(sorted(path for path in closure if not covered(path, requested)), [])
+        self.assertEqual(sorted(path for path in closure if path.startswith("test/")
+                                and not path.startswith("test/support/")), [])
 
     def test_preparation_test_support_changes_are_rejected_before_cache_lookup(self):
         self.mode = "changed-test-support"

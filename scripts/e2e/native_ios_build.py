@@ -63,9 +63,10 @@ def build_native_ios_cohort(case, *, source_root, flutter, timeout=1800.0,
         checkout_lease = cache.NativeCheckoutBuildLease(root,
             timeout=max(0.001, deadline-time.monotonic()), cancel_event=cancel)
         checkout_lease.__enter__()
+        # Cohort targets import only test/support from test/, not unit tests.
         members = "".join(command(["/usr/bin/git", "-C", str(root), "ls-files",
             "--cached", "--others", "--exclude-standard", "-z", "--", "lib",
-            "integration_test", "test", "rust", "rust_builder", "ios", "assets",
+            "integration_test", "test/support", "rust", "rust_builder", "ios", "assets",
             "third_party", "pubspec.yaml", "pubspec.lock", ".fvmrc"]))
         paths = [root/name for name in members.rstrip("\n\0").split("\0")
                  if name and name != "ios/Podfile.lock"]

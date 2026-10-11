@@ -1127,11 +1127,16 @@ The suite enables `.regtest-logs/build-cache/macos-cohort-v1` and
 signing/capture checks. A macOS entry holds the app and its matching cleanup
 helper; an iOS entry holds only the app. Older `ios-cohort-v1` pair entries are
 never read, migrated or deleted.
-The inputs bind checked wallet/test/native/Rust sources, the macOS helper and
-builder implementation, actual Dart package contents, semantic package
+The inputs bind checked wallet, `integration_test`, `test/support`, native and
+Rust sources, the macOS helper and builder implementation, actual Dart package
+contents, semantic package
 configuration, locked Pod versions, Flutter/engine/Dart identity, Xcode/SDK, Cargokit compiler
 identity, Cargo configuration, build-relevant environment and platform/architecture/TEX fixture
 (derived for every macOS selection).
+Unit tests elsewhere under `test/` are not inputs: the cohort targets import
+nothing else from it, and a host test computes the Dart import closure of both
+`--target` entry points and fails if any file in it falls outside the listed
+sources.
 The wallet's package-config generation timestamp and workspace-local Podspec
 checksums are not keys; the local package sources are checked instead. External
 package inventories exclude generated directories only at their roots; a
