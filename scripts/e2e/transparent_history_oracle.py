@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 
@@ -105,18 +106,25 @@ class Chain:
             self._headers[block_hash] = self.rpc("getblockheader", block_hash)
         return self._headers[block_hash]
 
-    def raw(self, txid, raw_hex=None):
-        if txid in self._tx:
+    def raw(self, txid, raw_hex=None, attempts=1):
+        """The verbose transaction, or None when the node does not have it.
+        With `attempts` above one, a miss is retried a second apart: the
+        node's address index can name a transaction a moment before it can
+        return it."""
+        if self._tx.get(txid) is not None:
             return self._tx[txid]
-        try:
-            tx = self.rpc("getrawtransaction", txid, 1)
-        except RpcError:
-            if raw_hex is None:
-                tx = None
-            else:
-                # Never reached the chain (e.g. withheld by the proxy): decode
-                # the authored public bytes instead.
-                tx = self.rpc("decoderawtransaction", raw_hex)
+        tx = None
+        for attempt in range(attempts):
+            try:
+                tx = self.rpc("getrawtransaction", txid, 1)
+                break
+            except RpcError:
+                if attempt + 1 < attempts:
+                    time.sleep(1)
+        if tx is None and raw_hex is not None:
+            # Never reached the chain (e.g. withheld by the proxy): decode
+            # the authored public bytes instead.
+            tx = self.rpc("decoderawtransaction", raw_hex)
         self._tx[txid] = tx
         return tx
 
@@ -269,7 +277,11 @@ def owned_ledger(chain, ownership, account):
     received = {}
     spends = {}
     for txid in txids:
-        tx = chain.raw(txid)
+        tx = chain.raw(txid, attempts=10)
+        if tx is None:
+            raise SystemExit(
+                f"the address index names {txid}, which the node cannot return"
+            )
         for vout in tx["vout"]:
             script = vout["scriptPubKey"]["hex"]
             if script in scripts:

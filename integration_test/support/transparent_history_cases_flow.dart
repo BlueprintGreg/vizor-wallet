@@ -164,6 +164,7 @@ Future<void> thWaitForSynchronized(
       );
     }
     if (DateTime.now().isAfter(nextSync) && !rust_sync.isSyncRunning()) {
+      debugPrint('[th-e2e] not synchronized yet; sync ${syncs + 1}');
       ProviderScope.containerOf(
         tester.element(find.byType(WidgetsApp).first),
       ).read(syncProvider.notifier).startSync();
@@ -262,11 +263,11 @@ List<String> _feePresentationFailures(
   String ticker,
 ) {
   final failures = <String>[];
-  final shown = detailTexts.contains(kNetworkFeeText)
-      ? 'fee_only'
-      : detailTexts.contains(kNetChangeIncludesFeeText)
-      ? 'net_change'
-      : 'separate';
+  final hasTxFee =
+      reviewRows.containsKey('Tx fee') || detailTexts.contains('Tx fee');
+  // A balance movement, the fee in it or all of it, is labelled "Net change";
+  // its fee line shows only a fee the receipt can state (#839 30d252d06).
+  final shown = detailTexts.contains(kNetChangeText) ? 'net_change' : 'separate';
   if (!row.feePresentations.contains(shown)) {
     failures.add(
       '${row.label}: receipt fee presentation is $shown, '
@@ -274,8 +275,6 @@ List<String> _feePresentationFailures(
     );
     return failures;
   }
-  final hasTxFee =
-      reviewRows.containsKey('Tx fee') || detailTexts.contains('Tx fee');
   final amounts = detailTexts
       .map((t) => thParseAmount(t, ticker))
       .whereType<int>()
@@ -301,13 +300,22 @@ List<String> _feePresentationFailures(
       }
     case 'net_change':
       final feeText = reviewRows['Tx fee'];
-      final feeShown = feeText != null
-          ? row.acceptsFee(thParseAmount(feeText, ticker))
-          : detailTexts.contains('Tx fee') && amounts.any(row.acceptsFee);
+      // An account fee the wallet has not established reads "Unknown", or
+      // shows the whole fee as unattributed evidence.
+      final unknownFee =
+          row.feeKnown == null &&
+          (feeText == kUnknownFeeText || detailTexts.contains(kUnknownFeeText));
+      // A fee line, when shown, is the whole fee or "Unknown".
+      final feeShown =
+          !hasTxFee ||
+          unknownFee ||
+          (feeText != null
+              ? row.acceptsFee(thParseAmount(feeText, ticker))
+              : amounts.any(row.acceptsFee));
       if (!feeShown) {
         failures.add(
-          '${row.label}: net-change receipt has no Tx fee with the whole fee '
-          '${row.feeValues}',
+          '${row.label}: net-change receipt fee is neither the whole fee '
+          '${row.feeValues} nor unknown',
         );
       }
       if (row.amountMax != null && !amounts.contains(row.amountMax)) {
@@ -361,6 +369,9 @@ Future<void> thWaitForHistory(
       }
     } catch (_) {}
     if (DateTime.now().isAfter(nextSync) && !rust_sync.isSyncRunning()) {
+      debugPrint(
+        '[th-e2e] history missing ${missing.length} txs; sync ${syncs + 1}',
+      );
       ProviderScope.containerOf(
         tester.element(find.byType(WidgetsApp).first),
       ).read(syncProvider.notifier).startSync();
@@ -581,9 +592,9 @@ Future<List<String>> thVerifyActivity(
         '${row.label}: an established row is marked "$_incompleteRowText"',
       );
     }
-    // A movement that is exactly the whole fee reads as one debit of it, with
-    // no pool: "Network fee" when fee-only, "Sent" when a provisional net
-    // change (in-flight and failed rows keep their phase titles).
+    // A movement that is exactly the whole fee reads as one "Net change"
+    // debit of it, with no pool, whether fee-only or a provisional net change
+    // (in-flight and failed rows keep their phase titles).
     final feeSized =
         row.feePresentations.length == 1 &&
         const {
@@ -598,9 +609,7 @@ Future<List<String>> thVerifyActivity(
           ? 'Send failed'
           : row.pending
           ? (mobile ? 'Sending...' : 'Sending ...')
-          : feeOnly
-          ? kNetworkFeeText
-          : 'Sent';
+          : kNetChangeText;
       final kind = feeOnly ? 'fee-only' : 'fee-sized';
       if (!texts.contains(title)) {
         failures.add('${row.label}: $kind title "$title" not in $texts');

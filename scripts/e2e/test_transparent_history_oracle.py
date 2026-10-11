@@ -323,18 +323,20 @@ class PrivateUiRows(unittest.TestCase):
         (want,) = [r for r in public.ui_rows(context()) if r["txid"] == row["txid"]]
         self.assertEqual(row, dict(want, details_incomplete=False, row_incomplete=False))
 
-    def test_a_fully_funded_transparent_send_is_exact_and_marked_incomplete(self):
+    def test_a_fully_funded_transparent_send_is_exact_and_complete(self):
+        # Txid display facts name its payee.
         (row,) = self.rows_for("bb" * 32)
         self.assertEqual((row["role"], row["amount_zats"], row["fee_known"]), ("sent", ZEC, FEE))
         self.assertEqual(row["pool_labels"], ["Transparent"])
-        self.assertTrue(row["details_incomplete"])
+        self.assertFalse(row["details_incomplete"])
         self.assertFalse(row["row_incomplete"])
         self.assertFalse(row["optional"])
 
     def test_an_incomplete_row_is_marked_with_honest_amounts_and_whole_fees(self):
         (row,) = self.rows_for("dd" * 32)
         self.assertIsNone(row["role"])
-        self.assertTrue(row["details_incomplete"])
+        # Txid display facts may complete its receipt.
+        self.assertIsNone(row["details_incomplete"])
         self.assertTrue(row["row_incomplete"])
         self.assertFalse(row["optional"])
         self.assertEqual(row["status"], "Completed")
@@ -354,15 +356,17 @@ class PrivateUiRows(unittest.TestCase):
         self.assertEqual(rows["received"]["amount_zats"], ZEC)
         for row in rows.values():
             self.assertEqual(row["pool_labels"], ["Transparent"])
-            self.assertTrue(row["details_incomplete"])
             self.assertFalse(row["row_incomplete"])
+        for row in rows.values():
+            self.assertIsNone(row["details_incomplete"])
         self.assertEqual(rows["sent"]["fee_presentations"], ["separate"])
         self.assertNotIn("fee_presentations", rows["received"])
         self.assertFalse(rows["sent"]["optional"])
 
-    def test_a_receive_found_by_scanning_marks_only_its_receipt(self):
+    def test_a_receive_found_by_scanning_marks_only_its_row_as_established(self):
+        # Txid display facts may complete its receipt.
         (row,) = self.rows_for("11" * 32, "A1")
-        self.assertTrue(row["details_incomplete"])
+        self.assertIsNone(row["details_incomplete"])
         self.assertFalse(row["row_incomplete"])
 
     def test_the_receiving_account_of_a_cross_account_send_is_exact(self):
@@ -371,7 +375,7 @@ class PrivateUiRows(unittest.TestCase):
         self.assertFalse(row["details_incomplete"])
         self.assertFalse(row["row_incomplete"])
         (sender,) = self.rows_for("ff" * 32)
-        self.assertTrue(sender["details_incomplete"])
+        self.assertIsNone(sender["details_incomplete"])
         self.assertTrue(sender["row_incomplete"])
         self.assertIsNone(sender["fee_known"])
 
@@ -385,34 +389,35 @@ class PrivateUiRows(unittest.TestCase):
     def test_an_uninvolved_account_has_no_rows(self):
         self.assertEqual(self.rows_for("bb" * 32, "A1"), [])
 
-    def test_an_established_transparent_movement_of_the_whole_fee_is_fee_only(self):
+    def test_an_established_transparent_movement_of_the_whole_fee_is_a_net_change(self):
         facts = {"fee": FEE, "has_shielded": False, "inputs": [io(0, 2 * ZEC, "A0")]}
         effect = {"delta": -FEE, "owned_input_count": 1}
-        self.assertEqual(private.fee_presentations(facts, effect, ["known"]), ["fee_only"])
+        self.assertEqual(private.fee_presentations(facts, effect, ["known"]), ["net_change"])
 
-    def test_a_shielded_movement_of_the_whole_fee_shows_no_fee(self):
-        # #839 30d252d06: without Enhance evidence a shield's account fee stays
-        # unknown, so no whole fee is shown beside its movement.
+    def test_a_shielded_movement_of_the_whole_fee_is_a_net_change(self):
+        # #839 30d252d06: without Enhance evidence a shield's role and account
+        # fee stay unknown, so it reads "Net change" with an unknown fee.
         (row,) = self.rows_for("dd" * 32)
-        self.assertEqual(row["fee_presentations"], ["separate"])
+        self.assertEqual(row["fee_presentations"], ["net_change", "separate"])
 
     def test_a_reconstructed_payment_keeps_its_fee_separate(self):
         (row,) = self.rows_for("bb" * 32)
         self.assertEqual(row["fee_presentations"], ["separate"])
 
-    def test_an_unknown_whole_fee_keeps_the_amount_line(self):
+    def test_an_unestablished_movement_with_an_unknown_fee_is_a_net_change(self):
+        # #839 30d252d06: a movement whose role is not established reads
+        # "Net change" and keeps its fee line, here "Unknown".
         (row,) = self.rows_for("ee" * 32)
-        self.assertEqual(row["fee_presentations"], ["separate"])
+        self.assertEqual(row["fee_presentations"], ["net_change", "separate"])
 
-    def test_a_fee_another_account_could_supply_is_not_shown(self):
+    def test_a_fee_another_account_could_supply_leaves_a_net_change(self):
         (sender,) = self.rows_for("ff" * 32)
-        self.assertEqual(sender["fee_presentations"], ["separate"])
+        self.assertEqual(sender["fee_presentations"], ["net_change", "separate"])
 
-    def test_a_known_whole_fee_inside_a_larger_movement_is_a_net_change(self):
-        effect = {"delta": -(ZEC + FEE)}
-        self.assertEqual(
-            private.fee_presentations({"fee": FEE}, effect, ["known"]), ["net_change"]
-        )
+    def test_an_established_payment_with_a_known_fee_is_separate(self):
+        effect = {"delta": -(ZEC + FEE), "spent": ZEC + FEE, "owned_input_count": 1}
+        facts = {"fee": FEE, "has_shielded": False, "inputs": [{}]}
+        self.assertEqual(private.fee_presentations(facts, effect, ["known"]), ["separate"])
         self.assertIsNone(private.fee_presentations({"fee": FEE}, effect, None))
 
     def test_a_receive_has_no_fee_presentation(self):
