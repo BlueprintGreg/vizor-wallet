@@ -548,3 +548,83 @@ fn an_undeclared_rewrite_of_a_sealed_shard_withdraws_recovery() {
         Some(crate::wallet::sync::TransparentStopReason::Withdrawn),
     );
 }
+
+/// A publisher that re-cuts sealed history the wallet recovered from, and
+/// declares it, keeps the wallet's funds and history: the two sealed shards
+/// are merged into one wider shard, the tail is renumbered, and the next pass
+/// over the re-cut map (the chain has moved on) leaves the balance current
+/// and exact, the history unchanged, and no stop reason.
+#[test]
+fn a_declared_re_cut_of_sealed_history_keeps_the_wallet_current() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "a_declared_re_cut_of_sealed_history_keeps_the_wallet_current",
+    ) {
+        return;
+    }
+    let (wallet, lwd, runtime) = private_wallet();
+    let first = ShardService::publish(&publication(
+        wallet.address,
+        u64::from(TOP),
+        0,
+        String::new(),
+    ));
+    let seam = test_transport::set(&wallet.path, first.observer());
+    sync(&wallet.path, &lwd).expect("a whole sync completes");
+    let received = |path: &str| -> Vec<u64> {
+        get_transaction_history(path, MAIN, None, &wallet.uuid)
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.tx_kind == "received")
+            .map(|row| row.display_amount)
+            .collect()
+    };
+    let before = received(&wallet.path);
+    assert_eq!(before, vec![RECEIVED, RECEIVED]);
+    let mut requests = seam.seam.observer.requests();
+    drop(seam);
+
+    // The chain moves on three blocks. The re-cut merges sealed shards 0
+    // and 1 into one, from the first shard's start, and the tail, now shard
+    // 1, extends to the new tip.
+    let tip = TOP + 3;
+    scan(&wallet.path, BIRTHDAY, TOP + 1, tip, 0);
+    let later = runtime.block_on(CapturingLwd::start_at_tip(u64::from(tip), main_hash(tip).0));
+    let [shard0, shard1, tail]: [ShardSpec; 3] =
+        publication(wallet.address, u64::from(tip), 0, String::new())
+            .try_into()
+            .ok()
+            .unwrap();
+    // A re-cut shard that keeps its geometry is a new revision of what it
+    // replaces, as is the renumbered tail.
+    let mut merged_events = shard0.events;
+    merged_events.extend(shard1.events);
+    let merged = ShardSpec {
+        revision: 1,
+        supersedes: first.digest(0),
+        ..ShardSpec::first(shard0.start, shard1.end, true, merged_events)
+    };
+    let tail = ShardSpec {
+        revision: 1,
+        supersedes: first.digest(2),
+        ..tail
+    };
+    let recut = ShardService::publish_recut(&[merged, tail], &first, shard0.start);
+    let seam = test_transport::set(&wallet.path, recut.observer());
+    sync(&wallet.path, &later).expect("a whole sync over the re-cut map completes");
+    requests.extend(seam.seam.observer.requests());
+
+    let balance = get_wallet_balance(&wallet.path, MAIN, &wallet.uuid).unwrap();
+    assert_eq!(
+        balance.transparent_authority,
+        TransparentBalanceAuthority::Current,
+        "{balance:?}"
+    );
+    assert_eq!(balance.transparent, RECEIVED, "{balance:?}");
+    assert_eq!(balance.transparent_stop, None, "{balance:?}");
+    assert_eq!(received(&wallet.path), before);
+    assert_private(&requests, &[secret(&wallet.address)]);
+    assert_eq!(disclosing(&lwd), Vec::<String>::new());
+    assert_eq!(disclosing(&later), Vec::<String>::new());
+}
+

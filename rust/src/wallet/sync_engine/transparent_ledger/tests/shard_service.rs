@@ -6,7 +6,7 @@
 //! The publisher and server are `zakura_pir_transparent::testing::service`;
 //! this module adds the events the coordinator tests publish and plugs the
 //! server into the transport's request observer. Every shard has the smallest
-//! published geometry and no re-cut. Block hashes follow the coordinator
+//! published geometry; a publication may declare re-cuts of an earlier one. Block hashes follow the coordinator
 //! tests' main chain (`main_hash`), so a wallet scanned with those tests'
 //! `scan` agrees with every shard boundary the service publishes inside its
 //! scanned range.
@@ -14,11 +14,13 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use transparent::address::TransparentAddress;
-use zakura_pir_transparent::testing::service::{publish, InProcess, SEAL};
+use zakura_pir_transparent::testing::service::{publish, superseded, InProcess, SEAL};
 use zakura_pir_transparent::testing::transparent_events::{
     ReceiveEvent, SpendEvent, TransparentEvent, Txid,
 };
-use zakura_pir_transparent::testing::transparent_filter::{BlockHash, ScriptBytes, ShardMap};
+use zakura_pir_transparent::testing::transparent_filter::{
+    BlockHash, Recut, ScriptBytes, ShardMap,
+};
 
 pub(super) use zakura_pir_transparent::testing::service::ShardSpec;
 
@@ -120,13 +122,35 @@ impl ShardService {
     /// block hash the publication names at or above it differs from the main
     /// chain's.
     pub(super) fn publish_forked(shards: &[ShardSpec], fork_from: u64) -> Self {
+        Self::publish_with(shards, fork_from, vec![])
+    }
+
+    /// Publishes `shards` as a re-cut of `earlier`'s publication from
+    /// `from_height` up: the map declares, as epoch 1, every shard `earlier`
+    /// published at or above that height superseded, exactly as published.
+    pub(super) fn publish_recut(shards: &[ShardSpec], earlier: &Self, from_height: u64) -> Self {
+        let recut = Recut {
+            epoch: 1,
+            from_height,
+            superseded: earlier
+                .map
+                .shards
+                .iter()
+                .filter(|entry| entry.end_height >= from_height)
+                .map(superseded)
+                .collect(),
+        };
+        Self::publish_with(shards, u64::MAX, vec![recut])
+    }
+
+    fn publish_with(shards: &[ShardSpec], fork_from: u64, recuts: Vec<Recut>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let map = publish(
             dir.path(),
             shards,
             SEAL,
             |height| synthetic(height, u8::from(height >= fork_from)),
-            vec![],
+            recuts,
         );
         Self {
             service: InProcess::serve(dir.path()),
