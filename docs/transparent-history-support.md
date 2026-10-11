@@ -11,15 +11,19 @@ measured by the H01-H13 suite on an isolated regtest chain, in two layers:
   the macOS app), in both modes.
 
 Latest runs: 2026-10-11, Rust layer only, branch `claude/tpir-private-history`
-at `c8c55feb9` (on #839 `4c7382d04`), with the five private-only variants
-(see Private-only variants). Same verdicts: private passes all 13 cases, now
-including every new variant; public fails only on G2, G4 and G5, and runs none
-of the new variants.
+at `186367e79` (on #839 `c42eac8ec`, wallet-libraries `ad963341`) with the
+five private-only variants (see Private-only variants). Same verdicts:
+private passes all 13 cases, including every new variant, with no privacy
+violation; public fails only on G2, G4 and G5, and runs none of the new
+variants. The first private run on this head failed only N_discover's check
+that a budget stop showed as more shard-map fetches, which the library's
+in-call continuation no longer produces; the check now compares the private
+work (see N_discover).
 
 | Run | Output | Time | Exit |
 |---|---|---|---|
-| Public, Rust layer | `public-2` | 401 s (with a rebuild) | 101 (G2, G4, G5) |
-| Private, Rust layer | `private-2` | 1,142 s (with a rebuild) | 0 |
+| Public, Rust layer | `public` | 373 s | 101 (G2, G4, G5) |
+| Private, Rust layer | `private2` | 1,170 s | 0 |
 
 These ran on a host without Docker access: the harness's `docker` commands
 went to a local stand-in that runs the zcashd (v6.20.0) and lightwalletd
@@ -27,8 +31,9 @@ went to a local stand-in that runs the zcashd (v6.20.0) and lightwalletd
 with the same ports, configuration and data directory. Nothing in the
 repository changed for it.
 
-Previous runs: 2026-10-10, Rust layer only, branch `claude/tpir-private-history`
-restacked on #839 `b7f8d4cc7`, wallet-libraries `bfbb4f4a`, wallet-pir
+Earlier, the variants passed the same way on `c8c55feb9` (on #839
+`4c7382d04`). Previous runs: 2026-10-10, Rust layer only, branch
+`claude/tpir-private-history` restacked on #839 `b7f8d4cc7`, wallet-libraries `bfbb4f4a`, wallet-pir
 `9d2cbda0`. The private profile now also serves txid display PIR, so private
 receipts fill their transparent details as production does. Both profiles
 were rerun on #839 `4c7382d04` (#957) on `24cd19a4e` (#959, #960, #961) and on
@@ -166,7 +171,7 @@ another party funded (#876).
 ## Private-only variants
 
 Run in the private profile only, after H13, so they change no chain an
-earlier checkpoint reads. Measured in `private-2`.
+earlier checkpoint reads. Measured in `private2`.
 
 | Variant | Case | Checked by | Result |
 |---|---|---|---|
@@ -202,21 +207,27 @@ private-queries preference: both accounts stay private and read `stopped`
 (`not_selected`) with their last known amounts; 15 lightwalletd requests,
 none with a transparent subject, and no transparent PIR query. With the tip
 unmoved the private ledger still covers it and authority stays `current`
-(the first run, `private-1`, which did not mine first).
+(an earlier run, which did not mine first).
 
-**N_discover.** Discovery at the default budget took 2 shard-map fetches, 6
-directory and 1 page query; at a query budget of 1, 4 shard-map fetches, 6
-directory and no page query: account 1's pages stopped a pass, and the
-continuation asked about the rest. Both found exactly accounts 1, 2 and 6.
-The import and the private sync sent lightwalletd 10 requests, none with a
-transparent subject, and each account's transparent balance was current and
-matched zcashd's address index.
+**N_discover.** Both discoveries found exactly accounts 1, 2 and 6. At the
+default budget discovery made 1 manifest, 2 setup, 6 directory and 1 page
+request; at a query budget of 1, the same except no page query: a pass
+stopped at its budget before account 1's pages, and the library's next pass
+asked about the rest. Wallet-libraries `ad963341` runs those passes inside
+one call over the shard map it already has, so the number of shard-map
+fetches no longer shows them (2 in both); the harness compares the private
+work instead, since a complete pass always does the same work. The import and
+the private sync sent lightwalletd 10 requests, none with a transparent
+subject, and each account's transparent balance was current and matched
+zcashd's address index.
 
 The Dart side of N_restart is in `test/providers/enhance_pir_provider_test.dart`
 ("a launch over a durably private wallet"): an unreadable saved preference is
 private for the launch and unconfirmed; a missing one is a fresh install's,
 which bootstrap records as off. Neither reconciles the wallet's policy, so a
-durably private wallet is never lowered at startup.
+durably private wallet is never lowered at startup; with the preference off,
+the single Private queries toggle (#966) stays on while the wallet reads
+privately, and turning it off is the disclosed opt-out.
 
 ## Fee presentation
 
@@ -360,8 +371,8 @@ fixed.
   behaviour.
 - **A missing preference over a private wallet.** A missing saved preference
   becomes off at bootstrap, so a durably private wallet then reads `stopped`
-  (`not_selected`) until private queries are turned on or the opt-out is
-  finished in Settings. It is never lowered silently.
+  (`not_selected`) until private queries are turned on or the Private
+  queries toggle is turned off. It is never lowered silently.
 
 ## Limits
 
