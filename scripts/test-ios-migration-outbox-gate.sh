@@ -45,7 +45,9 @@ private final class IronwoodMigrationNotificationGate {
 private final class BackgroundMigrationManager {
   static let shared = BackgroundMigrationManager()
   var handoffs = 0
+  var rearmResumes = 0
   func handoffToForeground() { handoffs += 1 }
+  func resumePendingDirectRouteRearm() { rearmResumes += 1 }
 }
 private final class AppDelegate: FlutterAppDelegate {
 ''' + callback + '''
@@ -60,8 +62,11 @@ final class BackgroundMigrationForegroundHandoffTests: XCTestCase {
   private func verifyHandoff(continuedProcessing: Bool) {
     supportsContinuedProcessing = continuedProcessing
     let before = BackgroundMigrationManager.shared.handoffs
+    let rearmsBefore = BackgroundMigrationManager.shared.rearmResumes
     AppDelegate().applicationWillEnterForeground(UIApplication())
     XCTAssertEqual(BackgroundMigrationManager.shared.handoffs, before + 1)
+    // A direct-route re-arm still owed is retried on every foreground entry.
+    XCTAssertEqual(BackgroundMigrationManager.shared.rearmResumes, rearmsBefore + 1)
   }
 }
 ''')
@@ -236,7 +241,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 28 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 30 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

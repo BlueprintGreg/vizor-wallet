@@ -48,6 +48,8 @@ import UIKit
     // version. Cancel its unsent requests before Dart can change the Tor setting.
     // The manager gates only the iOS 26 continued-preparation handoff itself.
     BackgroundMigrationManager.shared.handoffToForeground()
+    // A re-arm owed for the direct route that never got a confirmed wake.
+    BackgroundMigrationManager.shared.resumePendingDirectRouteRearm()
     super.applicationWillEnterForeground(application)
   }
 

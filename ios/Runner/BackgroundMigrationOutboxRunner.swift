@@ -155,6 +155,41 @@ final class BackgroundMigrationRouteGate: @unchecked Sendable {
   }
 }
 
+/// The durable obligation to re-arm background work after the saved route
+/// became direct. A Tor-deferred wake scheduled nothing after itself, so
+/// until a wake is confirmed this flag is the only record that one is owed. It
+/// survives the app being closed and is retried on the next foreground entry.
+/// It clears on a confirmed wake, when there is nothing to re-arm, or when Tor
+/// is saved again.
+enum BackgroundMigrationDirectRouteRearm {
+  static let defaultsKey = "vizor.migration.directRouteRearmPending"
+
+  static func markPending(defaults: UserDefaults = .standard) {
+    defaults.set(true, forKey: defaultsKey)
+  }
+
+  static func clear(defaults: UserDefaults = .standard) {
+    defaults.removeObject(forKey: defaultsKey)
+  }
+
+  static func isPending(defaults: UserDefaults = .standard) -> Bool {
+    defaults.bool(forKey: defaultsKey)
+  }
+}
+
+/// Whether a direct-route re-arm should keep the wake that is already pending.
+///
+/// Submitting a replacement cancels the pending request first, so a failed
+/// replacement would revoke a wake that was already in place, for example one
+/// a concurrent re-arm had just confirmed. A pending wake already satisfies the
+/// obligation.
+func backgroundMigrationShouldKeepPendingWake(
+  pendingIdentifiers: [String],
+  identifier: String
+) -> Bool {
+  pendingIdentifiers.contains(identifier)
+}
+
 /// What to re-arm once the saved route has become direct.
 struct BackgroundMigrationSavedRouteDirectActions: Equatable {
   /// Submit the outbox/preparation `BGProcessingTask` wake.

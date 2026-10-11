@@ -555,8 +555,12 @@ final class BackgroundMigrationManager {
   /// `backgroundMigrationSavedRouteDirectActions`. Submitting the wake
   /// replaces any pending request, so a repeated call schedules nothing extra.
   /// Completes with false only when a needed wake could not be submitted, so
-  /// Dart retries; nothing to re-arm is success.
+  /// Dart retries; nothing to re-arm is success. The obligation is recorded
+  /// durably first (`BackgroundMigrationDirectRouteRearm`) and cleared only
+  /// once satisfied, so a failure survives the app being closed. A wake that
+  /// is already pending is kept rather than replaced.
   func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
+    BackgroundMigrationDirectRouteRearm.markPending()
     let actions = backgroundMigrationSavedRouteDirectActions(
       torSelected: BackgroundMigrationTorRoute.isSelected(),
       hasRunnableOutboxWork: hasRunnableOutboxWork(),
@@ -568,10 +572,35 @@ final class BackgroundMigrationManager {
       }
     }
     guard actions.scheduleBackgroundWake else {
+      BackgroundMigrationDirectRouteRearm.clear()
       completion(true)
       return
     }
-    schedule(completion: completion)
+    BGTaskScheduler.shared.getPendingTaskRequests { [weak self] requests in
+      guard let self else {
+        completion(false)
+        return
+      }
+      if backgroundMigrationShouldKeepPendingWake(
+        pendingIdentifiers: requests.map(\.identifier),
+        identifier: Self.taskIdentifier
+      ) {
+        BackgroundMigrationDirectRouteRearm.clear()
+        completion(true)
+        return
+      }
+      self.schedule { scheduled in
+        if scheduled { BackgroundMigrationDirectRouteRearm.clear() }
+        completion(scheduled)
+      }
+    }
+  }
+
+  /// Retries a direct-route re-arm that was never confirmed, for example
+  /// because the app was closed while submissions kept failing.
+  func resumePendingDirectRouteRearm() {
+    guard BackgroundMigrationDirectRouteRearm.isPending() else { return }
+    savedRouteBecameDirect { _ in }
   }
 
   func cancel() {

@@ -1093,8 +1093,11 @@ void main() {
       expect(outcomes, isEmpty);
     });
 
-    test('stops retrying once a newer toggle owns the route', () async {
-      final events = <String>[];
+    ProviderContainer rearmContainer(
+      List<String> events,
+      List<Duration> delays,
+      Future<bool> Function() hook,
+    ) {
       final container = ProviderContainer(
         overrides: [
           networkPrivacyPreferenceStoreProvider.overrideWithValue(
@@ -1114,28 +1117,100 @@ void main() {
           ) async {
             await update();
           }),
-          networkPrivacyRearmRetryDelaysProvider.overrideWithValue(const [
-            Duration.zero,
-            Duration(milliseconds: 50),
-          ]),
-          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
-            () async {
-              events.add('rearm');
-              return false;
-            },
-          ),
+          networkPrivacyRearmRetryDelaysProvider.overrideWithValue(delays),
+          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(hook),
         ],
       );
       addTearDown(container.dispose);
+      return container;
+    }
+
+    Future<void> settle() async {
+      for (var i = 0; i < 50; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+    }
+
+    test(
+      'keeps retrying past the backoff list until native confirms',
+      () async {
+        final events = <String>[];
+        var calls = 0;
+        final container = rearmContainer(events, const [
+          Duration.zero,
+          Duration(milliseconds: 1),
+        ], () async => ++calls > 5);
+        final notifier = container.read(networkPrivacyProvider.notifier);
+
+        await notifier.setTorEnabled(true);
+        await notifier.setTorEnabled(false);
+        await settle();
+
+        // Five failures, well past the two listed delays, then success.
+        expect(calls, 6);
+      },
+    );
+
+    test('a repeated direct save keeps the pending re-arm', () async {
+      final events = <String>[];
+      var calls = 0;
+      final container = rearmContainer(events, const [
+        Duration.zero,
+        Duration(milliseconds: 20),
+      ], () async => ++calls > 1);
       final notifier = container.read(networkPrivacyProvider.notifier);
 
       await notifier.setTorEnabled(true);
       await notifier.setTorEnabled(false);
-      await Future<void>.delayed(Duration.zero);
-      await notifier.setTorEnabled(true);
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(calls, 1);
+      // Saved direct already, so this save owes nothing itself; it must not
+      // drop the obligation the first one took on.
+      await notifier.setTorEnabled(false);
+      await settle();
 
-      expect(events.where((event) => event == 'rearm'), hasLength(1));
+      expect(calls, 2);
+    });
+
+    test('stops once Tor is saved again', () async {
+      final events = <String>[];
+      var calls = 0;
+      final container = rearmContainer(
+        events,
+        const [Duration.zero, Duration(milliseconds: 20)],
+        () async {
+          calls++;
+          return false;
+        },
+      );
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      await notifier.setTorEnabled(true);
+      await settle();
+
+      expect(calls, 1);
+    });
+
+    test('a wallet reset drops the pending re-arm', () async {
+      final events = <String>[];
+      var calls = 0;
+      final container = rearmContainer(
+        events,
+        const [Duration.zero, Duration(milliseconds: 20)],
+        () async {
+          calls++;
+          return false;
+        },
+      );
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      notifier.markRouteDirectAfterReset();
+      await settle();
+
+      expect(calls, 1);
     });
 
     test('not when the saved route was already direct', () async {

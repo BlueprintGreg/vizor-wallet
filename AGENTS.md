@@ -706,8 +706,11 @@ policy-aware openers and fails closed while Tor is starting or broken.
   confirmations, so turning Tor off lets the next `startPreparation` re-arm
   them. Saving the direct route over a saved Tor route re-arms held-back
   outbox and preparation work through one path (`savedRouteBecameDirect`,
-  called after the write succeeds and retried with backoff until native
-  confirms, unless a newer toggle takes over); a failed save re-arms nothing and
+  called after the write succeeds). The re-arm is an obligation held until a
+  wake is confirmed: Dart retries with capped backoff across later direct
+  toggles, native records it durably (`BackgroundMigrationDirectRouteRearm`)
+  and retries it on foreground entry, an already-pending wake is kept rather
+  than replaced, and only saving Tor again or a wallet reset drops it; a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
   screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet
   reset clears the published saved route only after removing the preference

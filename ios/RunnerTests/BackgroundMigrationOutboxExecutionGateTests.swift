@@ -304,6 +304,35 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
 }
 
 final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
+  func testTheRearmObligationPersistsUntilCleared() throws {
+    let suite = "vizor.test.rearm." + UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+    BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
+    // A failed submission leaves it set, so the next foreground retries.
+    XCTAssertTrue(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+    BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+  }
+
+  func testAPendingWakeIsKeptRatherThanReplaced() {
+    // Replacing cancels first; a failed replacement would revoke a wake that
+    // a concurrent re-arm had already confirmed.
+    XCTAssertTrue(
+      backgroundMigrationShouldKeepPendingWake(
+        pendingIdentifiers: ["other", "com.keplr.vizor.ironwood-migration"],
+        identifier: "com.keplr.vizor.ironwood-migration"
+      )
+    )
+    XCTAssertFalse(
+      backgroundMigrationShouldKeepPendingWake(
+        pendingIdentifiers: ["other"],
+        identifier: "com.keplr.vizor.ironwood-migration"
+      )
+    )
+  }
+
   func testDirectRouteReArmsHeldBackOutboxAndPreparationWork() {
     XCTAssertEqual(
       backgroundMigrationSavedRouteDirectActions(

@@ -640,10 +640,10 @@ Future<bool> _rearmBackgroundMigrationForDirectRoute() async {
       false;
 }
 
-/// Waits before each attempt to re-arm background work for the direct route.
-/// A Tor-deferred wake scheduled nothing after itself, so a failed re-arm
-/// would otherwise leave that work without a native request until the app is
-/// reopened.
+/// Waits before each attempt to re-arm background work for the direct route;
+/// the last delay repeats until native confirms. A Tor-deferred wake scheduled
+/// nothing after itself, so a failed re-arm would otherwise leave that work
+/// without a native request.
 final networkPrivacyRearmRetryDelaysProvider = Provider<List<Duration>>(
   (_) => const [
     Duration.zero,
@@ -716,8 +716,18 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   /// Numbers each Tor save's background route fence lease.
   var _torSaveLeases = 0;
 
+  /// Background work is owed a re-arm for the direct route.
+  var _rearmPending = false;
+  var _rearmRunning = false;
+  var _disposed = false;
+
   @override
   NetworkPrivacyState build() {
+    _disposed = false;
+    ref.onDispose(() {
+      _disposed = true;
+      _rearmPending = false;
+    });
     final pending = _pendingStartupActivation;
     if (pending != null) {
       _pendingStartupActivation = null;
@@ -751,6 +761,8 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   void markRouteDirectAfterReset() {
     _startupActivationSuperseded = true;
     ++_generation;
+    // The wallet whose background work was owed a re-arm no longer exists.
+    _rearmPending = false;
     final off = NetworkPrivacyState(
       torEnabled: false,
       status: NetworkPrivacyConnectionStatus.off,
@@ -878,6 +890,10 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         await _endTorSave(backgroundRoute, saveLease);
       }
       savedTorEnabled = true;
+      // Saved Tor refuses every background request, so a re-arm still owed
+      // for the direct route has nothing left to do; the next direct save
+      // takes on a new one.
+      _rearmPending = false;
       if (generation != _generation) return;
       runtime.beginEnable();
     } else {
@@ -949,12 +965,9 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           // to wake it, so re-arm it here, once, now that the saved route
           // is direct.
           if (heldBackByTor) {
-            unawaited(
-              _rearmForDirectRoute(
-                savedRouteDirect,
-                generation,
-                ref.read(networkPrivacyRearmRetryDelaysProvider),
-              ),
+            _requestDirectRouteRearm(
+              savedRouteDirect,
+              ref.read(networkPrivacyRearmRetryDelaysProvider),
             );
           }
         } finally {
@@ -1040,18 +1053,45 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     }
   }
 
-  /// Retries until native confirms the re-arm, or a newer toggle owns the
-  /// route (a Tor save would refuse the work anyway).
-  Future<void> _rearmForDirectRoute(
+  /// Takes on the obligation to re-arm background work for the direct route.
+  /// A later toggle does not cancel it, even one that saves direct again and
+  /// so takes on no obligation of its own; it ends only as described in
+  /// [_runDirectRouteRearm]. One loop serves every request.
+  void _requestDirectRouteRearm(
     NetworkPrivacySavedRouteDirectHook savedRouteDirect,
-    int generation,
+    List<Duration> retryDelays,
+  ) {
+    _rearmPending = true;
+    if (_rearmRunning) return;
+    _rearmRunning = true;
+    unawaited(
+      _runDirectRouteRearm(
+        savedRouteDirect,
+        retryDelays,
+      ).whenComplete(() => _rearmRunning = false),
+    );
+  }
+
+  /// Retries until native confirms the re-arm, Tor is saved again (a
+  /// background request would be refused anyway, and the next direct save
+  /// re-arms), a wallet reset, or disposal. Native also records the
+  /// obligation durably and retries it on the next foreground entry.
+  Future<void> _runDirectRouteRearm(
+    NetworkPrivacySavedRouteDirectHook savedRouteDirect,
     List<Duration> retryDelays,
   ) async {
-    for (final delay in retryDelays) {
+    for (var attempt = 0; ; attempt++) {
+      final delay =
+          retryDelays[attempt < retryDelays.length
+              ? attempt
+              : retryDelays.length - 1];
       if (delay > Duration.zero) await Future<void>.delayed(delay);
-      if (generation != _generation) return;
+      if (!_rearmPending || _disposed) return;
       try {
-        if (await savedRouteDirect()) return;
+        if (await savedRouteDirect()) {
+          _rearmPending = false;
+          return;
+        }
       } catch (error, stackTrace) {
         debugPrint(
           'NetworkPrivacyNotifier: failed to re-arm background work for the '
@@ -1059,10 +1099,6 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         );
       }
     }
-    debugPrint(
-      'NetworkPrivacyNotifier: gave up re-arming background work for the '
-      'direct route; it re-arms when migration next schedules it.',
-    );
   }
 
   Future<void> retry() =>
