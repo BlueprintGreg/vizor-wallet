@@ -70,9 +70,6 @@ class TransparentBalanceDisplay {
       'Private recovery found conflicting records for this account. Turning '
           'off Private queries discards privately recovered records and looks '
           'up transparent funds publicly.',
-    rust_sync.TransparentStopReason.ledger =>
-      'Ledger transparent funds are not recovered privately. Turning off '
-          'Private queries looks up transparent funds publicly.',
     rust_sync.TransparentStopReason.legacyDiscrepancy =>
       "Earlier public records don't match private recovery. Turning off "
           'Private queries discards privately recovered records and looks up '

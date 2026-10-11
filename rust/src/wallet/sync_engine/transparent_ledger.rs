@@ -40,7 +40,7 @@
 //! for a lagging publication or an overloaded service take at most
 //! [`PUBLICATION_WAIT_CAP`] in all. An account that cannot progress is held
 //! in memory for [`HOLD`] and skipped without traffic, as is a quarantined
-//! account and, under `PrivateRequired`, a Ledger account.
+//! account. Software and hardware accounts recover from their stored birthday.
 //!
 //! Private queries off captures `Public`, so [`run`] returns before any read
 //! or request. On supported mainnet, private queries on captures
@@ -69,7 +69,6 @@ use zcash_client_sqlite::{error::SqliteClientError, AccountUuid};
 use super::enhancement::{may_raise, EnhancementPolicy};
 use super::{watch_for_exit, SyncError};
 use crate::wallet::db::{with_wallet_db_write_lock, WalletDatabase};
-use crate::wallet::keys::{self, HardwareSignerKind};
 use crate::wallet::network::WalletNetwork;
 
 #[cfg(test)]
@@ -186,8 +185,6 @@ pub(crate) struct RunStats {
     pub(crate) promoted: usize,
     /// Time spent waiting for a lagging publication or an overloaded service.
     pub(crate) publication_wait: Duration,
-    /// Ledger accounts skipped under `PrivateRequired`.
-    pub(crate) paused_ledger: usize,
     /// Quarantined accounts skipped.
     pub(crate) quarantined: usize,
     /// Held accounts skipped.
@@ -439,12 +436,6 @@ impl<S: RecoverySource> Run<'_, S> {
     /// Whether `account` is skipped in this run without a source call,
     /// counting why.
     fn skip(&mut self, account: AccountUuid, now: Instant) -> Result<bool, SyncError> {
-        // Recovery from the birthday would miss a Ledger account's earlier
-        // history, and its public discovery is withheld.
-        if is_ledger(self.db, account)? {
-            self.stats.paused_ledger += 1;
-            return Ok(true);
-        }
         if let Some(cause) = hold_at(self.db_path, account, now) {
             log::info!("transparent ledger: skipping a held account ({cause:?})");
             self.stats.held += 1;
@@ -697,16 +688,6 @@ impl<S: RecoverySource> Run<'_, S> {
             Err(error) => Err(db_error(error)),
         }
     }
-}
-
-/// Whether `account` is a Ledger account.
-fn is_ledger(db: &WalletDatabase, account: AccountUuid) -> Result<bool, SyncError> {
-    Ok(db
-        .get_account(account)
-        .map_err(db_error)?
-        .is_some_and(|account| {
-            keys::hardware_signer_kind(account.source()) == Some(HardwareSignerKind::Ledger)
-        }))
 }
 
 /// Whether `account` is quarantined, from its private snapshot.

@@ -938,6 +938,63 @@ fn empty_filter_service(map: Arc<Mutex<Vec<u8>>>) -> RequestObserver {
     })
 }
 
+/// Exercise Ledger through the production source and adapter, including a
+/// publication beginning before the stored birthday. No live service is used.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pir_source_recovers_ledger_from_its_birthday() {
+    let _route = crate::network_privacy::test_route_policy::lock_route_policy();
+    let wallet = main_wallet(1);
+    let uuid = super::qualification::import_main_ledger(&wallet.path);
+    let account = keys::parse_account_uuid(&uuid).unwrap();
+    scan(&wallet.path, BIRTHDAY, BIRTHDAY, TOP, 0);
+    let _mode = test_mode::set(&wallet.path, TransparentLedgerMode::PrivateRequired);
+    let mut db = open_wallet_db_with_timeout(&wallet.path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
+    db.apply_transparent_policy(TransparentLedgerMode::PrivateRequired)
+        .unwrap();
+    let watch = db.transparent_watch_set(account).unwrap();
+    assert!(watch
+        .addresses
+        .iter()
+        .all(|address| address.required_from == BIRTHDAY.into()));
+    let observer = empty_filter_service(Arc::new(Mutex::new(empty_filter_map(BIRTHDAY - 1, 0))));
+    let _transport = test_transport::set(&wallet.path, observer.clone());
+    let source = TransparentPirSource::new(&wallet.path, MAIN);
+    let RunOutcome::Finished(stats) = run(
+        &mut db,
+        &wallet.path,
+        MAIN,
+        policy(TransparentLedgerMode::PrivateRequired),
+        &source,
+        Some(account),
+        now,
+        &|| false,
+    )
+    .await
+    .unwrap() else {
+        panic!("recovery finishes");
+    };
+    assert_eq!(stats.promoted, 2);
+    let recovered = db.transparent_candidate_recovery(account).unwrap();
+    assert_eq!(recovered.covered_through, Some(TOP.into()));
+    assert!(recovered.blockers.is_empty());
+    assert_eq!(
+        db.transparent_watch_set(account).unwrap().lifecycle,
+        AccountLifecycle::Active
+    );
+    let requests = observer.requests();
+    assert!(!requests.is_empty());
+    let secrets: Vec<Vec<u8>> = watch
+        .addresses
+        .iter()
+        .map(|address| match address.address {
+            TransparentAddress::PublicKeyHash(hash) | TransparentAddress::ScriptHash(hash) => {
+                hash.to_vec()
+            }
+        })
+        .collect();
+    assert_private(&requests, &secrets);
+}
+
 /// Moves the wallet's policy generation on, as a transition by another
 /// connection would, without changing its mode.
 fn bump_policy_generation(path: &str) {

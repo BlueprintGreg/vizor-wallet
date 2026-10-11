@@ -14570,11 +14570,10 @@ impl SseDecode for crate::api::sync::TransparentStopReason {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
             0 => crate::api::sync::TransparentStopReason::Quarantined,
-            1 => crate::api::sync::TransparentStopReason::Ledger,
-            2 => crate::api::sync::TransparentStopReason::LegacyDiscrepancy,
-            3 => crate::api::sync::TransparentStopReason::Withdrawn,
-            4 => crate::api::sync::TransparentStopReason::Stalled,
-            5 => crate::api::sync::TransparentStopReason::NotSelected,
+            1 => crate::api::sync::TransparentStopReason::LegacyDiscrepancy,
+            2 => crate::api::sync::TransparentStopReason::Withdrawn,
+            3 => crate::api::sync::TransparentStopReason::Stalled,
+            4 => crate::api::sync::TransparentStopReason::NotSelected,
             _ => unreachable!("Invalid variant for TransparentStopReason: {}", inner),
         };
     }
@@ -19445,11 +19444,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::TransparentStopReason {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
             Self::Quarantined => 0.into_dart(),
-            Self::Ledger => 1.into_dart(),
-            Self::LegacyDiscrepancy => 2.into_dart(),
-            Self::Withdrawn => 3.into_dart(),
-            Self::Stalled => 4.into_dart(),
-            Self::NotSelected => 5.into_dart(),
+            Self::LegacyDiscrepancy => 1.into_dart(),
+            Self::Withdrawn => 2.into_dart(),
+            Self::Stalled => 3.into_dart(),
+            Self::NotSelected => 4.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -23369,11 +23367,10 @@ impl SseEncode for crate::api::sync::TransparentStopReason {
         <i32>::sse_encode(
             match self {
                 crate::api::sync::TransparentStopReason::Quarantined => 0,
-                crate::api::sync::TransparentStopReason::Ledger => 1,
-                crate::api::sync::TransparentStopReason::LegacyDiscrepancy => 2,
-                crate::api::sync::TransparentStopReason::Withdrawn => 3,
-                crate::api::sync::TransparentStopReason::Stalled => 4,
-                crate::api::sync::TransparentStopReason::NotSelected => 5,
+                crate::api::sync::TransparentStopReason::LegacyDiscrepancy => 1,
+                crate::api::sync::TransparentStopReason::Withdrawn => 2,
+                crate::api::sync::TransparentStopReason::Stalled => 3,
+                crate::api::sync::TransparentStopReason::NotSelected => 4,
                 _ => {
                     unimplemented!("");
                 }

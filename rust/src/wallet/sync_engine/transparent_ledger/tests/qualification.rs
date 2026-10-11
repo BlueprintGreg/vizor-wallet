@@ -619,7 +619,7 @@ fn watched_hashes(db: &WalletDatabase, account: AccountUuid) -> Vec<Vec<u8>> {
 
 /// Imports a Ledger account into the mainnet wallet at `path`. Returns its
 /// UUID text.
-fn import_main_ledger(path: &str) -> String {
+pub(super) fn import_main_ledger(path: &str) -> String {
     use secrecy::ExposeSecret;
     let seed = keys::mnemonic_to_seed(&keys::generate_mnemonic()).unwrap();
     let ufvk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
@@ -718,8 +718,7 @@ async fn an_activated_wallet_discloses_nothing_through_any_lane_including_the_pi
     assert_eq!(raised.mode, TransparentLedgerMode::PrivateRequired);
     let mut db = open_wallet_db_with_timeout(&path, MAIN, SYNC_DB_BUSY_TIMEOUT).unwrap();
 
-    // A trusted recovery promotes the software account; the Ledger account
-    // pauses.
+    // A trusted recovery promotes both software and Ledger accounts.
     let fixture = FixtureSource::new(main_hash);
     fixture
         .receive(reported_at(address, &tx, MAIN_LEGACY_HEIGHT))
@@ -738,7 +737,17 @@ async fn an_activated_wallet_discloses_nothing_through_any_lane_including_the_pi
     .unwrap() else {
         panic!("recovery finishes");
     };
-    assert_eq!((stats.promoted, stats.paused_ledger), (1, 1));
+    assert_eq!(stats.promoted, 2);
+    let ledger_uuid: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT lower(hex(uuid)) FROM accounts WHERE key_source = ?1",
+            [keys::KEY_SOURCE_LEDGER],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ledger = AccountUuid::from_uuid(uuid::Uuid::parse_str(&ledger_uuid).unwrap());
+    assert!(fixture.calls_for(ledger) > 0);
     let current = || get_wallet_balance(&path, MAIN, &uuid).unwrap();
     assert_eq!(
         (current().transparent_authority, current().transparent),
