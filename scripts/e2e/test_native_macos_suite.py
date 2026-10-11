@@ -153,6 +153,21 @@ class SuiteTests(unittest.TestCase):
             with self.assertRaisesRegex(e2e_catalog.CatalogError,"zero scenarios"):
                 e2e_catalog.select_scenarios(self.catalog,failed_from=Path(item["report"]))
 
+    def test_producers_and_cases_share_one_run_scoped_digest_memo(self):
+        tables = []
+        self.on_build = lambda evidence: tables.append(SUITE.content_memo._table)
+        execute = self.execute
+        def scoped(*args, **kwargs):
+            tables.append(SUITE.content_memo._table)
+            return execute(*args, **kwargs)
+        self.execute = scoped
+        code, _, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(tables), 3)  # The signer producer and both repetitions' cases.
+        self.assertIsInstance(tables[0], dict)
+        self.assertTrue(all(table is tables[0] for table in tables))
+        self.assertIsNone(SUITE.content_memo._table)
+
     def test_short_dispatch_keeps_catalog_result_order_and_separate_budgets(self):
         self.args.workers, self.args.repeat = 1, 1
         self.scenarios = tuple(self.catalog.scenarios_by_id[name] for name in (

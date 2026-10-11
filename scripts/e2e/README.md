@@ -1299,6 +1299,23 @@ driver siblings and configured PATH lookups. Collection never executes those
 configured tools. The signer and voting builders use the same collector and
 recheck its inputs before publication, including after the original owner seals.
 
+Within one `run_native_suite` invocation, `content_memo.py` reuses whole-file
+SHA-256 digests across the producers and the case phase. The four file captures
+(`toolchain_inputs.file_record`, `native_zakura_front._capture`,
+`funder_build._file_record` and `native_build_cache._original_bundle_file`) look
+up the opened file's `(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)` only
+after their own checks, and a hit skips only the read: canonical paths, owners,
+parent and file modes, link counts, size bounds, executable bits and the
+post-read identity checks still run every time. A digest is stored only when
+that stat is unchanged after the read and the file last changed at least 2
+seconds before the capture began. Ordinary writes, truncation, replacement,
+`chmod` and `utime` all change the key, since ctime cannot be set back. A write
+through a shared memory mapping that has not been synced does not change the
+stat yet, so a reused digest can miss it. The front's package configuration is
+always read, because its bytes are parsed. Digests are never kept between runs,
+so each run hashes every file at least once; direct callers outside the suite
+run without the memo.
+
 macOS and iOS producers share one checkout-wide lock under
 `.regtest-logs/native-build-locks` from source capture through publication, even
 with different artifact keys/cache roots or with caching disabled. Different
@@ -1384,7 +1401,7 @@ Gift SDK repair or same-final-source21/64-case coverage. The public iOS catalog
 remains pending until its functional integration gate is satisfied.
 
 ```bash
-python3.11 -B -m unittest scripts/e2e/test_native_build_cache.py scripts/e2e/test_native_ios_build.py scripts/e2e/test_native_macos_build.py scripts/e2e/test_native_macos_suite.py
+python3.11 -B -m unittest scripts/e2e/test_native_build_cache.py scripts/e2e/test_native_ios_build.py scripts/e2e/test_native_macos_build.py scripts/e2e/test_native_macos_suite.py scripts/e2e/test_content_memo.py
 ```
 
 ### Immutable voting executable cache

@@ -16,7 +16,9 @@ import shutil
 import stat
 import tarfile
 import threading
+import time
 
+import content_memo
 import e2e_runtime as runtime
 from native_case_lifecycle import NativeCaseLifecycle
 import native_owned_tree as tree
@@ -48,6 +50,7 @@ def _relative(name):
 
 
 def _file_record(path, *, executable=False, limit=_MAX_SOURCE_BYTES):
+    started_ns = time.time_ns()
     if not path.is_absolute() or path.resolve(strict=True) != path:
         raise FunderBuildError("artifact path is not canonical")
     with contextlib.ExitStack() as stack:
@@ -58,13 +61,19 @@ def _file_record(path, *, executable=False, limit=_MAX_SOURCE_BYTES):
         tree.check(before, directory=False)
         if before.st_size > limit or (executable and not before.st_mode & stat.S_IXUSR):
             raise FunderBuildError("artifact size or executable mode is invalid")
-        digest = hashlib.sha256()
-        with os.fdopen(os.dup(descriptor), "rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        if tree.identity(os.fstat(descriptor)) != tree.identity(before):
+        hexdigest = content_memo.lookup(before)
+        if hexdigest is None:
+            digest = hashlib.sha256()
+            with os.fdopen(os.dup(descriptor), "rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        after = os.fstat(descriptor)
+        if tree.identity(after) != tree.identity(before):
             raise FunderBuildError("artifact changed while capturing its bytes")
-        return tree.identity(before), digest.hexdigest()
+        if hexdigest is None:
+            hexdigest = digest.hexdigest()
+            content_memo.store(before, after, hexdigest, started_ns)
+        return tree.identity(before), hexdigest
 
 
 class ProducedRegtestFunder:

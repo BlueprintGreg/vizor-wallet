@@ -12,9 +12,11 @@ import shlex
 import shutil
 import stat
 import sys
+import time
 import uuid
 from urllib.parse import unquote, urljoin, urlparse
 
+import content_memo
 from funder_cache import FunderCacheLease, FunderCacheError, _json, _read, _rename_exclusive
 from funder_build import _file_record, _MAX_BINARY_BYTES
 from native_case_lifecycle import NativeCaseLifecycle
@@ -62,6 +64,7 @@ def _original_bundle_file(path):
     # Joined SDK output can contain group-writable assets (Flutter's stock
     # Material Icons font). Never change that output or publish those modes:
     # bind exact bytes/attachment while copying, then seal independent files.
+    started_ns = time.time_ns()
     descriptor = os.open(path, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     try:
         before = os.fstat(descriptor)
@@ -69,17 +72,23 @@ def _original_bundle_file(path):
             or before.st_mode & 0o002 or before.st_nlink < 1 or before.st_size > _MAX_BINARY_BYTES
             or path.resolve(strict=True) != path):
             raise NativeBuildCacheError("original SDK resource is not a bounded owned regular file")
-        digest, count = hashlib.sha256(), 0
-        with os.fdopen(os.dup(descriptor),"rb") as reader:
-            for chunk in iter(lambda:reader.read(1024*1024),b""):
-                count += len(chunk)
-                if count > _MAX_BINARY_BYTES:
-                    raise NativeBuildCacheError("original SDK resource grew beyond its bound")
-                digest.update(chunk)
+        hexdigest = content_memo.lookup(before)
+        if hexdigest is None:
+            digest, count = hashlib.sha256(), 0
+            with os.fdopen(os.dup(descriptor),"rb") as reader:
+                for chunk in iter(lambda:reader.read(1024*1024),b""):
+                    count += len(chunk)
+                    if count > _MAX_BINARY_BYTES:
+                        raise NativeBuildCacheError("original SDK resource grew beyond its bound")
+                    digest.update(chunk)
         identity = tree.identity(before)
-        if tree.identity(os.fstat(descriptor)) != identity or tree.identity(path.lstat()) != identity:
+        after = os.fstat(descriptor)
+        if tree.identity(after) != identity or tree.identity(path.lstat()) != identity:
             raise NativeBuildCacheError("original SDK resource changed during inspection")
-        return identity,digest.hexdigest()
+        if hexdigest is None:
+            hexdigest = digest.hexdigest()
+            content_memo.store(before, after, hexdigest, started_ns)
+        return identity,hexdigest
     finally:
         os.close(descriptor)
 

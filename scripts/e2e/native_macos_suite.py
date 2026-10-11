@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 
+import content_memo
 import e2e_runtime as runtime
 from e2e_schedule import schedule_scenarios
 from funder_build import build_regtest_funder
@@ -473,81 +474,82 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
     ios_preparation_slots = (threading.BoundedSemaphore(report["resource_budget"]["ios_preparation_slots"])
         if report["resource_budget"]["ios_preparation_slots"] else None)
     try:
-        _console("Building selected native artifacts once; logs: "+str(evidence))
-        # Selection-independent inputs: the signer always carries every catalog
-        # Rust target and the address tool, and every macOS cohort compiles the
-        # same derived TEX fixture, so any subset reuses the same cache entries.
-        targets = tuple(dict.fromkeys(target for target, _ in RUST_CASES.values()))
-        selected_targets = tuple(dict.fromkeys(s.target for s in scenarios if s.engine == "rust"))
-        needs_addresses = any(s.engine == "flutter-macos" for s in scenarios)
-        needs_ios_addresses = any(s.id in IOS_MIGRATION_SCENARIOS for s in scenarios)
-        producer = build_case(1, "rust.signer-build", "rust")
-        cache_parent = logs / "build-cache"
-        cache_parent.mkdir(mode=0o700, exist_ok=True)
-        artifact = build_regtest_funder(producer,
-            source_root=root, source_commit=commit, jobs=args.build_jobs, timeout=1200,
-            cancel_event=cancel, test_targets=targets, wallet_addresses=True,
-            cache_root=cache_parent / "funder-v1")
-        identity = artifact.identity()
-        report["builds"]["signer_build_count"] = identity["cargo_build_count"]
-        report["builds"]["signer_cache_hit"] = identity["cache_hit"]
-        report["builds"]["signer_cache_key"] = identity.get("cache_key")
-        report["builds"].update(rust_build_count=identity["cargo_build_count"],
-            rust_built_test_targets=list(targets), rust_test_targets=list(selected_targets))
-        payment_addresses = {}
-        ios_addresses = None
-        if needs_ios_addresses:
-            ios_addresses = derive_ios_migration_addresses(build_case(5, "rust.ios-wallet-addresses", "rust"),
-                artifact, scenarios, cancel=cancel)
-            report["builds"]["ios_note_address_count"] = len(ios_addresses["note_addresses"])
-        if needs_addresses:
-            payment_addresses = derive_payment_addresses(build_case(2,"rust.wallet-addresses", "rust"),
-                artifact, cancel=cancel)
-            report["builds"]["payment_addresses"] = payment_addresses
-        helper = None
-        if any(s.engine == "flutter-macos" for s in scenarios):
-            helper, build_proof = build_native_macos_cohort(build_case(0,"flutter.macos.native-build"),
-                source_root=root, flutter=args.flutter, cancel_event=cancel,
-                tex_address=payment_addresses.get("receiver_tex"), cache_root=cache_parent/"macos-cohort-v1")
-            report["builds"].update(build_proof)
-        ios_cohort = None
-        if any(s.engine == "flutter-ios" for s in scenarios):
-            ios_cohort, ios_proof = build_native_ios_cohort(build_case(4,"flutter.ios.native-build","ios"),
-                source_root=root, flutter=args.flutter, cancel_event=cancel, cache_root=cache_parent/"ios-cohort-v2")
-            report["builds"]["ios"] = ios_proof
-        voting_artifact = None
-        if any(s.id in VOTING_SCENARIOS for s in scenarios):
-            voting_artifact, voting_proof = build_voting_artifacts(
-                build_case(3,"rust.voting-build","rust"),
-                sdk_cache=args.voting_sdk_cache, pir_cache=args.voting_pir_cache,
-                cache_root=cache_parent/"voting-v1", jobs=args.build_jobs, cancel_event=cancel)
-            report["builds"].update(voting_build_count=voting_proof["build_count"], voting_proof=voting_proof)
-        dart = (args.flutter.resolve(strict=True).parent/"cache/dart-sdk/bin/dart").resolve(strict=True)
-        repetitions = []
-        for repetition in range(args.repeat):
-            repeated = evidence/("repetition-"+str(repetition))
-            repeated.mkdir(mode=0o700)
-            repeated_id = uuid.uuid4().hex[:10]
-            repetitions.append((repeated, repeated_id))
-        # Dispatch equal-duration repetitions next to each other rather than
-        # enqueueing a long first-repetition tail ahead of short later repeats.
-        jobs = [(repetition, index, scenarios[index]) for index in schedule.indices
-                for repetition in range(args.repeat)]
-        results = [[] for _ in repetitions]
-        with ThreadPoolExecutor(max_workers=report["resource_budget"]["case_slots"]) as pool:
-            submitted = {pool.submit(execute_case,*repetitions[repetition],index,scenario,
-                helper=helper,artifact=artifact,source_root=root,dart=dart,args=args,cancel=cancel,
-                desktop_transparent=payment_addresses.get("desktop_transparent"),
-                voting_artifact=voting_artifact, ios_cohort=ios_cohort, ios_addresses=ios_addresses,
-                ios_preparation_slots=ios_preparation_slots):(repetition,index)
-                for repetition,index,scenario in jobs}
-            for future in as_completed(submitted):
-                repetition,index = submitted[future]
-                item = future.result()
-                results[repetition].append((index,item))
-                retained.extend(item.get("retained") or ())
-                _console("Completed " + item["scenario_id"] + ": " + item["status"] +
-                    " (" + str(item.get("duration_seconds", 0)) + "s)")
+        with content_memo.run_scope():
+            _console("Building selected native artifacts once; logs: "+str(evidence))
+            # Selection-independent inputs: the signer always carries every catalog
+            # Rust target and the address tool, and every macOS cohort compiles the
+            # same derived TEX fixture, so any subset reuses the same cache entries.
+            targets = tuple(dict.fromkeys(target for target, _ in RUST_CASES.values()))
+            selected_targets = tuple(dict.fromkeys(s.target for s in scenarios if s.engine == "rust"))
+            needs_addresses = any(s.engine == "flutter-macos" for s in scenarios)
+            needs_ios_addresses = any(s.id in IOS_MIGRATION_SCENARIOS for s in scenarios)
+            producer = build_case(1, "rust.signer-build", "rust")
+            cache_parent = logs / "build-cache"
+            cache_parent.mkdir(mode=0o700, exist_ok=True)
+            artifact = build_regtest_funder(producer,
+                source_root=root, source_commit=commit, jobs=args.build_jobs, timeout=1200,
+                cancel_event=cancel, test_targets=targets, wallet_addresses=True,
+                cache_root=cache_parent / "funder-v1")
+            identity = artifact.identity()
+            report["builds"]["signer_build_count"] = identity["cargo_build_count"]
+            report["builds"]["signer_cache_hit"] = identity["cache_hit"]
+            report["builds"]["signer_cache_key"] = identity.get("cache_key")
+            report["builds"].update(rust_build_count=identity["cargo_build_count"],
+                rust_built_test_targets=list(targets), rust_test_targets=list(selected_targets))
+            payment_addresses = {}
+            ios_addresses = None
+            if needs_ios_addresses:
+                ios_addresses = derive_ios_migration_addresses(build_case(5, "rust.ios-wallet-addresses", "rust"),
+                    artifact, scenarios, cancel=cancel)
+                report["builds"]["ios_note_address_count"] = len(ios_addresses["note_addresses"])
+            if needs_addresses:
+                payment_addresses = derive_payment_addresses(build_case(2,"rust.wallet-addresses", "rust"),
+                    artifact, cancel=cancel)
+                report["builds"]["payment_addresses"] = payment_addresses
+            helper = None
+            if any(s.engine == "flutter-macos" for s in scenarios):
+                helper, build_proof = build_native_macos_cohort(build_case(0,"flutter.macos.native-build"),
+                    source_root=root, flutter=args.flutter, cancel_event=cancel,
+                    tex_address=payment_addresses.get("receiver_tex"), cache_root=cache_parent/"macos-cohort-v1")
+                report["builds"].update(build_proof)
+            ios_cohort = None
+            if any(s.engine == "flutter-ios" for s in scenarios):
+                ios_cohort, ios_proof = build_native_ios_cohort(build_case(4,"flutter.ios.native-build","ios"),
+                    source_root=root, flutter=args.flutter, cancel_event=cancel, cache_root=cache_parent/"ios-cohort-v2")
+                report["builds"]["ios"] = ios_proof
+            voting_artifact = None
+            if any(s.id in VOTING_SCENARIOS for s in scenarios):
+                voting_artifact, voting_proof = build_voting_artifacts(
+                    build_case(3,"rust.voting-build","rust"),
+                    sdk_cache=args.voting_sdk_cache, pir_cache=args.voting_pir_cache,
+                    cache_root=cache_parent/"voting-v1", jobs=args.build_jobs, cancel_event=cancel)
+                report["builds"].update(voting_build_count=voting_proof["build_count"], voting_proof=voting_proof)
+            dart = (args.flutter.resolve(strict=True).parent/"cache/dart-sdk/bin/dart").resolve(strict=True)
+            repetitions = []
+            for repetition in range(args.repeat):
+                repeated = evidence/("repetition-"+str(repetition))
+                repeated.mkdir(mode=0o700)
+                repeated_id = uuid.uuid4().hex[:10]
+                repetitions.append((repeated, repeated_id))
+            # Dispatch equal-duration repetitions next to each other rather than
+            # enqueueing a long first-repetition tail ahead of short later repeats.
+            jobs = [(repetition, index, scenarios[index]) for index in schedule.indices
+                    for repetition in range(args.repeat)]
+            results = [[] for _ in repetitions]
+            with ThreadPoolExecutor(max_workers=report["resource_budget"]["case_slots"]) as pool:
+                submitted = {pool.submit(execute_case,*repetitions[repetition],index,scenario,
+                    helper=helper,artifact=artifact,source_root=root,dart=dart,args=args,cancel=cancel,
+                    desktop_transparent=payment_addresses.get("desktop_transparent"),
+                    voting_artifact=voting_artifact, ios_cohort=ios_cohort, ios_addresses=ios_addresses,
+                    ios_preparation_slots=ios_preparation_slots):(repetition,index)
+                    for repetition,index,scenario in jobs}
+                for future in as_completed(submitted):
+                    repetition,index = submitted[future]
+                    item = future.result()
+                    results[repetition].append((index,item))
+                    retained.extend(item.get("retained") or ())
+                    _console("Completed " + item["scenario_id"] + ": " + item["status"] +
+                        " (" + str(item.get("duration_seconds", 0)) + "s)")
         for index,((repeated,repeated_id),items) in enumerate(zip(repetitions,results)):
             items = [item for _,item in sorted(items)]
             path = repeated/"run.json"

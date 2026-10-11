@@ -17,6 +17,7 @@ import threading
 import time
 from urllib.parse import urljoin, urlparse, unquote
 
+import content_memo
 import e2e_runtime as runtime
 from native_case_lifecycle import NativeCaseLifecycle
 import native_owned_tree as tree
@@ -59,27 +60,36 @@ def _same_lightd_info(earlier, later):
 
 
 def _capture(path, *, chunks=None):
+    started_ns = time.time_ns()
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         details = os.fstat(descriptor)
         if (not stat.S_ISREG(details.st_mode) or details.st_uid not in {0, os.getuid()}
             or details.st_mode & 0o022 or details.st_nlink != 1 or details.st_size > 32 * 1024 * 1024):
             raise NativeZakuraFrontError("front source/tool must be an owned bounded regular file")
-        digest = hashlib.sha256()
-        total = 0
-        with os.fdopen(descriptor, "rb", closefd=False) as source:
-            for chunk in iter(lambda: source.read(min(64 * 1024, details.st_size - total + 1)), b""):
-                total += len(chunk)
-                if total > details.st_size:
-                    raise NativeZakuraFrontError("front source/tool grew during capture")
-                digest.update(chunk)
-                if chunks is not None:
-                    chunks.append(chunk)
+        # A caller that parses the bytes (chunks) always reads them; no memo either way.
+        hexdigest = content_memo.lookup(details) if chunks is None else None
+        if hexdigest is None:
+            digest = hashlib.sha256()
+            total = 0
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                for chunk in iter(lambda: source.read(min(64 * 1024, details.st_size - total + 1)), b""):
+                    total += len(chunk)
+                    if total > details.st_size:
+                        raise NativeZakuraFrontError("front source/tool grew during capture")
+                    digest.update(chunk)
+                    if chunks is not None:
+                        chunks.append(chunk)
         identity = tree.identity(details)
-        if (tree.identity(os.fstat(descriptor)) != identity
+        after = os.fstat(descriptor)
+        if (tree.identity(after) != identity
             or tree.identity(path.lstat()) != identity):
             raise NativeZakuraFrontError("front source/tool changed during capture")
-        return identity, digest.hexdigest()
+        if hexdigest is None:
+            hexdigest = digest.hexdigest()
+            if chunks is None:
+                content_memo.store(details, after, hexdigest, started_ns)
+        return identity, hexdigest
     finally:
         os.close(descriptor)
 

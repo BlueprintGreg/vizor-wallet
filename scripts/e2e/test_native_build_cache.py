@@ -447,6 +447,22 @@ class InputTests(unittest.TestCase):
             environment={"RUSTFLAGS":"private compiler flags"} if environment is None else environment,
             cancel=self.cancel,**options)
 
+    def test_run_scoped_digests_reread_only_inputs_whose_stat_changed(self):
+        source = self.package/"source.dart"
+        with patch.object(CACHE.content_memo, "_RACY_NS", 0), CACHE.content_memo.run_scope():
+            first = self.inputs()
+            with patch.object(os, "fdopen", wraps=os.fdopen) as reads:
+                self.assertEqual(self.inputs(), first)
+            self.assertEqual(reads.call_count, 0)
+            details = source.stat()
+            source.write_text("patched dependency")  # Same size; restoring mtime leaves only ctime changed.
+            os.utime(source, ns=(details.st_atime_ns, details.st_mtime_ns))
+            with patch.object(os, "fdopen", wraps=os.fdopen) as reads:
+                second = self.inputs()
+            self.assertEqual(reads.call_count, 1)
+        self.assertNotEqual(second["package_config"], first["package_config"])
+        self.assertEqual({**second, "package_config":None}, {**first, "package_config":None})
+
     def test_configured_environment_tool_bytes_invalidate_without_setting_changes(self):
         wrapper = self.root/"custom-wrapper"
         wrapper.write_text("original custom build tool")

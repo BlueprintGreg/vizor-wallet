@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -15,14 +14,8 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-
-SPEC = importlib.util.spec_from_file_location(
-    "e2e_runtime", Path(__file__).with_name("e2e_runtime.py")
-)
-assert SPEC is not None and SPEC.loader is not None
-RUNTIME = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = RUNTIME
-SPEC.loader.exec_module(RUNTIME)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import e2e_runtime as RUNTIME
 
 
 class RuntimeTests(unittest.TestCase):

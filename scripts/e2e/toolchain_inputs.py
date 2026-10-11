@@ -11,8 +11,10 @@ import shlex
 import shutil
 import stat
 import sys
+import time
 import tomllib
 
+import content_memo
 import e2e_runtime as runtime
 import native_owned_tree as tree
 
@@ -253,6 +255,7 @@ def _json(value):
 
 def file_record(path, *, executable=False, limit=512*1024*1024, error_type=ToolInputError):
     """Read installed root/user-owned SDK inputs, never relax output ownership."""
+    started_ns = time.time_ns()
     if not path.is_absolute() or path.resolve(strict=True) != path:
         raise error_type("native tool input must be canonical")
     with contextlib.ExitStack() as stack:
@@ -268,18 +271,24 @@ def file_record(path, *, executable=False, limit=512*1024*1024, error_type=ToolI
             or before.st_mode & 0o002 or before.st_nlink < 1 or before.st_size > limit
             or (executable and not before.st_mode & stat.S_IXUSR)):
             raise error_type("native tool input is not a protected bounded file: "+str(path))
-        digest, size = hashlib.sha256(), 0
-        with os.fdopen(os.dup(descriptor), "rb") as source:
-            for chunk in iter(lambda:source.read(1024*1024), b""):
-                size += len(chunk)
-                if size > limit:
-                    raise error_type("native tool input grew beyond its bound")
-                digest.update(chunk)
-        if (tree.identity(os.fstat(descriptor)) != tree.identity(before)
+        hexdigest = content_memo.lookup(before)
+        if hexdigest is None:
+            digest, size = hashlib.sha256(), 0
+            with os.fdopen(os.dup(descriptor), "rb") as source:
+                for chunk in iter(lambda:source.read(1024*1024), b""):
+                    size += len(chunk)
+                    if size > limit:
+                        raise error_type("native tool input grew beyond its bound")
+                    digest.update(chunk)
+        after = os.fstat(descriptor)
+        if (tree.identity(after) != tree.identity(before)
             or tree.identity(path.lstat()) != tree.identity(before)
             or tree.identity(path.parent.lstat()) != tree.identity(parent_info)):
             raise error_type("native tool input changed during inspection")
-        return tree.identity(before), digest.hexdigest()
+        if hexdigest is None:
+            hexdigest = digest.hexdigest()
+            content_memo.store(before, after, hexdigest, started_ns)
+        return tree.identity(before), hexdigest
 
 
 def tree_digest(root, cancel, *, capture=file_record, ignore_generated=True,
