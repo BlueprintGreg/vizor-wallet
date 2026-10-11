@@ -957,7 +957,7 @@ async fn the_pir_source_recovers_ledger_from_its_birthday() {
         .iter()
         .all(|address| address.required_from == BIRTHDAY.into()));
     let observer = empty_filter_service(Arc::new(Mutex::new(empty_filter_map(BIRTHDAY - 1, 0))));
-    let _transport = test_transport::observe(&wallet.path, observer.clone());
+    let _transport = test_transport::set(&wallet.path, observer.clone());
     let source = TransparentPirSource::new(&wallet.path, MAIN);
     let RunOutcome::Finished(stats) = run(
         &mut db,

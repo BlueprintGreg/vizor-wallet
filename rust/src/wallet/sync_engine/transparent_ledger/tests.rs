@@ -1760,13 +1760,20 @@ fn ledger_address(wallet: &Wallet, scope: TransparentKeyScope, index: u32) -> Tr
     use transparent::keys::{IncomingViewingKey, NonHardenedChildIndex};
     let account = wallet.db.get_account(wallet.account).unwrap().unwrap();
     let transparent = account.ufvk().unwrap().transparent().unwrap();
-    let ivk = if scope == TransparentKeyScope::EXTERNAL {
-        transparent.derive_external_ivk().unwrap()
+    let index = NonHardenedChildIndex::from_index(index).unwrap();
+    if scope == TransparentKeyScope::EXTERNAL {
+        transparent
+            .derive_external_ivk()
+            .unwrap()
+            .derive_address(index)
+            .unwrap()
     } else {
-        transparent.derive_internal_ivk().unwrap()
-    };
-    ivk.derive_address(NonHardenedChildIndex::from_index(index).unwrap())
-        .unwrap()
+        transparent
+            .derive_internal_ivk()
+            .unwrap()
+            .derive_address(index)
+            .unwrap()
+    }
 }
 
 #[tokio::test]
