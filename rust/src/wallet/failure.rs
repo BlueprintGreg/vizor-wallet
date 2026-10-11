@@ -18,8 +18,10 @@ pub enum FailureCode {
     /// Transparent broadcast authority refused the transaction for good
     /// before anything was sent. Retrying cannot succeed.
     AuthorityRefused,
-    /// A checkpointed Ledger operation can never be broadcast; the outbox has
-    /// already discarded it and released its inputs.
+    /// A Ledger operation can never go through, so retrying is pointless.
+    /// From a broadcast: the outbox has already discarded the operation and
+    /// released its inputs. From a checkpoint: the operation ID already holds
+    /// a different signed transaction, which stays saved untouched.
     LedgerOperationTerminal,
     /// Private recovery has not yet covered the transparent funds. Shielded
     /// funds stay available.

@@ -328,7 +328,7 @@ pub fn ledger_checkpoint_signed_operation(
     external_ref: Option<String>,
     pczt_with_proofs_bytes: Vec<u8>,
     pczt_with_signatures_bytes: Vec<u8>,
-) -> Result<LedgerSignedOperation, String> {
+) -> Result<LedgerSignedOperation, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::checkpoint_signed_operation(
         &db_path,
@@ -341,6 +341,7 @@ pub fn ledger_checkpoint_signed_operation(
         &pczt_with_signatures_bytes,
     )
     .map(to_signed_operation)
+    .map_err(Into::into)
 }
 
 /// Durably checkpoint every proof/signature PCZT pair for one Ledger operation.
@@ -354,7 +355,7 @@ pub fn ledger_checkpoint_signed_operation_batch(
     external_ref: Option<String>,
     pczt_with_proofs: Vec<Vec<u8>>,
     pczt_with_signatures: Vec<Vec<u8>>,
-) -> Result<LedgerSignedOperation, String> {
+) -> Result<LedgerSignedOperation, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::checkpoint_signed_operation_batch(
         &db_path,
@@ -367,6 +368,7 @@ pub fn ledger_checkpoint_signed_operation_batch(
         &pczt_with_signatures,
     )
     .map(to_signed_operation)
+    .map_err(Into::into)
 }
 
 /// List checkpointed Ledger operations without exposing either PCZT blob.
