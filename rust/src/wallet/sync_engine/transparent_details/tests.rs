@@ -377,7 +377,9 @@ fn found(facts: &TransparentDisplayFacts) -> TxidLookup {
     }
     TxidLookup::Found {
         entry: DisplayEntry {
-            tag: transparent_shard::txid::Tag::of(&transparent_events::Txid(*facts.txid.as_ref())),
+            tag: zakura_pir_transparent::testing::transparent_shard::txid::Tag::of(
+                &zakura_pir_transparent::testing::transparent_events::Txid(*facts.txid.as_ref()),
+            ),
             coinbase: facts.coinbase,
             shielded_components: facts.shielded_components,
             multiple_source_scripts: facts.multiple_source_scripts,

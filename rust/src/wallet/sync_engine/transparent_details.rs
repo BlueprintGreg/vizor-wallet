@@ -331,10 +331,7 @@ pub(crate) async fn run<S: DetailSource>(
                 }
                 continue;
             }
-            Err(SqliteClientError::StaleTransparentPolicy { .. }) => {
-                log::info!("transparent details: policy changed; ending the run");
-                return RunOutcome::Superseded(stats);
-            }
+            Err(SqliteClientError::StaleTransparentPolicy { .. }) => return superseded(stats),
             Err(_) => {
                 if let Some(outcome) = deferral {
                     log::warn!("transparent details: could not record a deferral");
@@ -345,9 +342,10 @@ pub(crate) async fn run<S: DetailSource>(
                 }
                 log::warn!("transparent details: store failed; retrying later");
                 let unavailable = TransparentDetailOutcome::Unavailable { retry_after: None };
-                if !defer(
+                match defer(
                     db,
                     &request,
+                    expected_generation,
                     now,
                     unavailable,
                     facts_map,
@@ -356,16 +354,19 @@ pub(crate) async fn run<S: DetailSource>(
                 )
                 .await
                 {
-                    return gave_up(should_exit, stats);
+                    Deferral::GaveUp => return gave_up(should_exit, stats),
+                    Deferral::Superseded => return superseded(stats),
+                    Deferral::Recorded => {}
                 }
                 served(db_path, request.txid.as_ref());
                 continue;
             }
         };
         let Some(gate) = source.gate() else {
-            if !defer(
+            match defer(
                 db,
                 &request,
+                expected_generation,
                 now,
                 TransparentDetailOutcome::Protocol,
                 None,
@@ -374,7 +375,9 @@ pub(crate) async fn run<S: DetailSource>(
             )
             .await
             {
-                return gave_up(should_exit, stats);
+                Deferral::GaveUp => return gave_up(should_exit, stats),
+                Deferral::Superseded => return superseded(stats),
+                Deferral::Recorded => {}
             }
             served(db_path, request.txid.as_ref());
             continue;
@@ -412,9 +415,10 @@ pub(crate) async fn run<S: DetailSource>(
             Err(_) => {
                 log::warn!("transparent details: store failed; retrying later");
                 let unavailable = TransparentDetailOutcome::Unavailable { retry_after: None };
-                if !defer(
+                match defer(
                     db,
                     &request,
+                    expected_generation,
                     now,
                     unavailable,
                     None,
@@ -423,7 +427,9 @@ pub(crate) async fn run<S: DetailSource>(
                 )
                 .await
                 {
-                    return gave_up(should_exit, stats);
+                    Deferral::GaveUp => return gave_up(should_exit, stats),
+                    Deferral::Superseded => return superseded(stats),
+                    Deferral::Recorded => {}
                 }
             }
         }
@@ -460,18 +466,30 @@ fn gave_up(should_exit: &(dyn Fn() -> bool + Sync), stats: RunStats) -> RunOutco
     RunOutcome::Finished(stats)
 }
 
+/// What [`defer`] did.
+enum Deferral {
+    /// Recorded, or failed and logged: the transaction waits for a later run.
+    Recorded,
+    /// Gave up waiting for the wallet's write lock, recording nothing.
+    GaveUp,
+    /// The policy generation moved since the listing, recording nothing.
+    Superseded,
+}
+
 /// Records a lookup of `request` whose result could not be stored, which
-/// schedules the next attempt, and counts it. `false` when it gave up waiting
-/// for the wallet's write lock at `write_exit`, recording nothing.
+/// schedules the next attempt, and counts it. The deferral is written under
+/// `expected_generation`, the listing's policy generation, so a lookup made
+/// under another policy schedules nothing under this one.
 async fn defer(
     db: &mut WalletDatabase,
     request: &TransparentDetailRequest,
+    expected_generation: u64,
     now: SystemTime,
     outcome: TransparentDetailOutcome,
     map_sha256: Option<[u8; 32]>,
     stats: &mut RunStats,
     write_exit: &(dyn Fn() -> bool + Sync),
-) -> bool {
+) -> Deferral {
     let deferred = with_wallet_db_write_lock_unless(
         "sync_engine.transparent_details.defer",
         write_exit,
@@ -481,19 +499,31 @@ async fn defer(
                 request.mined_height,
                 outcome,
                 map_sha256,
+                expected_generation,
                 now,
             )
         },
     )
     .await;
-    let Some(deferred) = deferred else {
-        return false;
-    };
     match deferred {
-        Ok(()) => count_deferral(outcome, stats),
-        Err(_) => log::warn!("transparent details: could not record a deferral"),
+        None => Deferral::GaveUp,
+        Some(Ok(())) => {
+            count_deferral(outcome, stats);
+            Deferral::Recorded
+        }
+        Some(Err(SqliteClientError::StaleTransparentPolicy { .. })) => Deferral::Superseded,
+        Some(Err(_)) => {
+            log::warn!("transparent details: could not record a deferral");
+            Deferral::Recorded
+        }
     }
-    true
+}
+
+/// How the run ends when a write found the policy generation moved: what it
+/// stored before stays, and nothing is written under the new policy.
+fn superseded(stats: RunStats) -> RunOutcome {
+    log::info!("transparent details: policy changed; ending the run");
+    RunOutcome::Superseded(stats)
 }
 
 /// Counts a recorded deferral by its outcome.

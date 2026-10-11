@@ -16,10 +16,10 @@
 //! A discovery runs through [`run_detached`], on a thread and runtime of its
 //! own as a recovery pass does, and stops at [`DISCOVERY_DEADLINE`]. It
 //! succeeds only when every candidate is covered through the publication's
-//! end. A pass stopped by its query or byte budget is followed by one over the
-//! candidates it did not confirm, since a heavily used address spends the
-//! budget on its own history; anything else is a failure the user retries,
-//! never a shorter list.
+//! end; anything else is a failure the user retries, never a shorter list.
+//! The library follows a pass its query or byte budget stopped with one over
+//! the candidates it did not confirm, since a heavily used address spends the
+//! budget on its own history.
 //! Logs carry outcome and variant names, never addresses or adapter text.
 
 use std::collections::BTreeSet;
@@ -147,27 +147,25 @@ impl PrivateAccountDiscovery {
                     #[cfg(test)]
                     let exchange = transport.attach(exchange);
                     let mut http = TransparentPirHttp::new(exchange, MAX_RESPONSE_BYTES);
-                    Ok(discover_until_complete(&addresses, &exit, |asked| {
-                        let result = {
-                            let (mut filters, mut shards) = http.split();
-                            // The caller chose the candidates; the script
-                            // limit is theirs.
-                            let limits = DiscoveryLimits {
-                                scripts: asked.len(),
-                                shards: MAX_SHARDS,
-                                queries: MAX_QUERIES,
-                                private_bytes: MAX_PRIVATE_BYTES,
-                            };
-                            discover_active_addresses(
-                                asked,
-                                floor,
-                                &limits,
-                                &mut filters,
-                                &mut shards,
-                            )
+                    let result = {
+                        let (mut filters, mut shards) = http.split();
+                        // The caller chose the candidates; the script limit is
+                        // theirs.
+                        let limits = DiscoveryLimits {
+                            scripts: addresses.len(),
+                            shards: MAX_SHARDS,
+                            queries: MAX_QUERIES,
+                            private_bytes: MAX_PRIVATE_BYTES,
                         };
-                        interpret(result, http.outage())
-                    }))
+                        discover_active_addresses(
+                            &addresses,
+                            floor,
+                            &limits,
+                            &mut filters,
+                            &mut shards,
+                        )
+                    };
+                    Ok(interpret(result, http.outage()))
                 })();
                 result.unwrap_or_else(|name: &str| {
                     log::warn!("private account discovery: {name}");
@@ -194,77 +192,22 @@ impl PrivateAccountDiscovery {
     }
 }
 
-/// What one discovery pass established about the candidates it was asked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Pass {
-    /// Every candidate was covered: the positions of those with history.
-    Complete(Vec<usize>),
-    /// A query or byte budget stopped the pass: the positions it confirmed.
-    Budget(Vec<usize>),
-    /// Anything else; nothing it found is used.
-    Failed,
-}
-
-/// Runs passes until every candidate is covered, and returns the positions in
-/// `candidates` of those with history.
-///
-/// A pass stopped by its budget keeps what it confirmed, and the next pass asks
-/// only about the rest: a heavily used address spends the budget on its own
-/// history, and once confirmed it is not asked about again. Fails when a pass
-/// fails or confirms nothing new, or when `exit` holds between passes. Each
-/// pass removes a candidate, so there are at most as many passes as
-/// candidates.
-pub(crate) fn discover_until_complete(
-    candidates: &[TransparentAddress],
-    exit: impl Fn() -> bool,
-    mut pass: impl FnMut(&[TransparentAddress]) -> Pass,
+/// The candidates with history, from a discovery's result. `outage` says a
+/// failure was the service being unreachable or not serving.
+pub(crate) fn interpret(
+    result: Result<Discovery, RecoveryError>,
+    outage: bool,
 ) -> Result<BTreeSet<usize>, PrivateDiscoveryFailed> {
-    let mut remaining: Vec<usize> = (0..candidates.len()).collect();
-    let mut found = BTreeSet::new();
-    loop {
-        let asked: Vec<TransparentAddress> = remaining.iter().map(|&at| candidates[at]).collect();
-        let positions = |active: Vec<usize>| -> BTreeSet<usize> {
-            active
-                .into_iter()
-                .filter_map(|at| remaining.get(at).copied())
-                .collect()
-        };
-        match pass(&asked) {
-            Pass::Complete(active) => {
-                found.extend(positions(active));
-                return Ok(found);
-            }
-            Pass::Budget(active) if !active.is_empty() => {
-                let confirmed = positions(active);
-                found.extend(&confirmed);
-                remaining.retain(|at| !confirmed.contains(at));
-                if remaining.is_empty() {
-                    return Ok(found);
-                }
-                if exit() {
-                    return Err(PrivateDiscoveryFailed);
-                }
-                log::info!("private account discovery: budget reached; asking about the rest");
-            }
-            Pass::Budget(_) => {
-                log::warn!("private account discovery: budget reached with nothing confirmed");
-                return Err(PrivateDiscoveryFailed);
-            }
-            Pass::Failed => return Err(PrivateDiscoveryFailed),
-        }
-    }
-}
-
-/// One pass's result as a [`Pass`]. `outage` says a failure was the service
-/// being unreachable or not serving.
-pub(crate) fn interpret(result: Result<Discovery, RecoveryError>, outage: bool) -> Pass {
     match result {
         Ok(Discovery { active, progress }) => match progress.outcome {
-            Outcome::Complete => Pass::Complete(active),
-            Outcome::More => Pass::Budget(active),
+            Outcome::Complete => Ok(active.into_iter().collect()),
+            Outcome::More => {
+                log::warn!("private account discovery: budget reached with nothing new confirmed");
+                Err(PrivateDiscoveryFailed)
+            }
             outcome => {
                 log::warn!("private account discovery: incomplete ({outcome:?})");
-                Pass::Failed
+                Err(PrivateDiscoveryFailed)
             }
         },
         Err(error) => {
@@ -275,7 +218,7 @@ pub(crate) fn interpret(result: Result<Discovery, RecoveryError>, outage: bool) 
                 RecoveryError::PublicationChanged => "publication changed",
             };
             log::warn!("private account discovery: failed ({name})");
-            Pass::Failed
+            Err(PrivateDiscoveryFailed)
         }
     }
 }
@@ -296,19 +239,20 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_answers_only_when_complete_or_stopped_by_its_budget() {
+    fn only_a_complete_discovery_answers() {
         assert_eq!(
             interpret(discovery(vec![0, 6], Outcome::Complete), false),
-            Pass::Complete(vec![0, 6])
+            Ok(BTreeSet::from([0, 6]))
         );
-        assert_eq!(
-            interpret(discovery(vec![2], Outcome::More), false),
-            Pass::Budget(vec![2])
-        );
-        for outcome in [Outcome::Behind, Outcome::Overloaded, Outcome::Stalled] {
+        for outcome in [
+            Outcome::More,
+            Outcome::Behind,
+            Outcome::Overloaded,
+            Outcome::Stalled,
+        ] {
             assert_eq!(
                 interpret(discovery(vec![0], outcome), false),
-                Pass::Failed,
+                Err(PrivateDiscoveryFailed),
                 "{outcome:?}"
             );
         }
@@ -318,87 +262,8 @@ mod tests {
             (RecoveryError::Failure("x".into()), true),
             (RecoveryError::PublicationChanged, false),
         ] {
-            assert_eq!(interpret(Err(error), outage), Pass::Failed);
+            assert_eq!(interpret(Err(error), outage), Err(PrivateDiscoveryFailed));
         }
-    }
-
-    fn candidates(count: u8) -> Vec<TransparentAddress> {
-        (0..count)
-            .map(|n| TransparentAddress::PublicKeyHash([n; 20]))
-            .collect()
-    }
-
-    /// Runs [`discover_until_complete`] over `count` candidates, answering
-    /// each pass in turn, and returns the result with the candidates each
-    /// pass was asked.
-    fn passes(
-        count: u8,
-        answers: Vec<Pass>,
-    ) -> (
-        Result<BTreeSet<usize>, PrivateDiscoveryFailed>,
-        Vec<Vec<TransparentAddress>>,
-    ) {
-        let mut answers = answers.into_iter();
-        let mut asked = Vec::new();
-        let result = discover_until_complete(
-            &candidates(count),
-            || false,
-            |candidates| {
-                asked.push(candidates.to_vec());
-                answers.next().expect("no more passes than answers")
-            },
-        );
-        (result, asked)
-    }
-
-    #[test]
-    fn a_budget_stop_asks_again_about_the_rest_only() {
-        let all = candidates(5);
-        // The budget stopped the first pass after confirming candidate 2;
-        // the second, over 0, 1, 3 and 4, completes and finds the one at
-        // position 1 of those, candidate 1.
-        let (result, asked) = passes(5, vec![Pass::Budget(vec![2]), Pass::Complete(vec![1])]);
-        assert_eq!(result, Ok(BTreeSet::from([1, 2])));
-        assert_eq!(
-            asked,
-            vec![all.clone(), vec![all[0], all[1], all[3], all[4]]]
-        );
-        // Every candidate confirmed: nothing is left to ask.
-        let (result, asked) = passes(2, vec![Pass::Budget(vec![0, 1])]);
-        assert_eq!(result, Ok(BTreeSet::from([0, 1])));
-        assert_eq!(asked.len(), 1);
-        assert_eq!(
-            passes(3, vec![Pass::Complete(vec![0, 2])]).0,
-            Ok(BTreeSet::from([0, 2]))
-        );
-    }
-
-    #[test]
-    fn a_pass_that_fails_or_confirms_nothing_new_ends_the_discovery() {
-        assert_eq!(passes(3, vec![Pass::Failed]).0, Err(PrivateDiscoveryFailed));
-        assert_eq!(
-            passes(3, vec![Pass::Budget(vec![])]).0,
-            Err(PrivateDiscoveryFailed)
-        );
-        assert_eq!(
-            passes(3, vec![Pass::Budget(vec![0]), Pass::Budget(vec![])]).0,
-            Err(PrivateDiscoveryFailed)
-        );
-        assert_eq!(
-            passes(3, vec![Pass::Budget(vec![0]), Pass::Failed]).0,
-            Err(PrivateDiscoveryFailed)
-        );
-        // Past the deadline, no further pass starts.
-        let mut calls = 0;
-        let result = discover_until_complete(
-            &candidates(3),
-            || true,
-            |_| {
-                calls += 1;
-                Pass::Budget(vec![0])
-            },
-        );
-        assert_eq!((result, calls), (Err(PrivateDiscoveryFailed), 1));
     }
 
     #[tokio::test]

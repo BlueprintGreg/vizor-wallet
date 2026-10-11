@@ -7,8 +7,8 @@
 //! untrusted unless [`FixtureSource::trust`] makes it trusted, as the
 //! transparent PIR source is, so the coordinator qualifies its revisions only
 //! when a test asks for it. It settles a batch with the
-//! adapter's own settlement, `testing::apply`, which is
-//! `apply_and_acknowledge` without a companion to acknowledge.
+//! adapter's own settlement, `testing::apply`, which is the gated
+//! settlement's commit loop without a companion to acknowledge.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
