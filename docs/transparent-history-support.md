@@ -10,7 +10,15 @@ measured by the H01-H13 suite on an isolated regtest chain, in two layers:
 - the desktop app layer (`integration_test/regtest_transparent_history_cases_test.dart`,
   the macOS app), in both modes.
 
-Latest runs: 2026-10-11, Rust layer only, branch `claude/tpir-private-history`
+Runs on #971 (`roman/transparent-pir` `a050f3a60`), 2026-10-11, this
+branch at `2b03f3585`, real Docker, Rust and desktop app layers:
+
+| Profile | Rust layer | Desktop app layer |
+|---|---|---|
+| Private (with the five variants) | 13 of 13 cases pass, no privacy violation, 522 txid display requests | 51 of 51 rows pass, no violation |
+| Public | fails only on G2 (H05), G4 (H12), G5 (H13 N_cut) | 46 of 49 rows pass; the 3 failures are G4 |
+
+Earlier runs on #839:  2026-10-11, Rust layer only, branch `claude/tpir-private-history`
 at `186367e79` (on #839 `c42eac8ec`, wallet-libraries `ad963341`) with the
 five private-only variants (see Private-only variants). Same verdicts:
 private passes all 13 cases, including every new variant, with no privacy
