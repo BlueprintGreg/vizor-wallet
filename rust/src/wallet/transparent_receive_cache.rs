@@ -192,6 +192,56 @@ pub(crate) fn mark_account_dirty(db_path: &str, account_uuid: &str) -> Result<()
     })
 }
 
+/// Marks every cached account dirty, so reads fall back to the wallet DB
+/// until a refresh rewrites each record clean. Reads only the sidecar, never
+/// creates one, and marks all records in one write or none.
+pub(crate) fn mark_all_dirty(db_path: &str) -> Result<(), String> {
+    with_cache_lock(|| {
+        let path = sidecar_path(db_path);
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let db = open_existing_db(&path)?;
+        let write_txn = db
+            .begin_write()
+            .map_err(|e| format!("transparent receive cache write txn: {e}"))?;
+        {
+            let mut table = match write_txn.open_table(CACHE_TABLE) {
+                Ok(table) => table,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+                Err(e) => return Err(format!("transparent receive cache open table: {e}")),
+            };
+            let mut records = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(|e| format!("transparent receive cache iterate: {e}"))?
+            {
+                let (key, value) =
+                    entry.map_err(|e| format!("transparent receive cache entry: {e}"))?;
+                records.push((key.value().to_string(), value.value().to_string()));
+            }
+            for (account_uuid, encoded_record) in records {
+                let mut record: CacheRecord = serde_json::from_str(&encoded_record)
+                    .map_err(|e| format!("transparent receive cache decode: {e}"))?;
+                if record.dirty {
+                    continue;
+                }
+                retire_legacy_completion(&mut record);
+                record.dirty = true;
+                let encoded = serde_json::to_string(&record)
+                    .map_err(|e| format!("transparent receive cache encode: {e}"))?;
+                table
+                    .insert(account_uuid.as_str(), encoded.as_str())
+                    .map_err(|e| format!("transparent receive cache insert: {e}"))?;
+            }
+        }
+        write_txn
+            .commit()
+            .map_err(|e| format!("transparent receive cache commit: {e}"))
+    })
+}
+
 pub(crate) fn delete_account(db_path: &str, account_uuid: &str) -> Result<(), String> {
     with_cache_lock(|| {
         let path = sidecar_path(db_path);

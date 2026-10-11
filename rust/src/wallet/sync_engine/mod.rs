@@ -4849,11 +4849,16 @@ async fn run_sync_impl(
 /// [`SyncEventKind::FollowupUpdated`] event so the UI re-reads the balances,
 /// shielding state and receive address the run may have changed.
 ///
+/// Recovery can record receipts at addresses the receive cache lists as
+/// unused, so the cache is marked dirty before the run and only a refresh
+/// after it marks an account clean again. A run that exits, or a refresh that
+/// fails, leaves the cache dirty: reads fall back to the wallet DB until the
+/// next sync refreshes it.
+///
 /// Recovery keeps its own progress in the library and never fails the sync:
 /// errors and outcomes are only logged. With private queries off, the policy
-/// captures `Public`, so the run returns before any read, and nothing is
-/// refreshed or reported; nor is it when the run exited, whose next sync
-/// refreshes the cache before recovering again.
+/// captures `Public`, so the run returns before any read, and the cache and
+/// UI are left alone; nothing is reported either when the run exited.
 ///
 /// A background preparation sync (`running_mode` 2) skips the run entirely:
 /// it holds the global sync guard, so a foreground sync requested meanwhile
@@ -4874,6 +4879,17 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
     if !runs_transparent_followup(running_mode) {
         return;
     }
+    let private = policy.transparent_mode()
+        != zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode::Public;
+    if private {
+        if let Err(e) = transparent_receive_cache::mark_all_dirty(db_data_path) {
+            log::warn!(
+                "[{}] sync: could not mark the transparent receive cache dirty: {}",
+                elapsed(),
+                e
+            );
+        }
+    }
     match transparent_ledger::run(
         db,
         db_data_path,
@@ -4886,7 +4902,14 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
     )
     .await
     {
-        Ok(transparent_ledger::RunOutcome::NotEnabled) => return,
+        // Nothing was recorded; a durable `Public` policy found after marking
+        // the cache dirty still restores it below.
+        Ok(transparent_ledger::RunOutcome::NotEnabled) => {
+            if private {
+                refresh_transparent_receive_cache(db_data_path, network, completed.0);
+            }
+            return;
+        }
         Ok(transparent_ledger::RunOutcome::Exited) => {
             log::info!(
                 "[{}] sync: exiting during private transparent recovery",
@@ -4906,8 +4929,6 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             error
         ),
     }
-    // The sync refreshed the receive cache before recovery ran, and recovery
-    // may have recorded receipts at addresses the cache lists as unused.
     refresh_transparent_receive_cache(db_data_path, network, completed.0);
     progress_fn(followup_updated_event(completed));
 }
