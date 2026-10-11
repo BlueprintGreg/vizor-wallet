@@ -2072,6 +2072,12 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
           // setTorEnabled instead would restart sync in the middle of the wipe.
           ref.read(networkPrivacyProvider.notifier).markRouteDirectAfterReset();
         },
+        // Only a confirmed removal clears the published saved route; a failed
+        // one leaves saved Tor governing background migration and its
+        // disclosure until the next save or launch.
+        onSavedRouteCleared: () => ref
+            .read(networkPrivacyProvider.notifier)
+            .markSavedRouteClearedAfterReset(),
       );
     }
 
@@ -2987,6 +2993,7 @@ String? resolveNextActiveAccountUuidAfterRemoval({
 @visibleForTesting
 Future<void> clearTorPrivacyStateForReset({
   required Future<void> Function() switchRouteToDirect,
+  void Function()? onSavedRouteCleared,
   Future<String> Function() resolveTorDirectory = getTorDataDirectoryPath,
   Future<SharedPreferences> Function() openPreferences =
       SharedPreferences.getInstance,
@@ -3002,7 +3009,10 @@ Future<void> clearTorPrivacyStateForReset({
   }
   try {
     final preferences = await openPreferences();
-    await preferences.remove(kTorEnabledPreferenceKey);
+    if (!await preferences.remove(kTorEnabledPreferenceKey)) {
+      throw StateError('Could not remove the Tor preference.');
+    }
+    onSavedRouteCleared?.call();
   } catch (e, st) {
     log('resetWallet: tor route preference cleanup failed: $e\n$st');
   }

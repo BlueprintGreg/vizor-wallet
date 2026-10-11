@@ -229,6 +229,33 @@ impl DirectRouteCommitment {
     }
 }
 
+/// The route as a native request starts, so a failure can be classified by
+/// what happened while it was in flight rather than by the route at the end.
+///
+/// Only [`begin_tor_enable`] advances the direct-route epoch, and it cancels
+/// every uncommitted direct connection when it does. A toggle back to direct
+/// before the failure is classified leaves Tor no longer desired, so reading
+/// the current route alone would report that cancellation as a network failure
+/// and the outbox would count an attempt that never left the device.
+#[derive(Clone, Copy)]
+pub(crate) struct DirectRouteSnapshot {
+    epoch: u64,
+}
+
+impl DirectRouteSnapshot {
+    pub(crate) fn capture() -> Self {
+        Self {
+            epoch: DIRECT_ROUTE_EPOCH.load(Ordering::Acquire),
+        }
+    }
+
+    /// Whether Tor is desired now or was requested since the capture, even if
+    /// it has been turned off again.
+    pub(crate) fn tor_requested_since(&self) -> bool {
+        is_tor_desired() || self.epoch != DIRECT_ROUTE_EPOCH.load(Ordering::Acquire)
+    }
+}
+
 pub(crate) struct DirectRouteLease {
     id: u64,
     epoch: u64,

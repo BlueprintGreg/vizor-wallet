@@ -681,7 +681,9 @@ policy-aware openers and fails closed while Tor is starting or broken.
   or deadline and the outbox persists the actual response. Cancellation and
   the dispatch decision (including the direct-route commitment) take one lock
   (`CLightwalletdCancellation::dispatch`), so neither can land between the
-  other's check and effect.
+  other's check and effect. A direct connect cancelled by a Tor request stays a
+  route refusal even if Tor is turned off again before the failure is
+  classified (`DirectRouteSnapshot`).
 - **iOS background migration never uses Tor.** A background pass never brings
   Tor up or borrows the foreground's client, and a cold launch may not have
   applied the route, so it reads the saved route
@@ -695,7 +697,9 @@ policy-aware openers and fails closed while Tor is starting or broken.
   outbox and preparation work through one path (`savedRouteBecameDirect`,
   called once after the write succeeds); a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
-  screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). Foreground entry hands off the outbox on every
+  screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet
+  reset clears the published saved route only after removing the preference
+  succeeds. Foreground entry hands off the outbox on every
   supported iOS version before settings can change; only continued-preparation
   handoff requires iOS 26. Already-pending proof notifications are returned
   even when network inspection is deferred. The mobile settings card and

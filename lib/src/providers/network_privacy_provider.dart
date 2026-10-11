@@ -683,11 +683,36 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   /// The reset switches the runtime itself, because routing a wipe through
   /// [setTorEnabled] would restart sync against the database being deleted.
   /// This keeps the published state from outliving the wallet it belonged to.
+  ///
+  /// The saved route is not cleared yet: the reset removes the preference
+  /// afterwards and reports that through [markSavedRouteClearedAfterReset].
+  /// Until then a saved Tor route still governs background migration, so it
+  /// stays published.
   void markRouteDirectAfterReset() {
     _startupActivationSuperseded = true;
     ++_generation;
-    _initialNetworkPrivacyState = const NetworkPrivacyState.off();
-    state = const NetworkPrivacyState.off();
+    final off = NetworkPrivacyState(
+      torEnabled: false,
+      status: NetworkPrivacyConnectionStatus.off,
+      savedTorEnabled: state.torRouteSaved,
+    );
+    _initialNetworkPrivacyState = off;
+    state = off;
+  }
+
+  /// Records that a wallet reset removed the saved route preference.
+  void markSavedRouteClearedAfterReset() {
+    final cleared = NetworkPrivacyState(
+      torEnabled: state.torEnabled,
+      status: state.status,
+      targetTorEnabled: state.targetTorEnabled,
+      savedTorEnabled: false,
+      softwareUpdatesAvailable: state.softwareUpdatesAvailable,
+      error: state.error,
+      startupNotice: state.startupNotice,
+    );
+    _initialNetworkPrivacyState = cleared;
+    state = cleared;
   }
 
   void clearStartupNotice() {

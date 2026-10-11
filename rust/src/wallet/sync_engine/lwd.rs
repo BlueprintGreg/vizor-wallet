@@ -224,6 +224,7 @@ pub(crate) async fn open_native_migration_lwd_channel(
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 
+    let route = crate::network_privacy::DirectRouteSnapshot::capture();
     let tor_client = crate::network_privacy::try_tor_client_for_route(isolated)
         .map_err(|blocked| NativeRouteOpenError::RouteBlocked(blocked.to_string()))?;
     if let Some(tor_client) = tor_client {
@@ -251,12 +252,21 @@ pub(crate) async fn open_native_migration_lwd_channel(
             client,
             direct: true,
         }),
-        // The direct lease aborts the connect when Tor is requested mid-way.
-        // Report that as the refusal it is, so the caller knows nothing went out.
-        Err(_) if crate::network_privacy::is_tor_desired() => Err(
-            NativeRouteOpenError::RouteBlocked("Tor was selected while connecting".to_string()),
-        ),
-        Err(error) => Err(NativeRouteOpenError::Network(error)),
+        Err(error) => Err(classify_direct_open_failure(route, error)),
+    }
+}
+
+/// The direct lease aborts the connect when Tor is requested mid-way. Report
+/// that as the refusal it is, so the caller knows nothing went out, even when
+/// Tor has been turned off again by the time the failure surfaces.
+fn classify_direct_open_failure(
+    route: crate::network_privacy::DirectRouteSnapshot,
+    error: SyncError,
+) -> NativeRouteOpenError {
+    if route.tor_requested_since() {
+        NativeRouteOpenError::RouteBlocked("Tor was selected while connecting".to_string())
+    } else {
+        NativeRouteOpenError::Network(error)
     }
 }
 
@@ -969,6 +979,29 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn a_connect_cancelled_by_a_reverted_tor_toggle_is_still_a_refusal() {
+        // Tor turned on cancels the direct connect, then off again before the
+        // failure is classified. Nothing was sent, so the outbox must see a
+        // refusal rather than a network failure that counts an attempt.
+        let _policy = crate::network_privacy::test_route_policy::lock_route_policy();
+        crate::network_privacy::disable_tor();
+        let route = crate::network_privacy::DirectRouteSnapshot::capture();
+        crate::network_privacy::begin_tor_enable();
+        crate::network_privacy::disable_tor();
+        assert!(matches!(
+            classify_direct_open_failure(route, SyncError::net("connection aborted")),
+            NativeRouteOpenError::RouteBlocked(_)
+        ));
+
+        // Without a toggle in flight, a failure stays a network failure.
+        let route = crate::network_privacy::DirectRouteSnapshot::capture();
+        assert!(matches!(
+            classify_direct_open_failure(route, SyncError::net("connection refused")),
+            NativeRouteOpenError::Network(_)
+        ));
+    }
 
     fn compact_block(height: u64) -> CompactBlock {
         CompactBlock {

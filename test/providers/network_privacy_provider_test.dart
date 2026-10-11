@@ -1190,6 +1190,15 @@ void main() {
     final state = container.read(networkPrivacyProvider);
     expect(state.torEnabled, isFalse);
     expect(state.status, NetworkPrivacyConnectionStatus.off);
+    // The saved preference is removed only afterwards, and may fail to be:
+    // until that is confirmed, saved Tor still governs background migration.
+    expect(state.torRouteSaved, isTrue);
+
+    container
+        .read(networkPrivacyProvider.notifier)
+        .markSavedRouteClearedAfterReset();
+    expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+    expect(container.read(networkPrivacyProvider).torEnabled, isFalse);
   });
 
   test('startup does not wait for Tor to bootstrap', () async {
