@@ -15,8 +15,9 @@
 //! ([`forget_private_ledger`]). Leaving `PrivateRequired` only revokes private
 //! authority; without forgetting, a publication's facts would keep counting in
 //! public mode, and a false spend would hide a real output in both modes. A
-//! forget that cannot finish is retried at every sync start while the wallet
-//! is public.
+//! forget that cannot finish fails the toggle-off, which stays pending until a
+//! retry forgets, and is also retried at every sync start while the wallet is
+//! public.
 
 use std::path::Path;
 use std::time::Duration;
@@ -56,7 +57,10 @@ pub(crate) const POLICY_DRAIN: Duration = Duration::from_secs(30);
 /// waits behind a raise lowers what the raise applied.
 ///
 /// Returns the policy this call applied, or `None` when nothing needed to
-/// change. A missing wallet is left missing.
+/// change. A missing wallet is left missing. Lowering fails when the private
+/// facts cannot be forgotten, even though `Public` already applied: the
+/// caller keeps the opt-out pending, and a retry applies nothing new and
+/// forgets again.
 pub(crate) async fn set_transparent_policy(
     db_path: &str,
     network: WalletNetwork,
@@ -84,11 +88,10 @@ pub(crate) async fn set_transparent_policy(
         log::info!("transparent policy: applied {:?}", applied.mode);
     }
     if target == TransparentLedgerMode::Public {
-        // The policy is public now, whatever happens here; a forget that
-        // fails is retried at the next sync start.
-        if let Err(error) = forget_private_ledger(db_path, network) {
-            log::warn!("transparent policy: could not forget private ledger facts: {error}");
-        }
+        // Facts private recovery alone reported keep counting under the public
+        // policy until they are forgotten, so the opt-out is not finished
+        // before then.
+        forget_private_ledger(db_path, network)?;
     }
     Ok(applied)
 }
