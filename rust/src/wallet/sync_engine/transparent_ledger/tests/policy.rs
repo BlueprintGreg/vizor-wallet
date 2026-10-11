@@ -646,7 +646,8 @@ async fn lowering_clears_the_wallets_holds() {
 
 /// Nothing is forgotten while a companion survives, because a companion that
 /// outlived the facts would make a later private run skip them. The policy
-/// is public all the same, and the next attempt, as at sync start, finishes.
+/// is public all the same, but the toggle-off fails, so the opt-out stays
+/// pending while those facts still count; its retry finishes.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_companion_that_cannot_be_deleted_defers_forgetting() {
@@ -664,23 +665,27 @@ async fn a_companion_that_cannot_be_deleted_defers_forgetting() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
     let restore = Restore(dir.clone());
 
-    set_transparent_policy(&wallet.path, NETWORK, false)
+    assert!(set_transparent_policy(&wallet.path, NETWORK, false)
         .await
-        .unwrap();
+        .is_err());
     assert_eq!(
         applied(&wallet.path, NETWORK).mode,
         TransparentLedgerMode::Public
     );
     assert!(companion.exists());
     assert!(count(&wallet.path, "SELECT COUNT(*) FROM tpir_receive_events") > 0);
+    // As at sync start.
     assert!(forget_private_ledger(&wallet.path, NETWORK).is_err());
     assert!(count(&wallet.path, "SELECT COUNT(*) FROM tpir_receive_events") > 0);
 
+    // The retried toggle-off applies nothing new and finishes the forget.
     drop(restore);
-    let forgotten = forget_private_ledger(&wallet.path, NETWORK)
-        .unwrap()
-        .unwrap();
-    assert!(!forgotten.removed_nothing(), "{forgotten:?}");
+    assert_eq!(
+        set_transparent_policy(&wallet.path, NETWORK, false)
+            .await
+            .unwrap(),
+        None
+    );
     assert!(!companion.exists());
     assert_eq!(
         count(&wallet.path, "SELECT COUNT(*) FROM tpir_receive_events"),
