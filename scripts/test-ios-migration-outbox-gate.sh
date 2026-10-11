@@ -28,15 +28,36 @@ from pathlib import Path
 import sys
 
 source = Path('ios/Runner/AppDelegate.swift').read_text()
-start = source.index('  override func applicationWillEnterForeground(')
+start = source.index('  override func application(\n    _ application: UIApplication,\n    didFinishLaunchingWithOptions')
 end = source.index('  func didInitializeImplicitFlutterEngine(', start)
 callback = source[start:end].replace('#available(iOS 26.0, *)', 'supportsContinuedProcessing')
 Path(sys.argv[1]).write_text('''
 import XCTest
 private var supportsContinuedProcessing = false
-private class UIApplication {}
+private class UIApplication {
+  enum State { case active, inactive, background }
+  struct LaunchOptionsKey: Hashable {}
+  let applicationState: State
+  init(state: State = .active) { applicationState = state }
+}
 private class FlutterAppDelegate {
+  func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+  ) -> Bool { true }
   func applicationWillEnterForeground(_ application: UIApplication) {}
+}
+private enum FreshInstallKeychainCleaner {
+  static func runIfNeeded() {}
+}
+private final class BGTaskScheduler {
+  static let shared = BGTaskScheduler()
+  func cancel(taskRequestWithIdentifier identifier: String) {}
+}
+private final class BackgroundMigrationPreparationManager {
+  static let shared = BackgroundMigrationPreparationManager()
+  func handoffPendingRequestForForegroundLaunch() {}
+  func registerBackgroundTask() {}
 }
 private final class IronwoodMigrationNotificationGate {
   static let shared = IronwoodMigrationNotificationGate()
@@ -48,6 +69,7 @@ private final class BackgroundMigrationManager {
   var rearmResumes = 0
   func handoffToForeground() { handoffs += 1 }
   func resumePendingDirectRouteRearm() { rearmResumes += 1 }
+  func registerBackgroundTask() {}
 }
 private final class AppDelegate: FlutterAppDelegate {
 ''' + callback + '''
@@ -58,6 +80,22 @@ final class BackgroundMigrationForegroundHandoffTests: XCTestCase {
   }
   func testForegroundEntryHandsOffOnIOS26AndLater() {
     verifyHandoff(continuedProcessing: true)
+  }
+  func testColdForegroundLaunchResumesAPendingRearm() {
+    // No applicationWillEnterForeground follows a cold foreground launch.
+    verifyLaunch(state: .active, resumes: 1)
+  }
+  func testBackgroundLaunchLeavesTheRearmForForegroundEntry() {
+    verifyLaunch(state: .background, resumes: 0)
+  }
+  private func verifyLaunch(state: UIApplication.State, resumes: Int) {
+    supportsContinuedProcessing = true
+    let before = BackgroundMigrationManager.shared.rearmResumes
+    _ = AppDelegate().application(
+      UIApplication(state: state),
+      didFinishLaunchingWithOptions: nil
+    )
+    XCTAssertEqual(BackgroundMigrationManager.shared.rearmResumes, before + resumes)
   }
   private func verifyHandoff(continuedProcessing: Bool) {
     supportsContinuedProcessing = continuedProcessing
@@ -94,6 +132,7 @@ for header in [
     'func migrationPreparationHandoffContinuationScopes(',
     'func migrationPreparationForegroundOnlyLaunchContinuationScopes(',
     'func migrationPreparationRouteRefusalEndsTracking(',
+    'func migrationPreparationDirectRouteNeedsTracking(',
 ]:
     parts.append(declaration(manager, header))
 parts.append(declaration(tests, 'final class BackgroundMigrationPreparationTorDeferralTests'))
@@ -241,7 +280,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 30 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 35 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

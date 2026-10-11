@@ -718,6 +718,11 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
 
   /// Background work is owed a re-arm for the direct route.
   var _rearmPending = false;
+
+  /// Identifies the current obligation, so an acknowledgement for an earlier
+  /// one (a Tor save and a new direct save happened while it was in flight)
+  /// cannot satisfy it.
+  var _rearmRevision = 0;
   var _rearmRunning = false;
   var _disposed = false;
 
@@ -763,6 +768,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     ++_generation;
     // The wallet whose background work was owed a re-arm no longer exists.
     _rearmPending = false;
+    _rearmRevision++;
     final off = NetworkPrivacyState(
       torEnabled: false,
       status: NetworkPrivacyConnectionStatus.off,
@@ -894,6 +900,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       // for the direct route has nothing left to do; the next direct save
       // takes on a new one.
       _rearmPending = false;
+      _rearmRevision++;
       if (generation != _generation) return;
       runtime.beginEnable();
     } else {
@@ -1062,6 +1069,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     List<Duration> retryDelays,
   ) {
     _rearmPending = true;
+    _rearmRevision++;
     if (_rearmRunning) return;
     _rearmRunning = true;
     unawaited(
@@ -1087,10 +1095,16 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
               : retryDelays.length - 1];
       if (delay > Duration.zero) await Future<void>.delayed(delay);
       if (!_rearmPending || _disposed) return;
+      final revision = _rearmRevision;
       try {
         if (await savedRouteDirect()) {
-          _rearmPending = false;
-          return;
+          if (revision == _rearmRevision) {
+            _rearmPending = false;
+            return;
+          }
+          // A newer obligation arrived while this call was in flight; it
+          // needs a call of its own, made straight away.
+          attempt = -1;
         }
       } catch (error, stackTrace) {
         debugPrint(

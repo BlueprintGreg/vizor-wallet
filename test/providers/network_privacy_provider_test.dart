@@ -1171,6 +1171,33 @@ void main() {
       expect(calls, 2);
     });
 
+    test('a slow acknowledgement cannot satisfy a newer re-arm', () async {
+      final events = <String>[];
+      final firstCall = Completer<bool>();
+      var calls = 0;
+      final container = rearmContainer(
+        events,
+        const [Duration.zero, Duration(milliseconds: 1)],
+        () {
+          calls++;
+          return calls == 1 ? firstCall.future : Future.value(true);
+        },
+      );
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      expect(calls, 1);
+      // While the first re-arm is still in flight, Tor is saved and then the
+      // direct route is saved again, which owes a re-arm of its own.
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      firstCall.complete(true);
+      await settle();
+
+      expect(calls, 2);
+    });
+
     test('stops once Tor is saved again', () async {
       final events = <String>[];
       var calls = 0;

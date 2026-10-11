@@ -177,6 +177,65 @@ enum BackgroundMigrationDirectRouteRearm {
   }
 }
 
+/// Runs one direct-route re-arm at a time.
+///
+/// Two callers (Dart's retry loop and a foreground-entry resume) can re-arm
+/// concurrently. Checking for a pending wake and then submitting is not atomic
+/// across them, so they are serialized here: a request that arrives during an
+/// attempt runs the attempt once more afterwards, and every waiting caller
+/// receives that final result. The durable obligation follows the final
+/// result, so a failure is never acknowledged by an earlier success.
+final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
+  typealias Attempt = (@escaping (Bool) -> Void) -> Void
+
+  private let lock = NSLock()
+  private let defaults: UserDefaults
+  private var running = false
+  private var rerun = false
+  private var waiting: [(Bool) -> Void] = []
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  /// `attempt` re-arms once and reports whether the obligation is satisfied.
+  func request(_ attempt: @escaping Attempt, completion: @escaping (Bool) -> Void) {
+    BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
+    lock.lock()
+    waiting.append(completion)
+    if running {
+      rerun = true
+      lock.unlock()
+      return
+    }
+    running = true
+    lock.unlock()
+    run(attempt)
+  }
+
+  private func run(_ attempt: @escaping Attempt) {
+    attempt { [self] satisfied in
+      lock.lock()
+      if rerun {
+        rerun = false
+        lock.unlock()
+        run(attempt)
+        return
+      }
+      running = false
+      if satisfied {
+        BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
+      } else {
+        BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
+      }
+      let completions = waiting
+      waiting = []
+      lock.unlock()
+      completions.forEach { $0(satisfied) }
+    }
+  }
+}
+
 /// Whether a direct-route re-arm should keep the wake that is already pending.
 ///
 /// Submitting a replacement cancels the pending request first, so a failed

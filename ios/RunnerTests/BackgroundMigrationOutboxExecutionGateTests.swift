@@ -316,6 +316,49 @@ final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
     XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
   }
 
+  func testConcurrentRearmsRunOneAtATimeAndShareTheFinalResult() throws {
+    let suite = "vizor.test.rearm." + UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let serializer = BackgroundMigrationRearmSerializer(defaults: defaults)
+    var attempts: [(Bool) -> Void] = []
+    let attempt: BackgroundMigrationRearmSerializer.Attempt = { done in
+      attempts.append(done)
+    }
+    var first: Bool?
+    var second: Bool?
+    serializer.request(attempt) { first = $0 }
+    // A second caller arrives while the first attempt is still in flight; it
+    // must not run a concurrent attempt that could cancel the first's wake.
+    serializer.request(attempt) { second = $0 }
+    XCTAssertEqual(attempts.count, 1)
+    // The first attempt succeeds, but a request arrived meanwhile, so the
+    // attempt runs once more and only its result is reported.
+    attempts[0](true)
+    XCTAssertEqual(attempts.count, 2)
+    XCTAssertNil(first)
+    attempts[1](false)
+    XCTAssertEqual(first, false)
+    XCTAssertEqual(second, false)
+    // A failure keeps the durable obligation for the next foreground entry.
+    XCTAssertTrue(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+  }
+
+  func testASatisfiedRearmClearsTheObligation() throws {
+    let suite = "vizor.test.rearm." + UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let serializer = BackgroundMigrationRearmSerializer(defaults: defaults)
+    var result: Bool?
+    serializer.request({ done in
+      // Recorded before the attempt runs, so a crash mid-attempt keeps it.
+      XCTAssertTrue(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+      done(true)
+    }) { result = $0 }
+    XCTAssertEqual(result, true)
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+  }
+
   func testAPendingWakeIsKeptRatherThanReplaced() {
     // Replacing cancels first; a failed replacement would revoke a wake that
     // a concurrent re-arm had already confirmed.

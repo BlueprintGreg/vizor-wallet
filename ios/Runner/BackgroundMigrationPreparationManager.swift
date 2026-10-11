@@ -347,6 +347,20 @@ private enum BackgroundMigrationPreparationTrackingPass {
   case deferredToForeground
 }
 
+/// Whether the direct-route re-arm still owes confirmation tracking: a state-0
+/// run is waiting for confirmations, the route lets the read-only task track
+/// it, and notifications allow background migration. When true, a tracker
+/// that could not be submitted leaves the re-arm unsatisfied, because the
+/// generic background wake does not track state-0 confirmations.
+func migrationPreparationDirectRouteNeedsTracking(
+  disposition: BackgroundMigrationPreparationContinuedTaskDisposition,
+  pendingTrackableScopes: Set<String>,
+  notificationsDisabled: Bool
+) -> Bool {
+  disposition == .trackConfirmations && !pendingTrackableScopes.isEmpty
+    && !notificationsDisabled
+}
+
 /// Whether a lookup the route gate refused should end a running tracking task.
 ///
 /// A refusal while Tor is only being saved is transient: the save either
@@ -1266,6 +1280,30 @@ final class BackgroundMigrationPreparationManager {
     } else {
       evaluate()
     }
+  }
+
+  /// Re-arms confirmation tracking after the saved route became direct.
+  /// Completes true when nothing needs tracking or tracking is armed or
+  /// running, and false when a needed tracker could not be submitted.
+  func rearmConfirmationTrackingForDirectRoute(
+    completion: @escaping (Bool) -> Void
+  ) {
+    let needed = migrationPreparationDirectRouteNeedsTracking(
+      disposition: migrationPreparationContinuedTaskDisposition(
+        preparationResumeTarget(),
+        privateRecovery: BackgroundMigrationPrivateRecovery.isEnabled(),
+        torSelected: BackgroundMigrationTorRoute.isSelected()
+      ),
+      pendingTrackableScopes: pendingTrackableScopes(),
+      notificationsDisabled: stateLock.withPreparationLock {
+        notificationAuthorization.isDisabled
+      }
+    )
+    guard needed else {
+      completion(true)
+      return
+    }
+    start(completion: completion)
   }
 
   func acknowledgeForegroundContinuation(

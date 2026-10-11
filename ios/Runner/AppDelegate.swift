@@ -38,6 +38,10 @@ import UIKit
     }
     if application.applicationState != .background {
       IronwoodMigrationNotificationGate.shared.enforceOnForeground()
+      // A cold foreground launch never gets applicationWillEnterForeground,
+      // so a direct-route re-arm still owed is retried here too. A background
+      // launch leaves it for the next foreground entry.
+      BackgroundMigrationManager.shared.resumePendingDirectRouteRearm()
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }

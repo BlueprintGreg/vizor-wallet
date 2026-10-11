@@ -3447,6 +3447,41 @@ final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
     )
   }
 
+  func testTheDirectRouteRearmOwesTrackingOnlyForTrackableRuns() {
+    // A state-0 run the read-only task can track: a tracker that fails to
+    // submit leaves the re-arm unsatisfied.
+    XCTAssertTrue(
+      migrationPreparationDirectRouteNeedsTracking(
+        disposition: .trackConfirmations,
+        pendingTrackableScopes: [stillCountingB],
+        notificationsDisabled: false
+      )
+    )
+    // Nothing to track, the route still defers, or notifications are off:
+    // there is no tracker to owe.
+    XCTAssertFalse(
+      migrationPreparationDirectRouteNeedsTracking(
+        disposition: .trackConfirmations,
+        pendingTrackableScopes: [],
+        notificationsDisabled: false
+      )
+    )
+    XCTAssertFalse(
+      migrationPreparationDirectRouteNeedsTracking(
+        disposition: .foregroundOnly,
+        pendingTrackableScopes: [stillCountingB],
+        notificationsDisabled: false
+      )
+    )
+    XCTAssertFalse(
+      migrationPreparationDirectRouteNeedsTracking(
+        disposition: .trackConfirmations,
+        pendingTrackableScopes: [stillCountingB],
+        notificationsDisabled: true
+      )
+    )
+  }
+
   func testOnlyASavedTorRouteEndsRunningTracking() {
     // A Tor save in progress refuses lookups only until it lifts or lands;
     // a saved Tor route refuses every lookup until the foreground runs.

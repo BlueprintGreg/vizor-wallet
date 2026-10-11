@@ -438,6 +438,7 @@ final class BackgroundMigrationManager {
   private var notificationAuthorization =
     IronwoodMigrationNotificationAuthorizationEpochState()
   private var activeCancellation: BackgroundMigrationCancellation?
+  private let directRouteRearm = BackgroundMigrationRearmSerializer()
   private var authorizationMonitor:
     IronwoodMigrationNotificationAuthorizationMonitor?
 
@@ -491,6 +492,7 @@ final class BackgroundMigrationManager {
 
   func schedule(
     earliestBeginDate: Date = Date(),
+    replacingPending: Bool = true,
     completion: @escaping (Bool) -> Void
   ) {
     guard !isMutationQuiesced else {
@@ -512,19 +514,32 @@ final class BackgroundMigrationManager {
         completion(false)
         return
       }
-      completion(self.submitAuthorized(earliestBeginDate: earliestBeginDate))
+      completion(
+        self.submitAuthorized(
+          earliestBeginDate: earliestBeginDate,
+          replacingPending: replacingPending
+        )
+      )
     }
   }
 
-  private func submitAuthorized(earliestBeginDate: Date) -> Bool {
+  /// `replacingPending` cancels a pending request first, the normal
+  /// reschedule. A re-arm passes false: submitting then cannot revoke a wake
+  /// another caller just confirmed if the submission fails.
+  private func submitAuthorized(
+    earliestBeginDate: Date,
+    replacingPending: Bool = true
+  ) -> Bool {
     stateLock.vizorWithLock {
       guard !mutationQuiesced && !notificationAuthorization.isDisabled
         && !BackgroundMigrationOutboxExecutionGate.shared.isPaused else {
         return false
       }
-      BGTaskScheduler.shared.cancel(
-        taskRequestWithIdentifier: Self.taskIdentifier
-      )
+      if replacingPending {
+        BGTaskScheduler.shared.cancel(
+          taskRequestWithIdentifier: Self.taskIdentifier
+        )
+      }
       let request = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
       request.requiresNetworkConnectivity = true
       request.requiresExternalPower = false
@@ -552,47 +567,62 @@ final class BackgroundMigrationManager {
 
   /// The one re-arm path for background work a saved Tor route held back.
   /// Dart calls it after saving the direct route; see
-  /// `backgroundMigrationSavedRouteDirectActions`. Submitting the wake
-  /// replaces any pending request, so a repeated call schedules nothing extra.
-  /// Completes with false only when a needed wake could not be submitted, so
-  /// Dart retries; nothing to re-arm is success. The obligation is recorded
-  /// durably first (`BackgroundMigrationDirectRouteRearm`) and cleared only
-  /// once satisfied, so a failure survives the app being closed. A wake that
-  /// is already pending is kept rather than replaced.
+  /// `backgroundMigrationSavedRouteDirectActions`. Completes with false while
+  /// any needed part is not armed, so Dart retries; nothing to re-arm is
+  /// success. Attempts are serialized and the obligation is recorded durably
+  /// (`BackgroundMigrationRearmSerializer`), so it survives the app being
+  /// closed and concurrent callers cannot acknowledge each other's failure.
   func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
-    BackgroundMigrationDirectRouteRearm.markPending()
+    directRouteRearm.request({ [weak self] done in
+      guard let self else {
+        done(false)
+        return
+      }
+      self.attemptDirectRouteRearm(completion: done)
+    }, completion: completion)
+  }
+
+  /// One re-arm attempt: confirmation tracking for state-0 runs, then the
+  /// outbox/preparation wake. The wake is kept when one is already pending
+  /// and otherwise submitted without cancelling first, so a failed submission
+  /// cannot revoke a wake that is in place.
+  private func attemptDirectRouteRearm(completion: @escaping (Bool) -> Void) {
     let actions = backgroundMigrationSavedRouteDirectActions(
       torSelected: BackgroundMigrationTorRoute.isSelected(),
       hasRunnableOutboxWork: hasRunnableOutboxWork(),
       hasResumablePreparationWork: hasResumablePreparationWork()
     )
-    if actions.restartPreparationTracking {
-      if #available(iOS 26.0, *) {
-        BackgroundMigrationPreparationManager.shared.start { _ in }
+    let armWake = { (trackingArmed: Bool) in
+      guard actions.scheduleBackgroundWake else {
+        completion(trackingArmed)
+        return
+      }
+      BGTaskScheduler.shared.getPendingTaskRequests { [weak self] requests in
+        guard let self else {
+          completion(false)
+          return
+        }
+        if backgroundMigrationShouldKeepPendingWake(
+          pendingIdentifiers: requests.map(\.identifier),
+          identifier: Self.taskIdentifier
+        ) {
+          completion(trackingArmed)
+          return
+        }
+        self.schedule(replacingPending: false) { scheduled in
+          completion(trackingArmed && scheduled)
+        }
       }
     }
-    guard actions.scheduleBackgroundWake else {
-      BackgroundMigrationDirectRouteRearm.clear()
-      completion(true)
+    guard actions.restartPreparationTracking else {
+      armWake(true)
       return
     }
-    BGTaskScheduler.shared.getPendingTaskRequests { [weak self] requests in
-      guard let self else {
-        completion(false)
-        return
-      }
-      if backgroundMigrationShouldKeepPendingWake(
-        pendingIdentifiers: requests.map(\.identifier),
-        identifier: Self.taskIdentifier
-      ) {
-        BackgroundMigrationDirectRouteRearm.clear()
-        completion(true)
-        return
-      }
-      self.schedule { scheduled in
-        if scheduled { BackgroundMigrationDirectRouteRearm.clear() }
-        completion(scheduled)
-      }
+    if #available(iOS 26.0, *) {
+      BackgroundMigrationPreparationManager.shared
+        .rearmConfirmationTrackingForDirectRoute(completion: armWake)
+    } else {
+      armWake(true)
     }
   }
 
