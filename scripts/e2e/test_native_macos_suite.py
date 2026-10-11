@@ -1,6 +1,7 @@
 """Coordinator models; native signing, wallet assertions and Docker are not real."""
 import contextlib
 from dataclasses import replace
+import errno
 import fcntl
 import hashlib
 import io
@@ -23,6 +24,21 @@ import native_macos_suite as SUITE
 
 # Every selection requests this one signer build: all catalog Rust targets.
 BUILT_TARGETS = tuple(dict.fromkeys(target for target, _ in SUITE.RUST_CASES.values()))
+
+
+class Terminal(io.StringIO):
+    """A tty stream; after a hangup every write fails with EIO, as on a closed terminal."""
+    hung_up = False
+
+    def write(self, text):
+        if self.hung_up:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return super().write(text)
+
+    def flush(self):
+        if self.hung_up:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        super().flush()
 
 
 class SuiteTests(unittest.TestCase):
@@ -93,9 +109,11 @@ class SuiteTests(unittest.TestCase):
         (case/"native-publication/cohort.app/MaterialIcons.otf").chmod(0o664)
         return case
 
-    def invoke(self):
-        output = io.StringIO()
-        self.errors = io.StringIO()
+    def invoke(self, output=None, errors=None):
+        """Run the modeled suite; with caller streams the caller reads summary.json itself."""
+        summary_on_stdout = output is None
+        output = io.StringIO() if output is None else output
+        self.errors = io.StringIO() if errors is None else errors
         with patch.object(SUITE.sys,"platform","darwin"), \
              patch.object(SUITE.subprocess,"run",side_effect=self.git), \
              patch.object(SUITE,"NativeCaseLifecycle",side_effect=lambda x:x), \
@@ -117,7 +135,7 @@ class SuiteTests(unittest.TestCase):
         self.ios_builder = ios_build
         self.payment_address_deriver = payment_addresses
         self.ios_address_deriver = ios_addresses
-        return code,json.loads(output.getvalue()),build,signer
+        return code,json.loads(output.getvalue()) if summary_on_stdout else None,build,signer
 
     def test_two_concurrent_repetitions_share_only_one_build_and_signer(self):
         code,summary,build,signer = self.invoke()
@@ -590,6 +608,38 @@ class SuiteTests(unittest.TestCase):
                     self.assertEqual((builds/"build-prune.json").exists(), inherited == signal.SIG_IGN)
         finally:
             signal.signal(signal.SIGHUP, original)
+
+    def test_closed_terminal_after_sighup_still_writes_every_report(self):
+        terminal = Terminal(), Terminal()
+        def execute(root, run_id, worker_id, scenario, **kwargs):
+            signal.getsignal(signal.SIGHUP)(signal.SIGHUP, None)
+            for stream in terminal:
+                stream.hung_up = True  # The terminal is gone: stdout and stderr now fail with EIO.
+            namespace = "vizor_"+run_id+"_w0_1"
+            return {"scenario_id":scenario.id, "status":"cancelled", "retained":[{"namespace":namespace,
+                "docker":{"fixture_run_id":"c"*32}, "simulator":None, "macos_support":"/model/"+namespace}]}
+        self.execute = execute
+        original = signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        try:
+            code = self.invoke(*terminal)[0]
+        finally:
+            signal.signal(signal.SIGHUP, original)
+        self.assertEqual(code, 1)
+        evidence, = (self.root/".regtest-logs").glob("native-suite-*")
+        summary = json.loads((evidence/"summary.json").read_text())
+        self.assertIsNone(summary["error"])
+        self.assertEqual([item["report"] for item in summary["repetition_reports"]],
+                         [str(evidence/("repetition-"+str(index))/"run.json") for index in range(self.args.repeat)])
+        namespaces = []
+        for item in summary["repetition_reports"]:
+            results = json.loads(Path(item["report"]).read_text())["results"]
+            self.assertEqual([result["status"] for result in results], ["cancelled"])
+            namespaces += [entry["namespace"] for result in results for entry in result["retained"]]
+        totals = summary["retained"]
+        self.assertEqual(sorted(totals["namespaces"]), sorted(namespaces))
+        self.assertEqual({key: totals[key] for key in ("cases", "docker_fixtures", "simulators", "macos_namespaces")},
+                         {"cases":2, "docker_fixtures":2, "simulators":0, "macos_namespaces":2})
+        self.assertEqual(terminal[0].getvalue(), "")  # The summary never reached the closed terminal.
 
     def test_failed_case_reports_retained_resources_through_the_worker(self):
         self.retained = [{"namespace":"vizor_aaaaaaaaaa_w0_1", "evidence":"/model/case", "workspace":"/model/w",

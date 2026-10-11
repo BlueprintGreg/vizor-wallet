@@ -201,6 +201,14 @@ def _write_report(path, report):
         output.write("\n")
 
 
+def _console(text, stream=None):
+    """Print progress or results; a closed terminal (SIGHUP) or pipe never stops the reports."""
+    try:
+        print(text, file=sys.stderr if stream is None else stream, flush=True)
+    except OSError:
+        pass  # EIO from a hung-up tty, EPIPE from a dead tee: nobody is reading.
+
+
 def _claim_run_owner(evidence, run_id, checkout):
     """Hold the run's liveness lock for this runner; the JSON beside it is diagnostic.
 
@@ -254,10 +262,9 @@ def _prune_passing_builds(builds, expected, run_id, cancel):
             output.write("\n")
     except OSError as error:
         record["errors"].append(f"record: {error}")
-    print(f"Removed passing-run build intermediates: {tree.size_text(record['bytes'])} in "
-          f"{len(record['removed'])} entries, logs and markers kept"
-          + (f"; {len(record['errors'])} error(s)" if record["errors"] else "") + f"; see {path}",
-          file=sys.stderr, flush=True)
+    _console(f"Removed passing-run build intermediates: {tree.size_text(record['bytes'])} in "
+             f"{len(record['removed'])} entries, logs and markers kept"
+             + (f"; {len(record['errors'])} error(s)" if record["errors"] else "") + f"; see {path}")
 
 
 def _ios_launch_timeout(args):
@@ -466,7 +473,7 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
     ios_preparation_slots = (threading.BoundedSemaphore(report["resource_budget"]["ios_preparation_slots"])
         if report["resource_budget"]["ios_preparation_slots"] else None)
     try:
-        print("Building selected native artifacts once; logs: "+str(evidence),file=sys.stderr,flush=True)
+        _console("Building selected native artifacts once; logs: "+str(evidence))
         # Selection-independent inputs: the signer always carries every catalog
         # Rust target and the address tool, and every macOS cohort compiles the
         # same derived TEX fixture, so any subset reuses the same cache entries.
@@ -539,8 +546,8 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
                 item = future.result()
                 results[repetition].append((index,item))
                 retained.extend(item.get("retained") or ())
-                print("Completed " + item["scenario_id"] + ": " + item["status"] +
-                    " (" + str(item.get("duration_seconds", 0)) + "s)",file=sys.stderr,flush=True)
+                _console("Completed " + item["scenario_id"] + ": " + item["status"] +
+                    " (" + str(item.get("duration_seconds", 0)) + "s)")
         for index,((repeated,repeated_id),items) in enumerate(zip(repetitions,results)):
             items = [item for _,item in sorted(items)]
             path = repeated/"run.json"
@@ -556,12 +563,12 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         report["duration_seconds"] = round(time.monotonic()-started,3)
         report["retained"] = totals = _retained_totals(retained)
         _write_report(evidence/"summary.json",report)
-        print(json.dumps(report,indent=2,allow_nan=False))
-        print("Retained by native-suite-" + run_id + ": " + ("none" if not totals["cases"] else
+        _console(json.dumps(report,indent=2,allow_nan=False), sys.stdout)
+        _console("Retained by native-suite-" + run_id + ": " + ("none" if not totals["cases"] else
             f"{totals['cases']} failed case(s) ({', '.join(totals['namespaces'])}): "
             f"{totals['docker_fixtures']} Docker fixture(s), {totals['simulators']} Simulator(s), "
             f"{totals['macos_namespaces']} macOS namespace(s); evidence {evidence}; "
-            f"list: python3 scripts/e2e/native-prune.py --run {run_id}"), file=sys.stderr, flush=True)
+            f"list: python3 scripts/e2e/native-prune.py --run {run_id}"))
         passed = report["error"] is None and all(item["failed"] == 0 for item in report["repetition_reports"])
         # Handlers stay installed so a signal stops this sweep cooperatively.
         if passed and report["repetition_reports"] and not cancel.is_set():

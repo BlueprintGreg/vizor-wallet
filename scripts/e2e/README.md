@@ -284,7 +284,9 @@ Failed cases keep state/logs,
 and uncertain cleanup remains failure. SIGINT, SIGTERM and SIGHUP (a closed
 terminal) cancel cooperatively: cancellation stops owned children and new
 assignment without terminating ordinary wallet processes. A SIGHUP that was
-already ignored, as under `nohup`, stays ignored.
+already ignored, as under `nohup`, stays ignored. Progress and result lines
+that can no longer reach a closed terminal or pipe are dropped, so every
+`run.json` and `summary.json` is still written.
 
 The runner holds an exclusive lock on `run-owner.lock` in the run folder for
 its whole lifetime, created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600;
