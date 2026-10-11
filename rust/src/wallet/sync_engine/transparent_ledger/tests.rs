@@ -2032,10 +2032,43 @@ async fn the_followup_retires_a_cached_receive_address_recovery_funded() {
     transparent_receive_cache::refresh_all_from_wallet_db(&wallet.path, NETWORK, Some(completed.0))
         .unwrap();
     assert_eq!(cached(&wallet).as_deref(), Some(funded.as_str()));
-
-    // Recovery that finds nothing leaves the address on offer.
     let empty = FixtureSource::new(main_hash);
     empty.trust();
+
+    // With private queries off nothing runs, and the cache stays clean.
+    transparent_followup(
+        1,
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        policy(TransparentLedgerMode::Public),
+        &empty,
+        Some(wallet.account),
+        &|| false,
+        &progress,
+        completed,
+    )
+    .await;
+    assert_eq!(cached(&wallet).as_deref(), Some(funded.as_str()));
+
+    // A run that exits may have committed for an earlier account, so it
+    // leaves the cache dirty and reads fall back to the wallet DB.
+    transparent_followup(
+        1,
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        &empty,
+        Some(wallet.account),
+        &|| true,
+        &progress,
+        completed,
+    )
+    .await;
+    assert_eq!(cached(&wallet), None);
+
+    // Recovery that finds nothing leaves the address on offer.
     transparent_followup(
         1,
         &mut wallet.db,
