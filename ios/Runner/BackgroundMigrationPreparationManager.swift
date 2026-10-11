@@ -376,6 +376,21 @@ func migrationPreparationTrackerArmed(
   (taskRunning && !stopping) || pendingIdentifiers.contains(identifier)
 }
 
+/// Whether the running tracker is stopping, so it is no longer armed: an
+/// expiry, a foreground handoff, a wallet mutation, disabled notifications,
+/// or a refusal because Tor is now saved. A stopping tracker ends without
+/// re-arming confirmation tracking on its own.
+func migrationPreparationTrackingStopRequested(
+  expired: Bool,
+  foregroundHandoffRequested: Bool,
+  mutationQuiesced: Bool,
+  notificationsDisabled: Bool,
+  routeDeferralStopping: Bool
+) -> Bool {
+  expired || foregroundHandoffRequested || mutationQuiesced
+    || notificationsDisabled || routeDeferralStopping
+}
+
 /// Whether a lookup the route gate refused should end a running tracking task.
 ///
 /// A refusal while Tor is only being saved is transient: the save either
@@ -1038,6 +1053,8 @@ final class BackgroundMigrationPreparationManager {
   private var notificationAuthorization =
     IronwoodMigrationNotificationAuthorizationEpochState()
   private var foregroundHandoffRequested = false
+  /// The running tracker was refused because Tor is saved and is ending.
+  private var routeDeferralStopping = false
   private var foregroundContinuationScopes: Set<String>
   private let notificationCoordinator =
     MigrationPreparationNotificationCoordinator.shared
@@ -1774,6 +1791,7 @@ final class BackgroundMigrationPreparationManager {
       latestTrackingProgress = nil
       displayedProgressUnits = 0
       foregroundHandoffRequested = false
+      routeDeferralStopping = false
       taskProgress = task.progress
       taskProgress?.totalUnitCount = Self.progressDisplayUnitCount
       taskProgress?.completedUnitCount = 0
@@ -1869,6 +1887,11 @@ final class BackgroundMigrationPreparationManager {
           )
           return
         case .deferredToForeground:
+          // From here the tracker is stopping: a re-arm attempt during its
+          // cleanup must not count it as armed.
+          self.stateLock.withPreparationLock {
+            self.routeDeferralStopping = true
+          }
           self.finishRouteDeferredTrackingTask(task)
           return
         }
@@ -1899,6 +1922,7 @@ final class BackgroundMigrationPreparationManager {
       trackingCancellation = nil
       latestTrackingProgress = nil
       foregroundHandoffRequested = false
+      routeDeferralStopping = false
     }
     guard !BackgroundMigrationTorRoute.isSelected() else {
       task.setTaskCompleted(success: notificationSubmitted)
@@ -2525,6 +2549,7 @@ final class BackgroundMigrationPreparationManager {
       trackingCancellation = nil
       latestTrackingProgress = nil
       foregroundHandoffRequested = false
+      routeDeferralStopping = false
     }
 
     let success = migrationPreparationTrackingTaskSucceeded(
@@ -2542,12 +2567,6 @@ final class BackgroundMigrationPreparationManager {
         taskRequestWithIdentifier: Self.taskIdentifier
       )
     }
-    // A direct-route re-arm refused while this tracker was stopping (a
-    // foreground handoff marks it so) has no other in-session retry. Now that
-    // the tracker has stopped and its request is settled, retry it.
-    if BackgroundMigrationDirectRouteRearm.isPending() {
-      BackgroundMigrationManager.shared.resumePendingDirectRouteRearm()
-    }
     if runtime.handedOff {
       recordSchedulingState("handed_off_to_foreground")
     } else if runtime.quiesced {
@@ -2563,13 +2582,20 @@ final class BackgroundMigrationPreparationManager {
     } else {
       recordSchedulingState("confirmation_tracking_finished")
     }
-    guard migrationPreparationTrackingShouldAttemptRearm(
-      completionFailed: completionFailed,
-      quiesced: runtime.quiesced,
-      expired: runtime.expired,
-      handedOff: runtime.handedOff,
-      notificationsDisabled: runtime.disabled
-    ) else {
+    // A direct-route re-arm refused while this tracker was stopping (a
+    // foreground handoff marks it so) has no other in-session retry. It owns
+    // re-arming when pending: it submits confirmation tracking itself, so no
+    // ordinary re-arm runs alongside it.
+    let pendingDirectRearm = BackgroundMigrationDirectRouteRearm.isPending()
+    guard pendingDirectRearm
+      || migrationPreparationTrackingShouldAttemptRearm(
+        completionFailed: completionFailed,
+        quiesced: runtime.quiesced,
+        expired: runtime.expired,
+        handedOff: runtime.handedOff,
+        notificationsDisabled: runtime.disabled
+      )
+    else {
       cancelWatchdog()
       task.setTaskCompleted(success: success)
       return
@@ -2596,6 +2622,12 @@ final class BackgroundMigrationPreparationManager {
     // The task must finish even if the submission callback never fires.
     queue.asyncAfter(deadline: .now() + Self.rearmSubmissionTimeout) {
       complete()
+    }
+    if pendingDirectRearm {
+      BackgroundMigrationManager.shared.savedRouteBecameDirect { _ in
+        complete()
+      }
+      return
     }
     start { scheduled in
       if !scheduled {
@@ -2629,8 +2661,13 @@ final class BackgroundMigrationPreparationManager {
 
   private var isTrackingStopRequested: Bool {
     stateLock.withPreparationLock {
-      expired || foregroundHandoffRequested || mutationQuiesced
-        || notificationAuthorization.isDisabled
+      migrationPreparationTrackingStopRequested(
+        expired: expired,
+        foregroundHandoffRequested: foregroundHandoffRequested,
+        mutationQuiesced: mutationQuiesced,
+        notificationsDisabled: notificationAuthorization.isDisabled,
+        routeDeferralStopping: routeDeferralStopping
+      )
     }
   }
 

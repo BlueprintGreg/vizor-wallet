@@ -3512,6 +3512,37 @@ final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
     )
   }
 
+  func testARouteDeferredTrackerIsStoppingDuringItsCleanup() {
+    // Otherwise a re-arm attempt during cleanup counts the ending tracker as
+    // armed and clears the obligation it still owes.
+    XCTAssertTrue(
+      migrationPreparationTrackingStopRequested(
+        expired: false, foregroundHandoffRequested: false,
+        mutationQuiesced: false, notificationsDisabled: false,
+        routeDeferralStopping: true
+      )
+    )
+    XCTAssertFalse(
+      migrationPreparationTrackingStopRequested(
+        expired: false, foregroundHandoffRequested: false,
+        mutationQuiesced: false, notificationsDisabled: false,
+        routeDeferralStopping: false
+      )
+    )
+    XCTAssertFalse(
+      migrationPreparationTrackerArmed(
+        taskRunning: true,
+        stopping: migrationPreparationTrackingStopRequested(
+          expired: false, foregroundHandoffRequested: false,
+          mutationQuiesced: false, notificationsDisabled: false,
+          routeDeferralStopping: true
+        ),
+        pendingIdentifiers: [],
+        identifier: "com.keplr.vizor.ironwood-preparation"
+      )
+    )
+  }
+
   func testOnlyASavedTorRouteEndsRunningTracking() {
     // A Tor save in progress refuses lookups only until it lifts or lands;
     // a saved Tor route refuses every lookup until the foreground runs.

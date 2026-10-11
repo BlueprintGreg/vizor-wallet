@@ -134,6 +134,7 @@ for header in [
     'func migrationPreparationRouteRefusalEndsTracking(',
     'func migrationPreparationDirectRouteNeedsTracking(',
     'func migrationPreparationTrackerArmed(',
+    'func migrationPreparationTrackingStopRequested(',
 ]:
     parts.append(declaration(manager, header))
 parts.append(declaration(tests, 'final class BackgroundMigrationPreparationTorDeferralTests'))
@@ -224,6 +225,7 @@ private final class PreparationRouteHandoffProbe {
   var trackingCancellation: Int? = 1
   var latestTrackingProgress: Int? = 1
   var foregroundHandoffRequested = false
+  var routeDeferralStopping = true
   var notificationAuthorization = NotificationState()
   var makeDirectDuringCleanup = false
   struct NotificationState { var isDisabled = false }
@@ -293,7 +295,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 39 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 40 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"
