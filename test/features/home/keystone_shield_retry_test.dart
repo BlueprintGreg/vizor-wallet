@@ -46,17 +46,22 @@ void main() {
     await support.delete(recursive: true);
   });
 
-  test('only the Rust retry marker is retryable', () {
+  test('only the Rust retry code is retryable', () {
+    expect(isHardwareBroadcastRetryable(_retryable), isTrue);
+    // The message alone decides nothing, whatever it says.
     expect(
       isHardwareBroadcastRetryable(
         'hardware_recovery_retryable: Transparent broadcast authority '
         'unavailable',
       ),
-      isTrue,
+      isFalse,
     );
     expect(
       isHardwareBroadcastRetryable(
-        'Transparent broadcast authority unavailable',
+        const ApiWalletError(
+          code: ApiWalletErrorCode.authorityRefused,
+          message: _refusal,
+        ),
       ),
       isFalse,
     );
@@ -64,7 +69,7 @@ void main() {
 
   testWidgets('a refusal while private recovery catches up sends the same '
       'signature again', (tester) async {
-    api.refusals = ['hardware_recovery_retryable: $_refusal'];
+    api.refusals = [_retryable];
     var completed = 0;
     await tester.pumpWidget(_app(onComplete: () => completed++));
     await _getSignature(tester);
@@ -85,7 +90,12 @@ void main() {
   });
 
   testWidgets('a final refusal offers no retry', (tester) async {
-    api.refusals = [_refusal];
+    api.refusals = [
+      const ApiWalletError(
+        code: ApiWalletErrorCode.authorityRefused,
+        message: _refusal,
+      ),
+    ];
     await tester.pumpWidget(_app(onComplete: () {}));
     await _getSignature(tester);
 
@@ -97,6 +107,10 @@ void main() {
 }
 
 const _refusal = 'Transparent broadcast authority unavailable';
+const _retryable = ApiWalletError(
+  code: ApiWalletErrorCode.retryAfterRecovery,
+  message: _refusal,
+);
 final _signature = [9, 8, 7];
 
 Future<void> _settle(WidgetTester tester) async {
@@ -179,7 +193,7 @@ class _ShieldApi extends RustLibApi {
   static _ShieldApi? current;
 
   final broadcasts = <List<int>>[];
-  List<String> refusals = [];
+  List<ApiWalletError> refusals = [];
   int scans = 0;
 
   void reset() {

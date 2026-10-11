@@ -57,7 +57,12 @@ import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 import 'package:zcash_wallet/src/rust/api/keystone.dart'
     show KeystoneActionSig, KeystoneMsgSig, KeystoneSigResult;
 import 'package:zcash_wallet/src/rust/api/sync.dart'
-    show KeystoneBatchPczt, TexPcztPairResult, ProposalResult;
+    show
+        ApiWalletError,
+        ApiWalletErrorCode,
+        KeystoneBatchPczt,
+        TexPcztPairResult,
+        ProposalResult;
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
 import 'package:zcash_wallet/src/rust/wallet/keystone.dart'
     show ZcashBatchMessageInput;
@@ -1931,8 +1936,10 @@ void main() {
   ) async {
     final operationService = _FakeLedgerSignedOperationService()
       ..failuresRemaining = 1
-      ..checkpointError = StateError(
-        'Ledger signed operation cannot be retried with different data',
+      ..checkpointError = const ApiWalletError(
+        code: ApiWalletErrorCode.ledgerOperationTerminal,
+        message:
+            'Ledger signed operation cannot be retried with different data',
       );
     var signerCalls = 0;
 

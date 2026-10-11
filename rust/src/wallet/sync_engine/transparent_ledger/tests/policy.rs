@@ -35,7 +35,7 @@ async fn rpc(sent: &AtomicUsize) {
 
 #[tokio::test]
 async fn openers_never_run_weaker_than_the_durable_policy() {
-    // No selection for this wallet: every opener selects `Public`.
+    // No mode override for this wallet: every opener opens `Public`.
     let mut wallet = wallet();
     let path = wallet.path.clone();
     let other = keys::mnemonic_to_seed(&keys::generate_mnemonic()).unwrap();
@@ -187,7 +187,7 @@ async fn an_unconfirmed_preference_withholds_lookups_but_never_raises() {
     let mut wallet = wallet();
     let before = applied(&wallet.path, NETWORK);
     let _unconfirmed =
-        test_mode::select(&wallet.path, TransparentLedgerMode::PrivateRequired, false);
+        test_mode::set_with(&wallet.path, TransparentLedgerMode::PrivateRequired, false);
 
     // Handles and the captured policy are private for the launch.
     let reopened =
@@ -432,7 +432,7 @@ async fn private_queries_off_writes_nothing_and_sends_no_private_requests() {
         set_transparent_policy(&path, MAIN, false).await.unwrap(),
         None
     );
-    // An unsupported network does not select private recovery or open the
+    // An unsupported network has no private recovery and does not open the
     // wallet, even when private queries is on.
     let not_a_wallet = format!("{path}.other");
     std::fs::write(&not_a_wallet, b"not a wallet").unwrap();

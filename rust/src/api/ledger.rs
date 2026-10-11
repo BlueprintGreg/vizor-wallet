@@ -360,7 +360,7 @@ pub async fn ledger_broadcast_signed_operation(
     operation_id: String,
     spend_params_path: Option<String>,
     output_params_path: Option<String>,
-) -> Result<LedgerSignedOperationBroadcastResult, String> {
+) -> Result<LedgerSignedOperationBroadcastResult, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::broadcast_signed_operation(
         &db_path,
@@ -378,6 +378,7 @@ pub async fn ledger_broadcast_signed_operation(
         message: result.message,
         requires_ack: result.requires_ack,
     })
+    .map_err(Into::into)
 }
 
 /// Acknowledge and delete an operation whose broadcast result is pending.

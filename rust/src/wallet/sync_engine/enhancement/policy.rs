@@ -22,13 +22,14 @@ pub(crate) fn set_preference_confirmed(confirmed: bool) {
     PREFERENCE_CONFIRMED.store(confirmed, Ordering::SeqCst);
 }
 
-/// The transparent ledger mode that `preference` selects on `network`.
+/// The transparent ledger mode for the private queries `preference` on
+/// `network`.
 ///
 /// `PrivateRequired` only on mainnet with private queries on, outside
-/// masquerade builds; otherwise `Public`. The selection never
-/// weakens a wallet: reads honor a stricter durable policy, and only an
-/// explicit toggle-off lowers one.
-pub(crate) fn select_transparent_mode(
+/// masquerade builds; otherwise `Public`. It never weakens a wallet: reads
+/// honor a stricter durable policy, and only an explicit toggle-off lowers
+/// one.
+pub(crate) fn transparent_mode_for_preference(
     network: WalletNetwork,
     preference: bool,
 ) -> TransparentLedgerMode {
@@ -39,14 +40,14 @@ pub(crate) fn select_transparent_mode(
     }
 }
 
-/// The selection from the live preference on the supported network.
-pub(crate) fn selected_transparent_mode(network: WalletNetwork) -> TransparentLedgerMode {
-    select_transparent_mode(network, crate::api::sync::enhance_pir_enabled())
+/// The transparent ledger mode for the live private queries preference.
+pub(crate) fn live_transparent_mode(network: WalletNetwork) -> TransparentLedgerMode {
+    transparent_mode_for_preference(network, crate::api::sync::enhance_pir_enabled())
 }
 
 /// Transparent ledger mode for a handle on the wallet at `db_path`.
 ///
-/// Production returns [`selected_transparent_mode`]. Tests select a mode for
+/// Production returns [`live_transparent_mode`]. Tests override the mode for
 /// one wallet file through [`test_mode`], so private activation runs through
 /// the same handle openers, balance reads, and spend paths as production
 /// without touching the process-wide preference.
@@ -55,38 +56,38 @@ pub(crate) fn transparent_ledger_mode_for(
     network: WalletNetwork,
 ) -> TransparentLedgerMode {
     #[cfg(test)]
-    if let Some(selection) = test_mode::get(db_path) {
-        return selection.mode;
+    if let Some(mode) = test_mode::get(db_path) {
+        return mode.mode;
     }
     let _ = db_path;
-    selected_transparent_mode(network)
+    live_transparent_mode(network)
 }
 
-/// Whether this build recovers the wallet at `db_path` privately: only a
-/// `PrivateRequired` selection runs private recovery. A wallet that durably
-/// requires it in a build that does not select it keeps the stricter policy,
-/// so its transparent funds stay unavailable until private queries are turned
-/// off.
-pub(crate) fn selects_private_recovery(db_path: &str, network: WalletNetwork) -> bool {
+/// Whether private queries are in effect for the wallet at `db_path`: on, on
+/// mainnet. Only then does private recovery run. A wallet that durably
+/// requires private recovery while they are off (turning them off did not
+/// finish) keeps the stricter policy, so its transparent funds stay
+/// unavailable until private queries are turned off again.
+pub(crate) fn private_queries_active(db_path: &str, network: WalletNetwork) -> bool {
     transparent_ledger_mode_for(db_path, network) == TransparentLedgerMode::PrivateRequired
 }
 
 /// Whether a durable policy may be raised to `PrivateRequired` for the wallet
-/// at `db_path` without an explicit toggle: the selection is `PrivateRequired`
+/// at `db_path` without an explicit toggle: the live mode is `PrivateRequired`
 /// and the preference behind it was read, not assumed. An unreadable
-/// preference still selects private handles for the launch, which withholds
+/// preference still opens private handles for the launch, which withholds
 /// public lookups, but never writes a policy.
 pub(crate) fn may_raise(db_path: &str, network: WalletNetwork) -> bool {
     #[cfg(test)]
-    if let Some(selection) = test_mode::get(db_path) {
-        return selection.mode == TransparentLedgerMode::PrivateRequired && selection.confirmed;
+    if let Some(mode) = test_mode::get(db_path) {
+        return mode.mode == TransparentLedgerMode::PrivateRequired && mode.confirmed;
     }
     let _ = db_path;
-    selected_transparent_mode(network) == TransparentLedgerMode::PrivateRequired
+    live_transparent_mode(network) == TransparentLedgerMode::PrivateRequired
         && PREFERENCE_CONFIRMED.load(Ordering::SeqCst)
 }
 
-/// Test seam: a per-wallet-file selection, standing in for the live
+/// Test seam: a per-wallet-file mode override, standing in for the live
 /// preference and confirmation. Keyed by path, so parallel
 /// tests on other wallets are unaffected and no test changes the
 /// process-wide values.
@@ -98,19 +99,19 @@ pub(crate) mod test_mode {
     use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
 
     #[derive(Clone, Copy, Debug)]
-    pub(crate) struct Selection {
+    pub(crate) struct Override {
         /// The mode handles on the wallet are opened with.
         pub(crate) mode: TransparentLedgerMode,
         /// Whether the preference behind `mode` counts as read from storage.
         pub(crate) confirmed: bool,
     }
 
-    fn overrides() -> &'static Mutex<HashMap<String, Selection>> {
-        static OVERRIDES: OnceLock<Mutex<HashMap<String, Selection>>> = OnceLock::new();
+    fn overrides() -> &'static Mutex<HashMap<String, Override>> {
+        static OVERRIDES: OnceLock<Mutex<HashMap<String, Override>>> = OnceLock::new();
         OVERRIDES.get_or_init(Default::default)
     }
 
-    pub(crate) fn get(db_path: &str) -> Option<Selection> {
+    pub(crate) fn get(db_path: &str) -> Option<Override> {
         overrides()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -121,12 +122,12 @@ pub(crate) mod test_mode {
     /// Handles opened on `db_path` use `mode`, from a confirmed preference,
     /// until the guard drops.
     pub(crate) fn set(db_path: &str, mode: TransparentLedgerMode) -> ModeOverride {
-        select(db_path, mode, true)
+        set_with(db_path, mode, true)
     }
 
     /// Handles opened on `db_path` use `mode` until the guard drops; whether
     /// the preference behind it was read is `confirmed`.
-    pub(crate) fn select(
+    pub(crate) fn set_with(
         db_path: &str,
         mode: TransparentLedgerMode,
         confirmed: bool,
@@ -134,7 +135,7 @@ pub(crate) mod test_mode {
         overrides()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(db_path.to_owned(), Selection { mode, confirmed });
+            .insert(db_path.to_owned(), Override { mode, confirmed });
         ModeOverride(db_path.to_owned())
     }
 
@@ -154,7 +155,7 @@ pub(crate) mod test_mode {
 /// observe different values during the same operation.
 ///
 /// The transparent ledger mode is captured with it, from the same preference
-/// on the supported network: see [`select_transparent_mode`].
+/// on the supported network: see [`transparent_mode_for_preference`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EnhancementPolicy {
     private: bool,
@@ -170,12 +171,12 @@ impl EnhancementPolicy {
     pub(crate) fn for_preference(network: WalletNetwork, preference: bool) -> Self {
         Self {
             private: network == WalletNetwork::Main && preference && !cfg!(ironwood_masquerade),
-            transparent: select_transparent_mode(network, preference),
+            transparent: transparent_mode_for_preference(network, preference),
         }
     }
 
-    /// Test seam for a transparent mode this build would not select for the
-    /// test's network.
+    /// Test seam for a transparent mode the test's network and preference
+    /// would not produce.
     #[cfg(test)]
     pub(crate) fn with_transparent_mode(self, transparent: TransparentLedgerMode) -> Self {
         Self {
@@ -319,7 +320,10 @@ mod tests {
                     TransparentLedgerMode::Public
                 };
                 let policy = EnhancementPolicy::for_preference(network, preference);
-                assert_eq!(select_transparent_mode(network, preference), expected);
+                assert_eq!(
+                    transparent_mode_for_preference(network, preference),
+                    expected
+                );
                 assert_eq!(policy.transparent_mode(), expected);
                 assert_eq!(policy.is_private(), enabled);
             }
@@ -373,7 +377,9 @@ mod tests {
             let relative = path.strip_prefix(&root).unwrap();
             // Test-only files: a `tests/` module directory or `*tests.rs`.
             if path.ends_with("frb_generated.rs")
-                || relative.components().any(|part| part.as_os_str() == "tests")
+                || relative
+                    .components()
+                    .any(|part| part.as_os_str() == "tests")
                 || relative
                     .file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"))
@@ -398,13 +404,15 @@ mod tests {
                     continue;
                 }
                 let gated = code.contains("origin_override(")
-                    || lines[index.saturating_sub(WINDOW)..=index].iter().any(|above| {
-                        above.contains("cfg(debug_assertions)")
-                            || above.contains("cfg!(debug_assertions)")
-                            || above.contains("#[test]")
-                            || above.contains("#[tokio::test")
-                            || above.contains("#[cfg(test)]")
-                    });
+                    || lines[index.saturating_sub(WINDOW)..=index]
+                        .iter()
+                        .any(|above| {
+                            above.contains("cfg(debug_assertions)")
+                                || above.contains("cfg!(debug_assertions)")
+                                || above.contains("#[test]")
+                                || above.contains("#[tokio::test")
+                                || above.contains("#[cfg(test)]")
+                        });
                 if !gated {
                     ungated.push(format!("{}:{}: {}", relative.display(), index + 1, code));
                 }

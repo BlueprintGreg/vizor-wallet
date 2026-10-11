@@ -223,7 +223,7 @@ advanced tip retains the durable guard; an advanced tip schedules scanning
 before resubmission. This applies to both status sources. See
 [`docs/transaction-resubmission.md`](../../../../../docs/transaction-resubmission.md).
 
-The unselected source is lazy and is never opened. A selected private source
+The source not in use is lazy and is never opened. A private source in use
 does not fall back to public lightwalletd after initialization or observation
 failure.
 
@@ -547,8 +547,8 @@ without granting funds. Tests use the trusted fixture, not the library's
   or `Stopped`. Last-known amounts are informational and the spendable fields
   stay zero. An account that recovery will not restore on its own is
   `Stopped`, with `transparent_stop` saying why: `Quarantined`, `Ledger`, `LegacyDiscrepancy`,
-  `Withdrawn`, `Stalled`, or `NotSelected` for a durably private wallet in a
-  build that does not select private recovery. `transparent_private` reports a
+  `Withdrawn`, `Stalled`, or `OptOutUnfinished` for a durably private wallet
+  while private queries are off (turning them off did not finish). `transparent_private` reports a
   durable `PrivateRequired`.
   This composite read bypasses the summary-only cache to prevent mixing generations.
 - **Operations.** Shielding and software proposals use library selectors and

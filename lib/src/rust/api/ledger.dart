@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'sync.dart';
 
 // These functions are ignored because they are not marked as `pub`: `expected_ledger_account`, `ledger_account_fingerprint`, `parse_ledger_db_network`, `require_mainnet`, `to_action_sigs`, `to_apdu_command`, `to_device_app`, `to_signed_operation`
 

@@ -140,7 +140,7 @@ impl SignedProposal {
         &self,
         wallet: &Wallet,
         signature: Vec<u8>,
-    ) -> Result<StoreAndBroadcastPcztsResult, String> {
+    ) -> Result<StoreAndBroadcastPcztsResult, WalletFailure> {
         crate::wallet::sync::store_and_broadcast_signed_pczts_for_proposal(
             &wallet.path,
             "http://127.0.0.1:1",
@@ -159,7 +159,7 @@ impl SignedProposal {
         &self,
         wallet: &Wallet,
         url: &str,
-    ) -> Result<StoreAndBroadcastPcztsResult, String> {
+    ) -> Result<StoreAndBroadcastPcztsResult, WalletFailure> {
         crate::wallet::sync::store_and_broadcast_signed_pczts_for_proposal(
             &wallet.path,
             url,
@@ -358,7 +358,7 @@ impl Wallet {
         .unwrap();
     }
 
-    async fn recover(&self, url: &str) -> Result<StoreAndBroadcastPcztsResult, String> {
+    async fn recover(&self, url: &str) -> Result<StoreAndBroadcastPcztsResult, WalletFailure> {
         store_and_broadcast_signed_pczts(
             &self.path,
             url,
@@ -566,7 +566,10 @@ async fn missing_or_mismatching_mined_bytes_defer_without_rpc() {
             .await
             .err()
             .expect("mined bytes must defer");
-        assert!(error.contains("stored mined transaction"), "{error}");
+        assert!(
+            error.message.contains("stored mined transaction"),
+            "{error}"
+        );
         broadcast(
             &wallet.path,
             &url,
@@ -635,7 +638,10 @@ async fn rewound_mining_defers_only_while_recovery_evidence_is_pending() {
         .await;
         if deferred {
             let error = result.unwrap_err();
-            assert!(error.contains("awaiting mined-state recovery"), "{error}");
+            assert!(
+                error.message.contains("awaiting mined-state recovery"),
+                "{error}"
+            );
             assert!(service.calls.lock().unwrap().is_empty());
             let rows = list(&wallet.path, WalletNetwork::Regtest, None).unwrap();
             assert_eq!(rows[0].state, STATE_SIGNED_PENDING_BROADCAST);
@@ -967,7 +973,7 @@ async fn invalid_signed_effects_are_rejected_even_when_base_is_mined() {
     .err()
     .expect("mismatched effects must fail");
     assert!(
-        error.contains("transaction effects do not match"),
+        error.message.contains("transaction effects do not match"),
         "{error}"
     );
 }
@@ -999,8 +1005,11 @@ async fn proposal_recovery_preserves_retry_capability_until_mined_evidence_retur
             .await
             .err()
             .expect("incomplete mined evidence must remain retryable");
-        assert!(error.contains("retry after sync"), "{evidence}: {error}");
-        assert!(error.starts_with("hardware_recovery_retryable:"));
+        assert!(
+            error.message.contains("retry after sync"),
+            "{evidence}: {error}"
+        );
+        assert_eq!(error.code, Some(FailureCode::RetryAfterRecovery));
         proposal.assert_retained(&wallet, true);
         conn.execute(
             "UPDATE transactions SET raw = ?1, mined_height = 201",
@@ -1047,7 +1056,7 @@ async fn partially_mined_proposal_retains_retry_capability_on_rpc_failures() {
                 .err()
                 .expect("RPC failure must remain an error");
             assert!(
-                error.contains(if failure == "route" {
+                error.message.contains(if failure == "route" {
                     "Failed to open the broadcast route"
                 } else {
                     "Failed to read the chain tip before broadcast"
@@ -1064,7 +1073,7 @@ async fn partially_mined_proposal_retains_retry_capability_on_rpc_failures() {
             );
             assert!(service.submitted.lock().unwrap().is_empty());
             assert_eq!(
-                error.starts_with("hardware_recovery_retryable:"),
+                error.code == Some(FailureCode::RetryAfterRecovery),
                 mined_index.is_some()
             );
             proposal.assert_retained(&wallet, mined_index.is_some());
@@ -1106,7 +1115,7 @@ async fn proposal_recovery_still_releases_invalid_signed_effects() {
         .err()
         .expect("mismatched effects must fail");
     assert!(
-        error.contains("transaction effects do not match"),
+        error.message.contains("transaction effects do not match"),
         "{error}"
     );
     proposal.assert_retained(&wallet, false);
@@ -1191,7 +1200,10 @@ async fn interrupted_outcome_write_recovers_in_a_fresh_offline_process() {
     )
     .await
     .unwrap_err();
-    assert!(error.contains("interrupted outcome write"), "{error}");
+    assert!(
+        error.message.contains("interrupted outcome write"),
+        "{error}"
+    );
     assert_eq!(*service.submitted.lock().unwrap(), [signed.raw.clone()]);
     assert_eq!(
         list(&wallet.path, WalletNetwork::Regtest, None).unwrap()[0].state,

@@ -7,6 +7,7 @@ use flutter_rust_bridge::frb;
 use zeroize::Zeroizing;
 
 use crate::frb_generated::StreamSink;
+use crate::wallet::failure::{FailureCode, WalletFailure};
 use crate::wallet::{keys, network::WalletNetwork, secret_store, sync as wallet_sync, sync_engine};
 
 // ======================== Sync Mode ========================
@@ -57,6 +58,67 @@ pub(crate) fn enhance_pir_enabled() -> bool {
 #[frb(sync)]
 pub fn set_enhance_pir_preference_confirmed(confirmed: bool) {
     sync_engine::enhancement::set_preference_confirmed(confirmed);
+}
+
+/// What the app should do about a failure, beyond showing its message.
+///
+/// Decisions such as keeping a signed transaction for a retry read this code,
+/// never the message, so rewording a message cannot change them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiWalletErrorCode {
+    /// Nothing more than the message.
+    Other,
+    /// Nothing was sent and the signed transaction is kept: private recovery
+    /// is catching up, or the wallet was busy. Offer to send the same
+    /// signatures again after sync.
+    RetryAfterRecovery,
+    /// Transparent broadcast authority refused the transaction for good
+    /// before anything was sent.
+    AuthorityRefused,
+    /// The checkpointed Ledger operation can never be broadcast and has been
+    /// discarded.
+    LedgerOperationTerminal,
+    /// Private recovery has not yet covered the transparent funds.
+    RecoveryIncomplete,
+    /// The wallet still requires private recovery while Private queries is
+    /// off: turning it off did not finish.
+    OptOutUnfinished,
+}
+
+/// An error from a call whose failures the app acts on. Its Dart
+/// `toString()` is the message, so existing message handling still works.
+#[frb(dart_code = "
+  @override
+  String toString() => message;
+")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiWalletError {
+    pub code: ApiWalletErrorCode,
+    pub message: String,
+}
+
+impl From<WalletFailure> for ApiWalletError {
+    fn from(failure: WalletFailure) -> Self {
+        Self {
+            code: match failure.code {
+                None => ApiWalletErrorCode::Other,
+                Some(FailureCode::RetryAfterRecovery) => ApiWalletErrorCode::RetryAfterRecovery,
+                Some(FailureCode::AuthorityRefused) => ApiWalletErrorCode::AuthorityRefused,
+                Some(FailureCode::LedgerOperationTerminal) => {
+                    ApiWalletErrorCode::LedgerOperationTerminal
+                }
+                Some(FailureCode::RecoveryIncomplete) => ApiWalletErrorCode::RecoveryIncomplete,
+                Some(FailureCode::OptOutUnfinished) => ApiWalletErrorCode::OptOutUnfinished,
+            },
+            message: failure.message,
+        }
+    }
+}
+
+impl From<String> for ApiWalletError {
+    fn from(message: String) -> Self {
+        WalletFailure::from(message).into()
+    }
 }
 
 /// A wallet's durable transparent ledger mode.
@@ -125,6 +187,22 @@ pub fn reconcile_transparent_policy(
                 .map_err(|e| e.to_string())?,
         };
         Ok(resulting.map(ApiAppliedTransparentPolicy::from))
+    })
+}
+
+/// The wallet's durable transparent policy, read without changing or creating
+/// anything; `None` when there is no wallet. Startup uses it to show a saved
+/// `false` on a wallet that still requires private recovery as the
+/// unfinished opt-out it is, so one toggle governs both.
+pub fn read_transparent_policy(
+    db_path: String,
+    network: String,
+) -> Result<Option<ApiAppliedTransparentPolicy>, String> {
+    catch(|| {
+        let network = keys::parse_network(&network)?;
+        sync_engine::transparent_ledger::current_transparent_policy(&db_path, network)
+            .map(|applied| applied.map(ApiAppliedTransparentPolicy::from))
+            .map_err(|e| e.to_string())
     })
 }
 
@@ -672,9 +750,10 @@ pub enum TransparentStopReason {
     Withdrawn,
     /// Recovery stalled repeatedly.
     Stalled,
-    /// The wallet requires private recovery, which this build does not run.
-    /// Turning off private queries restores public lookups.
-    NotSelected,
+    /// The wallet requires private recovery while private queries are off:
+    /// turning them off did not finish. Turning them off again restores public
+    /// lookups.
+    OptOutUnfinished,
 }
 
 pub struct WalletBalance {
@@ -755,7 +834,7 @@ pub struct AddressValidationResult {
 
 // ======================== Panic Guard ========================
 
-fn catch<T>(f: impl FnOnce() -> Result<T, String> + panic::UnwindSafe) -> Result<T, String> {
+fn catch<T, E: From<String>>(f: impl FnOnce() -> Result<T, E> + panic::UnwindSafe) -> Result<T, E> {
     match panic::catch_unwind(f) {
         Ok(result) => result,
         Err(e) => {
@@ -766,7 +845,7 @@ fn catch<T>(f: impl FnOnce() -> Result<T, String> + panic::UnwindSafe) -> Result
             } else {
                 "Unknown panic".to_string()
             };
-            Err(format!("Rust panic: {msg}"))
+            Err(format!("Rust panic: {msg}").into())
         }
     }
 }
@@ -967,7 +1046,9 @@ pub fn get_balance(
             }
             wallet_sync::TransparentStopReason::Withdrawn => TransparentStopReason::Withdrawn,
             wallet_sync::TransparentStopReason::Stalled => TransparentStopReason::Stalled,
-            wallet_sync::TransparentStopReason::NotSelected => TransparentStopReason::NotSelected,
+            wallet_sync::TransparentStopReason::OptOutUnfinished => {
+                TransparentStopReason::OptOutUnfinished
+            }
         });
         let spendable = b.sapling + b.orchard + b.ironwood;
         let total_spendable = b.transparent + b.sapling + b.orchard + b.ironwood;
@@ -2664,7 +2745,7 @@ pub fn create_shield_transparent_pczt(
     lightwalletd_url: String,
     network: String,
     account_uuid: String,
-) -> Result<ShieldTransparentPcztResult, String> {
+) -> Result<ShieldTransparentPcztResult, ApiWalletError> {
     catch(|| {
         let network = parse_network_and_migrate(&db_path, &network)?;
         let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
@@ -2691,7 +2772,7 @@ pub fn shield_transparent_balance(
     network: String,
     account_uuid: String,
     mnemonic_bytes: Vec<u8>,
-) -> Result<ShieldTransparentResult, String> {
+) -> Result<ShieldTransparentResult, ApiWalletError> {
     catch(|| {
         let network = parse_network_and_migrate(&db_path, &network)?;
         let mnemonic_bytes = Zeroizing::new(mnemonic_bytes);
@@ -2727,7 +2808,7 @@ pub fn shield_transparent_balance_with_macos_stored_mnemonic(
     network: String,
     account_uuid: String,
     password: String,
-) -> Result<ShieldTransparentResult, String> {
+) -> Result<ShieldTransparentResult, ApiWalletError> {
     catch(|| {
         let network = parse_network_and_migrate(&db_path, &network)?;
         let password = Zeroizing::new(password.into_bytes());
@@ -3372,15 +3453,16 @@ pub async fn store_and_broadcast_signed_pczts_for_proposal(
     pczt_with_signatures: Vec<Vec<u8>>,
     spend_params_path: Option<String>,
     output_params_path: Option<String>,
-) -> Result<StoreAndBroadcastPcztsResult, String> {
+) -> Result<StoreAndBroadcastPcztsResult, ApiWalletError> {
     let network = match parse_network_and_migrate(&db_path, &network) {
         Ok(network) => network,
         Err(error) => {
             return match wallet_sync::discard_proposal(proposal_id, &send_flow_id) {
-                Ok(()) => Err(error),
+                Ok(()) => Err(error.into()),
                 Err(cleanup_error) => Err(format!(
                     "{error}; additionally failed to release proposal inputs: {cleanup_error}"
-                )),
+                )
+                .into()),
             };
         }
     };
@@ -3418,15 +3500,16 @@ pub async fn store_and_broadcast_pczts_with_keystone_signatures_for_proposal(
     signature_blobs: Vec<Vec<u8>>,
     spend_params_path: Option<String>,
     output_params_path: Option<String>,
-) -> Result<StoreAndBroadcastPcztsResult, String> {
+) -> Result<StoreAndBroadcastPcztsResult, ApiWalletError> {
     let network = match parse_network_and_migrate(&db_path, &network) {
         Ok(network) => network,
         Err(error) => {
             return match wallet_sync::discard_proposal(proposal_id, &send_flow_id) {
-                Ok(()) => Err(error),
+                Ok(()) => Err(error.into()),
                 Err(cleanup_error) => Err(format!(
                     "{error}; additionally failed to release proposal inputs: {cleanup_error}"
-                )),
+                )
+                .into()),
             };
         }
     };
@@ -3446,10 +3529,11 @@ pub async fn store_and_broadcast_pczts_with_keystone_signatures_for_proposal(
         Ok(signatures) => signatures,
         Err(error) => {
             return match wallet_sync::discard_proposal(proposal_id, &send_flow_id) {
-                Ok(()) => Err(error),
+                Ok(()) => Err(error.into()),
                 Err(cleanup_error) => Err(format!(
                     "{error}; additionally failed to release proposal inputs: {cleanup_error}"
-                )),
+                )
+                .into()),
             };
         }
     };
@@ -3506,7 +3590,7 @@ pub async fn extract_and_broadcast_pczt(
     pczt_with_signatures_bytes: Vec<u8>,
     spend_params_path: Option<String>,
     output_params_path: Option<String>,
-) -> Result<ExtractAndBroadcastPcztResult, String> {
+) -> Result<ExtractAndBroadcastPcztResult, ApiWalletError> {
     let network = parse_network_and_migrate(&db_path, &network)?;
     let result = wallet_sync::extract_and_broadcast_pczt(
         &db_path,
