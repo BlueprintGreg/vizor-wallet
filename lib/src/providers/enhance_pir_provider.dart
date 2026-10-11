@@ -113,16 +113,15 @@ final transparentOptOutPendingProvider =
       TransparentOptOutPendingNotifier.new,
     );
 
-/// Whether Settings offers to finish lowering the wallet's transparent
-/// policy: private queries are off, but an opt-out is unfinished or the
-/// wallet still reads its transparent balance privately. Offered whether or
-/// not the private service is available here, so a wallet already made
-/// private can always be returned to public lookups.
-final transparentOptOutActionProvider = Provider<bool>((ref) {
-  if (ref.watch(enhancePirProvider)) return false;
-  if (ref.watch(transparentOptOutPendingProvider)) return true;
-  return ref.watch(walletTransparentPrivateProvider);
-});
+/// The single toggle stays on while either query path is private, including
+/// an unfinished turn-off. It also remains available to turn off a durable
+/// private policy on a network without the private service.
+final privateQueriesControlEnabledProvider = Provider<bool>(
+  (ref) =>
+      ref.watch(enhancePirProvider) ||
+      ref.watch(transparentOptOutPendingProvider) ||
+      ref.watch(walletTransparentPrivateProvider),
+);
 
 /// Whether the active account's latest transparent balance read was private,
 /// published by [SyncNotifier]. Settings watches this rather than sync, so
@@ -141,7 +140,7 @@ final walletTransparentPrivateProvider =
       WalletTransparentPrivateNotifier.new,
     );
 
-/// Whether turning private queries off, or finishing an opt-out, would send
+/// Whether turning private queries off would send
 /// the wallet's transparent lookups to the server: its transparent policy is
 /// still private, an opt-out is unfinished, or private queries are on for an
 /// existing wallet, which then recovers its transparent funds privately.
@@ -167,11 +166,10 @@ const kTransparentRaisePendingMessage =
     'Private queries are on. Private transparent recovery could not start '
     'yet and will be retried.';
 
-/// Feedback when private queries are off but the wallet's transparent policy
-/// is still private. Transparent lookups stay private until it is lowered.
+/// Feedback when turning off failed. Both query paths remain private and
+/// the same toggle can retry the turn-off.
 const kTransparentOptOutPendingMessage =
-    'Private queries are off. Transparent lookups stay private until this '
-    'finishes; it will be retried.';
+    'Private queries are still on. Try turning them off again.';
 
 /// Private queries are an **install-scoped** preference: they are chosen
 /// once and apply to every wallet that lives on this device, including a
@@ -186,22 +184,17 @@ class EnhancePirNotifier extends Notifier<bool> {
   bool build() {
     final bootstrap = ref.watch(appBootstrapProvider);
     // An unreadable setting is private for this launch.
-    return ref.watch(enhancePirAvailableProvider) &&
-        (bootstrap.enhancePirEnabled ?? true);
+    return ref.watch(transparentPolicyStartupProvider).optOutPending ||
+        (ref.watch(enhancePirAvailableProvider) &&
+            (bootstrap.enhancePirEnabled ?? true));
   }
 
   Future<void> set(bool enabled) async {
     final effectiveEnabled = enabled && ref.read(enhancePirAvailableProvider);
-    if (effectiveEnabled == state) return;
+    if (effectiveEnabled == state && (effectiveEnabled || !_controlEnabled)) {
+      return;
+    }
     await _transition(() => effectiveEnabled ? _enable() : _disable());
-  }
-
-  /// Finishes an unfinished opt-out, or lowers a wallet whose transparent
-  /// policy is still private while private queries are off, even where the
-  /// private service is unavailable. Private queries end up off either way.
-  Future<void> finishTransparentOptOut() async {
-    if (state) return set(false);
-    await _transition(_disable);
   }
 
   Future<void> _transition(Future<String?> Function() change) async {
@@ -272,13 +265,10 @@ class EnhancePirNotifier extends Notifier<bool> {
       await store.writeEnabled(false);
     } catch (_) {
       // The setting is still on, so startup ignores the marker; clear it
-      // anyway so Settings does not offer to finish an opt-out that never was.
+      // anyway so the toggle does not report an opt-out that never started.
       await _clearOptOutMarker();
       rethrow;
     }
-    rust_sync.setEnhancePirEnabled(enabled: false);
-    state = false;
-    String? outcome;
     try {
       // Adopted at once, before any further wait, so the visible state and
       // the account-switch cache demote as soon as the policy changed.
@@ -286,13 +276,21 @@ class EnhancePirNotifier extends Notifier<bool> {
           .read(syncProvider.notifier)
           .adoptAppliedTransparentPolicy(await reconcile(false));
     } catch (error) {
-      // Lowering changes nothing on failure: the durable private policy still
-      // governs every transparent lookup, so none goes out publicly. The
-      // persisted marker retries it at the next launch, and Settings offers
-      // to finish it now.
+      // Keep both runtime query paths private until lowering succeeds. The
+      // saved intent survives a crash; the same toggle retries it now.
       log('Could not lower the transparent policy yet: $error');
-      outcome = kTransparentOptOutPendingMessage;
+      final available = ref.read(enhancePirAvailableProvider);
+      rust_sync.setEnhancePirEnabled(enabled: available);
+      state = true;
+      try {
+        await ref.read(enhancePirBackgroundSinkProvider)(available);
+      } catch (error) {
+        log('Could not retain private background recovery: $error');
+      }
+      return kTransparentOptOutPendingMessage;
     }
+    rust_sync.setEnhancePirEnabled(enabled: false);
+    state = false;
     try {
       await ref.read(enhancePirBackgroundSinkProvider)(false);
     } catch (error) {
@@ -300,24 +298,28 @@ class EnhancePirNotifier extends Notifier<bool> {
       // reapplies the setting; nothing public is issued meanwhile.
       log('Could not release private background recovery: $error');
     }
-    if (outcome != null) return outcome;
     await _clearOptOutMarker();
     return null;
   }
 
-  /// Clears the opt-out marker. A failed clear keeps it: the retry it causes
-  /// at the next launch lowers an already public wallet, which changes
-  /// nothing.
+  /// Clears the pending UI state once the policy has changed. A failed
+  /// persisted clear leaves a harmless retry at startup: lowering an already
+  /// public wallet changes nothing.
   Future<void> _clearOptOutMarker() async {
     try {
       await ref.read(transparentOptOutStoreProvider).writePending(false);
-      ref.read(transparentOptOutPendingProvider.notifier).update(false);
     } catch (error) {
       log('Could not clear the private queries opt-out marker: $error');
     }
+    ref.read(transparentOptOutPendingProvider.notifier).update(false);
   }
 
-  Future<void> toggle() => set(!state);
+  bool get _controlEnabled =>
+      state ||
+      ref.read(transparentOptOutPendingProvider) ||
+      ref.read(walletTransparentPrivateProvider);
+
+  Future<void> toggle() => set(!_controlEnabled);
 }
 
 final enhancePirProvider = NotifierProvider<EnhancePirNotifier, bool>(

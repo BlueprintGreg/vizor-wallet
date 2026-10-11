@@ -77,16 +77,10 @@ void main() {
       expect(
         display.hint,
         'Private transparent recovery is not selected. Turn off Private '
-        'queries to look up transparent funds publicly. If it is already '
-        'off, choose Finish turning off in Settings.',
+        'queries in Settings to look up transparent funds publicly.',
       );
       expect(display.hint, isNot(contains('until private recovery')));
-      expect(
-        display.hint,
-        contains(
-          'If it is already off, choose Finish turning off in Settings.',
-        ),
-      );
+      expect(display.hint, contains('Private queries in Settings'));
     });
 
     test('conflicting records say turning off discards them', () {
@@ -246,12 +240,7 @@ void main() {
       final copy = friendlyShieldBalanceError(Exception(notSelectedRefusal));
       expect(copy, transparentRecoveryNotSelectedMessage);
       expect(copy, contains('Turn off Private queries'));
-      expect(
-        copy,
-        contains(
-          'If it is already off, choose Finish turning off in Settings.',
-        ),
-      );
+      expect(copy, contains('Private queries in Settings'));
       expect(copy, isNot(contains('until private recovery completes')));
     });
   });

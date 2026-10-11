@@ -281,7 +281,7 @@ Future<void> applyEnhancePirPolicy(
     return;
   }
   final saved = bootstrap.enhancePirEnabled;
-  final enabled =
+  var enabled =
       (saved ?? true) && isEnhancePirAvailableForNetwork(bootstrap.network);
   void applyRuntimeSetting() {
     (setRustEnabled ??
@@ -317,6 +317,7 @@ Future<void> applyEnhancePirPolicy(
       }
     } catch (error) {
       optOutUnfinished = true;
+      enabled = isEnhancePirAvailableForNetwork(bootstrap.network);
       log('bootstrap: could not finish the private queries opt-out: $error');
     }
     applyRuntimeSetting();

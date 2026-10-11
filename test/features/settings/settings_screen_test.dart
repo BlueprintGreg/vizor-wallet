@@ -721,11 +721,13 @@ void main() {
   });
 
   group('off mainnet, where private queries are unavailable', () {
-    testWidgets('nothing to finish shows no opt-out action', (tester) async {
+    testWidgets('a public wallet shows no private queries control', (
+      tester,
+    ) async {
       await tester.pumpWidget(_settingsHarness(network: 'test'));
       await tester.pump();
       expect(
-        find.byKey(const ValueKey('settings_transparent_opt_out_button')),
+        find.byKey(const ValueKey('settings_enhance_pir_toggle')),
         findsNothing,
       );
     });
@@ -746,8 +748,10 @@ void main() {
         ],
       ),
     ]) {
-      testWidgets('$reason can still be finished', (tester) async {
-        final enhancePir = _RecordingEnhancePir();
+      testWidgets('$reason uses the single private queries toggle', (
+        tester,
+      ) async {
+        final enhancePir = _RecordingToggle(false);
         await tester.binding.setSurfaceSize(const Size(1512, 1600));
         addTearDown(() => tester.binding.setSurfaceSize(null));
         await tester.pumpWidget(
@@ -761,18 +765,27 @@ void main() {
         );
         await tester.pump();
 
-        // The toggle stays hidden; the way to lower the wallet does not.
+        // The same toggle is available while the wallet remains private.
         expect(
           find.byKey(const ValueKey('settings_enhance_pir_toggle')),
-          findsNothing,
+          findsOneWidget,
         );
         final button = find.byKey(
-          const ValueKey('settings_transparent_opt_out_button'),
+          const ValueKey('settings_enhance_pir_toggle'),
         );
         expect(button, findsOneWidget);
+        expect(find.text('Finish turning off'), findsNothing);
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('settings_enhance_pir_status')),
+              )
+              .data,
+          'On',
+        );
         await tester.ensureVisible(button);
 
-        // Finishing sends transparent lookups to the server, so it asks.
+        // Turning off sends transparent lookups to the server, so it asks.
         await tester.tap(button);
         await tester.pumpAndSettle();
         expect(_turnOffDialog, findsOneWidget);
@@ -781,7 +794,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(_turnOffDialog, findsNothing);
-        expect(enhancePir.finishes, 0);
+        expect(enhancePir.toggles, 0);
 
         await tester.tap(button);
         await tester.pumpAndSettle();
@@ -789,7 +802,7 @@ void main() {
           find.byKey(const ValueKey('private_queries_turn_off_confirm')),
         );
         await tester.pumpAndSettle();
-        expect(enhancePir.finishes, 1);
+        expect(enhancePir.toggles, 1);
       });
     }
   });
@@ -884,7 +897,7 @@ void main() {
       final enhancePir = await pumpToggle(
         tester,
         enabled: false,
-        walletPrivate: true,
+        walletPrivate: false,
       );
       expect(_turnOffDialog, findsNothing);
       expect(enhancePir.toggles, 1);
@@ -1199,16 +1212,6 @@ bool _hasFocusRing(WidgetTester tester) {
         border.top.width == 2;
   });
   return focusRing.evaluate().isNotEmpty;
-}
-
-class _RecordingEnhancePir extends EnhancePirNotifier {
-  int finishes = 0;
-
-  @override
-  bool build() => false;
-
-  @override
-  Future<void> finishTransparentOptOut() async => finishes++;
 }
 
 final _turnOffDialog = find.byKey(

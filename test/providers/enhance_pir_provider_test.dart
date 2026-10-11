@@ -139,11 +139,12 @@ class _OptOut implements TransparentOptOutStore {
   final List<String>? events;
   bool value = false;
   bool failWrite = false;
+  bool failClear = false;
   @override
   Future<bool> readPending() async => value;
   @override
   Future<void> writePending(bool pending) async {
-    if (failWrite) throw StateError('disk full');
+    if (failWrite || (!pending && failClear)) throw StateError('disk full');
     events?.add('optout:$pending');
     value = pending;
   }
@@ -461,8 +462,8 @@ void main() {
         // only once the lowering applied.
         'optout:true',
         'store:false',
-        'rust:false',
         'reconcile:false',
+        'rust:false',
         'native:false',
         'optout:false',
       ]);
@@ -539,54 +540,53 @@ void main() {
       expect(sync.appliedTransparentPolicy, isNull);
     },
   );
-  // Previously a failed lowering restored Rust and the saved preference to
-  // on. The shielded setting now stays off and the opt-out stays persisted,
-  // so startup retries it; the durable private policy keeps governing every
-  // transparent lookup meanwhile.
-  test('a failed lowering on disable keeps private queries off and persists '
-      'the opt-out', () async {
-    final events = <String>[];
-    api.events = events;
-    final store = _Store()
-      ..value = true
-      ..events = events;
-    final optOut = _OptOut(events);
-    final reconciler = _DurableReconciler()..failLower = true;
-    final sync = _Sync()..gate.complete();
-    final container = setup(
-      store,
-      sync,
-      initialEnabled: true,
-      background: _Background(events),
-      reconciler: reconciler,
-      optOut: optOut,
-    );
-    addTearDown(container.dispose);
+  test(
+    'a failed lowering on disable keeps both query paths private and persists '
+    'the opt-out',
+    () async {
+      final events = <String>[];
+      api.events = events;
+      final store = _Store()
+        ..value = true
+        ..events = events;
+      final optOut = _OptOut(events);
+      final reconciler = _DurableReconciler()..failLower = true;
+      final sync = _Sync()..gate.complete();
+      final container = setup(
+        store,
+        sync,
+        initialEnabled: true,
+        background: _Background(events),
+        reconciler: reconciler,
+        optOut: optOut,
+      );
+      addTearDown(container.dispose);
 
-    await container.read(enhancePirProvider.notifier).set(false);
+      await container.read(enhancePirProvider.notifier).set(false);
 
-    expect(events, [
-      'optout:true',
-      'store:false',
-      'rust:false',
-      'native:false',
-    ]);
-    expect(api.values, [false], reason: 'no rollback');
-    expect(store.value, isFalse);
-    expect(container.read(enhancePirProvider), isFalse);
-    // Fail-closed: the wallet is still durably private.
-    expect(reconciler.privateRequired, isTrue);
-    expect(reconciler.calls, [false]);
-    expect(optOut.value, isTrue);
-    expect(container.read(transparentOptOutPendingProvider), isTrue);
-    expect(container.read(transparentOptOutActionProvider), isTrue);
-    expect(
-      container.read(enhancePirTransitionProvider),
-      kTransparentOptOutPendingMessage,
-    );
-    expect(sync.appliedTransparentPolicy, isNull);
-  });
-  test('a pending opt-out can be finished from Settings', () async {
+      expect(events, [
+        'optout:true',
+        'store:false',
+        'rust:true',
+        'native:true',
+      ]);
+      expect(api.values, [true], reason: 'public queries stay disabled');
+      expect(store.value, isFalse);
+      expect(container.read(enhancePirProvider), isTrue);
+      // Fail-closed: the wallet is still durably private.
+      expect(reconciler.privateRequired, isTrue);
+      expect(reconciler.calls, [false]);
+      expect(optOut.value, isTrue);
+      expect(container.read(transparentOptOutPendingProvider), isTrue);
+      expect(container.read(privateQueriesControlEnabledProvider), isTrue);
+      expect(
+        container.read(enhancePirTransitionProvider),
+        kTransparentOptOutPendingMessage,
+      );
+      expect(sync.appliedTransparentPolicy, isNull);
+    },
+  );
+  test('the same toggle retries a failed turn-off', () async {
     final store = _Store()..value = true;
     final optOut = _OptOut();
     final reconciler = _DurableReconciler()..failLower = true;
@@ -603,18 +603,16 @@ void main() {
     final notifier = container.read(enhancePirProvider.notifier);
     await notifier.set(false);
     expect(optOut.value, isTrue);
-    // A second off is not a change of the setting.
-    await notifier.set(false);
-    expect(reconciler.calls, [false]);
+    expect(container.read(privateQueriesControlEnabledProvider), isTrue);
 
     reconciler.failLower = false;
-    await notifier.finishTransparentOptOut();
+    await notifier.toggle();
 
     expect(reconciler.calls, [false, false]);
     expect(reconciler.privateRequired, isFalse);
     expect(optOut.value, isFalse);
     expect(container.read(transparentOptOutPendingProvider), isFalse);
-    expect(container.read(transparentOptOutActionProvider), isFalse);
+    expect(container.read(privateQueriesControlEnabledProvider), isFalse);
     expect(container.read(enhancePirTransitionProvider), isNull);
     expect(container.read(enhancePirProvider), isFalse);
     expect(
@@ -622,6 +620,65 @@ void main() {
       ApiTransparentLedgerMode.public,
     );
   });
+  test(
+    'the toggle lowers a private wallet whose saved preference is off',
+    () async {
+      final reconciler = _DurableReconciler();
+      final container = setup(
+        _Store()..value = false,
+        _Sync()..gate.complete(),
+        reconciler: reconciler,
+      );
+      addTearDown(container.dispose);
+      container.read(walletTransparentPrivateProvider.notifier).update(true);
+      expect(container.read(privateQueriesControlEnabledProvider), isTrue);
+
+      await container.read(enhancePirProvider.notifier).toggle();
+
+      expect(reconciler.calls, [false]);
+      expect(reconciler.privateRequired, isFalse);
+      expect(container.read(privateQueriesControlEnabledProvider), isFalse);
+    },
+  );
+
+  test(
+    'a failed marker clear does not leave the toggle on after lowering',
+    () async {
+      final optOut = _OptOut()..failClear = true;
+      final reconciler = _DurableReconciler();
+      final container = setup(
+        _Store()..value = true,
+        _Sync()..gate.complete(),
+        initialEnabled: true,
+        reconciler: reconciler,
+        optOut: optOut,
+        background: _Background([]),
+      );
+      addTearDown(container.dispose);
+
+      await container.read(enhancePirProvider.notifier).toggle();
+
+      expect(optOut.value, isTrue, reason: 'startup can safely lower again');
+      expect(reconciler.privateRequired, isFalse);
+      expect(container.read(privateQueriesControlEnabledProvider), isFalse);
+    },
+  );
+
+  test('a startup turn-off failure keeps the single toggle on', () {
+    final container = setup(
+      _Store()..value = false,
+      _Sync(),
+      extra: [
+        transparentPolicyStartupProvider.overrideWithValue(
+          const TransparentPolicyStartup(optOutPending: true),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    expect(container.read(enhancePirProvider), isTrue);
+    expect(container.read(privateQueriesControlEnabledProvider), isTrue);
+  });
+
   group('turning private queries off discloses transparent lookups', () {
     Future<bool> discloses({
       bool enabled = true,
@@ -770,37 +827,39 @@ void main() {
       'Setting unchanged. Try again.',
     );
   });
-  // Previously a failed lowering tried to restore the saved preference to
-  // on. Nothing is restored now: the opt-out stays saved and pending.
-  test('a failed lowering never lowers durable private policy nor restores '
-      'the setting', () async {
-    final store = _Store()
-      ..value = true
-      ..failEnabled = true;
-    final reconciler = _DurableReconciler()..failLower = true;
-    final events = <String>[];
-    final container = setup(
-      store,
-      _Sync()..gate.complete(),
-      initialEnabled: true,
-      background: _Background(events),
-      reconciler: reconciler,
-    );
-    addTearDown(container.dispose);
+  // Keep the runtime private without relying on a second preference write.
+  // The persisted turn-off intent still lets startup recover after a crash.
+  test(
+    'a failed lowering keeps private queries on even if saving on would fail',
+    () async {
+      final store = _Store()
+        ..value = true
+        ..failEnabled = true;
+      final reconciler = _DurableReconciler()..failLower = true;
+      final events = <String>[];
+      final container = setup(
+        store,
+        _Sync()..gate.complete(),
+        initialEnabled: true,
+        background: _Background(events),
+        reconciler: reconciler,
+      );
+      addTearDown(container.dispose);
 
-    await container.read(enhancePirProvider.notifier).set(false);
+      await container.read(enhancePirProvider.notifier).set(false);
 
-    expect(reconciler.privateRequired, isTrue);
-    expect(reconciler.calls, [false]);
-    expect(api.values, [false]);
-    expect(events, ['native:false']);
-    expect(store.value, isFalse);
-    expect(container.read(enhancePirProvider), isFalse);
-    expect(
-      container.read(enhancePirTransitionProvider),
-      kTransparentOptOutPendingMessage,
-    );
-  });
+      expect(reconciler.privateRequired, isTrue);
+      expect(reconciler.calls, [false]);
+      expect(api.values, [true]);
+      expect(events, ['native:true']);
+      expect(store.value, isFalse);
+      expect(container.read(enhancePirProvider), isTrue);
+      expect(
+        container.read(enhancePirTransitionProvider),
+        kTransparentOptOutPendingMessage,
+      );
+    },
+  );
   test(
     'a failed disable save changes no policy for an unreadable preference',
     () async {

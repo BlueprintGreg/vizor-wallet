@@ -11,7 +11,6 @@ import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../private_queries_turn_off.dart';
-import '../transparent_opt_out_action.dart';
 import 'mobile_tor_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
 
@@ -31,8 +30,9 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
-    final enhancePirEnabled = ref.watch(enhancePirProvider);
-    final enhancePirAvailable = ref.watch(enhancePirAvailableProvider);
+    final enhancePirEnabled = ref.watch(privateQueriesControlEnabledProvider);
+    final enhancePirAvailable =
+        ref.watch(enhancePirAvailableProvider) || enhancePirEnabled;
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
     return MobileSurfaceCard(
@@ -158,11 +158,6 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                 color: colors.text.secondary,
               ),
             ),
-          // Not gated on availability: see [TransparentOptOutAction].
-          TransparentOptOutAction(
-            keyPrefix: 'mobile_settings',
-            showTransition: !enhancePirAvailable,
-          ),
         ],
       ),
     );
