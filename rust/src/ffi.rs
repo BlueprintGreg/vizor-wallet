@@ -116,16 +116,60 @@ fn lightwalletd_runtime() -> Result<tokio::runtime::Runtime, String> {
 const LIGHTWALLETD_RESULT_CANCELLED: i32 = 3;
 const LIGHTWALLETD_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-#[repr(C)]
+/// A caller's cancellation token, opaque to Swift.
+///
+/// Cancellation is linearized against a broadcast's dispatch point: [`cancel`]
+/// and [`dispatch`] take the same lock, so every cancellation is ordered
+/// either before a dispatch decision, which then sends nothing, or after it,
+/// in which case that broadcast runs to its response or deadline.
+///
+/// [`cancel`]: Self::cancel
+/// [`dispatch`]: Self::dispatch
 pub struct CLightwalletdCancellation {
     cancelled: AtomicBool,
+    dispatch: std::sync::Mutex<()>,
+}
+
+impl CLightwalletdCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            dispatch: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Waits for a dispatch decision in progress, so the caller knows whether
+    /// its cancellation came before that decision or after it.
+    fn cancel(&self) {
+        let _dispatch = self
+            .dispatch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// The dispatch point: refuses when cancellation came first, and otherwise
+    /// runs `commit` (the route commitment) before any cancellation can be
+    /// ordered after it.
+    fn dispatch<E>(&self, cancelled: E, commit: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        let _dispatch = self
+            .dispatch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.is_cancelled() {
+            return Err(cancelled);
+        }
+        commit()
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn zcash_lightwalletd_cancellation_create() -> *mut CLightwalletdCancellation {
-    Box::into_raw(Box::new(CLightwalletdCancellation {
-        cancelled: AtomicBool::new(false),
-    }))
+    Box::into_raw(Box::new(CLightwalletdCancellation::new()))
 }
 
 #[no_mangle]
@@ -133,7 +177,7 @@ pub extern "C" fn zcash_lightwalletd_cancellation_cancel(
     cancellation: *mut CLightwalletdCancellation,
 ) {
     if let Some(cancellation) = unsafe { cancellation.as_ref() } {
-        cancellation.cancelled.store(true, Ordering::Release);
+        cancellation.cancel();
     }
 }
 
@@ -156,7 +200,7 @@ where
     let Some(cancellation) = cancellation else {
         return Ok(future.await);
     };
-    if cancellation.cancelled.load(Ordering::Acquire) {
+    if cancellation.is_cancelled() {
         return Err(());
     }
 
@@ -164,14 +208,14 @@ where
     loop {
         tokio::select! {
             output = &mut future => {
-                return if cancellation.cancelled.load(Ordering::Acquire) {
+                return if cancellation.is_cancelled() {
                     Err(())
                 } else {
                     Ok(output)
                 };
             }
             _ = tokio::time::sleep(LIGHTWALLETD_CANCELLATION_POLL_INTERVAL) => {
-                if cancellation.cancelled.load(Ordering::Acquire) {
+                if cancellation.is_cancelled() {
                     return Err(());
                 }
             }
@@ -254,13 +298,20 @@ async fn routed_send_transaction(
     .await
     .map_err(|()| RoutedRequestError::Cancelled)??;
     before_dispatch();
-    if cancellation.is_some_and(|cancellation| cancellation.cancelled.load(Ordering::Acquire)) {
-        return Err(RoutedRequestError::Cancelled);
-    }
-    if channel.direct {
-        commitment
-            .commit()
-            .map_err(|blocked| RoutedRequestError::RouteBlocked(blocked.to_string()))?;
+    // One decision covers both refusals: a cancellation ordered before it and
+    // a route switch both send nothing, and neither can land in between.
+    let commit = || {
+        if channel.direct {
+            commitment
+                .commit()
+                .map_err(|blocked| RoutedRequestError::RouteBlocked(blocked.to_string()))
+        } else {
+            Ok(())
+        }
+    };
+    match cancellation {
+        Some(cancellation) => cancellation.dispatch(RoutedRequestError::Cancelled, commit)?,
+        None => commit()?,
     }
     crate::wallet::sync_engine::send_transaction_with_status(&mut channel.client, raw_transaction)
         .await
@@ -357,8 +408,7 @@ pub extern "C" fn zcash_lightwalletd_observe_transaction(
         match runtime.block_on(await_lightwalletd_request_or_cancellation(
             cancellation,
             async {
-                let cancelled =
-                    || cancellation.is_some_and(|token| token.cancelled.load(Ordering::Acquire));
+                let cancelled = || cancellation.is_some_and(|token| token.is_cancelled());
                 let public_source = LightwalletdSource::new(
                     || async {
                         crate::wallet::sync_engine::open_background_direct_lwd_channel(
@@ -506,8 +556,7 @@ pub extern "C" fn zcash_status_pir_observe_transaction_v2(
         match runtime.block_on(await_lightwalletd_request_or_cancellation(
             cancellation,
             async {
-                let cancelled =
-                    || cancellation.is_some_and(|token| token.cancelled.load(Ordering::Acquire));
+                let cancelled = || cancellation.is_some_and(|token| token.is_cancelled());
                 let private_source =
                     crate::wallet::sync_engine::enhancement::status::PrivateStatusSource::new(
                         db_path, network, &cancelled, true,
@@ -908,13 +957,11 @@ mod tests {
 
     #[test]
     fn lightwalletd_cancellation_interrupts_an_in_flight_request() {
-        let cancellation = CLightwalletdCancellation {
-            cancelled: AtomicBool::new(false),
-        };
+        let cancellation = CLightwalletdCancellation::new();
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(10));
-                cancellation.cancelled.store(true, Ordering::Release);
+                cancellation.cancel();
             });
 
             let runtime = lightwalletd_runtime().unwrap();
@@ -929,13 +976,57 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_is_ordered_before_or_after_a_dispatch_decision() {
+        // Cancelled first: the dispatch refuses and never commits.
+        let cancellation = CLightwalletdCancellation::new();
+        cancellation.cancel();
+        let mut committed = false;
+        assert_eq!(
+            cancellation.dispatch("cancelled", || {
+                committed = true;
+                Ok(())
+            }),
+            Err("cancelled")
+        );
+        assert!(!committed);
+
+        // Dispatched first: a cancellation issued during the decision waits
+        // for it, so it cannot land between the check and the commitment. The
+        // dispatch stands and the cancellation applies only afterwards.
+        let cancellation = &CLightwalletdCancellation::new();
+        let (inside, entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            let dispatch = scope.spawn(move || {
+                cancellation.dispatch("cancelled", || {
+                    inside.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok(())
+                })
+            });
+            entered.recv().unwrap();
+            let cancel = scope.spawn(|| cancellation.cancel());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                !cancel.is_finished(),
+                "a cancellation landed inside the dispatch decision"
+            );
+            assert!(!cancellation.is_cancelled());
+            release.send(()).unwrap();
+            assert_eq!(dispatch.join().unwrap(), Ok(()));
+            cancel.join().unwrap();
+        });
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[test]
     fn lightwalletd_cancellation_handle_lifecycle_sets_the_flag() {
         let cancellation = zcash_lightwalletd_cancellation_create();
         assert!(!cancellation.is_null());
-        assert!(!unsafe { &*cancellation }.cancelled.load(Ordering::Acquire));
+        assert!(!unsafe { &*cancellation }.is_cancelled());
 
         zcash_lightwalletd_cancellation_cancel(cancellation);
-        assert!(unsafe { &*cancellation }.cancelled.load(Ordering::Acquire));
+        assert!(unsafe { &*cancellation }.is_cancelled());
 
         zcash_lightwalletd_cancellation_destroy(cancellation);
     }

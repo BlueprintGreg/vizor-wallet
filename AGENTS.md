@@ -676,9 +676,12 @@ policy-aware openers and fails closed while Tor is starting or broken.
   (`DIRECT_ROUTE_DRAIN_TIMEOUT`) outlasts the broadcast's unary RPC deadline;
   uncommitted direct requests are cancelled at once. The same dispatch point
   bounds every cancellation source, including foreground handoff and task
-  expiry: cancellation before it sends nothing (`CANCELLED`, recorded as a
-  non-attempt), and after it the broadcast runs to its response or deadline
-  and the outbox persists the actual response.
+  expiry, on both routes: cancellation before it sends nothing (`CANCELLED`,
+  recorded as a non-attempt), and after it the broadcast runs to its response
+  or deadline and the outbox persists the actual response. Cancellation and
+  the dispatch decision (including the direct-route commitment) take one lock
+  (`CLightwalletdCancellation::dispatch`), so neither can land between the
+  other's check and effect.
 - **iOS background migration never uses Tor.** A background pass never brings
   Tor up or borrows the foreground's client, and a cold launch may not have
   applied the route, so it reads the saved route

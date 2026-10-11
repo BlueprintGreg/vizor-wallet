@@ -378,11 +378,9 @@ async fn cancellation_before_dispatch_sends_nothing() {
     let _policy = lock_route_policy();
     disable_tor();
     let server = RecordingLwd::start();
-    let cancellation = CLightwalletdCancellation {
-        cancelled: AtomicBool::new(false),
-    };
+    let cancellation = CLightwalletdCancellation::new();
     let result = routed_send_transaction(server.url_str(), &[1, 2, 3], Some(&cancellation), || {
-        cancellation.cancelled.store(true, Ordering::Release)
+        cancellation.cancel()
     })
     .await;
     assert!(
