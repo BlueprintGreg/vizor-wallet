@@ -1057,7 +1057,7 @@ void main() {
     // A missing preference is a fresh install's: bootstrap records it as
     // off. The wallet's durable private policy still holds, since only an
     // explicit opt-out lowers it; its transparent recovery waits until
-    // private queries are turned on, or Settings finishes the opt-out.
+    // private queries are turned on, or the toggle finishes the opt-out.
     test('with a missing preference is off but never lowered', () async {
       final preferences = _Store();
       final (:saved, :steps, :wallet) = await launch(preferences);
@@ -1077,9 +1077,11 @@ void main() {
       addTearDown(container.dispose);
       expect(container.read(enhancePirProvider), isFalse);
       // Sync reports the wallet still reads its transparent funds privately;
-      // Settings then offers to finish the opt-out instead of lowering it.
+      // the Private queries toggle then stays on, and turning it off is the
+      // disclosed opt-out, instead of startup lowering it.
       container.read(walletTransparentPrivateProvider.notifier).update(true);
-      expect(container.read(transparentOptOutActionProvider), isTrue);
+      expect(container.read(privateQueriesControlEnabledProvider), isTrue);
+      expect(container.read(privateQueriesTurnOffDisclosesProvider), isTrue);
       expect(wallet.calls, isEmpty);
       expect(api.values, isEmpty);
     });
