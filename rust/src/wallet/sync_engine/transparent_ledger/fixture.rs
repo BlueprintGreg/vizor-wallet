@@ -74,6 +74,8 @@ struct State {
     revision: Option<RecoveryRevision>,
     /// The account of each call, in order.
     calls: Vec<AccountUuid>,
+    /// Recovery floors requested by the wallet for each account.
+    requested_from: HashMap<AccountUuid, BTreeSet<BlockHeight>>,
     /// Accounts whose last answer was a `Ready` batch not yet settled.
     unacknowledged: HashMap<AccountUuid, RecoveryBatch<AccountUuid>>,
     acknowledged: usize,
@@ -103,6 +105,7 @@ impl FixtureSource {
                 on_acknowledge: None,
                 revision: None,
                 calls: Vec::new(),
+                requested_from: HashMap::new(),
                 unacknowledged: HashMap::new(),
                 acknowledged: 0,
                 reconciled: 0,
@@ -236,6 +239,17 @@ impl FixtureSource {
         self.order().into_iter().filter(|a| *a == account).count()
     }
 
+    /// Recovery floors actually requested by the wallet across its passes.
+    pub(crate) fn requested_from(&self, account: AccountUuid) -> BTreeSet<BlockHeight> {
+        self.state
+            .lock()
+            .unwrap()
+            .requested_from
+            .get(&account)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Acknowledgments of `Ready` batches the source accepted.
     pub(crate) fn acknowledged(&self) -> usize {
         self.state.lock().unwrap().acknowledged
@@ -309,6 +323,17 @@ impl RecoverySource for FixtureSource {
         let hook = {
             let mut state = self.state.lock().unwrap();
             state.calls.push(request.account);
+            state
+                .requested_from
+                .entry(request.account)
+                .or_default()
+                .extend(
+                    request
+                        .watch
+                        .addresses
+                        .iter()
+                        .map(|address| address.required_from),
+                );
             state.hooks.pop_front()
         };
         if let Some(hook) = hook {
@@ -439,17 +464,31 @@ impl State {
             return Ok(self.ready(request.account, vec![commit], progress));
         }
 
-        let watched: BTreeSet<_> = watch.addresses.iter().map(|a| a.address).collect();
+        let watched: HashMap<_, _> = watch
+            .addresses
+            .iter()
+            .map(|a| (a.address, a.required_from))
+            .collect();
         commit.receives = self
             .receives
             .iter()
-            .filter(|r| watched.contains(&r.address) && r.mined_height <= anchor.height)
+            .filter(|r| {
+                watched
+                    .get(&r.address)
+                    .is_some_and(|from| r.mined_height >= *from)
+                    && r.mined_height <= anchor.height
+            })
             .cloned()
             .collect();
         commit.spends = self
             .spends
             .iter()
-            .filter(|s| watched.contains(&s.prevout_address) && s.mined_height <= anchor.height)
+            .filter(|s| {
+                watched
+                    .get(&s.prevout_address)
+                    .is_some_and(|from| s.mined_height >= *from)
+                    && s.mined_height <= anchor.height
+            })
             .cloned()
             .collect();
         for watched in &watch.addresses {

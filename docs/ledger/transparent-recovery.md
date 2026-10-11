@@ -4,7 +4,24 @@ Import stores the Ledger UFVK and returns to Home. The next wallet sync recovers
 mined transparent history for that one BIP44 account, without another device
 connection. This is not discovery of additional hardened accounts.
 
-## Initial recovery
+## Private recovery
+
+With Private queries on, Ledger uses the same private transparent recovery as
+Keystone and software accounts. It starts at the stored account birthday,
+which must precede the account's first transparent or shielded activity.
+Recovery derives receiving and change addresses from the imported viewing key;
+it needs no further device connection and never falls back to public lookups.
+Transparent funds stay unavailable until current private coverage and the
+existing activation checks authorize them. Cancellation or restart leaves
+recovery resumable under the saved private policy.
+
+A birthday chosen too late can omit earlier transparent history and address
+use. Existing public records that private recovery cannot explain block
+activation; a fresh import has no such records to reveal an omission. The
+birthday is not automatically lowered. Turning Private queries off explicitly
+restores the public discovery described below, which checks from height 0.
+
+## Initial public recovery
 
 - Query `GetTaddressTxids` (the existing compatible name for the full-transaction
   history RPC) from height 0 to a fixed tip for each external/internal address.

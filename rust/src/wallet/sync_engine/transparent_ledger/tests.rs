@@ -26,7 +26,7 @@ use crate::wallet::sync_engine::lwd::transparent_lookup::apply_transparent_polic
 use crate::wallet::sync_engine::{SyncEventKind, SyncProgressEvent};
 use crate::wallet::{
     db::{open_wallet_db_with_timeout, SYNC_DB_BUSY_TIMEOUT},
-    keys,
+    keys::{self, HardwareSignerKind},
     network::WalletNetwork,
 };
 
@@ -1748,29 +1748,209 @@ async fn cancellation_during_a_pass_applies_nothing_from_it() {
     }
 }
 
-#[tokio::test]
-async fn a_ledger_account_is_paused_and_does_not_block_sync() {
-    use crate::wallet::sync_engine::ledger_discovery;
-
+/// Selects the imported Ledger account as the subject of these recovery tests.
+fn ledger_wallet() -> Wallet {
     let mut wallet = wallet();
-    let ledger = import_ledger(&wallet);
-    // Under public lookups, the Ledger account owes its discovery.
-    assert!(!ledger_discovery::is_ready(&wallet.path, NETWORK, ledger).unwrap());
+    wallet.account = import_ledger(&wallet);
+    wallet.uuid = wallet.account.expose_uuid().to_string();
+    wallet
+}
+
+fn ledger_address(wallet: &Wallet, scope: TransparentKeyScope, index: u32) -> TransparentAddress {
+    use transparent::keys::{IncomingViewingKey, NonHardenedChildIndex};
+    let account = wallet.db.get_account(wallet.account).unwrap().unwrap();
+    let transparent = account.ufvk().unwrap().transparent().unwrap();
+    let index = NonHardenedChildIndex::from_index(index).unwrap();
+    if scope == TransparentKeyScope::EXTERNAL {
+        transparent
+            .derive_external_ivk()
+            .unwrap()
+            .derive_address(index)
+            .unwrap()
+    } else {
+        transparent
+            .derive_internal_ivk()
+            .unwrap()
+            .derive_address(index)
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_ledger_account_recovers_privately_and_can_shield() {
+    use super::tests::activation::checkpoint_trees;
+    use crate::wallet::sync::{get_shield_transparent_status, get_transaction_history};
+
+    let mut wallet = ledger_wallet();
+    let address = ledger_address(&wallet, TransparentKeyScope::EXTERNAL, 0);
+    let source = FixtureSource::new(main_hash);
+    source.receive(receive(1, address, VALUE, 150)).trust();
     let _mode = activate(&mut wallet).await;
-    let source = funded_source(&wallet);
+    let pending = balance(&wallet, &wallet.uuid);
+    assert_eq!(pending.transparent, 0);
+    assert_eq!(
+        pending.transparent_stop, None,
+        "hardware recovery is pending, not stopped"
+    );
 
     let RunOutcome::Finished(stats) = run_required(&mut wallet, &source).await else {
         panic!("recovery finishes");
     };
+    assert_eq!(stats.promoted, 2, "both software and Ledger recover");
+    assert!(source.calls_for(wallet.account) > 0);
     assert_eq!(
-        (stats.paused_ledger, stats.accounts, stats.promoted),
-        (1, 1, 1)
+        source.requested_from(wallet.account),
+        [BlockHeight::from_u32(wallet.birthday)].into()
     );
-    assert_eq!(source.calls_for(ledger), 0);
-    assert_eq!(lifecycle(&wallet, ledger), AccountLifecycle::Candidate);
-    // The sync's readiness check passes, so the withheld discovery never
-    // fails a sync.
-    assert!(ledger_discovery::is_ready(&wallet.path, NETWORK, ledger).unwrap());
+    assert_eq!(lifecycle(&wallet, wallet.account), AccountLifecycle::Active);
+    let current = balance(&wallet, &wallet.uuid);
+    assert_eq!(
+        (current.transparent_authority, current.transparent),
+        (TransparentBalanceAuthority::Current, VALUE)
+    );
+    assert_eq!(current.transparent_stop, None);
+    let history = get_transaction_history(&wallet.path, NETWORK, None, &wallet.uuid).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].txid_hex, hex::encode([1; 32]));
+    checkpoint_trees(&mut wallet, TIP);
+    let shielding = get_shield_transparent_status(&wallet.path, NETWORK, &wallet.uuid).unwrap();
+    assert!(shielding.can_shield, "{}", shielding.reason);
+}
+
+#[tokio::test]
+async fn ledger_spent_receiving_and_change_addresses_extend_private_discovery() {
+    let mut wallet = ledger_wallet();
+    let _mode = activate(&mut wallet).await;
+    let source = FixtureSource::new(main_hash);
+    source.trust();
+    // Fully spent history fills the initial gaps; funded addresses beyond them
+    // must be found by later passes, for both receiving and change scopes.
+    for (scope, gap, tag_base) in [
+        (TransparentKeyScope::EXTERNAL, 10, 10u8),
+        (TransparentKeyScope::INTERNAL, 5, 50u8),
+    ] {
+        for index in 0..=gap {
+            let tag = tag_base + index as u8;
+            let funding = receive(tag, ledger_address(&wallet, scope, index), VALUE, 120);
+            source.receive(funding.clone());
+            if index < gap {
+                source.spend(spend(tag + 100, &funding, 130));
+            }
+        }
+    }
+    run_required(&mut wallet, &source).await;
+    assert!(
+        source.calls_for(wallet.account) > 1,
+        "used gaps require another pass"
+    );
+    assert_eq!(balance(&wallet, &wallet.uuid).transparent, 2 * VALUE);
+    assert_eq!(lifecycle(&wallet, wallet.account), AccountLifecycle::Active);
+    let recovery = wallet
+        .db
+        .transparent_candidate_recovery(wallet.account)
+        .unwrap();
+    assert_eq!((recovery.receives.len(), recovery.spends.len()), (17, 15));
+}
+
+#[tokio::test]
+async fn interrupted_ledger_recovery_resumes_after_reopening_under_private_policy() {
+    let mut wallet = ledger_wallet();
+    let address = ledger_address(&wallet, TransparentKeyScope::EXTERNAL, 0);
+    let source = FixtureSource::new(main_hash);
+    source.receive(receive(1, address, VALUE, 150)).trust();
+    let mode = activate(&mut wallet).await;
+    let exit = Arc::new(AtomicBool::new(false));
+    let flag = exit.clone();
+    source.on_call(move || flag.store(true, Ordering::SeqCst));
+    let outcome = run(
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        &source,
+        Some(wallet.account),
+        now,
+        &|| exit.load(Ordering::SeqCst),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, RunOutcome::Exited);
+    assert_eq!(
+        lifecycle(&wallet, wallet.account),
+        AccountLifecycle::Candidate
+    );
+    assert_eq!(balance(&wallet, &wallet.uuid).transparent, 0);
+    drop(mode);
+    wallet.db = open_wallet_db_with_timeout(&wallet.path, NETWORK, SYNC_DB_BUSY_TIMEOUT).unwrap();
+    assert_eq!(
+        applied(&wallet.path, NETWORK).mode,
+        TransparentLedgerMode::PrivateRequired
+    );
+    assert_eq!(balance(&wallet, &wallet.uuid).transparent, 0);
+    let _mode = test_mode::set(&wallet.path, TransparentLedgerMode::PrivateRequired);
+    run_required(&mut wallet, &source).await;
+    assert_eq!(balance(&wallet, &wallet.uuid).transparent, VALUE);
+}
+
+#[tokio::test]
+async fn ledger_private_recovery_honors_the_stored_birthday() {
+    let mut wallet = ledger_wallet();
+    let address = ledger_address(&wallet, TransparentKeyScope::EXTERNAL, 0);
+    let source = FixtureSource::new(main_hash);
+    source
+        .receive(receive(1, address, VALUE, wallet.birthday - 1))
+        .receive(receive(2, address, VALUE, wallet.birthday))
+        .trust();
+    let _mode = activate(&mut wallet).await;
+    run_required(&mut wallet, &source).await;
+    assert_eq!(
+        source.requested_from(wallet.account),
+        [BlockHeight::from_u32(wallet.birthday)].into()
+    );
+    assert_eq!(balance(&wallet, &wallet.uuid).transparent, VALUE);
+    let recovery = wallet
+        .db
+        .transparent_candidate_recovery(wallet.account)
+        .unwrap();
+    assert_eq!(recovery.receives.len(), 1);
+    assert_eq!(recovery.receives[0].outpoint, OutPoint::new([2; 32], 0));
+}
+
+#[tokio::test]
+async fn ledger_public_records_before_the_birthday_still_block_private_activation() {
+    use crate::wallet::sync::TransparentStopReason;
+    use transparent::bundle::TxOut;
+    use zcash_client_backend::wallet::WalletTransparentOutput;
+
+    let mut wallet = ledger_wallet();
+    let address = ledger_address(&wallet, TransparentKeyScope::EXTERNAL, 0);
+    let legacy = WalletTransparentOutput::from_parts(
+        OutPoint::new([1; 32], 0),
+        TxOut::new(Zatoshis::const_from_u64(VALUE), address.script().into()),
+        Some(BlockHeight::from_u32(wallet.birthday - 1)),
+        Some(wallet.account),
+        Some(TransparentKeyScope::EXTERNAL),
+        None,
+    )
+    .unwrap();
+    wallet.db.put_received_transparent_utxo(&legacy).unwrap();
+    let _mode = activate(&mut wallet).await;
+    let source = FixtureSource::new(main_hash);
+    source
+        .receive(receive(1, address, VALUE, wallet.birthday - 1))
+        .trust();
+    run_required(&mut wallet, &source).await;
+    assert!(source.calls_for(wallet.account) > 0);
+    assert_eq!(
+        lifecycle(&wallet, wallet.account),
+        AccountLifecycle::Candidate
+    );
+    let stopped = balance(&wallet, &wallet.uuid);
+    assert_eq!(stopped.transparent, 0);
+    assert_eq!(
+        stopped.transparent_stop,
+        Some(TransparentStopReason::LegacyDiscrepancy)
+    );
 }
 
 #[tokio::test]

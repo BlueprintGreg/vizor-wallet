@@ -1,10 +1,10 @@
 /// What private queries adds to supported mainnet transparent recovery.
-/// Transparent funds are unavailable until recovery completes; Ledger
-/// accounts are paused rather than recovered privately.
+/// Software and hardware accounts recover from their stored birthday.
 const kPrivateTransparentRecoverySettingsCopy =
-    'Also recovers transparent funds privately. Transparent funds stay '
-    'unavailable until private recovery completes; Ledger transparent funds '
-    'are not recovered privately.';
+    'Also recovers transparent funds privately from the account birthday. '
+    'The birthday must be before the account’s first transparent or shielded '
+    'activity. Transparent funds stay unavailable until private recovery '
+    'completes.';
 
 /// Includes transparent recovery in the private queries disclosure.
 String privateQueriesDescription(String description) =>

@@ -67,9 +67,9 @@ fn table_exists(conn: &rusqlite::Connection) -> Result<bool, String> {
 /// Read-only gate: a missing checkpoint means a Ledger import still needs recovery.
 ///
 /// Ready while public transparent lookups are withheld from the wallet: its
-/// discovery cannot run then, and private recovery pauses the account, so
-/// waiting for it would block every sync. Its transparent funds stay
-/// unavailable, so its shielding gates still refuse.
+/// public discovery cannot run then. Private recovery determines its
+/// transparent authority instead, so the balance and shielding checks wait
+/// for private coverage rather than this public checkpoint.
 pub(crate) fn is_ready(
     db_path: &str,
     network: WalletNetwork,
