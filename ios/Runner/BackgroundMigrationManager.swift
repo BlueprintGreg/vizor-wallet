@@ -492,7 +492,6 @@ final class BackgroundMigrationManager {
 
   func schedule(
     earliestBeginDate: Date = Date(),
-    replacingPending: Bool = true,
     completion: @escaping (Bool) -> Void
   ) {
     guard !isMutationQuiesced else {
@@ -514,31 +513,19 @@ final class BackgroundMigrationManager {
         completion(false)
         return
       }
-      completion(
-        self.submitAuthorized(
-          earliestBeginDate: earliestBeginDate,
-          replacingPending: replacingPending
-        )
-      )
+      completion(self.submitAuthorized(earliestBeginDate: earliestBeginDate))
     }
   }
 
-  /// `replacingPending` cancels a pending request first, the normal
-  /// reschedule. A re-arm passes false: submitting then cannot revoke a wake
-  /// another caller just confirmed if the submission fails.
-  private func submitAuthorized(
-    earliestBeginDate: Date,
-    replacingPending: Bool = true
-  ) -> Bool {
+  /// Submitting replaces a pending request with the same identifier, so there
+  /// is no cancel first: a failed submission leaves the pending wake in place
+  /// instead of revoking one another caller, such as a direct-route re-arm,
+  /// just confirmed.
+  private func submitAuthorized(earliestBeginDate: Date) -> Bool {
     stateLock.vizorWithLock {
       guard !mutationQuiesced && !notificationAuthorization.isDisabled
         && !BackgroundMigrationOutboxExecutionGate.shared.isPaused else {
         return false
-      }
-      if replacingPending {
-        BGTaskScheduler.shared.cancel(
-          taskRequestWithIdentifier: Self.taskIdentifier
-        )
       }
       let request = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
       request.requiresNetworkConnectivity = true
@@ -584,8 +571,8 @@ final class BackgroundMigrationManager {
 
   /// One re-arm attempt: confirmation tracking for state-0 runs, then the
   /// outbox/preparation wake. The wake is kept when one is already pending
-  /// and otherwise submitted without cancelling first, so a failed submission
-  /// cannot revoke a wake that is in place.
+  /// and otherwise submitted, which never cancels first (`submitAuthorized`),
+  /// so a failed submission cannot revoke a wake that is in place.
   private func attemptDirectRouteRearm(completion: @escaping (Bool) -> Void) {
     let actions = backgroundMigrationSavedRouteDirectActions(
       torSelected: BackgroundMigrationTorRoute.isSelected(),
@@ -609,7 +596,7 @@ final class BackgroundMigrationManager {
           completion(trackingArmed)
           return
         }
-        self.schedule(replacingPending: false) { scheduled in
+        self.schedule { scheduled in
           completion(trackingArmed && scheduled)
         }
       }
@@ -753,6 +740,9 @@ final class BackgroundMigrationManager {
       if removed {
         IronwoodMigrationBackgroundCredentialStore.deleteAll()
         BackgroundMigrationOutboxExecutionGate.shared.discardStopLeases()
+        // The reset wallet's re-arm obligation goes with it, both as owed
+        // work and as durable evidence of the Tor transition.
+        BackgroundMigrationDirectRouteRearm.clear()
       }
       BackgroundMigrationNotification.remove(
         batchIds: batchIds,

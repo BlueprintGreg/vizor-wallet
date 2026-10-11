@@ -653,6 +653,17 @@ final networkPrivacyRearmRetryDelaysProvider = Provider<List<Duration>>(
   ],
 );
 
+/// Waits before each retry of releasing a background route fence lease; the
+/// last delay repeats. An unreleased lease refuses every background request
+/// until the process exits, so a failed release is retained and retried.
+final networkPrivacyFenceReleaseRetryDelaysProvider = Provider<List<Duration>>(
+  (_) => const [
+    Duration(seconds: 1),
+    Duration(seconds: 5),
+    Duration(seconds: 30),
+  ],
+);
+
 final networkPrivacySavedRouteDirectHookProvider =
     Provider<NetworkPrivacySavedRouteDirectHook>(
       (_) => _rearmBackgroundMigrationForDirectRoute,
@@ -1055,19 +1066,40 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     }
   }
 
+  /// Releases this save's fence lease. A failed release is retained and
+  /// retried in the background until native confirms (native release is
+  /// idempotent), so the toggle is not held up by it.
   Future<void> _endTorSave(
+    NetworkPrivacyBackgroundRouteFence fence,
+    String leaseId,
+  ) async {
+    if (await _tryEndTorSave(fence, leaseId)) return;
+    final retryDelays = ref.read(networkPrivacyFenceReleaseRetryDelaysProvider);
+    unawaited(() async {
+      for (var attempt = 0; ; attempt++) {
+        await Future<void>.delayed(
+          retryDelays[attempt < retryDelays.length
+              ? attempt
+              : retryDelays.length - 1],
+        );
+        if (_disposed || await _tryEndTorSave(fence, leaseId)) return;
+      }
+    }());
+  }
+
+  Future<bool> _tryEndTorSave(
     NetworkPrivacyBackgroundRouteFence fence,
     String leaseId,
   ) async {
     try {
       await fence.endTorSave(leaseId);
+      return true;
     } catch (error, stackTrace) {
-      // A written Tor route keeps refusing background requests on its own;
-      // an unwritten one leaves them refused until the next save or launch.
       debugPrint(
         'NetworkPrivacyNotifier: failed to end the background route fence: '
         '$error\n$stackTrace',
       );
+      return false;
     }
   }
 

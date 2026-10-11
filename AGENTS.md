@@ -693,7 +693,8 @@ policy-aware openers and fails closed while Tor is starting or broken.
   (`beginTorRouteSave` / `endTorRouteSave`): new background requests are
   refused and admitted ones finish before Tor is written, so a request can
   never read direct and send after Tor was saved. Each save holds its own
-  lease, so overlapping toggles cannot release each other's fence; the drain
+  lease, so overlapping toggles cannot release each other's fence, and a
+  failed release is retained and retried until native confirms; the drain
   covers the 10s connect plus 20s RPC deadlines. A fence that cannot drain
   aborts the enable before anything is saved. A background outbox request
   refused only by a save in progress is a retryable route block, not a
@@ -714,7 +715,9 @@ policy-aware openers and fails closed while Tor is starting or broken.
   state follows the last completed write, native
   records it durably (`BackgroundMigrationDirectRouteRearm`) and retries it on
   foreground entry and cold foreground launch, native attempts are serialized
-  (`BackgroundMigrationRearmSerializer`) and never cancel a pending wake, a
+  (`BackgroundMigrationRearmSerializer`), no migration wake submission
+  cancels the pending request first (submission replaces it), a full wallet
+  revocation clears the durable marker, a
   needed state-0 tracker counts only once it is running and not being stopped,
   or pending (not while another submission is in flight; an armed tracker is
   not resubmitted), a needed state-0 tracker that fails to submit leaves it

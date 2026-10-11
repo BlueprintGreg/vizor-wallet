@@ -941,6 +941,50 @@ void main() {
       expect(fence.ended, hasLength(2));
     });
 
+    test('a failed fence release is retried until native confirms', () async {
+      final events = <String>[];
+      final fence = _FakeBackgroundRouteFence(events, drained: true)
+        ..failEnds = 2;
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(
+            _FakeStore(events),
+          ),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(fence),
+          networkPrivacyFenceReleaseRetryDelaysProvider.overrideWithValue(
+            const [Duration(milliseconds: 1)],
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      // The toggle completes without waiting for the retried release.
+      await container.read(networkPrivacyProvider.notifier).setTorEnabled(true);
+      expect(events, contains('begin-enable'));
+      for (var i = 0; i < 50 && fence.released.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+
+      // An unreleased lease would refuse every background request until
+      // the process exits.
+      expect(fence.ended, hasLength(3));
+      expect(fence.released, fence.began);
+    });
+
     test('a failed Tor save still ends the fence', () async {
       final events = <String>[];
       final container = containerFor(
@@ -1929,8 +1973,10 @@ class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
   final bool drained;
   final began = <String>[];
   final ended = <String>[];
+  final released = <String>[];
   Future<void>? holdBegin;
   Future<void>? holdEnd;
+  var failEnds = 0;
 
   @override
   Future<bool> beginTorSave(String leaseId) async {
@@ -1945,6 +1991,11 @@ class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
     events.add('fence-end');
     ended.add(leaseId);
     await holdEnd;
+    if (failEnds > 0) {
+      failEnds--;
+      throw StateError('reply interrupted');
+    }
+    released.add(leaseId);
   }
 }
 
