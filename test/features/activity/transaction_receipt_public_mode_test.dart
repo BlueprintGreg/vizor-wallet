@@ -239,7 +239,8 @@ void main() {
       expect(loads.detail, 2);
       expect(find.text(kTransparentDetailsUnavailableText), findsOneWidget);
 
-      // REGRESSION(839): in public mode `unavailable` is terminal for the receipt, yet transparentDetailsAwaited() treats it as awaited, so the receipt re-reads its detail every 5 s for as long as it stays open (main never polled).
+      // In public mode a failed lookup is final: the receipt stops
+      // re-reading, as on main.
       await tester.pump(kTransparentDetailsPollInterval * 4);
       await tester.pump();
       expect(
@@ -352,7 +353,7 @@ void main() {
         detail: () async => detail,
       );
       expect(find.byType(ReceivedReceiptView), findsOneWidget);
-      // REGRESSION(839): main showed no fee row on a receive ("the sender paid the fee"); 6aa0f39b8 (ungated by private queries) now shows "Network fee 0.0001 ZEC" in public mode too.
+      // As on main, a receive shows no fee row: the sender paid it.
       expect(find.text('Network fee'), findsNothing);
       expect(find.text('0.0001 ZEC'), findsNothing);
       await _expectNoPolling(tester, loads);
