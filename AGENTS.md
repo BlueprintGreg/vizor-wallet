@@ -706,7 +706,8 @@ policy-aware openers and fails closed while Tor is starting or broken.
   confirmations, so turning Tor off lets the next `startPreparation` re-arm
   them. Saving the direct route over a saved Tor route re-arms held-back
   outbox and preparation work through one path (`savedRouteBecameDirect`,
-  called once after the write succeeds); a failed save re-arms nothing and
+  called after the write succeeds and retried with backoff until native
+  confirms, unless a newer toggle takes over); a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
   screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet
   reset clears the published saved route only after removing the preference

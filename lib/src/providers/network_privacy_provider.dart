@@ -623,20 +623,35 @@ final networkPrivacyDirectRequestGateProvider =
     );
 
 /// Re-arms native background work that a saved Tor route held back. Called
-/// once, right after the direct route is saved over a saved Tor route.
-typedef NetworkPrivacySavedRouteDirectHook = Future<void> Function();
+/// right after the direct route is saved over a saved Tor route. Returns
+/// false when the work could not be re-armed, so the caller retries.
+typedef NetworkPrivacySavedRouteDirectHook = Future<bool> Function();
 
 const _backgroundMigrationChannel = MethodChannel(
   'com.zcash.wallet/background_migration',
 );
 
-Future<void> _rearmBackgroundMigrationForDirectRoute() async {
+Future<bool> _rearmBackgroundMigrationForDirectRoute() async {
   // Only iOS background migration defers to a saved Tor route.
-  if (!Platform.isIOS) return;
-  await _backgroundMigrationChannel.invokeMethod<bool>(
-    'savedRouteBecameDirect',
-  );
+  if (!Platform.isIOS) return true;
+  return await _backgroundMigrationChannel.invokeMethod<bool>(
+        'savedRouteBecameDirect',
+      ) ??
+      false;
 }
+
+/// Waits before each attempt to re-arm background work for the direct route.
+/// A Tor-deferred wake scheduled nothing after itself, so a failed re-arm
+/// would otherwise leave that work without a native request until the app is
+/// reopened.
+final networkPrivacyRearmRetryDelaysProvider = Provider<List<Duration>>(
+  (_) => const [
+    Duration.zero,
+    Duration(seconds: 2),
+    Duration(seconds: 10),
+    Duration(minutes: 1),
+  ],
+);
 
 final networkPrivacySavedRouteDirectHookProvider =
     Provider<NetworkPrivacySavedRouteDirectHook>(
@@ -933,7 +948,15 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           // Background work deferred while Tor was saved has nothing else
           // to wake it, so re-arm it here, once, now that the saved route
           // is direct.
-          if (heldBackByTor) unawaited(_rearmForDirectRoute(savedRouteDirect));
+          if (heldBackByTor) {
+            unawaited(
+              _rearmForDirectRoute(
+                savedRouteDirect,
+                generation,
+                ref.read(networkPrivacyRearmRetryDelaysProvider),
+              ),
+            );
+          }
         } finally {
           // The gate follows the runtime, not the preference. Rust is on the
           // direct route with its Tor client dropped, so a gate left shut
@@ -1017,18 +1040,29 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     }
   }
 
+  /// Retries until native confirms the re-arm, or a newer toggle owns the
+  /// route (a Tor save would refuse the work anyway).
   Future<void> _rearmForDirectRoute(
     NetworkPrivacySavedRouteDirectHook savedRouteDirect,
+    int generation,
+    List<Duration> retryDelays,
   ) async {
-    try {
-      await savedRouteDirect();
-    } catch (error, stackTrace) {
-      // Best-effort: the next foreground poll can still re-arm the work.
-      debugPrint(
-        'NetworkPrivacyNotifier: failed to re-arm background work for the '
-        'direct route: $error\n$stackTrace',
-      );
+    for (final delay in retryDelays) {
+      if (delay > Duration.zero) await Future<void>.delayed(delay);
+      if (generation != _generation) return;
+      try {
+        if (await savedRouteDirect()) return;
+      } catch (error, stackTrace) {
+        debugPrint(
+          'NetworkPrivacyNotifier: failed to re-arm background work for the '
+          'direct route: $error\n$stackTrace',
+        );
+      }
     }
+    debugPrint(
+      'NetworkPrivacyNotifier: gave up re-arming background work for the '
+      'direct route; it re-arms when migration next schedules it.',
+    );
   }
 
   Future<void> retry() =>

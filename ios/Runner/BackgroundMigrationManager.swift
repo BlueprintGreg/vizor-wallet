@@ -554,6 +554,8 @@ final class BackgroundMigrationManager {
   /// Dart calls it after saving the direct route; see
   /// `backgroundMigrationSavedRouteDirectActions`. Submitting the wake
   /// replaces any pending request, so a repeated call schedules nothing extra.
+  /// Completes with false only when a needed wake could not be submitted, so
+  /// Dart retries; nothing to re-arm is success.
   func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
     let actions = backgroundMigrationSavedRouteDirectActions(
       torSelected: BackgroundMigrationTorRoute.isSelected(),
@@ -566,7 +568,7 @@ final class BackgroundMigrationManager {
       }
     }
     guard actions.scheduleBackgroundWake else {
-      completion(false)
+      completion(true)
       return
     }
     schedule(completion: completion)

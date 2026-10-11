@@ -978,7 +978,10 @@ void main() {
             await update();
           }),
           networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
-            () async => events.add('rearm'),
+            () async {
+              events.add('rearm');
+              return true;
+            },
           ),
         ],
       );
@@ -1039,6 +1042,100 @@ void main() {
 
       expect(events.where((event) => event == 'rearm'), hasLength(1));
       expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+    });
+
+    test('retries until native confirms the re-arm', () async {
+      final events = <String>[];
+      final outcomes = <Object>[StateError('channel'), false, true];
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(
+            _FakeStore(events),
+          ),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacyRearmRetryDelaysProvider.overrideWithValue(
+            List.filled(5, Duration.zero),
+          ),
+          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+            () async {
+              events.add('rearm');
+              final outcome = outcomes.removeAt(0);
+              if (outcome is Error) throw outcome;
+              return outcome as bool;
+            },
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      for (var i = 0; i < 10; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      // A thrown call and a false result both retry; success stops.
+      expect(events.where((event) => event == 'rearm'), hasLength(3));
+      expect(outcomes, isEmpty);
+    });
+
+    test('stops retrying once a newer toggle owns the route', () async {
+      final events = <String>[];
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(
+            _FakeStore(events),
+          ),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacyRearmRetryDelaysProvider.overrideWithValue(const [
+            Duration.zero,
+            Duration(milliseconds: 50),
+          ]),
+          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+            () async {
+              events.add('rearm');
+              return false;
+            },
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      await notifier.setTorEnabled(false);
+      await Future<void>.delayed(Duration.zero);
+      await notifier.setTorEnabled(true);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(events.where((event) => event == 'rearm'), hasLength(1));
     });
 
     test('not when the saved route was already direct', () async {
