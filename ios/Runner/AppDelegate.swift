@@ -126,6 +126,14 @@ import UIKit
         BackgroundMigrationManager.shared.schedule { scheduled in
           DispatchQueue.main.async { result(scheduled) }
         }
+      case "beginTorRouteSave":
+        DispatchQueue.global(qos: .userInitiated).async {
+          let drained = BackgroundMigrationRouteGate.shared.beginTorSave()
+          DispatchQueue.main.async { result(drained) }
+        }
+      case "endTorRouteSave":
+        BackgroundMigrationRouteGate.shared.endTorSave()
+        result(true)
       case "savedRouteBecameDirect":
         BackgroundMigrationManager.shared.savedRouteBecameDirect { rearmed in
           DispatchQueue.main.async { result(rearmed) }

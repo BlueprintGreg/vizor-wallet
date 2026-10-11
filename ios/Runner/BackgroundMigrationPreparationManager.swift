@@ -1959,19 +1959,27 @@ final class BackgroundMigrationPreparationManager {
       print(
         "[BGPreparation] observing \(transactionIds.count) tx(s) account=\(manifest.accountUuid)"
       )
-      // Read again before each lookup: the task may have started before the
+      // Admitted before each lookup: the task may have started before the
       // user turned Tor on, and this process may not apply that route itself.
-      guard !BackgroundMigrationTorRoute.isSelected() else {
+      // The gate also orders the lookup against a Tor save in progress.
+      guard
+        let tipResult = BackgroundMigrationRouteGate.shared.admitDirect(
+          torSaved: { BackgroundMigrationTorRoute.isSelected() },
+          {
+            NativeLightwalletdClient.latestBlockHeight(
+              endpoint: manifest.lightwalletdUrl,
+              cancellation: cancellation
+            )
+          }
+        )
+      else {
         results.append(
           MigrationPreparationScopeTrackingResult(scope: scope, disposition: .retry)
         )
         continue
       }
       let tip: UInt64
-      switch NativeLightwalletdClient.latestBlockHeight(
-        endpoint: manifest.lightwalletdUrl,
-        cancellation: cancellation
-      ) {
+      switch tipResult {
       case .success(let height):
         tip = height
       case .failure(.cancelled):
@@ -2110,32 +2118,33 @@ final class BackgroundMigrationPreparationManager {
     if privateStatus {
       return .failure(.coverageIncomplete)
     }
-    if BackgroundMigrationTorRoute.isSelected() {
-      return .failure(.routeDeferredToForeground)
+    // Each lookup is admitted on its own, so a Tor save between the two byte
+    // orders stops the second one.
+    let lookup: (Data) -> Result<
+      NativeLightwalletdTransactionObservation,
+      NativeLightwalletdError
+    > = { transactionId in
+      BackgroundMigrationRouteGate.shared.admitDirect(
+        torSaved: { BackgroundMigrationTorRoute.isSelected() }
+      ) {
+        NativeLightwalletdClient.transaction(
+          endpoint: endpoint,
+          dbPath: dbPath,
+          privateStatus: false,
+          network: network,
+          requiredThrough: requiredThrough,
+          transactionId: transactionId,
+          cancellation: cancellation
+        )
+      } ?? .failure(.routeDeferredToForeground)
     }
-    let first = NativeLightwalletdClient.transaction(
-      endpoint: endpoint,
-      dbPath: dbPath,
-      privateStatus: false,
-      network: network,
-      requiredThrough: requiredThrough,
-      transactionId: protocolOrder,
-      cancellation: cancellation
-    )
+    let first = lookup(protocolOrder)
     guard protocolOrder != storedOrder,
       shouldTryStoredTransactionIdByteOrder(after: first)
     else {
       return first
     }
-    let second = NativeLightwalletdClient.transaction(
-      endpoint: endpoint,
-      dbPath: dbPath,
-      privateStatus: false,
-      network: network,
-      requiredThrough: requiredThrough,
-      transactionId: storedOrder,
-      cancellation: cancellation
-    )
+    let second = lookup(storedOrder)
     return transactionObservationAfterStoredByteOrderFallback(
       first: first,
       second: second

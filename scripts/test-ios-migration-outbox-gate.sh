@@ -99,10 +99,11 @@ import Darwin
 let suite = XCTestSuite(name: "Migration outbox and foreground handoff")
 suite.addTest(BackgroundMigrationOutboxExecutionGateTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationSavedRouteDirectTests.defaultTestSuite)
+suite.addTest(BackgroundMigrationRouteGateTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 19 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 22 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

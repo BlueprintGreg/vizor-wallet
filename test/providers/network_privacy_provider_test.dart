@@ -817,6 +817,93 @@ void main() {
     },
   );
 
+  group('saving Tor fences native background requests', () {
+    ProviderContainer containerFor(
+      List<String> events,
+      NetworkPrivacyPreferenceStore store, {
+      bool drained = true,
+    }) {
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(store),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(
+            _FakeBackgroundRouteFence(events, drained: drained),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test('the Tor save happens inside the fence', () async {
+      final events = <String>[];
+      final container = containerFor(events, _FakeStore(events));
+
+      await container.read(networkPrivacyProvider.notifier).setTorEnabled(true);
+
+      final fenced = events
+          .where(
+            (event) =>
+                event.startsWith('fence') ||
+                event.startsWith('store') ||
+                event == 'begin-enable',
+          )
+          .toList();
+      expect(fenced, [
+        'fence-begin',
+        'store:true',
+        'fence-end',
+        'begin-enable',
+      ]);
+    });
+
+    test('a fence that cannot drain aborts before saving Tor', () async {
+      final events = <String>[];
+      final container = containerFor(
+        events,
+        _FakeStore(events),
+        drained: false,
+      );
+
+      await container.read(networkPrivacyProvider.notifier).setTorEnabled(true);
+
+      expect(events, contains('fence-end'));
+      expect(events, isNot(contains('store:true')));
+      expect(events, isNot(contains('begin-enable')));
+      final state = container.read(networkPrivacyProvider);
+      expect(state.status, NetworkPrivacyConnectionStatus.failed);
+      expect(state.torEnabled, isFalse);
+      expect(state.torRouteSaved, isFalse);
+    });
+
+    test('a failed Tor save still ends the fence', () async {
+      final events = <String>[];
+      final container = containerFor(
+        events,
+        _WriteFailingStore(events, failOn: true),
+      );
+
+      await container.read(networkPrivacyProvider.notifier).setTorEnabled(true);
+
+      expect(events, containsAllInOrder(['fence-begin', 'fence-end']));
+      expect(events, isNot(contains('begin-enable')));
+    });
+  });
+
   group('saved direct route re-arms held-back background work', () {
     ProviderContainer containerFor(
       List<String> events,
@@ -1390,6 +1477,24 @@ class _FakeStore implements NetworkPrivacyPreferenceStore {
   @override
   Future<void> writeTorEnabled(bool enabled) async {
     events.add('store:$enabled');
+  }
+}
+
+class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
+  _FakeBackgroundRouteFence(this.events, {required this.drained});
+
+  final List<String> events;
+  final bool drained;
+
+  @override
+  Future<bool> beginTorSave() async {
+    events.add('fence-begin');
+    return drained;
+  }
+
+  @override
+  Future<void> endTorSave() async {
+    events.add('fence-end');
   }
 }
 

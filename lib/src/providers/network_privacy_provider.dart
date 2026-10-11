@@ -643,6 +643,43 @@ final networkPrivacySavedRouteDirectHookProvider =
       (_) => _rearmBackgroundMigrationForDirectRoute,
     );
 
+/// Orders native background migration requests against saving Tor as the
+/// route (`BackgroundMigrationRouteGate` on iOS).
+abstract interface class NetworkPrivacyBackgroundRouteFence {
+  /// Refuses new background direct requests and waits for admitted ones.
+  /// False means they did not finish, so Tor must not be saved.
+  Future<bool> beginTorSave();
+
+  /// Ends a fence started by [beginTorSave], whether or not Tor was saved.
+  Future<void> endTorSave();
+}
+
+class PlatformNetworkPrivacyBackgroundRouteFence
+    implements NetworkPrivacyBackgroundRouteFence {
+  const PlatformNetworkPrivacyBackgroundRouteFence();
+
+  @override
+  Future<bool> beginTorSave() async {
+    // Only iOS runs background migration requests outside the Rust route.
+    if (!Platform.isIOS) return true;
+    return await _backgroundMigrationChannel.invokeMethod<bool>(
+          'beginTorRouteSave',
+        ) ??
+        false;
+  }
+
+  @override
+  Future<void> endTorSave() async {
+    if (!Platform.isIOS) return;
+    await _backgroundMigrationChannel.invokeMethod<bool>('endTorRouteSave');
+  }
+}
+
+final networkPrivacyBackgroundRouteFenceProvider =
+    Provider<NetworkPrivacyBackgroundRouteFence>(
+      (_) => const PlatformNetworkPrivacyBackgroundRouteFence(),
+    );
+
 typedef NetworkPrivacyTransportRestart =
     Future<void> Function(Future<void> Function() updateTransport);
 
@@ -741,6 +778,9 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     final savedRouteDirect = ref.read(
       networkPrivacySavedRouteDirectHookProvider,
     );
+    final backgroundRoute = ref.read(
+      networkPrivacyBackgroundRouteFenceProvider,
+    );
     // Until a write succeeds, the route saved before this toggle stands.
     var savedTorEnabled = previousState.torRouteSaved;
 
@@ -774,7 +814,17 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       // silently undo a choice the user never reversed. Written first, a
       // failure aborts a toggle that has not changed anything yet: the route
       // is still direct, requests still flow, nothing needs rolling back.
+      //
+      // Native background migration reads the saved route before each direct
+      // request, so the save is fenced: new background requests are refused
+      // and admitted ones finish first. Otherwise one could read direct, and
+      // send after Tor was saved while this process is still direct.
       try {
+        if (!await backgroundRoute.beginTorSave()) {
+          throw StateError(
+            'Background migration requests did not stop in time.',
+          );
+        }
         await store.writeTorEnabled(true);
       } catch (error) {
         if (generation != _generation) return;
@@ -797,6 +847,8 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           error: error.toString(),
         );
         return;
+      } finally {
+        await _endTorSave(backgroundRoute);
       }
       savedTorEnabled = true;
       if (generation != _generation) return;
@@ -933,6 +985,19 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         softwareUpdatesAvailable: softwareUpdatesAvailable,
         error: error.toString(),
         startupNotice: startupNotice,
+      );
+    }
+  }
+
+  Future<void> _endTorSave(NetworkPrivacyBackgroundRouteFence fence) async {
+    try {
+      await fence.endTorSave();
+    } catch (error, stackTrace) {
+      // A written Tor route keeps refusing background requests on its own;
+      // an unwritten one leaves them refused until the next save or launch.
+      debugPrint(
+        'NetworkPrivacyNotifier: failed to end the background route fence: '
+        '$error\n$stackTrace',
       );
     }
   }

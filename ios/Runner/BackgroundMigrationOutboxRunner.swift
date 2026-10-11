@@ -43,16 +43,19 @@ struct BackgroundMigrationOutboxRunnerDependencies {
   /// refuses if this process has since switched to Tor.
   static func background(
     torSelected: @escaping () -> Bool = { BackgroundMigrationTorRoute.isSelected() },
+    gate: BackgroundMigrationRouteGate = .shared,
     transport: BackgroundMigrationOutboxRunnerDependencies = .foreground
   ) -> BackgroundMigrationOutboxRunnerDependencies {
     BackgroundMigrationOutboxRunnerDependencies(
       latestBlockHeight: { endpoint, cancellation in
-        guard !torSelected() else { return .failure(.routeDeferredToForeground) }
-        return transport.latestBlockHeight(endpoint, cancellation)
+        gate.admitDirect(torSaved: torSelected) {
+          transport.latestBlockHeight(endpoint, cancellation)
+        } ?? .failure(.routeDeferredToForeground)
       },
       sendTransaction: { endpoint, rawTransaction, cancellation in
-        guard !torSelected() else { return .failure(.routeDeferredToForeground) }
-        return transport.sendTransaction(endpoint, rawTransaction, cancellation)
+        gate.admitDirect(torSaved: torSelected) {
+          transport.sendTransaction(endpoint, rawTransaction, cancellation)
+        } ?? .failure(.routeDeferredToForeground)
       }
     )
   }
@@ -72,6 +75,70 @@ enum BackgroundMigrationTorRoute {
   static func isSelected(defaults: UserDefaults = .standard) -> Bool {
     guard let stored = defaults.object(forKey: defaultsKey) else { return false }
     return (stored as? Bool) ?? true
+  }
+}
+
+/// Orders background direct requests against saving Tor as the route.
+///
+/// Background migration never uses Tor, so it reads the saved route before
+/// each request. Reading it and then sending is a check-then-act race: Dart can
+/// save Tor in between, and the request still goes out directly because this
+/// process has not switched its route yet. Every background request is
+/// therefore admitted here, and Dart calls [beginTorSave] before writing Tor:
+/// from then on nothing new is admitted, and the save waits for admitted
+/// requests to finish (each is bounded by its RPC deadline). A request is thus
+/// either admitted before the save starts and completes before it is written,
+/// or refused.
+final class BackgroundMigrationRouteGate: @unchecked Sendable {
+  static let shared = BackgroundMigrationRouteGate()
+  /// Covers an admitted request's 20-second RPC deadline plus teardown.
+  static let saveDrainTimeout: TimeInterval = 25
+
+  private let condition = NSCondition()
+  private var torSavePending = false
+  private var admitted = 0
+
+  init() {}
+
+  /// Runs `request` unless Tor is saved or being saved; returns nil, having
+  /// sent nothing, when refused.
+  func admitDirect<T>(torSaved: () -> Bool, _ request: () -> T) -> T? {
+    condition.lock()
+    guard !torSavePending, !torSaved() else {
+      condition.unlock()
+      return nil
+    }
+    admitted += 1
+    condition.unlock()
+    defer {
+      condition.lock()
+      admitted -= 1
+      condition.broadcast()
+      condition.unlock()
+    }
+    return request()
+  }
+
+  /// Refuses new background requests and waits for admitted ones. Returns
+  /// false if they did not finish in time; the caller must then not save Tor
+  /// and must call [endTorSave].
+  func beginTorSave(timeout: TimeInterval = saveDrainTimeout) -> Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    torSavePending = true
+    let deadline = Date().addingTimeInterval(timeout)
+    while admitted > 0 {
+      if !condition.wait(until: deadline) { return admitted == 0 }
+    }
+    return true
+  }
+
+  /// Ends a save started with [beginTorSave], written or not. A written Tor
+  /// route keeps refusing through the saved-route check.
+  func endTorSave() {
+    condition.lock()
+    torSavePending = false
+    condition.unlock()
   }
 }
 

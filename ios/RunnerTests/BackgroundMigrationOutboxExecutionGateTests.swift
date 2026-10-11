@@ -379,3 +379,91 @@ final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
     )
   }
 }
+
+final class BackgroundMigrationRouteGateTests: XCTestCase {
+  func testTorSaveWaitsForAnAdmittedRequestAndRefusesNewOnes() {
+    let gate = BackgroundMigrationRouteGate()
+    let inside = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let requestDone = DispatchSemaphore(value: 0)
+    let saveStarted = DispatchSemaphore(value: 0)
+    let saveDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      _ = gate.admitDirect(torSaved: { false }) {
+        inside.signal()
+        _ = release.wait(timeout: .now() + 5)
+      }
+      requestDone.signal()
+    }
+    XCTAssertEqual(inside.wait(timeout: .now() + 5), .success)
+    var drained = false
+    DispatchQueue.global().async {
+      saveStarted.signal()
+      drained = gate.beginTorSave(timeout: 5)
+      saveDone.signal()
+    }
+    XCTAssertEqual(saveStarted.wait(timeout: .now() + 5), .success)
+    // The admitted request has not finished, so Tor is not saved yet.
+    XCTAssertEqual(saveDone.wait(timeout: .now() + 0.1), .timedOut)
+    // Nothing new is admitted while the save is pending.
+    var refusedRan = false
+    XCTAssertNil(gate.admitDirect(torSaved: { false }) { refusedRan = true })
+    XCTAssertFalse(refusedRan)
+    release.signal()
+    XCTAssertEqual(requestDone.wait(timeout: .now() + 5), .success)
+    XCTAssertEqual(saveDone.wait(timeout: .now() + 5), .success)
+    XCTAssertTrue(drained)
+    // An aborted save admits again while the saved route is still direct.
+    gate.endTorSave()
+    XCTAssertEqual(gate.admitDirect(torSaved: { false }) { 1 }, 1)
+    XCTAssertNil(gate.admitDirect(torSaved: { true }) { 1 })
+  }
+
+  func testTorSaveReportsARequestThatOutlivesTheTimeout() {
+    let gate = BackgroundMigrationRouteGate()
+    let inside = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let requestDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      _ = gate.admitDirect(torSaved: { false }) {
+        inside.signal()
+        _ = release.wait(timeout: .now() + 5)
+      }
+      requestDone.signal()
+    }
+    XCTAssertEqual(inside.wait(timeout: .now() + 5), .success)
+    XCTAssertFalse(gate.beginTorSave(timeout: 0.05))
+    release.signal()
+    XCTAssertEqual(requestDone.wait(timeout: .now() + 5), .success)
+    gate.endTorSave()
+  }
+
+  func testBackgroundOutboxRequestsAreRefusedDuringATorSave() {
+    let gate = BackgroundMigrationRouteGate()
+    XCTAssertTrue(gate.beginTorSave(timeout: 1))
+    defer { gate.endTorSave() }
+    let dependencies = BackgroundMigrationOutboxRunnerDependencies.background(
+      torSelected: { false },
+      gate: gate,
+      transport: BackgroundMigrationOutboxRunnerDependencies(
+        latestBlockHeight: { _, _ in
+          XCTFail("A background tip query went out during a Tor save")
+          return .success(1)
+        },
+        sendTransaction: { _, _, _ in
+          XCTFail("A background broadcast went out during a Tor save")
+          return .failure(.timedOut)
+        }
+      )
+    )
+    let cancellation = BackgroundMigrationCancellation()
+    switch dependencies.latestBlockHeight("https://example.invalid", cancellation) {
+    case .failure(.routeDeferredToForeground): break
+    default: XCTFail("Expected the tip query to defer to the foreground")
+    }
+    switch dependencies.sendTransaction("https://example.invalid", Data([1]), cancellation) {
+    case .failure(.routeDeferredToForeground): break
+    default: XCTFail("Expected the broadcast to defer to the foreground")
+    }
+  }
+}

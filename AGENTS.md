@@ -688,7 +688,12 @@ policy-aware openers and fails closed while Tor is starting or broken.
   Tor up or borrows the foreground's client, and a cold launch may not have
   applied the route, so it reads the saved route
   (`BackgroundMigrationTorRoute`, the `flutter.zcash_tor_enabled` user
-  default) before each request. With Tor saved, the outbox defers to the
+  default) before each request. Every background direct request is admitted
+  through `BackgroundMigrationRouteGate`, and Dart fences saving Tor with it
+  (`beginTorRouteSave` / `endTorRouteSave`): new background requests are
+  refused and admitted ones finish before Tor is written, so a request can
+  never read direct and send after Tor was saved. A fence that cannot drain
+  aborts the enable before anything is saved. With Tor saved, the outbox defers to the
   foreground (`deferredToForeground`, no reschedule) and preparation tracking
   stays foreground-only. A tracking task launched under saved Tor records only
   runs that need the foreground, never state-0 runs still counting
