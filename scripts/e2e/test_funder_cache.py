@@ -61,6 +61,34 @@ class FunderCacheTests(unittest.TestCase):
         self.assertNotIn("_", self.model.last_build_env)
         self.assertNotIn("_", second.identity()["cache_inputs"]["environment_sha256"])
 
+    def test_shell_session_credential_and_path_noise_reuse_the_signer(self):
+        first = self.build()
+        entries = os.environ.get("PATH", "").split(os.pathsep)
+        with patch.dict(os.environ, {"PWD":"/model/elsewhere", "OLDPWD":"/model/before", "SHLVL":"9",
+                                     "TERM_SESSION_ID":"w9t9p9:model", "MODEL_ACCESS_TOKEN":"model-secret",
+                                     "PATH":os.pathsep.join((*entries, str(self.model.root/"missing"), entries[0]))}):
+            second = self.build()
+        self.assertEqual(self.model.compile_calls, 1)
+        self.assertTrue(second.identity()["cache_hit"])
+        self.assertEqual(first.identity()["cache_key"], second.identity()["cache_key"])
+        hashed = second.identity()["cache_inputs"]["environment_sha256"]
+        for name in ("OLDPWD", "MODEL_ACCESS_TOKEN", "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS"):
+            self.assertNotIn(name, hashed)
+        self.assertIn("RUSTC", hashed)
+
+    def test_build_variables_and_requested_names_invalidate_the_signer(self):
+        keys = {}
+        for label, changes in (("original", {}), ("unlisted", {"OTHER_SWIFT_FLAGS":"-DMODEL"}),
+                               ("cflags", {"CFLAGS":"-DMODEL"}), ("rustflags", {"RUSTFLAGS":"--cfg model"}),
+                               ("requested", {"VIZOR_E2E_CACHE_ENV":"OTHER_SWIFT_FLAGS"}),
+                               ("requested-value", {"VIZOR_E2E_CACHE_ENV":"OTHER_SWIFT_FLAGS",
+                                                    "OTHER_SWIFT_FLAGS":"-DMODEL"})):
+            with patch.dict(os.environ, changes):
+                keys[label] = self.build().identity()["cache_key"]
+        self.assertEqual(keys["original"], keys["unlisted"])
+        self.assertEqual(len(set(keys.values())), 5)
+        self.assertEqual(self.model.compile_calls, 5)
+
     def test_locked_rust_source_change_invalidates_the_cache(self):
         first = self.build()
         (self.model.source / "rust/Cargo.lock").write_text("# changed locked inputs\n")

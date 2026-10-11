@@ -1,6 +1,7 @@
 """Coordinator models; native signing, wallet assertions and Docker are not real."""
 import contextlib
 from dataclasses import replace
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -471,6 +472,34 @@ class SuiteTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SUITE.validate_options(self.args,self.scenarios)
         self.assertFalse((self.root/".regtest-logs").exists())
+
+    def test_invalid_cache_environment_names_are_rejected_before_writes(self):
+        for value in ("1MODEL", "MODEL-NAME", "MODEL_*"):
+            with self.subTest(value=value), patch.dict(SUITE.os.environ, {"VIZOR_E2E_CACHE_ENV":value}), \
+                 patch.object(SUITE.sys,"platform","darwin"):
+                with self.assertRaisesRegex(ValueError,"VIZOR_E2E_CACHE_ENV"):
+                    SUITE.validate_options(self.args,self.scenarios)
+                with self.assertRaisesRegex(ValueError,"VIZOR_E2E_CACHE_ENV"):
+                    SUITE.run_native_suite(self.args,self.catalog,self.scenarios,{},source_root=self.root)
+        self.assertFalse((self.root/".regtest-logs").exists())
+
+    def test_summary_names_the_build_environment_without_values_or_digests(self):
+        secret = "model-secret-value"
+        with patch.dict(SUITE.os.environ, {"VIZOR_MODEL_X_TOKEN":secret, "OLDPWD":"/model/previous",
+                                           "VIZOR_E2E_CACHE_ENV":"OTHER_SWIFT_FLAGS", "OTHER_SWIFT_FLAGS":"-DMODEL"}):
+            code, summary, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        environment = summary["build_environment"]
+        self.assertEqual(set(environment), {"hashed_names", "excluded_names", "requested_extra_names"})
+        self.assertLessEqual({"VIZOR_MODEL_X_TOKEN", "OLDPWD"}, set(environment["excluded_names"]))
+        self.assertLessEqual({"OTHER_SWIFT_FLAGS", "VIZOR_E2E_CACHE_ENV"}, set(environment["hashed_names"]))
+        self.assertEqual(environment["requested_extra_names"], ["OTHER_SWIFT_FLAGS"])
+        text = json.dumps(summary)
+        for value in (secret, "/model/previous", hashlib.sha256(secret.encode()).hexdigest(),
+                      hashlib.sha256(b"-DMODEL").hexdigest()):
+            self.assertNotIn(value, text)
+        written = json.loads(next((self.root/".regtest-logs").glob("native-suite-*/summary.json")).read_text())
+        self.assertEqual(written["build_environment"], environment)
 
     def test_rust_cases_build_selected_targets_once_without_an_app_or_helper(self):
         self.scenarios = tuple(self.catalog.scenarios_by_id[name] for name in (

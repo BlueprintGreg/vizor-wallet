@@ -32,6 +32,7 @@ from native_voting_build import build_voting_artifacts
 from native_rust_execution import RUST_CASES, RUST_PROFILES, execute_native_rust_case
 from native_worker_lifecycle import prepare_native_worker_lifecycle
 from native_workspace import prepare_native_case_workspace
+import toolchain_inputs
 from zakura_funding import fund_zakura
 
 
@@ -162,6 +163,10 @@ def validate_options(args, scenarios):
     for field in ("flutter", "grpcurl"):
         if not os.access(getattr(args, field), os.X_OK):
             raise ValueError(field + " must be executable")
+    try:
+        toolchain_inputs.requested_environment_names(os.environ)
+    except toolchain_inputs.ToolInputError as error:
+        raise ValueError(str(error)) from error
     if any(s.id in IOS_SCENARIOS for s in scenarios):
         runtime_id = getattr(args, "ios_runtime", None)
         device_id = getattr(args, "ios_device_type", None)
@@ -381,6 +386,8 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         "source_commit":commit,"working_tree_dirty":dirty,"run_id":run_id,
         "workers":args.workers,"repeat":args.repeat,"repetition_reports":[],
         "builds":{},"error":None,"schedule":schedule.record,
+        # Names only: values and digests stay out of reports and stdout.
+        "build_environment":toolchain_inputs.build_environment_inputs(os.environ)[1],
         "resource_budget":{"artifact_producer_slots":1,"cargo_jobs":args.build_jobs,
                            "case_slots":min(args.workers, args.repeat * len(scenarios)),
                            "ios_preparation_slots":min(2, args.workers,

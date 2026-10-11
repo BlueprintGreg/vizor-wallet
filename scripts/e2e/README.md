@@ -269,7 +269,8 @@ oracle and the original three confirmation blocks. Startup recovery retains
 the actual first-stream stall, healthy retry and persisted completed status.
 Evidence stays in `.regtest-logs/native-suite-<id>/`. Each repetition's
 `run.json` is a schema-2 report accepted by the existing `--failed-from` selector;
-`summary.json` records the batch/build counts. Failed cases keep state/logs,
+`summary.json` records the batch/build counts and which environment names the
+build keys hashed, never their values. Failed cases keep state/logs,
 and uncertain cleanup remains failure. Cancellation stops owned children and
 new assignment without terminating ordinary wallet processes.
 
@@ -1075,10 +1076,12 @@ without starting another Cargo build, but each owns its own process/output.
 The suite enables `.regtest-logs/build-cache/funder-v1` by default. Keys bind the
 complete Rust Git/blob inventory, compiler/Cargo identity and executable bytes,
 host target, exact selected tests/address tool, producer implementation, Cargo
-configuration contents and hashed build environment. The invocation ID, Git
+configuration contents and the build-relevant environment described under
+"Build environment in cache keys" below. The invocation ID, Git
 commit outside the Rust subtree, target directory and build job count are not
-compilation inputs in this key. No environment values or configuration contents
-are written to the manifest. A hit still inventories the exact current source,
+compilation inputs in this key. The manifest stores SHA-256 digests of
+configuration contents and of those environment values, never the values
+themselves. A hit still inventories the exact current source,
 joins its original owner and copies binaries into a fresh private publication;
 it never accepts a loose old executable or adopts an old case. Reports record
 `signer_cache_hit`, `signer_cache_key` and actual signer/Rust build counts.
@@ -1117,14 +1120,15 @@ never read, migrated or deleted.
 The inputs bind checked wallet/test/native/Rust sources, the macOS helper and
 builder implementation, actual Dart package contents, semantic package
 configuration, locked Pod versions, Flutter/engine/Dart identity, Xcode/SDK, Cargokit compiler
-identity, Cargo configuration, environment and platform/architecture/TEX fixture.
+identity, Cargo configuration, build-relevant environment and platform/architecture/TEX fixture.
 The wallet's package-config generation timestamp and workspace-local Podspec
 checksums are not keys; the local package sources are checked instead. External
 package inventories exclude generated directories only at their roots; a
 configured packageUri source subtree is always included, even under a
 generated-looking name. A root packageUri includes the complete package tree.
 Same-named directories beneath source trees remain inputs. Remote Podspec checksums and all
-locked versions remain inputs. Compiler environment values are hashed.
+locked versions remain inputs. Build-relevant environment values are hashed as
+described under "Build environment in cache keys" below.
 Executables selected by Rust wrappers, target linkers, CC/CXX/AR and Rust
 linker flags are also hashed, including forwarded `-fuse-ld`, `-B` and
 `--ld-path` selectors, Cargo configuration, included files, relative paths,
@@ -1214,7 +1218,7 @@ python3.11 -B -m unittest scripts/e2e/test_native_build_cache.py scripts/e2e/tes
 Voting selections use `.regtest-logs/build-cache/voting-v1` for the five pinned
 SDK/PIR/round executables. Inputs bind both exact Git archives, selected Rust,
 Go and Make tool paths/bytes/versions, Cargo/Go configuration content hashes,
-hashed build environment, platform and producer implementation. Build job count
+build-relevant environment, platform and producer implementation. Build job count
 and case-private output paths are not compilation identities. The cache reuses
 the bounded per-key lock and exclusive, sealed executable publication; changed
 or writable cached bytes fail without rebuild or overwrite.
@@ -1238,6 +1242,8 @@ runtime scripts and joins its new producer owner. It copies verified binaries
 into that owner's independent publication; vote-chain homes, keys, PIR data,
 wallets and process owners remain case-local. Reports use the actual
 `voting_build_count` (zero on a hit) and `voting_proof.cache_hit/cache_key`.
+The proof's `cache_inputs` lists the hashed variables as `environment_names`;
+their digests stay in the cache manifest.
 This is cooperative local build reuse, not hermetic provenance, voting success
 or final-source full-catalog coverage.
 
@@ -1250,6 +1256,62 @@ baseline, complete voting E2E, aggregate CPU/RAM saving or whole-suite speedup.
 
 ```bash
 python3.11 -B -m unittest scripts/e2e/test_native_voting.py scripts/e2e/test_native_macos_suite.py scripts/e2e/test_funder_cache.py
+```
+
+### Build environment in cache keys
+
+The signer, native cohort and voting keys hash only inherited variables that
+can select or configure a build, so a new shell, terminal tab or session
+reuses the same entries. `PWD`, `OLDPWD`, `SHLVL`, `TERM_*`, `TMPDIR`, `_` and
+other shell or session bookkeeping are not key inputs. Collectors, tool lookups
+and child processes still read the complete environment; only the key narrows.
+`build_environment_inputs` in `toolchain_inputs.py` hashes:
+
+- exact names: `PATH`, `HOME`, `LANG` and the POSIX locale categories
+  (`LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MESSAGES`, `LC_MONETARY`,
+  `LC_NUMERIC`, `LC_TIME`; terminal names such as `LC_TERMINAL` are not
+  locale settings), `DEVELOPER_DIR`, `SDKROOT`, `TOOLCHAINS`,
+  `XCODE_XCCONFIG_FILE`, `VIZOR_RUST_TOOLCHAIN`, `BUILD_TAGS`, `MAKEFLAGS`,
+  `MFLAGS`, `MAKEFILES`, the `CPATH` include and `LIBRARY_PATH` family,
+  `PROTOC`, `PROTOC_INCLUDE`, `CROSS_COMPILE`, `CRATE_CC_NO_DEFAULTS`,
+  `CXXSTDLIB`, `NVCC`, `SYSROOT`, `RING_PREGENERATE_ASM` and the Flutter
+  `xcode_backend` variables that `Generated.xcconfig` can leave unset;
+- whole-name families: `CARGO_*`, `RUST*`, compiler, archiver and linker
+  selectors and `*FLAGS` with optional `HOST_`/`TARGET_` prefixes and target
+  suffixes, `*_DEPLOYMENT_TARGET`, `CMAKE*`, `AWS_LC_*`, `PKG_CONFIG*`,
+  `LIBSQLITE3_*`, `SQLITE_*`, `ZSTD_SYS_*`, Go settings (`GO*` without an
+  underscore), `CGO_*`, `FLUTTER_*`,
+  `PUB_*`, Ruby and CocoaPods (`GEM_*`, `RUBY*`, `RBENV_*`, `BUNDLE_*`,
+  `COCOAPODS_*`, `CP_*`), `SWIFT*` and `DYLD_*`.
+
+A name containing `TOKEN`, `SECRET`, `PASSW`, `CREDENTIAL`, `AUTH`, `NETRC`,
+`LOGIN`, `API_KEY` or `PRIVATE_KEY` is not hashed even inside those families:
+credentials do not change compiled bytes. `PATH` is hashed after dropping
+entries that are not existing directories, resolving symlinks and keeping the
+first occurrence of each directory, so duplicates and missing directories do
+not start a new entry while lookup order still does. Each producer also leaves
+out the variables it sets per case: `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS`
+for the signer, plus `CGO_LDFLAGS` and `GOMAXPROCS` for voting.
+
+If a build reads a variable these rules miss, such as an Xcode build-setting
+name exported in the shell, list it in `VIZOR_E2E_CACHE_ENV`: exact names
+separated by commas or whitespace, for example
+`VIZOR_E2E_CACHE_ENV=OTHER_SWIFT_FLAGS`. Listed names are added to every key,
+even names that look like credentials, except the per-case names above.
+Patterns are not accepted, and an
+invalid name stops the run before it writes anything. The variable itself is
+hashed, so changing the list starts new entries. Until a missed variable is
+listed, changing it can reuse an entry built with its old value.
+
+Cache manifests keep each hashed name with the SHA-256 of its value, because
+those digests are the key inputs. Short values such as `LANG` are easy to
+guess from an unsalted digest, so manifests are private developer state, not
+something to publish. `summary.json` and stdout record `build_environment`
+for the invoking environment: `hashed_names`, `excluded_names` and
+`requested_extra_names`, as names only, never values or digests.
+
+```bash
+python3.11 -B -m unittest scripts/e2e/test_toolchain_inputs.py scripts/e2e/test_native_build_cache.py scripts/e2e/test_funder_cache.py scripts/e2e/test_native_voting.py scripts/e2e/test_native_macos_suite.py
 ```
 
 ### Owned offline signer execution

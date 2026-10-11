@@ -467,6 +467,34 @@ class InputTests(unittest.TestCase):
                     self.assertEqual(first["environment_sha256"], second["environment_sha256"])
                     self.assertNotEqual(first, second)
 
+    def test_shell_session_credential_and_path_noise_do_not_change_native_inputs(self):
+        base = {"PATH":os.pathsep.join((str(self.root), str(self.home))), "HOME":str(self.home),
+                "RUSTFLAGS":"private compiler flags"}
+        noise = {"PWD":"/model/elsewhere", "OLDPWD":"/model/before", "SHLVL":"9", "_":"/usr/bin/env",
+                 "TERM_SESSION_ID":"w9t9p9:model", "LC_TERMINAL":"model-terminal",
+                 "MODEL_ACCESS_TOKEN":"model-secret", "PATH":os.pathsep.join((str(self.root),
+                     str(self.root/"missing"), str(self.home), str(self.root)))}
+        for platform in ("ios", "macos"):
+            with self.subTest(platform=platform):
+                first = self.inputs(platform=platform, environment=base)
+                second = self.inputs(platform=platform, environment={**base, **noise})
+                self.assertEqual(first, second)
+                self.assertEqual(set(second["environment_sha256"]), set(base))
+
+    def test_build_variables_and_requested_names_change_native_inputs(self):
+        requested = {"VIZOR_E2E_CACHE_ENV":"OTHER_SWIFT_FLAGS"}
+        for platform in ("ios", "macos"):
+            for name in ("CFLAGS", "FLUTTER_XCODE_OTHER_SWIFT_FLAGS", "RUSTFLAGS", "MACOSX_DEPLOYMENT_TARGET"):
+                with self.subTest(platform=platform, variable=name):
+                    self.assertNotEqual(self.inputs(platform=platform, environment={name:"-DFIRST"}),
+                                        self.inputs(platform=platform, environment={name:"-DSECOND"}))
+            with self.subTest(platform=platform, variable="OTHER_SWIFT_FLAGS"):
+                self.assertEqual(self.inputs(platform=platform, environment={"OTHER_SWIFT_FLAGS":"-DFIRST"}),
+                                 self.inputs(platform=platform, environment={"OTHER_SWIFT_FLAGS":"-DSECOND"}))
+                self.assertNotEqual(
+                    self.inputs(platform=platform, environment={**requested, "OTHER_SWIFT_FLAGS":"-DFIRST"}),
+                    self.inputs(platform=platform, environment={**requested, "OTHER_SWIFT_FLAGS":"-DSECOND"}))
+
     def test_cargo_configured_tool_and_included_file_bytes_invalidate(self):
         directory = self.root/"rust/.cargo"
         directory.mkdir(parents=True)

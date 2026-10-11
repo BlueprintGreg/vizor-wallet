@@ -1,7 +1,6 @@
 """One original producer for the pinned voting services and round-creation tool."""
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -291,9 +290,8 @@ def build_voting_artifacts(case, *, sdk_cache, pir_cache, cache_root, jobs=4, ti
             "go_dependencies":go_dependencies(),
             "configured_tools":configured_inputs(),
             "configuration_sha256": configuration_hashes(),
-            "environment_sha256": {name: hashlib.sha256(value.encode()).hexdigest()
-                for name, value in sorted(environment.items())
-                if name not in {"CARGO_TARGET_DIR", "CARGO_BUILD_JOBS", "CGO_LDFLAGS", "GOMAXPROCS"}}}
+            "environment_sha256": toolchain_inputs.build_environment_inputs(environment,
+                excluded={"CARGO_TARGET_DIR", "CARGO_BUILD_JOBS", "CGO_LDFLAGS", "GOMAXPROCS"})[0]}
         def verify_inputs():
             unchanged = (go_dependencies() == cache_inputs["go_dependencies"] if case.accepting_launches
                 else toolchain_inputs.cargo_dependencies_unchanged(cache_inputs["go_dependencies"], cancel))
@@ -382,9 +380,12 @@ def build_voting_artifacts(case, *, sdk_cache, pir_cache, cache_root, jobs=4, ti
             if path.is_relative_to(sdk/"scripts"):
                 records[path] = record
         receipt = case.close()
+        # Reports name the hashed variables; only the cache manifest keeps digests.
+        reported = {name: value for name, value in cache_inputs.items() if name != "environment_sha256"}
+        reported["environment_names"] = sorted(cache_inputs["environment_sha256"])
         proof = {"schema_version":1,"sdk_revision":VOTE_SDK_REV,"pir_revision":PIR_REV,
                  "build_count":int(cached is None),"tool_versions":versions,"exit_codes":receipt.exit_codes,
-                 "cache_hit":cached is not None,"cache_key":lease.key,"cache_inputs":cache_inputs,
+                 "cache_hit":cached is not None,"cache_key":lease.key,"cache_inputs":reported,
                  "persistent_cache_attestation":True,"wallet_or_catalog_pass":False,
                  "binary_sha256":{name:records[path][1] for name,path in binaries.items()}}
         with (root/"build-proof.json").open("x") as output:

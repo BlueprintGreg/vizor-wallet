@@ -184,6 +184,62 @@ def configured_tool_inputs(environment, configurations, cwd, *, tool_directories
     return {"executables_sha256":tools, "configuration_sha256":configs}
 
 
+_CACHE_ENVIRONMENT = "VIZOR_E2E_CACHE_ENV"
+# Inherited variables that can select or configure a build. Collectors and
+# children still read the complete environment; only cache keys narrow.
+_BUILD_ENVIRONMENT_NAMES = frozenset({
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY",
+    "LC_NUMERIC", "LC_TIME", "DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS", "XCODE_XCCONFIG_FILE",
+    "VIZOR_RUST_TOOLCHAIN", "BUILD_TAGS", "MAKEFLAGS", "MFLAGS", "MAKEFILES", "CPATH",
+    "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "OBJCPLUS_INCLUDE_PATH",
+    "LIBRARY_PATH", "PROTOC", "PROTOC_INCLUDE", "CROSS_COMPILE", "CRATE_CC_NO_DEFAULTS",
+    "CXXSTDLIB", "NVCC", "SYSROOT", "RING_PREGENERATE_ASM",
+    # Flutter's xcode_backend reads these when Generated.xcconfig leaves them unset.
+    "LOCAL_ENGINE", "LOCAL_ENGINE_HOST", "EXTRA_FRONT_END_OPTIONS", "EXTRA_GEN_SNAPSHOT_OPTIONS",
+    "FLAVOR", "SPLIT_DEBUG_INFO", "DISABLE_PORT_PUBLICATION", "FRONTEND_SERVER_STARTER_PATH",
+    _CACHE_ENVIRONMENT})
+_BUILD_ENVIRONMENT_PATTERN = re.compile(
+    r"CARGO_\w+|RUST\w*|(?:(?:HOST|TARGET)_)?(?:CC|CXX|FC|AR|LD|AS|RANLIB|[A-Z]*FLAGS)(?:_[A-Za-z0-9_.-]+)?"
+    r"|[A-Z]+_DEPLOYMENT_TARGET|CMAKE\w*|AWS_LC_\w+|PKG_CONFIG\w*|LIBSQLITE3_\w+|SQLITE_\w+|ZSTD_SYS_\w+"
+    r"|GO[A-Z0-9]*|CGO_\w+|FLUTTER_\w+|PUB_\w+|GEM_\w+|RUBY\w*|RBENV_\w+|BUNDLE_\w+|COCOAPODS_\w+|CP_\w+"
+    r"|SWIFT\w*|DYLD_\w+")
+# Credentials never change compiled bytes; hashing them only records digests.
+_CREDENTIAL_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|NETRC|LOGIN|API_KEY|PRIVATE_KEY",
+                              re.IGNORECASE)
+
+
+def requested_environment_names(environment):
+    """Exact extra key names from VIZOR_E2E_CACHE_ENV, never patterns."""
+    names = tuple(dict.fromkeys(name for name in re.split(r"[\s,]+", environment.get(_CACHE_ENVIRONMENT, ""))
+                                if name))
+    if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names):
+        raise ToolInputError(_CACHE_ENVIRONMENT+" must list exact environment variable names")
+    return names
+
+
+def build_environment_inputs(environment, *, excluded=frozenset()):
+    """Hash build-relevant inherited variables; report other names, never values.
+
+    Shell/session bookkeeping and credentials are not key inputs. Requested
+    names are added even when they look like credentials; names the producer
+    sets per case stay excluded. PATH binds its existing canonical directories
+    in lookup order, so duplicates and missing entries cannot miss a key.
+    """
+    requested = requested_environment_names(environment)
+    hashed, skipped = {}, []
+    for name, value in sorted(environment.items()):
+        if name in excluded or not (name in requested or name in _BUILD_ENVIRONMENT_NAMES
+            or _BUILD_ENVIRONMENT_PATTERN.fullmatch(name) and not _CREDENTIAL_NAME.search(name)):
+            skipped.append(name)
+            continue
+        if name == "PATH":
+            value = os.pathsep.join(dict.fromkeys(os.path.realpath(entry)
+                for entry in value.split(os.pathsep) if os.path.isdir(entry)))
+        hashed[name] = hashlib.sha256(value.encode()).hexdigest()
+    return hashed, {"hashed_names":sorted(hashed), "excluded_names":skipped,
+                    "requested_extra_names":sorted(requested)}
+
+
 def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 

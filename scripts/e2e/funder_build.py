@@ -422,8 +422,8 @@ def build_regtest_funder(case: NativeCaseLifecycle, *, source_root: Path,
                     lambda args:command(args, env=build_env), compiler, cancellation),
                 "apple_linker": apple,
                 "configuration_sha256": configurations,
-                "environment_sha256": {name: hashlib.sha256(value.encode()).hexdigest()
-                    for name, value in sorted(build_env.items()) if name not in {"CARGO_TARGET_DIR", "CARGO_BUILD_JOBS"}}}
+                "environment_sha256": toolchain_inputs.build_environment_inputs(
+                    build_env, excluded={"CARGO_TARGET_DIR", "CARGO_BUILD_JOBS"})[0]}
             names = ("regtest_direct_funder", *test_targets,
                      *(("regtest_wallet_addresses",) if wallet_addresses else ()))
             lease = FunderCacheLease(cache_root, cache_inputs, names, timeout=timeout, cancel_event=cancellation)

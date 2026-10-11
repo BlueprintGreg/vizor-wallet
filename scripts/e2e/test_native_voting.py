@@ -1,5 +1,6 @@
 """Real Git archives, original children/files/leases; compiler/service transport modeled."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -144,6 +145,10 @@ class VotingBuildTests(unittest.TestCase):
             return BUILD.build_voting_artifacts(self.case, sdk_cache=self.model.source,
                 pir_cache=self.model.source, cache_root=self.cache, timeout=15, **options)
 
+    def published_inputs(self, proof):
+        # Proofs name hashed variables; only the published manifest keeps digests.
+        return json.loads((self.cache/proof["cache_key"]/"manifest.json").read_text())["inputs"]
+
     def test_build_once_publishes_original_joined_outputs_not_dirty_checkout(self):
         (self.model.source/"scripts/init.sh").write_text("dirty checkout")
         artifact, proof = self.build()
@@ -191,7 +196,37 @@ class VotingBuildTests(unittest.TestCase):
             _, second = self.build(jobs=8)
         self.assertEqual(self.make_calls, 1)
         self.assertEqual(first["cache_key"], second["cache_key"])
-        self.assertNotIn("_", first["cache_inputs"]["environment_sha256"])
+        self.assertNotIn("_", self.published_inputs(first)["environment_sha256"])
+        self.assertNotIn("_", first["cache_inputs"]["environment_names"])
+
+    def test_shell_session_and_credential_variables_reuse_voting_executables(self):
+        _, first = self.build()
+        entries = os.environ.get("PATH", "").split(os.pathsep)
+        with patch.dict(os.environ, {"PWD":"/model/elsewhere", "OLDPWD":"/model/before", "SHLVL":"9",
+                                     "TERM_SESSION_ID":"w9t9p9:model", "MODEL_ACCESS_TOKEN":"model-secret",
+                                     "PATH":os.pathsep.join((*entries, str(self.model.root/"missing"), entries[0]))}):
+            _, second = self.build()
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(first["cache_key"], second["cache_key"])
+        self.assertEqual(self.make_calls, 1)
+        self.assertNotIn("MODEL_ACCESS_TOKEN", self.published_inputs(second)["environment_sha256"])
+
+    def test_build_tags_invalidate_and_reports_name_variables_without_digests(self):
+        with patch.dict(os.environ, {"BUILD_TAGS":"first-model-tag"}):
+            _, first = self.build()
+        with patch.dict(os.environ, {"BUILD_TAGS":"second-model-tag"}):
+            _, second = self.build()
+        self.assertNotEqual(first["cache_key"], second["cache_key"])
+        self.assertEqual(self.make_calls, 2)
+        digest = hashlib.sha256(b"second-model-tag").hexdigest()
+        self.assertEqual(self.published_inputs(second)["environment_sha256"]["BUILD_TAGS"], digest)
+        written = (self.case.workspace.root/"voting-build/build-proof.json").read_text()
+        for report in (json.dumps(second), written):
+            self.assertNotIn(digest, report)
+            self.assertNotIn("environment_sha256", report)
+        self.assertIn("BUILD_TAGS", second["cache_inputs"]["environment_names"])
+        self.assertEqual(json.loads(written)["cache_inputs"]["environment_names"],
+                         second["cache_inputs"]["environment_names"])
 
     def test_absolute_cargo_receives_the_captured_original_rust_compiler(self):
         _, proof = self.build()
@@ -225,7 +260,7 @@ class VotingBuildTests(unittest.TestCase):
         rustup.write_text("repaired rustup driver")
         _, second = self.build()
         for field in ("tools", "tool_versions", "environment_sha256"):
-            self.assertEqual(first["cache_inputs"][field], second["cache_inputs"][field])
+            self.assertEqual(self.published_inputs(first)[field], self.published_inputs(second)[field])
         self.assertNotEqual(first["cache_key"], second["cache_key"])
         self.assertEqual(self.make_calls, 2)
         for context in ("outer", "sdk"):
@@ -265,7 +300,7 @@ class VotingBuildTests(unittest.TestCase):
         (self.model.cargo_dependency/"lib.rs").write_text("patched Cargo dependency")
         _, second = self.build()
         for field in ("configuration_sha256", "environment_sha256", "archives_sha256"):
-            self.assertEqual(first["cache_inputs"][field], second["cache_inputs"][field])
+            self.assertEqual(self.published_inputs(first)[field], self.published_inputs(second)[field])
         self.assertNotEqual(first["cache_key"], second["cache_key"])
         self.assertEqual(self.make_calls, 2)
 
@@ -274,7 +309,7 @@ class VotingBuildTests(unittest.TestCase):
         (self.go_dependency/"dependency.go").write_text("patched Go dependency source")
         _, second = self.build()
         for field in ("configuration_sha256", "environment_sha256", "archives_sha256", "tool_versions"):
-            self.assertEqual(first["cache_inputs"][field], second["cache_inputs"][field])
+            self.assertEqual(self.published_inputs(first)[field], self.published_inputs(second)[field])
         self.assertNotEqual(first["cache_key"], second["cache_key"])
         self.assertEqual(self.make_calls, 2)
 
@@ -321,7 +356,7 @@ class VotingBuildTests(unittest.TestCase):
         self.model.apple_tools["path_ar"].write_text("patched default archiver")
         _, second = self.build()
         for field in ("tools", "tool_versions", "environment_sha256"):
-            self.assertEqual(first["cache_inputs"][field], second["cache_inputs"][field])
+            self.assertEqual(self.published_inputs(first)[field], self.published_inputs(second)[field])
         self.assertNotEqual(first["cache_key"], second["cache_key"])
         self.assertEqual(self.make_calls, 2)
 
@@ -334,7 +369,8 @@ class VotingBuildTests(unittest.TestCase):
             _,first = self.build()
             linker.write_text("patched forwarded linker")
             _,second = self.build()
-        self.assertEqual(first["cache_inputs"]["environment_sha256"],second["cache_inputs"]["environment_sha256"])
+        self.assertEqual(self.published_inputs(first)["environment_sha256"],
+                         self.published_inputs(second)["environment_sha256"])
         self.assertNotEqual(first["cache_key"],second["cache_key"])
         self.assertEqual(self.make_calls,2)
 
@@ -346,7 +382,8 @@ class VotingBuildTests(unittest.TestCase):
             _, first = self.build()
             linker.write_text("patched target linker")
             _, second = self.build()
-        self.assertEqual(first["cache_inputs"]["environment_sha256"], second["cache_inputs"]["environment_sha256"])
+        self.assertEqual(self.published_inputs(first)["environment_sha256"],
+                         self.published_inputs(second)["environment_sha256"])
         self.assertNotEqual(first["cache_key"], second["cache_key"])
         self.assertEqual(self.make_calls, 2)
 
@@ -375,7 +412,7 @@ class VotingBuildTests(unittest.TestCase):
                 program.write_text("patched Go-configured compiler")
                 _, second = self.build()
                 for field in ("configuration_sha256", "environment_sha256", "tool_versions"):
-                    self.assertEqual(first["cache_inputs"][field], second["cache_inputs"][field])
+                    self.assertEqual(self.published_inputs(first)[field], self.published_inputs(second)[field])
                 self.assertNotEqual(first["cache_key"], second["cache_key"])
                 for context in ("outer", "sdk"):
                     self.assertNotEqual(first["cache_inputs"]["compiler_inputs"]["go"][context],

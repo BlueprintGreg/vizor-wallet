@@ -485,7 +485,7 @@ def collect_native_cache_inputs(root, source, tool, *, platform, architecture,
         "provisioning_profiles":_macos_provisioning_inputs(command, cancel)
             if platform == "macos" else None,
         "cargo_config_sha256":{str(path):_capture(path)[1] for path in sorted(configurations) if path.exists() or path.is_symlink()},
-        "environment_sha256":{name:hashlib.sha256(value.encode()).hexdigest() for name,value in sorted(environment.items())}}
+        "environment_sha256":toolchain_inputs.build_environment_inputs(environment)[0]}
 
 
 class ProducedNativeCohort:
