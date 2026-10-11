@@ -41,8 +41,8 @@ final transparentOptOutStoreProvider = Provider<TransparentOptOutStore>(
 );
 
 /// Reconciles the wallet's durable transparent policy with the private
-/// queries setting. `true` raises it when this build selects private
-/// transparent recovery; `false` lowers it to public in every build. Completes
+/// queries setting. `true` raises it on mainnet, where private transparent
+/// recovery runs; `false` lowers it to public on every network. Completes
 /// with the current mode and generation, including a no-op, or with `null`
 /// when no wallet exists. On failure the durable policy is unchanged.
 typedef TransparentPolicyReconciler =
@@ -65,6 +65,22 @@ TransparentPolicyReconciler walletTransparentPolicyReconciler(
     network: network,
     privateQueries: privateQueries,
   );
+};
+
+/// Reads the wallet's durable transparent policy without changing it, or
+/// `null` when no wallet exists.
+typedef TransparentPolicyReader =
+    Future<rust_sync.ApiAppliedTransparentPolicy?> Function();
+
+/// Reads the existing wallet database for `network`, never minting a name or
+/// creating a wallet.
+TransparentPolicyReader walletTransparentPolicyReader(
+  String network, {
+  Future<String?> Function() resolveExistingDbPath = getExistingWalletDbPath,
+}) => () async {
+  final dbPath = await resolveExistingDbPath();
+  if (dbPath == null) return null;
+  return rust_sync.readTransparentPolicy(dbPath: dbPath, network: network);
 };
 
 /// Overridable in tests; production reconciles the wallet database.

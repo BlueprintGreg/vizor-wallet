@@ -913,11 +913,11 @@ async fn raise_needs_a_confirmed_preference() {
         tokio::spawn(async move { gate.dispatch(async { released.await.unwrap() }).await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // A preference that could not be read selects private handles for the
+    // A preference that could not be read opens private handles for the
     // launch, but writes nothing, and never takes the fence: it does not
     // wait for the lookup.
     let unconfirmed =
-        test_mode::select(&wallet.path, TransparentLedgerMode::PrivateRequired, false);
+        test_mode::set_with(&wallet.path, TransparentLedgerMode::PrivateRequired, false);
     let source = unavailable();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(5),

@@ -11,9 +11,9 @@ use crate::wallet::sync::{
     get_shield_transparent_status, read_wallet_balances, TransparentStopReason,
 };
 
-/// The phrase of the shielding refusal for a wallet this build does not
-/// recover; the app matches it.
-const NOT_SELECTED: &str = "turn off private queries";
+/// The phrase of the shielding refusal for a private wallet while private
+/// queries are off.
+const OPT_OUT_UNFINISHED: &str = "turn private queries off again";
 /// The phrase of the shielding refusal while recovery may still complete.
 const INCOMPLETE: &str = "transparent funds are unavailable";
 
@@ -24,7 +24,7 @@ fn shield_reason(wallet: &Wallet, uuid: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_private_database_in_a_flag_off_build_is_stopped_not_selected() {
+async fn a_private_database_with_private_queries_off_is_stopped_opt_out_unfinished() {
     // Recovered and promoted with private queries on.
     let mut wallet = wallet();
     let mode = activate(&mut wallet).await;
@@ -37,8 +37,9 @@ async fn a_private_database_in_a_flag_off_build_is_stopped_not_selected() {
     );
     assert!(current.transparent_private);
 
-    // Reopened in a build without it, which selects `Public`. The private
-    // ledger still covers the tip, so the amount is still current.
+    // Private queries are now off, so handles open `Public`, but the opt-out
+    // never lowered the policy. The private ledger still covers the tip, so
+    // the amount is still current.
     drop(mode);
     let still = balance(&wallet, &wallet.uuid);
     assert_eq!(
@@ -47,8 +48,9 @@ async fn a_private_database_in_a_flag_off_build_is_stopped_not_selected() {
     );
     assert_eq!((still.transparent, still.transparent_stop), (VALUE, None));
 
-    // Once the chain moves, nothing in this build recovers the account: it
-    // is stopped, not awaiting recovery, and keeps its last-known amount.
+    // Once the chain moves, nothing recovers the account while private
+    // queries are off: it is stopped, not awaiting recovery, and keeps its
+    // last-known amount.
     scan(&wallet.path, wallet.birthday, TIP + 1, TIP + 1, 0);
     let stopped = balance(&wallet, &wallet.uuid);
     assert_eq!(
@@ -57,16 +59,16 @@ async fn a_private_database_in_a_flag_off_build_is_stopped_not_selected() {
     );
     assert_eq!(
         stopped.transparent_stop,
-        Some(TransparentStopReason::NotSelected)
+        Some(TransparentStopReason::OptOutUnfinished)
     );
     assert_eq!(stopped.transparent_last_known, Some(VALUE));
     assert_eq!(stopped.transparent, 0, "nothing is spendable");
     assert!(stopped.transparent_private);
     let reason = shield_reason(&wallet, &wallet.uuid);
-    assert!(reason.contains(NOT_SELECTED), "{reason}");
+    assert!(reason.contains(OPT_OUT_UNFINISHED), "{reason}");
     assert!(!reason.to_lowercase().contains(INCOMPLETE), "{reason}");
 
-    // A build that selects private recovery is only waiting for its next run.
+    // With private queries on, the wallet is only waiting for its next run.
     {
         let _flag = test_mode::set(&wallet.path, TransparentLedgerMode::PrivateRequired);
         let waiting = balance(&wallet, &wallet.uuid);
@@ -205,7 +207,7 @@ async fn the_balance_read_resolves_a_policy_raised_after_the_handle_opened() {
     );
     assert_eq!(
         private.transparent_stop,
-        Some(TransparentStopReason::NotSelected)
+        Some(TransparentStopReason::OptOutUnfinished)
     );
     assert_eq!(private.transparent, 0);
 }

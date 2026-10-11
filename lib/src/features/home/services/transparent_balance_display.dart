@@ -80,8 +80,8 @@ class TransparentBalanceDisplay {
     rust_sync.TransparentStopReason.stalled =>
       "Private recovery can't make progress for this account. Vizor will try "
           'again later.',
-    rust_sync.TransparentStopReason.notSelected =>
-      'Private transparent recovery is not selected. Turn off Private '
-          'queries in Settings to look up transparent funds publicly.',
+    rust_sync.TransparentStopReason.optOutUnfinished =>
+      "Turning off Private queries didn't finish. Turn it off again in "
+          'Settings to look up transparent funds publicly.',
   };
 }

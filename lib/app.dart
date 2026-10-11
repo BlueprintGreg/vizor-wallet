@@ -261,6 +261,11 @@ Future<Widget> buildBootstrappedZcashWalletApp({
 /// lowers. A failed raise or lowering leaves the wallet private; the next
 /// sync retries a raise, the next launch a lowering.
 ///
+/// There is one privacy toggle. A saved `false` on a wallet that still
+/// requires private recovery (an opt-out whose marker was lost) is shown and
+/// applied as an unfinished opt-out: Private queries reads on, private
+/// recovery keeps running, and turning the toggle off finishes the opt-out.
+///
 /// What it applied is recorded in [TransparentPolicyStartup.current] for the
 /// providers. Last, it prepares private transparent recovery's companion
 /// storage; see [prepareTransparentRecoveryCompanions].
@@ -270,6 +275,7 @@ Future<void> applyEnhancePirPolicy(
   void Function(bool enabled)? setRustEnabled,
   void Function(bool confirmed)? setPreferenceConfirmed,
   TransparentPolicyReconciler? reconcileTransparentPolicy,
+  TransparentPolicyReader? readTransparentPolicy,
   TransparentOptOutStore optOutStore =
       const SharedPreferencesTransparentOptOutStore(),
   Future<void> Function(bool enabled)? setNativePrivateRecovery,
@@ -329,6 +335,25 @@ Future<void> applyEnhancePirPolicy(
       log('bootstrap: could not apply private transparent policy: $error');
     }
   } else {
+    if (saved == false && isEnhancePirAvailableForNetwork(bootstrap.network)) {
+      try {
+        final current =
+            await (readTransparentPolicy ??
+                walletTransparentPolicyReader(bootstrap.network))();
+        if (current?.mode ==
+            rust_sync.ApiTransparentLedgerMode.privateRequired) {
+          // Still private: the opt-out never finished. Keep the runtime
+          // private and show the toggle on, so the user retries the opt-out.
+          applied = current;
+          optOutUnfinished = true;
+          enabled = true;
+        }
+      } catch (error) {
+        // Unknown: the library still resolves every read under the durable
+        // policy, so nothing public is revealed.
+        log('bootstrap: could not read the transparent policy: $error');
+      }
+    }
     applyRuntimeSetting();
   }
   TransparentPolicyStartup.current = TransparentPolicyStartup(

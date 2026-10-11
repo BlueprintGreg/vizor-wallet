@@ -27,7 +27,7 @@ use zcash_client_backend::data_api::transparent_ledger::{
     TransparentLedgerRead,
 };
 
-use super::super::enhancement::select_transparent_mode;
+use super::super::enhancement::transparent_mode_for_preference;
 use super::super::lwd::transparent_lookup::apply_transparent_policy_fenced_if;
 use super::super::{SyncError, WalletDatabase};
 use super::pir;
@@ -64,7 +64,9 @@ pub(crate) async fn set_transparent_policy(
 ) -> Result<Option<AppliedTransparentPolicy>, SyncError> {
     let target = if !private_queries {
         TransparentLedgerMode::Public
-    } else if select_transparent_mode(network, true) == TransparentLedgerMode::PrivateRequired {
+    } else if transparent_mode_for_preference(network, true)
+        == TransparentLedgerMode::PrivateRequired
+    {
         TransparentLedgerMode::PrivateRequired
     } else {
         return Ok(None);

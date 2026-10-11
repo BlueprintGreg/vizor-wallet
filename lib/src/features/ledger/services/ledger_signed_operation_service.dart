@@ -6,10 +6,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../main.dart' show log;
 import '../../../core/config/rpc_endpoint_config.dart';
+import '../../../core/zcash/wallet_error_code.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/rpc_endpoint_failover_provider.dart';
 import '../../../providers/sync_provider.dart';
 import '../../../rust/api/ledger.dart' as rust_ledger;
+import '../../../rust/api/sync.dart' as rust_sync;
 import 'ledger_operation_lifecycle.dart';
 import 'ledger_signing_service.dart' show ledgerWalletDbPathProvider;
 
@@ -313,8 +315,8 @@ String newLedgerSignedOperationId({
   return '${kind.wireName}:$accountUuid:$nonce';
 }
 
-bool isTerminalLedgerSignedOperationError(Object error) {
-  return error.toString().toLowerCase().contains(
-    'ledger signed operation cannot be retried',
-  );
-}
+/// Whether Rust discarded the checkpointed Ledger operation because it can
+/// never be broadcast. Read from Rust's code, never the message.
+bool isTerminalLedgerSignedOperationError(Object error) =>
+    walletErrorCode(error) ==
+    rust_sync.ApiWalletErrorCode.ledgerOperationTerminal;

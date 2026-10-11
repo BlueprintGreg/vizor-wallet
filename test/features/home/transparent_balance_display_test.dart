@@ -67,20 +67,20 @@ void main() {
       expect(hints, hasLength(rust_sync.TransparentStopReason.values.length));
     });
 
-    test('a build that cannot recover says to turn off Private queries', () {
+    test('an unfinished opt-out says to turn Private queries off again', () {
       final display = TransparentBalanceDisplay.of(
         SyncState(
           transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
-          transparentStop: rust_sync.TransparentStopReason.notSelected,
+          transparentStop: rust_sync.TransparentStopReason.optOutUnfinished,
         ),
       );
       expect(
         display.hint,
-        'Private transparent recovery is not selected. Turn off Private '
-        'queries in Settings to look up transparent funds publicly.',
+        "Turning off Private queries didn't finish. Turn it off again in "
+        'Settings to look up transparent funds publicly.',
       );
       expect(display.hint, isNot(contains('until private recovery')));
-      expect(display.hint, contains('Private queries in Settings'));
+      expect(display.hint, isNot(contains('selected')));
     });
 
     test('conflicting records say turning off discards them', () {
@@ -159,21 +159,21 @@ void main() {
         balance: _balance(
           rust_sync.TransparentBalanceAuthority.stopped,
           lastKnown: BigInt.from(9),
-          stop: rust_sync.TransparentStopReason.notSelected,
+          stop: rust_sync.TransparentStopReason.optOutUnfinished,
           private: true,
         ),
         syncComplete: true,
       );
       expect(
         stopped.transparentStop,
-        rust_sync.TransparentStopReason.notSelected,
+        rust_sync.TransparentStopReason.optOutUnfinished,
       );
       expect(stopped.transparentPrivate, isTrue);
       // An unrelated update keeps both.
       final updated = stopped.copyWith(percentage: 0.5);
       expect(
         updated.transparentStop,
-        rust_sync.TransparentStopReason.notSelected,
+        rust_sync.TransparentStopReason.optOutUnfinished,
       );
       expect(updated.transparentPrivate, isTrue);
 
@@ -210,11 +210,14 @@ void main() {
     const shieldingRefusal =
         'Transparent recovery is incomplete; transparent funds are '
         'unavailable until it completes';
-    // Vizor's shielding refusal for a private wallet in a build that does not
-    // recover it; the Rust status test pins its phrase.
-    const notSelectedRefusal =
-        'Private transparent recovery is not selected; turn '
-        'off private queries to use transparent funds';
+    // Vizor's shielding refusal for a private wallet while Private queries
+    // is off arrives coded; its text decides nothing.
+    const optOutUnfinishedRefusal = rust_sync.ApiWalletError(
+      code: rust_sync.ApiWalletErrorCode.optOutUnfinished,
+      message:
+          'Turning off private queries did not finish; turn private queries '
+          'off again to use transparent funds',
+    );
 
     test('match the recovery-incomplete copy', () {
       expect(isTransparentRecoveryIncompleteError(libraryRefusal), isTrue);
@@ -226,21 +229,27 @@ void main() {
     });
 
     test('shielding reports recovery, not insufficient funds', () {
+      // Vizor's own refusal is coded, so any wording reports recovery.
       expect(
-        friendlyShieldBalanceError(Exception(shieldingRefusal)),
+        friendlyShieldBalanceError(
+          const rust_sync.ApiWalletError(
+            code: rust_sync.ApiWalletErrorCode.recoveryIncomplete,
+            message: 'reworded',
+          ),
+        ),
+        transparentRecoveryIncompleteMessage,
+      );
+      // The library's refusal still reaches the app as text.
+      expect(
+        friendlyShieldBalanceError(Exception(libraryRefusal)),
         transparentRecoveryIncompleteMessage,
       );
     });
 
-    test('a build that cannot recover never promises recovery', () {
-      expect(isTransparentRecoveryNotSelectedError(notSelectedRefusal), isTrue);
-      expect(isTransparentRecoveryIncompleteError(notSelectedRefusal), isFalse);
-      expect(isTransparentRecoveryNotSelectedError(shieldingRefusal), isFalse);
-      expect(isTransparentRecoveryNotSelectedError(libraryRefusal), isFalse);
-      final copy = friendlyShieldBalanceError(Exception(notSelectedRefusal));
-      expect(copy, transparentRecoveryNotSelectedMessage);
-      expect(copy, contains('Turn off Private queries'));
-      expect(copy, contains('Private queries in Settings'));
+    test('an unfinished opt-out never promises recovery', () {
+      final copy = friendlyShieldBalanceError(optOutUnfinishedRefusal);
+      expect(copy, privateQueriesOptOutUnfinishedMessage);
+      expect(copy, contains('Turn it off again'));
       expect(copy, isNot(contains('until private recovery completes')));
     });
   });

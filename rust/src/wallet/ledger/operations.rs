@@ -6,6 +6,7 @@ use std::{
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::wallet::failure::{FailureCode, WalletFailure};
 use crate::wallet::sync::proposal_locks;
 
 use crate::wallet::{
@@ -271,7 +272,7 @@ pub(crate) async fn broadcast(
     operation_id: &str,
     spend_params_path: Option<&str>,
     output_params_path: Option<&str>,
-) -> Result<BroadcastResult, String> {
+) -> Result<BroadcastResult, WalletFailure> {
     validate_identifier("operation ID", operation_id)?;
     let _broadcast_guard = BroadcastGuard::acquire(db_path, network, operation_id)?;
     let stored = load_for_broadcast(db_path, network, operation_id)?;
@@ -295,11 +296,13 @@ pub(crate) async fn broadcast(
             &result.txids,
             &result.status,
             result.message.as_deref(),
-        ),
+        )
+        .map_err(WalletFailure::from),
         Err(error) => {
             if record_broadcast_failure(db_path, network, operation_id, &error)? {
-                Err(format!(
-                    "Ledger signed operation cannot be retried: {error}"
+                Err(WalletFailure::coded(
+                    FailureCode::LedgerOperationTerminal,
+                    format!("Ledger signed operation cannot be retried: {error}"),
                 ))
             } else {
                 Err(error)
@@ -498,8 +501,9 @@ fn record_broadcast_failure(
     db_path: &str,
     network: WalletNetwork,
     operation_id: &str,
-    message: &str,
+    failure: &WalletFailure,
 ) -> Result<bool, String> {
+    let message = failure.message.as_str();
     let network = network_name(network);
     let now = now_ms()?;
     with_wallet_db_write_lock("ledger.operations.record_failure", || {
@@ -507,7 +511,7 @@ fn record_broadcast_failure(
         ensure_table(&connection)?;
         proposal_locks::ensure_schema(&connection)?;
         let conn = connection.transaction().map_err(|e| e.to_string())?;
-        if is_terminal_broadcast_failure(message) {
+        if is_terminal_broadcast_failure(failure) {
             conn.execute(
                 &format!(
                     "DELETE FROM {TABLE}
@@ -541,11 +545,11 @@ fn record_broadcast_failure(
     })
 }
 
-fn is_terminal_broadcast_failure(message: &str) -> bool {
-    if message.starts_with(crate::wallet::sync::HARDWARE_AUTHORITY_REFUSED_PREFIX) {
+fn is_terminal_broadcast_failure(failure: &WalletFailure) -> bool {
+    if failure.code == Some(FailureCode::AuthorityRefused) {
         return true;
     }
-    let normalized = message.to_ascii_lowercase();
+    let normalized = failure.message.to_ascii_lowercase();
     normalized.contains("expired before broadcast") || normalized.contains("broadcast rejected")
 }
 
@@ -1264,7 +1268,7 @@ mod tests {
             db_path,
             WalletNetwork::Main,
             "send-1",
-            "network unavailable",
+            &"network unavailable".into(),
         )
         .unwrap();
         assert!(!terminal);
@@ -1283,16 +1287,18 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db_path = file.path().to_str().unwrap();
         checkpoint_test_operation(db_path, "send-1", "send");
-        let retryable =
-            "hardware_recovery_retryable: Reserve transparent broadcast authority: database is locked";
+        let retryable = WalletFailure::coded(
+            FailureCode::RetryAfterRecovery,
+            "Reserve transparent broadcast authority: database is locked",
+        );
         assert!(
-            !record_broadcast_failure(db_path, WalletNetwork::Main, "send-1", retryable).unwrap()
+            !record_broadcast_failure(db_path, WalletNetwork::Main, "send-1", &retryable).unwrap()
         );
         assert_eq!(list(db_path, WalletNetwork::Main, None).unwrap().len(), 1);
 
-        let refused = format!(
-            "{} Transparent broadcast authority unavailable: Transparent funds are unavailable",
-            crate::wallet::sync::HARDWARE_AUTHORITY_REFUSED_PREFIX
+        let refused = WalletFailure::coded(
+            FailureCode::AuthorityRefused,
+            "Transparent broadcast authority unavailable: Transparent funds are unavailable",
         );
         assert!(
             record_broadcast_failure(db_path, WalletNetwork::Main, "send-1", &refused).unwrap()
@@ -1309,7 +1315,7 @@ mod tests {
             db_path,
             WalletNetwork::Main,
             "send-1",
-            "Hardware signing request expired before broadcast",
+            &"Hardware signing request expired before broadcast".into(),
         )
         .unwrap();
 

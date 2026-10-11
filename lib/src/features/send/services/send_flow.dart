@@ -19,6 +19,7 @@ import '../../../core/storage/linux_keyring_coordinator.dart';
 import '../../../core/storage/linux_secret_operation_guard.dart';
 import '../../../core/storage/wallet_paths.dart';
 import '../../../core/zcash/transparent_ledger_errors.dart';
+import '../../../core/zcash/wallet_error_code.dart';
 import '../../../core/zcash/zip321_payment_request.dart'
     show stripUnsupportedZip321MemoText;
 import '../../../providers/account_provider.dart';
@@ -1135,12 +1136,13 @@ Future<SendBroadcastOutcome> _runSendBroadcast({
     );
   } catch (e) {
     log('SendBroadcast: ERROR: $e');
-    // Keep identical to Rust's HARDWARE_RECOVERY_RETRYABLE_PREFIX. Only Rust
-    // can confirm that a failed native call retained the signed proposal.
+    // Only Rust can confirm, with its retry code, that a failed native call
+    // retained the signed proposal.
     final canRetryBroadcast =
         keystone != null &&
         ((keystone.isRecoveryRetry && !keystoneRustAttempted) ||
-            e.toString().contains('hardware_recovery_retryable:'));
+            walletErrorCode(e) ==
+                rust_sync.ApiWalletErrorCode.retryAfterRecovery);
     final message = canRetryBroadcast
         ? 'Wait for wallet sync, then retry this signed transaction.'
         : friendlyBroadcastError(e.toString());

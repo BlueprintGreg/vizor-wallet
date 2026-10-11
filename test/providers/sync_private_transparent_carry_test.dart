@@ -530,7 +530,7 @@ void main() {
         hasAccountScopedData: true,
         transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
         transparentLastKnownBalance: BigInt.from(9),
-        transparentStop: rust_sync.TransparentStopReason.notSelected,
+        transparentStop: rust_sync.TransparentStopReason.optOutUnfinished,
         transparentPrivate: true,
       ),
     );
@@ -541,7 +541,7 @@ void main() {
     );
     expect(
       started.transparentStop,
-      rust_sync.TransparentStopReason.notSelected,
+      rust_sync.TransparentStopReason.optOutUnfinished,
     );
     expect(started.transparentLastKnownBalance, BigInt.from(9));
   });
@@ -576,7 +576,7 @@ void main() {
         hasAccountScopedData: true,
         transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
         transparentLastKnownBalance: BigInt.from(9),
-        transparentStop: rust_sync.TransparentStopReason.notSelected,
+        transparentStop: rust_sync.TransparentStopReason.optOutUnfinished,
         transparentPrivate: true,
       );
       expect(

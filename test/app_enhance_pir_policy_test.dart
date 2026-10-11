@@ -38,6 +38,8 @@ void main() {
   late List<String> applied;
   late bool failRaise;
   late bool failLower;
+  late ApiAppliedTransparentPolicy? durable;
+  late bool failRead;
   late _OptOutStore optOut;
 
   Future<void> apply(AppBootstrapState bootstrap) => applyEnhancePirPolicy(
@@ -51,6 +53,11 @@ void main() {
       }
       return privateQueries ? _raised : _lowered;
     },
+    readTransparentPolicy: () async {
+      applied.add('read');
+      if (failRead) throw StateError('the wallet is busy');
+      return durable;
+    },
     optOutStore: optOut,
     setNativePrivateRecovery: (enabled) async => applied.add('native:$enabled'),
     prepareCompanions: () async => applied.add('companions'),
@@ -60,6 +67,8 @@ void main() {
     applied = [];
     failRaise = false;
     failLower = false;
+    durable = _lowered;
+    failRead = false;
     optOut = _OptOutStore((step) => applied.add(step));
     TransparentPolicyStartup.current = const TransparentPolicyStartup();
   });
@@ -168,6 +177,7 @@ void main() {
       optOut.unreadable = true;
       await apply(_ready(enabled: false));
       expect(applied, [
+        if (available) 'read',
         'rust:false',
         'confirmed:true',
         'native:false',
@@ -213,11 +223,47 @@ void main() {
     await apply(_ready(enabled: false));
     // Only an explicit toggle-off lowers the transparent policy.
     expect(applied, [
+      if (available) 'read',
       'rust:false',
       'confirmed:true',
       'native:false',
       'companions',
     ]);
+    expect(TransparentPolicyStartup.current.optOutPending, isFalse);
+  });
+
+  // One privacy toggle: a saved `false` on a wallet that still requires
+  // private recovery is an opt-out that never finished, whatever happened to
+  // its marker. Private queries reads on until the user turns it off again.
+  test('a disabled preference on a private wallet shows the unfinished '
+      'opt-out', () async {
+    durable = _raised;
+    await apply(_ready(enabled: false));
+    expect(applied, [
+      if (available) 'read',
+      'rust:$available',
+      'confirmed:true',
+      'native:$available',
+      'companions',
+    ]);
+    expect(TransparentPolicyStartup.current.optOutPending, available);
+    expect(
+      TransparentPolicyStartup.current.appliedPolicy,
+      available ? _raised : isNull,
+    );
+  });
+
+  test('an unreadable policy leaves a disabled preference as it is', () async {
+    failRead = true;
+    await apply(_ready(enabled: false));
+    expect(applied, [
+      if (available) 'read',
+      'rust:false',
+      'confirmed:true',
+      'native:false',
+      'companions',
+    ]);
+    expect(TransparentPolicyStartup.current.optOutPending, isFalse);
   });
 
   test('a network without the service reconciles nothing', () async {

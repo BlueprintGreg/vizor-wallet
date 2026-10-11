@@ -208,6 +208,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApiVotingRoundContext dco_decode_api_voting_round_context(dynamic raw);
 
   @protected
+  ApiWalletError dco_decode_api_wallet_error(dynamic raw);
+
+  @protected
+  ApiWalletErrorCode dco_decode_api_wallet_error_code(dynamic raw);
+
+  @protected
   AuthenticatedRound dco_decode_authenticated_round(dynamic raw);
 
   @protected
@@ -1587,6 +1593,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ApiVotingRoundContext sse_decode_api_voting_round_context(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiWalletError sse_decode_api_wallet_error(SseDeserializer deserializer);
+
+  @protected
+  ApiWalletErrorCode sse_decode_api_wallet_error_code(
     SseDeserializer deserializer,
   );
 
@@ -3348,6 +3362,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_api_voting_round_context(
     ApiVotingRoundContext self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_error(
+    ApiWalletError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_error_code(
+    ApiWalletErrorCode self,
     SseSerializer serializer,
   );
 
