@@ -31,7 +31,9 @@ fixture UUID. This avoids exhausting Docker's larger default address pools when
 failed fixtures are retained. Only immutable builds are shared, never networks.
 Docker rejects overlapping subnets; a collision stays a startup failure, without
 pruning, adopting, or retrying another fixture's resources. The start proof records
-the requested subnet. Existing retained networks, containers, and volumes remain.
+the requested subnet. Existing retained networks, containers, and volumes remain
+until [`native-prune.py`](#retained-resources-and-pruning) removes those of a
+dead run.
 
 This source-loading boundary starts no Docker resource, wallet or test, and
 does not enable catalog execution. Offline checks, including the vendored
@@ -112,7 +114,9 @@ UUID, then requires that UUID to be absent from the device inventory and
 `~/Library/Developer/CoreSimulator/Devices/<udid>` to be absent. For an iOS case,
 `native_cleanup_proved` in the case result means exactly this deletion proof.
 A failed case stops its writers and keeps the shut-down device, workspace and
-evidence; nothing deletes them later.
+evidence. The runner never deletes them later; only
+[`native-prune.py --apply`](#retained-resources-and-pruning) does, by exact UUID,
+after the run is proven dead.
 
 The builder always passes `--dart-define=VIZOR_E2E_IOS_COHORT=true`, and the
 builder's own source is a cache-key input. Capture does not statically check
@@ -289,7 +293,8 @@ Each failed case result records under `retained` what its worker left in
 place: case namespace, evidence and workspace paths, the Docker fixture run ID
 and stopped identities, the Simulator UUID and name, the macOS support path
 and whether port locks are still held. `summary.json` adds run totals, and the
-runner prints one stderr line naming them (or `none`). This is a report from
+runner prints one stderr line naming them (or `none`) with the
+`native-prune.py --run <id>` command that lists them. This is a report from
 the original owners, not deletion authority.
 
 After `summary.json` is written for a fully passing run (no report error, no
@@ -301,7 +306,8 @@ keeps each producer's `*.log`, `workspace-owner.json`, `case-manifest.json` and
 read-only `builds/build-prune.json` and prints one stderr line. Removal stays
 anchored to the original `builds` directory; errors are recorded, not fatal,
 and reports are never rewritten. Failed, cancelled or interrupted runs keep
-every build output, for example to symbolicate a crash.
+every build output, for example to symbolicate a crash, until
+`native-prune.py --builds` strips them from a dead run.
 
 Build artifact reuse does not establish a wallet PASS or a general measured
 speedup. Resource/performance comparison
@@ -538,6 +544,77 @@ The actual two-worker run on clean `c39bd8b8e` passed both cases in
 proved native/backend cleanup. It is not a serial speedup comparison, persistent
 artifact-cache attestation or final-source full-catalog result.
 
+## Retained resources and pruning
+
+The runner itself never deletes what a failed, cancelled or killed case keeps:
+stopped Docker fixtures, shut-down Simulators, macOS namespaces, worker
+workspaces and evidence. A stderr line at run end names them. `native-prune.py`
+lists that state for this checkout and removes it only with `--apply`, by exact
+ID, once the owning run is proven dead:
+
+```bash
+# Dry run: list only. Then act on one dead run, or on old runs and folders.
+python3 scripts/e2e/native-prune.py
+python3 scripts/e2e/native-prune.py --run <id> --apply
+python3 scripts/e2e/native-prune.py --older-than 14d --keep-last 3 \
+  --builds --folders --apply
+```
+
+Scope is this checkout's `.regtest-logs/native-suite-*` runs and the Docker
+resources and Simulators that their exact case evidence maps to. Markers are
+mapping evidence; authority comes only from a dead run and an explicit
+`--apply`.
+
+- Docker: only resources labeled exactly `com.zakura.regtest-fixture=1` are
+  listed, then inspected one ID at a time. A fixture maps to one case through
+  `zakura-backend/fixture-identity.json`, its start/retention/cleanup proof or a
+  node/donor bind mount of that case's `zakurad.toml`; the fixture's other
+  resources follow its run label, and Vizor labels must agree with the case.
+  Anything else shaped like a fixture is reported as unmapped and never
+  deleted. Other tools' resources, such as `com.zakura.tsz.instance`, are
+  never listed.
+- Simulators: the exact UUID in `simulator-owner.json`, or, when a runner died
+  between creating the device and writing that marker, the UUID that
+  `simctl create` printed into the command log named by the allocation
+  intent's nonce. Name, runtime and device type must still match. A
+  `Vizor E2E` name alone is reported as unmapped and never touched.
+- macOS namespaces are listed only; their Keychain items and preferences need
+  the signed cleanup helper.
+
+A run is alive while its runner holds `run-owner.lock` and dead once the lock
+is free. A run from before this lock existed is dead only if `summary.json`
+exists; otherwise its liveness is unknown and it is skipped, unless
+`--assume-dead-after SECONDS` (at least 7200) is given. That option is a
+policy based on the newest change in the run tree and is reported as such, not
+as proof. Timestamps and PIDs never prove liveness.
+
+By default, `--apply` removes the retained backends and Simulators of the
+selected dead runs. Select runs with `--run ID` (repeatable), `--older-than
+DURATION` (`36h`, `14d`) and `--keep-last N` (the N most recently active runs
+are never selected). `--builds` also strips the build intermediates of dead
+runs like the passing-run cleanup above, keeping logs, markers and all case
+evidence. `--folders` also removes whole dead run folders, including their own
+`run-owner.lock`, and requires `--run` or `--older-than`. A folder stays while
+anything still maps to it: a failed or skipped deletion, a listed macOS
+namespace, conflicting evidence or an unavailable inventory.
+
+While acting on a run, prune holds that dead run's `run-owner.lock`,
+re-inspects each resource right before removing it and skips anything that
+changed. Docker removal goes containers, then volumes, then networks; a
+Simulator is shut down, deleted, and then proven absent from the inventory and
+from its device directory. `.regtest-logs/prune/prune.lock` serializes prunes
+of a checkout, and each `--apply` writes a read-only receipt
+`.regtest-logs/prune/prune-<UTC>-<random>.json`. Prune never runs
+`docker ... prune`, removes Docker images or build cache, runs `simctl erase`
+or `delete all`, signals processes, touches port, clipboard, build or cache
+lock files, `.retained` denial markers or `.regtest-logs/build-cache`, or
+rewrites `run.json` or `summary.json`. It exits 1 when a planned removal fails
+and 2 for usage or lock errors.
+
+```bash
+python3.11 -B -m unittest scripts/e2e/test_native_prune.py scripts/e2e/test_native_owned_tree.py
+```
+
 ## Native port ownership primitive
 
 `native_ports.py` is the first host-only worker-lifecycle component for macOS
@@ -546,8 +623,9 @@ and proxy sockets and per-UID POSIX file locks. A service takes over a port
 after `release_sockets()`; the cooperative lock remains until `close()`.
 Uncooperative processes can still bind after socket handoff, so this is not a
 claim of atomic listener transfer. Lock files remain in place to keep their
-inodes stable. Acquisition failure rolls back this lease's existing handles;
-cleanup errors stay failures rather than becoming a successful retry.
+inodes stable; `native-prune.py` never removes them either. Acquisition failure
+rolls back this lease's existing handles; cleanup errors stay failures rather
+than becoming a successful retry.
 
 The per-UID shared parent may be readable/searchable, as in the pinned standalone
 fixture, but must be canonical, owned and not writable by other users. The actual
@@ -719,7 +797,9 @@ The `SimulatorCleanup` record observes deletion of this fresh pre-app device,
 not Keychain, preferences, wallet-storage cleanup, or an E2E PASS. Case files,
 allocation markers, and command logs remain on disk, including failed/partial
 allocations. Unknown creation outcomes are not recovered by searching names or
-deleting broad sets of devices. Report-scoped recovery is separate work.
+deleting broad sets of devices.
+[`native-prune.py`](#retained-resources-and-pruning) recovers only exact UUIDs
+that case evidence names, for dead runs.
 
 Use one cooperative lifecycle owner and do not call these methods concurrently.
 Do not install/launch apps or mutate device state outside the case owner; this
@@ -920,10 +1000,10 @@ ownership evidence that every deletion rechecks.
 
 Preparation, launch or cleanup failures remain failed, stop/shut down only owned
 writers/device, and retain state/evidence. A failed deletion is not retried and
-leaves whatever the SDK did not remove. Case manifests/logs/markers are never
-removed. Operations are cooperative/single-owner, with separate process-group
-and SDK phase budgets, not one wall-clock SLA. The cleanup record is not a
-scenario PASS.
+leaves whatever the SDK did not remove. The runner never removes case
+manifests/logs/markers. Operations are cooperative/single-owner, with separate
+process-group and SDK phase budgets, not one wall-clock SLA. The cleanup record
+is not a scenario PASS.
 
 ```bash
 python3 -B -m unittest scripts/e2e/test_native_ios_case_storage.py scripts/e2e/test_native_ios_simulator.py scripts/e2e/test_native_ios_cohort.py
@@ -981,8 +1061,8 @@ new assignment. Only its explicit build-output mode, used for producer
 intermediates after a passing run, unlinks hard-linked or group-writable regular
 files; it still never follows links and stops on any identity change. Closing
 an unfinished worker stops its case writers and retains workspace/state instead
-of deleting it. Evidence is never removed, including after successful cleanup,
-and partial failures never become successful reruns.
+of deleting it. The runner never removes evidence, including after successful
+cleanup, and partial failures never become successful reruns.
 
 Operations are cooperative/single-owner; all writers must use the owned case
 groups/native app APIs. Phase SDK/native allowances and per-group termination
@@ -1146,7 +1226,8 @@ cancel-aware per-key lock serializes publication; staging is sealed and renamed
 without replacing an existing entry. Every hit verifies exact inventory and
 read-only single-link executable hashes. Corrupt or writable entries fail rather
 than being silently rebuilt or overwritten. Partial staging and failed cases
-remain evidence; this runner does not prune caches or developer resources.
+remain evidence; neither this runner nor `native-prune.py` prunes caches or
+developer resources.
 Wallet storage, chain state, devices and process owners are never cached.
 
 This is not a portable hermetic/environment attestation, native app build

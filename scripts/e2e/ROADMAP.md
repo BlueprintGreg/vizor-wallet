@@ -371,6 +371,7 @@ iOS cases and the cache/resource/final-source gates remain pending.
 | Voting scenario migrations | Owned voting/PIR services, configuration, and UI flow | Executor and voting-specific service lifecycle |
 | Immutable caches | Verified publication, identity, reuse, and invalidation for build artifacts | Correct build-once execution |
 | Resource scheduling | Separate build/run budgets and timing-informed assignment | Stable reports and measured workload; validate cold and warm cache behavior |
+| Retention and pruning | Run-owner liveness lock, retained-resource reports, passing-run build cleanup and an exact-ID prune of dead runs | Worker lifecycle, native backend and run reports |
 
 The prototype mixes these concerns in shared runner and app files. Reconstruct
 changes by contract and hunk; copying entire dirty files into the first PR would
@@ -389,8 +390,10 @@ Separate dependencies and optional work:
   fix is adopted.
 - The Riverpod Gift activity fix is a separately reviewable dependency update
   with a regression test. It gates the affected Gift test, not unrelated cases.
-- Report-scoped recovery is a separate safety-sensitive PR after ownership and
-  report contracts. Recovery receipts must not rewrite failed run results.
+- Recovery of retained state is the separate dry-run-first
+  [`native-prune.py`](README.md#retained-resources-and-pruning): it acts only on
+  dead runs, removes exact IDs that case evidence names, and writes receipts
+  under `.regtest-logs/prune/` that never rewrite failed run results.
 - Preparation, handoff, and replay experiments are optional diagnostics, not
   dependencies of the basic migration.
 
@@ -440,6 +443,8 @@ speedup guarantee. Establish a frozen-source baseline before making that claim.
   combining revisions into a passing result.
 - [ ] Verify selection and failed-case reruns, isolated concurrent cases,
   same-case restart, cancellation, cleanup failure, and sibling survival.
+- [ ] Verify pruning on real retained runs: only dead runs' exact resources go,
+  while live runs, unmapped and non-harness resources stay untouched.
 - [ ] Verify immutable build reuse and invalidation without sharing mutable
   fixture or wallet state.
 - [ ] Compare serial and parallel execution on identical source/workloads with

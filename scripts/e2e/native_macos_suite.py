@@ -235,14 +235,6 @@ def _retained_totals(retained):
             "macos_namespaces":sum(item["macos_support"] is not None for item in retained)}
 
 
-def _size(count):
-    for unit in ("B", "KiB", "MiB"):
-        if count < 1024:
-            return f"{count:.0f} {unit}" if unit == "B" else f"{count:.1f} {unit}"
-        count /= 1024
-    return f"{count:.1f} GiB"
-
-
 def _prune_passing_builds(builds, expected, run_id, cancel):
     """Drop producer intermediates once every case passed; never rewrite reports.
 
@@ -262,7 +254,7 @@ def _prune_passing_builds(builds, expected, run_id, cancel):
             output.write("\n")
     except OSError as error:
         record["errors"].append(f"record: {error}")
-    print(f"Removed passing-run build intermediates: {_size(record['bytes'])} in "
+    print(f"Removed passing-run build intermediates: {tree.size_text(record['bytes'])} in "
           f"{len(record['removed'])} entries, logs and markers kept"
           + (f"; {len(record['errors'])} error(s)" if record["errors"] else "") + f"; see {path}",
           file=sys.stderr, flush=True)
@@ -568,7 +560,8 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         print("Retained by native-suite-" + run_id + ": " + ("none" if not totals["cases"] else
             f"{totals['cases']} failed case(s) ({', '.join(totals['namespaces'])}): "
             f"{totals['docker_fixtures']} Docker fixture(s), {totals['simulators']} Simulator(s), "
-            f"{totals['macos_namespaces']} macOS namespace(s); evidence {evidence}"), file=sys.stderr, flush=True)
+            f"{totals['macos_namespaces']} macOS namespace(s); evidence {evidence}; "
+            f"list: python3 scripts/e2e/native-prune.py --run {run_id}"), file=sys.stderr, flush=True)
         passed = report["error"] is None and all(item["failed"] == 0 for item in report["repetition_reports"])
         # Handlers stay installed so a signal stops this sweep cooperatively.
         if passed and report["repetition_reports"] and not cancel.is_set():

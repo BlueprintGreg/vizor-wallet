@@ -620,6 +620,7 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("native-suite-"+summary["run_id"]+": 2 failed case(s) (", lines[0])
         self.assertIn("2 Docker fixture(s), 0 Simulator(s), 2 macOS namespace(s); evidence ", lines[0])
+        self.assertTrue(lines[0].endswith("; list: python3 scripts/e2e/native-prune.py --run "+summary["run_id"]))
         self.execute = lambda root, run_id, worker_id, scenario, **kwargs: {"scenario_id":scenario.id, "status":"passed"}
         code, summary, _, _ = self.invoke()
         self.assertEqual(summary["retained"], {"cases":0, "namespaces":[], "docker_fixtures":0,

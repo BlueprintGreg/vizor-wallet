@@ -167,6 +167,14 @@ def output_bytes(entries) -> int:
     return total
 
 
+def size_text(count) -> str:
+    for unit in ("B", "KiB", "MiB"):
+        if count < 1024:
+            return f"{count:.0f} {unit}" if unit == "B" else f"{count:.1f} {unit}"
+        count /= 1024
+    return f"{count:.1f} GiB"
+
+
 def _kept_build_file(name):
     return name in BUILD_EVIDENCE or name.endswith(".log")
 
