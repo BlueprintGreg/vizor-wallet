@@ -11,6 +11,9 @@
 //!                6 H01, 7 H02, 8 H09, 9 H05 change
 //!   C external:  0 H02, 1-2 H05;  D external: 0 H11 swap deposit
 //!   F external:  0.. one per shielded funding note (Z -> F, then S -> A0 Orchard)
+//!   B external:  10 N_spend's send (private profile)
+//!   E (erin, one seed): external 0 of ZIP 32 accounts 1 (four receives), 2
+//!                and 6 (one each), N_discover (private profile)
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -33,6 +36,26 @@ use crate::{
 
 const ZEC: u64 = 100_000_000;
 
+/// N_discover: the ZIP 32 accounts of erin's seed that receive transparent
+/// funds, and how many receives each gets at its first external address. The
+/// first spends the discovery pass's query budget on pages of its own; the
+/// others span two discovery batches.
+const ERIN_FUNDED: [(u32, u32); 3] = [(1, 4), (2, 1), (6, 1)];
+
+/// Import discovery's query budget for N_discover: the directory phase
+/// alone spends it, so the account with pages stops the pass.
+const DISCOVERY_MAX_QUERIES: &str = "1";
+
+fn erin_name(account: u32) -> &'static str {
+    match account {
+        0 => "E0",
+        1 => "E1",
+        2 => "E2",
+        6 => "E6",
+        _ => "E?",
+    }
+}
+
 pub struct Ctx {
     pub chain: Chain,
     pub faucet: Faucet,
@@ -45,6 +68,9 @@ pub struct Ctx {
     /// Harness-only funder: Z pays it transparently and S moves its coins
     /// into Alice's Orchard notes (zcashd never touches Orchard).
     pub f: Party,
+    /// N_discover's seed (private profile): ZIP 32 account 0, which holds
+    /// nothing, then the accounts [`ERIN_FUNDED`] names.
+    pub erin: Vec<(u32, Party)>,
     pub r: VizorWallet,
     enabled: BTreeSet<String>,
     timings: Vec<(String, Duration)>,
@@ -84,6 +110,12 @@ impl Ctx {
         let c = Party::generate("C", "carol");
         let d = Party::generate("D", "swap-provider");
         let f = Party::generate("F", "harness");
+        let e0 = Party::generate("E0", "erin");
+        let erin: Vec<(u32, Party)> = ERIN_FUNDED
+            .iter()
+            .map(|&(account, _)| (account, e0.sibling(erin_name(account), account)))
+            .collect();
+        let erin = std::iter::once((0, e0)).chain(erin).collect::<Vec<_>>();
         let mut suite = Suite::new();
         for (party, external, internal, ephemeral) in [
             (&a0, 30, 20, 20),
@@ -96,6 +128,9 @@ impl Ctx {
             suite.own(party, Scope::External, 0..external);
             suite.own(party, Scope::Internal, 0..internal);
             suite.own(party, Scope::Ephemeral, 0..ephemeral);
+        }
+        for (_, party) in &erin {
+            suite.own(party, Scope::External, 0..1);
         }
         let enabled: BTreeSet<String> = std::env::var("TH_CASES")
             .map(|v| v.split(',').map(|s| s.trim().to_uppercase()).collect())
@@ -116,13 +151,18 @@ impl Ctx {
                 chain.rpc_port,
                 &suite.out.join("publication"),
             ));
-            let alice: Vec<Vec<u8>> = suite
+            // Alice's scripts, and the discovery candidates of erin's seed.
+            let watched: Vec<Vec<u8>> = suite
                 .ownership
                 .iter()
                 .filter(|(_, owner)| owner.wallet == "alice")
                 .map(|(script, _)| hex::decode(script).expect("hex script"))
+                .chain((1..=20).map(|account| {
+                    let candidate = erin[0].1.sibling("E", account);
+                    hex::decode(candidate.script_hex(Scope::External, 0)).expect("hex script")
+                }))
                 .collect();
-            publisher.watch(&alice);
+            publisher.watch(&watched);
             std::env::set_var("VIZOR_TRANSPARENT_PIR_URL", publisher.url());
         }
         let faucet = Faucet::new(&chain);
@@ -137,6 +177,7 @@ impl Ctx {
             c,
             d,
             f,
+            erin,
             r,
             enabled,
             timings: Vec::new(),
@@ -264,6 +305,26 @@ impl Ctx {
                 ],
             );
         }
+        if crate::report::profile() == "private" {
+            // Private-only variants: each runs after H13, so none changes
+            // the chain an earlier checkpoint reads.
+            for (case, checkpoint, variants) in [
+                (
+                    "H13",
+                    "h13_recovered",
+                    &["N_lag_settled", "N_pir_fail_settled"][..],
+                ),
+                ("H13", "toggle", &["N_toggle"][..]),
+                ("H13", "restart", &["N_restart"][..]),
+                ("H03", "discover", &["N_discover"][..]),
+                ("H07", "spend", &["N_spend"][..]),
+            ] {
+                self.suite.cases.get_mut(case).unwrap().checkpoints.insert(
+                    checkpoint.into(),
+                    variants.iter().map(|v| v.to_string()).collect(),
+                );
+            }
+        }
         for case in crate::report::REQUIRED_CASES {
             if !self.on(case) {
                 self.suite.note(case, "not run: excluded by TH_CASES");
@@ -315,6 +376,20 @@ impl Ctx {
                 self.timed("H13", |ctx| ctx.h13_private());
             } else {
                 self.timed("H13", |ctx| ctx.h13());
+            }
+        }
+        if crate::report::profile() == "private" {
+            // The variants that leave the chain alone, then N_discover (new
+            // blocks, no transaction of Alice's), then N_spend (Alice's).
+            if self.on("H13") {
+                self.timed("N_toggle", |ctx| ctx.n_toggle());
+                self.timed("N_restart", |ctx| ctx.n_restart());
+            }
+            if self.on("H03") {
+                self.timed("N_discover", |ctx| ctx.n_discover());
+            }
+            if self.on("H07") {
+                self.timed("N_spend", |ctx| ctx.n_spend());
             }
         }
     }
@@ -1004,7 +1079,9 @@ impl Ctx {
     /// H13 (private profile): fresh restores while the transparent PIR
     /// service lags the chain by 60 blocks (H12's activity unpublished; the
     /// sync waits out the coordinator's budget for it), then while it fails
-    /// every private query.
+    /// every private query. Once both faults clear, each restore settles and
+    /// must recover: current authority and the chain's ledger, UTXO set and
+    /// balance (N_lag_settled, N_pir_fail_settled).
     fn h13_private(&mut self) {
         let publisher = crate::publication::global().expect("the private profile's publisher");
         let lag = VizorWallet::import("N_lag", &self.chain, &self.a0, &self.a1);
@@ -1029,6 +1106,367 @@ impl Ctx {
             &[(&fail, "N_pir_fail")],
             BTreeMap::from([("N_pir_fail".to_string(), fail_result)]),
         );
+        let lag_result = lag.settle_retrying().err();
+        let fail_result = fail.settle_retrying().err();
+        checkpoint(
+            &self.chain,
+            &mut self.suite,
+            "h13_recovered",
+            &[(&lag, "N_lag_settled"), (&fail, "N_pir_fail_settled")],
+            BTreeMap::from([
+                ("N_lag_settled".to_string(), lag_result),
+                ("N_pir_fail_settled".to_string(), fail_result),
+            ]),
+        );
+    }
+
+    /// N_toggle (private profile): a public restore raised to private
+    /// recovery and lowered again; see [`VizorWallet::import_toggled`].
+    fn n_toggle(&mut self) {
+        let (_wallet, findings) =
+            VizorWallet::import_toggled("N_toggle", &self.chain, &self.a0, &self.a1);
+        self.suite.verdict(
+            "toggle",
+            "H13",
+            "N_toggle",
+            findings.problems,
+            findings.notes,
+        );
+    }
+
+    /// N_restart (private profile): a private restore, recovered, then,
+    /// once the chain has moved past its private ledger, synced from a fresh
+    /// process (this test binary's `restart_child`) that never sets the
+    /// private-queries preference, as a launch before Dart applies it. The
+    /// stored `PrivateRequired` policy must hold: every account stays
+    /// private, its transparent recovery is stopped as not selected rather
+    /// than answered publicly, and no request to the wallet's lightwalletd
+    /// proxy names a transparent subject. (With the tip unmoved the private
+    /// ledger still covers it and authority stays current.)
+    fn n_restart(&mut self) {
+        let wallet = VizorWallet::import("N_restart", &self.chain, &self.a0, &self.a1);
+        let mut problems = Vec::new();
+        let mut notes = Vec::new();
+        if let Err(e) = wallet.settle_retrying() {
+            problems.push(format!("before the restart: sync failed: {e}"));
+        }
+        for account in &wallet.accounts {
+            match wallet.balance(account.name) {
+                Ok(b) if b.transparent_private && b.transparent_authority == "current" => {}
+                other => problems.push(format!(
+                    "before the restart: {} has not recovered privately: {other:?}",
+                    account.name
+                )),
+            }
+        }
+        // Past the private ledger's coverage: only recovery could make the
+        // restarted process's transparent balances current again.
+        self.mine(1);
+        let _ = wallet.proxy.take_requests();
+        let publisher = crate::publication::global().expect("the private profile's publisher");
+        let private_queries = |counts: BTreeMap<String, usize>| -> usize {
+            counts
+                .iter()
+                .filter(|(route, _)| route.starts_with("POST "))
+                .map(|(_, n)| n)
+                .sum()
+        };
+        let queries_before = private_queries(publisher.route_counts());
+        let out = self.suite.out.join("restart-child.json");
+        let _ = std::fs::remove_file(&out);
+        let accounts = wallet
+            .accounts
+            .iter()
+            .map(|a| format!("{}={}", a.name, a.uuid))
+            .collect::<Vec<_>>()
+            .join(",");
+        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--ignored",
+                "--exact",
+                "restart_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("TH_RESTART_DB", &wallet.db)
+            .env("TH_RESTART_LWD", &wallet.proxy.url)
+            .env("TH_RESTART_ACCOUNTS", accounts)
+            .env("TH_RESTART_OUT", &out)
+            .status();
+        let queries = private_queries(publisher.route_counts()) - queries_before;
+        match status {
+            Ok(status) if status.success() => {}
+            other => problems.push(format!("the restarted process failed: {other:?}")),
+        }
+        let result: serde_json::Value = std::fs::read(&out)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(serde_json::Value::Null);
+        for (index, sync) in result["syncs"].as_array().into_iter().flatten().enumerate() {
+            if !sync.is_null() {
+                problems.push(format!("restarted sync {}: {sync}", index + 1));
+            }
+        }
+        for account in &wallet.accounts {
+            let b = &result["balances"][account.name];
+            if b["transparent_private"] != json!(true) {
+                problems.push(format!(
+                    "{}: the restarted process does not keep it private: {b}",
+                    account.name
+                ));
+            }
+            if b["transparent_authority"] != json!("stopped")
+                || b["transparent_stop"] != json!("not_selected")
+            {
+                problems.push(format!(
+                    "{}: expected recovery stopped as not selected in a process with private queries unset: {b}",
+                    account.name
+                ));
+            }
+            notes.push(format!("{} after the restart: {b}", account.name));
+        }
+        let requests = wallet.proxy.take_requests();
+        let named = crate::proxy::transparent_subject_count(&requests);
+        notes.push(format!(
+            "restarted process: {} lightwalletd requests, {named} with a transparent subject; {queries} transparent PIR queries",
+            requests.len()
+        ));
+        if requests.is_empty() {
+            problems
+                .push("the restarted process sent lightwalletd nothing: it did not sync".into());
+        }
+        if named > 0 {
+            problems.push(format!(
+                "the restarted process sent {named} requests naming a transparent subject"
+            ));
+        }
+        self.suite
+            .verdict("restart", "H13", "N_restart", problems, notes);
+    }
+
+    /// N_discover (private profile): erin's seed, whose accounts 1, 2 and 6
+    /// hold only transparent funds, restored through onboarding's discovery
+    /// (`discover_software_wallet_import_accounts`, then
+    /// `import_software_wallet_with_account_discovery`) with private queries
+    /// on. Import discovery's query budget is lowered
+    /// ([`DISCOVERY_MAX_QUERIES`], debug builds on regtest only) so account
+    /// 1's history stops the first pass; the continuation must still find
+    /// every funded account. The restored wallet then recovers privately:
+    /// each account's transparent balance must be current and match zcashd's
+    /// address index. lightwalletd must see no transparent subject.
+    fn n_discover(&mut self) {
+        let publisher = crate::publication::global().expect("the private profile's publisher");
+        let mut problems = Vec::new();
+        let mut notes = Vec::new();
+        for (account, receives) in ERIN_FUNDED {
+            let address = self.erin_party(account).address(Scope::External, 0);
+            for receive in 0..receives {
+                let value = ZEC / 10 * (u64::from(receive) + 1) + u64::from(account) * 1_000;
+                self.faucet.pay(&self.chain, &[(&address, value)]);
+            }
+        }
+        self.mine(1);
+        self.mine(3);
+        publisher.catch_up();
+        let proxy = Proxy::start(&self.chain.lwd_url());
+        let scratch = tempfile::tempdir().expect("discovery dir");
+        let db = scratch.path().join("zcash_wallet.db");
+        // One discovery at the default budget, then one at the lowered
+        // budget. Each pass fetches the shard map, so the lowered one must
+        // fetch more maps: the passes the continuation added.
+        let discover = |budget: Option<&str>| {
+            let before = publisher.route_counts();
+            if let Some(budget) = budget {
+                std::env::set_var("ZCASH_E2E_REGTEST_DISCOVERY_MAX_QUERIES", budget);
+            }
+            let result =
+                rust_lib_zcash_wallet::api::wallet::discover_software_wallet_import_accounts(
+                    self.erin[0].1.mnemonic.clone(),
+                    String::new(),
+                    Some(1),
+                    "regtest".into(),
+                    db.to_string_lossy().into(),
+                    proxy.url.clone(),
+                    true,
+                );
+            std::env::remove_var("ZCASH_E2E_REGTEST_DISCOVERY_MAX_QUERIES");
+            let after = publisher.route_counts();
+            let grew = |pattern: &str| -> usize {
+                after
+                    .iter()
+                    .filter(|(route, _)| route.contains(pattern))
+                    .map(|(route, n)| n - before.get(route).copied().unwrap_or(0))
+                    .sum()
+            };
+            let found: Result<Vec<u32>, String> =
+                result.map(|r| r.accounts.iter().map(|a| a.zip32_account_index).collect());
+            (
+                found,
+                grew("GET /v1/filters/shards"),
+                grew("/query/directory"),
+                grew("/query/pages"),
+            )
+        };
+        let funded: Vec<u32> = ERIN_FUNDED.iter().map(|&(account, _)| account).collect();
+        let (baseline, baseline_maps, directory, pages) = discover(None);
+        notes.push(format!(
+            "discovery at the default budget: {baseline:?}, {baseline_maps} shard maps, {directory} directory and {pages} page queries"
+        ));
+        let (budgeted, maps, directory, pages) = discover(Some(DISCOVERY_MAX_QUERIES));
+        notes.push(format!(
+            "discovery at query budget {DISCOVERY_MAX_QUERIES}: {budgeted:?}, {maps} shard maps, {directory} directory and {pages} page queries"
+        ));
+        if baseline.as_ref() != Ok(&funded) {
+            problems.push(format!(
+                "discovery at the default budget found {baseline:?}, the funded accounts are {funded:?}"
+            ));
+        }
+        if maps <= baseline_maps {
+            problems.push(format!(
+                "the lowered budget fetched {maps} shard maps, the default {baseline_maps}: no pass was stopped by its budget, so the continuation was not exercised"
+            ));
+        }
+        let found = match budgeted {
+            Ok(found) => found,
+            Err(e) => {
+                problems.push(format!("discovery at the lowered budget failed: {e}"));
+                Vec::new()
+            }
+        };
+        if found != funded {
+            problems.push(format!(
+                "discovery at the lowered budget found accounts {found:?}, the funded accounts are {funded:?}"
+            ));
+        }
+        match VizorWallet::import_discovered(
+            "N_discover",
+            proxy,
+            &self.erin[0].1,
+            &found,
+            erin_name,
+        ) {
+            Ok(wallet) => {
+                if let Err(e) = wallet.settle_retrying() {
+                    problems.push(format!("sync failed: {e}"));
+                }
+                for (account, _) in ERIN_FUNDED {
+                    let name = erin_name(account);
+                    if !wallet.accounts.iter().any(|a| a.name == name) {
+                        problems.push(format!("{name} was not imported"));
+                        continue;
+                    }
+                    let address = self.erin_party(account).address(Scope::External, 0);
+                    let utxos = self
+                        .chain
+                        .rpc_ok("getaddressutxos", json!([{ "addresses": [address] }]));
+                    let chain_total: u64 = utxos
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|u| u["satoshis"].as_u64().unwrap())
+                        .sum();
+                    match wallet.balance(name) {
+                        Ok(b) if b.transparent_authority == "current"
+                            && b.transparent == chain_total => {}
+                        other => problems.push(format!(
+                            "{name}: transparent balance is not current at zcashd's {chain_total}: {other:?}"
+                        )),
+                    }
+                }
+                let requests = wallet.proxy.take_requests();
+                let named = crate::proxy::transparent_subject_count(&requests);
+                notes.push(format!(
+                    "discovery, import and sync: {} lightwalletd requests, {named} with a transparent subject",
+                    requests.len()
+                ));
+                if named > 0 {
+                    problems.push(format!(
+                        "{named} lightwalletd requests named a transparent subject"
+                    ));
+                }
+            }
+            Err(e) => problems.push(format!("import of the discovered accounts failed: {e}")),
+        }
+        self.suite
+            .verdict("discover", "H03", "N_discover", problems, notes);
+    }
+
+    fn erin_party(&self, account: u32) -> &Party {
+        &self
+            .erin
+            .iter()
+            .find(|(index, _)| *index == account)
+            .expect("an erin account")
+            .1
+    }
+
+    /// N_spend (private profile): a fresh private restore (policy raised
+    /// before its first sync) shields what it recovered of both accounts'
+    /// transparent funds and sends from A1's shielded funds to B through
+    /// Vizor's production paths; each transaction must be mined, and the
+    /// restore's activity and balances must match the oracle (H07's
+    /// checkpoint `spend`).
+    fn n_spend(&mut self) {
+        let n = VizorWallet::import("N_spend", &self.chain, &self.a0, &self.a1);
+        if let Err(e) = n.settle_retrying() {
+            panic!("N_spend sync failed: {e}\n{}", self.chain.container_logs());
+        }
+        let built_by = json!({"built_by": "N_spend"});
+        let mut shields = Vec::new();
+        for account in ["A0", "A1"] {
+            for txid in n.shield(account) {
+                self.suite.tx_full(
+                    "H07",
+                    &txid,
+                    "V",
+                    "shield",
+                    owner_shielded(account),
+                    None,
+                    built_by.clone(),
+                );
+                shields.push(txid);
+            }
+        }
+        self.n_mined(&n, &shields);
+        let to = self.b.address(Scope::External, 10);
+        let sent = n.send("A1", &to, ZEC);
+        for txid in &sent {
+            self.suite.tx_full(
+                "H07",
+                txid,
+                "V",
+                "shielded_to_external_t",
+                owner_shielded("A1"),
+                None,
+                built_by.clone(),
+            );
+        }
+        self.n_mined(&n, &sent);
+        let result = n.settle().err();
+        checkpoint(
+            &self.chain,
+            &mut self.suite,
+            "spend",
+            &[(&n, "N_spend")],
+            BTreeMap::from([("N_spend".to_string(), result)]),
+        );
+    }
+
+    /// Mines `txids`, which `wallet` built, past the trusted confirmation
+    /// depth, and settles `wallet`.
+    fn n_mined(&self, wallet: &VizorWallet, txids: &[String]) {
+        self.mine(1);
+        for txid in txids {
+            assert!(
+                self.chain.mined_height(txid).is_some(),
+                "{} transaction {txid} was not mined",
+                wallet.label
+            );
+        }
+        self.mine(3);
+        if let Err(e) = wallet.settle_retrying() {
+            panic!("{} sync failed: {e}", wallet.label);
+        }
     }
 
     pub fn finish(&mut self) -> i32 {
@@ -1133,18 +1571,6 @@ impl Ctx {
     }
 }
 
-/// lightwalletd methods that name a transparent subject: an address, or a
-/// txid (`GetTransaction`).
-const TRANSPARENT_SUBJECT_METHODS: &[&str] = &[
-    "GetAddressUtxos",
-    "GetAddressUtxosStream",
-    "GetTaddressTxids",
-    "GetTaddressTransactions",
-    "GetTaddressBalance",
-    "GetTaddressBalanceStream",
-    "GetTransaction",
-];
-
 /// The app layer's lightwalletd requests by method, and how many named a
 /// transparent subject.
 fn lightwalletd_summary(requests: &[RequestRecord]) -> serde_json::Value {
@@ -1152,10 +1578,7 @@ fn lightwalletd_summary(requests: &[RequestRecord]) -> serde_json::Value {
     for request in requests {
         *methods.entry(request.method.as_str()).or_default() += 1;
     }
-    let named = requests
-        .iter()
-        .filter(|r| TRANSPARENT_SUBJECT_METHODS.contains(&r.method.as_str()))
-        .count();
+    let named = crate::proxy::transparent_subject_count(requests);
     json!({
         "requests": requests.len(),
         "with_transparent_subject": named,

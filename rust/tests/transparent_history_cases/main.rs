@@ -8,7 +8,8 @@
 //! come from `scripts/e2e/transparent_history_oracle.py`, never from Vizor.
 //!
 //! The private profile's switches are process-wide, so run one profile per
-//! process: `--exact <profile>_profile_h01_to_h13`.
+//! process: `--exact <profile>_profile_h01_to_h13`. `restart_child` is the
+//! private profile's own fresh process (N_restart), not a profile.
 
 mod cases;
 mod chain;
@@ -63,4 +64,13 @@ fn private_profile_h01_to_h13() {
         "the private profile needs a debug build: release builds never select private recovery on regtest"
     );
     run("private");
+}
+
+/// N_restart's fresh process, started by the private profile with the
+/// wallet to sync in its environment; a no-op without it. It sets no
+/// private-queries preference, as a launch before Dart applies one.
+#[test]
+#[ignore = "child process of the private profile's N_restart variant"]
+fn restart_child() {
+    vizor::restart_child();
 }

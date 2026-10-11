@@ -110,16 +110,32 @@ pub struct CaseRecord {
     pub notes: Vec<String>,
 }
 
-/// How much evidence a variant has when observed: `complete` (settled sync),
-/// `pre_enrichment` (GetTransaction held), or `fault` (injected transport
-/// faults: lightwalletd in the public profile, the transparent PIR service in
-/// the private one).
-pub const VARIANT_KINDS: [(&str, &str); 5] = [
+/// How much evidence a variant has when observed: `complete` (settled sync,
+/// the default for a variant not listed), `pre_enrichment` (GetTransaction
+/// held), `fault` (injected transport faults: lightwalletd in the public
+/// profile, the transparent PIR service in the private one), or `harness`
+/// (asserted by the harness against its own premise, not by the oracle:
+/// [`Suite::verdict`]).
+///
+/// Private profile only: N_lag_settled and N_pir_fail_settled are N_lag and
+/// N_pir_fail settled once their fault clears; N_spend is a private restore
+/// that then shields and spends what it recovered; N_toggle raises a public
+/// wallet to private recovery and lowers it again; N_restart syncs a private
+/// wallet from a fresh process that never set the private-queries
+/// preference; N_discover restores a seed whose other accounts hold only
+/// transparent funds through private account discovery.
+pub const VARIANT_KINDS: [(&str, &str); 11] = [
     ("N_pre", "pre_enrichment"),
     ("N_cut", "fault"),
     ("N_utxo_fail", "fault"),
     ("N_lag", "fault"),
     ("N_pir_fail", "fault"),
+    ("N_lag_settled", "complete"),
+    ("N_pir_fail_settled", "complete"),
+    ("N_spend", "complete"),
+    ("N_toggle", "harness"),
+    ("N_restart", "harness"),
+    ("N_discover", "harness"),
 ];
 
 pub struct Suite {
@@ -351,6 +367,49 @@ impl Suite {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(Value::Null);
         self.results.push((label, status, summary));
+    }
+
+    /// Records the harness's own verdict on `variant` of `case` at
+    /// `checkpoint`: a report the gate reads like the oracle's, failing the
+    /// cell with `problems`, if any. For a `harness` variant, whose premise
+    /// (a toggle, a restart, a discovery) the oracle cannot see; `notes` are
+    /// what it measured, kept as informational.
+    pub fn verdict(
+        &mut self,
+        checkpoint: &str,
+        case: &str,
+        variant: &str,
+        problems: Vec<String>,
+        notes: Vec<String>,
+    ) {
+        self.write_inputs();
+        let failures = if problems.is_empty() {
+            json!({})
+        } else {
+            json!({ case: { variant: problems } })
+        };
+        let report = json!({
+            "checkpoint": checkpoint,
+            "mutation": null,
+            "source": "harness",
+            "evaluated": { case: [variant] },
+            "failures": failures,
+            "suite_failures": [],
+            "informational": notes,
+        });
+        write_json(&self.out.join(format!("report-{checkpoint}.json")), &report);
+        eprintln!(
+            "[checkpoint {checkpoint}] harness verdict {case} {variant}: {}",
+            if problems.is_empty() { "pass" } else { "FAIL" }
+        );
+        for line in &problems {
+            eprintln!("    {line}");
+        }
+        for line in &notes {
+            eprintln!("    note: {line}");
+        }
+        let status = i32::from(!problems.is_empty());
+        self.results.push((checkpoint.into(), status, report));
     }
 
     /// Hands the live chain to the Flutter layer: app-layer expectations from
