@@ -741,8 +741,9 @@ final class BackgroundMigrationManager {
         IronwoodMigrationBackgroundCredentialStore.deleteAll()
         BackgroundMigrationOutboxExecutionGate.shared.discardStopLeases()
         // The reset wallet's re-arm obligation goes with it, both as owed
-        // work and as durable evidence of the Tor transition.
-        BackgroundMigrationDirectRouteRearm.clear()
+        // work and as durable evidence of the Tor transition, including one
+        // an attempt still in flight would otherwise record again.
+        self.directRouteRearm.reset()
       }
       BackgroundMigrationNotification.remove(
         batchIds: batchIds,

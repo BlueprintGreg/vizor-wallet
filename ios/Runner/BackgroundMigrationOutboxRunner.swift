@@ -193,6 +193,9 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
   private var running = false
   private var rerun = false
   private var waiting: [(Bool) -> Void] = []
+  /// Advanced by [reset]; an attempt records its result only if no reset
+  /// happened since it started.
+  private var epoch = 0
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
@@ -215,7 +218,22 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
     run(attempt)
   }
 
+  /// Drops the obligation of a wallet that no longer exists: clears the
+  /// durable marker, and keeps any attempt already in flight from recording
+  /// it again when it finishes. A request made after the reset is a new
+  /// obligation and is recorded as usual.
+  func reset() {
+    lock.lock()
+    epoch += 1
+    rerun = false
+    BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
+    lock.unlock()
+  }
+
   private func run(_ attempt: @escaping Attempt) {
+    lock.lock()
+    let startedEpoch = epoch
+    lock.unlock()
     attempt { [self] satisfied in
       lock.lock()
       if rerun {
@@ -225,10 +243,12 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
         return
       }
       running = false
-      if satisfied {
-        BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
-      } else {
-        BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
+      if epoch == startedEpoch {
+        if satisfied {
+          BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
+        } else {
+          BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
+        }
       }
       let completions = waiting
       waiting = []
