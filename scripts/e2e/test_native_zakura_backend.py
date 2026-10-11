@@ -5,8 +5,10 @@ import json
 import ipaddress
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     import native_zakura_backend as BACKEND
     import native_workspace as WORKSPACE
+    import zakura_fixture_source as SOURCE
 finally:
     sys.path.pop(0)
 
@@ -26,6 +29,11 @@ class FixtureModel:
         self.run_id = run_id.hex
         self.timeout, self.miner_address, self.profile = timeout, miner_address, profile
         self.network_subnet = network_subnet
+        # Same names and ownership labels as the pinned helper's constructor.
+        prefix = "zakura-proof-" + self.run_id[:12]
+        self.network_name, self.node_name, self.donor_name = prefix + "-net", prefix + "-node", prefix + "-donor"
+        self.lwd_name, self.lwd_volume = prefix + "-lwd", prefix + "-lwd-data"
+        self.labels = {"com.zakura.regtest-fixture": "1", "com.zakura.regtest-fixture.run": self.run_id}
         self._closed = self._retained = False
         self.started = self.close_calls = self.retain_calls = 0
 
@@ -86,8 +94,8 @@ class BackendTests(unittest.TestCase):
         self.loader = source.start()
         self.addCleanup(source.stop)
 
-    def case(self, activation=500):
-        workspace = WORKSPACE.prepare_native_case_workspace(self.root, platform="macos",
+    def case(self, activation=500, root=None):
+        workspace = WORKSPACE.prepare_native_case_workspace(root or self.root, platform="macos",
             scenario_id="flutter.macos.backend-probe", run_id="a1b2c3d4e5", worker_id=0,
             case_index=len(self.cases), ports={"rpc": 28232, "lwd": 29067, "proxy": 29068},
             activation_height=activation)
@@ -126,6 +134,62 @@ class BackendTests(unittest.TestCase):
                 source_file = owner.root / "source-identity.json"
                 self.assertEqual(source_file.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(json.loads(source_file.read_text()), modeled_source().identity())
+
+    def test_fixture_identity_and_vizor_labels_are_recorded_before_docker_starts(self):
+        suite = self.root / "native-suite-0a1b2c3d4e" / "repetition-0"
+        suite.mkdir(parents=True, mode=0o700)
+        for root, expected in ((None, {}), (suite, {"com.keplr.vizor.e2e.suite-run": "0a1b2c3d4e"})):
+            with self.subTest(root=root):
+                owner = self.backend(self.case(root=root))
+                fixture = owner._fixture
+                self.assertEqual(fixture.started, 0)
+                labels = {"com.zakura.regtest-fixture": "1", "com.zakura.regtest-fixture.run": fixture.run_id,
+                          "com.keplr.vizor.e2e.namespace": owner._case.workspace.namespace, **expected}
+                self.assertEqual(fixture.labels, labels)
+                record = owner.root / "fixture-identity.json"
+                self.assertEqual(record.stat().st_mode & 0o777, 0o600)
+                prefix = "zakura-proof-" + fixture.run_id[:12]
+                self.assertEqual(json.loads(record.read_text()), {"schema_version": 1, "run_id": fixture.run_id,
+                    "prefix": prefix, "names": {"network": prefix + "-net", "node": prefix + "-node",
+                        "donor": prefix + "-donor", "lightwalletd": prefix + "-lwd",
+                        "lightwalletd_volume": prefix + "-lwd-data"},
+                    "network_subnet": fixture.network_subnet, "labels": labels})
+        self.assertEqual(owner.retained_resources(), {"fixture_run_id": owner._fixture.run_id,
+                                                      "stopped": False, "identity": None})
+        owner._case.close()
+        owner.retain()
+        self.assertEqual(owner.retained_resources()["stopped"], True)
+
+    def test_pinned_helper_creates_and_ownership_checks_with_the_vizor_labels(self):
+        self.loader.return_value = SOURCE.load_zakura_fixture_source()
+        tools = self.root / "tools"
+        (tools / "protos").mkdir(parents=True)
+        (tools / "protos" / "service.proto").write_text('syntax = "proto3";\n')
+        (tools / "grpcurl").write_text("#!/bin/sh\n")
+        (tools / "grpcurl").chmod(0o700)
+        owner = BACKEND.prepare_native_zakura_backend(self.case(), grpcurl=tools / "grpcurl",
+            proto_dir=tools / "protos", miner_address="tmJymvcUCn1ctbghvTJpXBwHiMEB8P6wxNV")
+        self.backends.append(owner)
+        fixture = owner._fixture
+        namespace = owner._case.workspace.namespace
+        self.assertIn("com.keplr.vizor.e2e.namespace=" + namespace, fixture._label_args())
+        self.assertEqual(json.loads((owner.root / "fixture-identity.json").read_text())["labels"], fixture.labels)
+        def inspected(labels):
+            payload = [{"Id": "network-id", "Name": fixture.network_name, "Labels": labels}]
+            return patch.object(fixture, "_docker", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload), ""))
+        foreign = {"com.zakura.regtest-fixture": "1", "com.zakura.regtest-fixture.run": fixture.run_id}
+        error = sys.modules[type(fixture).__mro__[1].__module__].FixtureError
+        deadline = time.monotonic() + 5
+        with inspected(foreign):
+            with self.assertRaisesRegex(error, "ownership labels changed"):
+                fixture._assert_owned("network", fixture.network_name, "network-id", deadline)
+            with self.assertRaisesRegex(error, "not owned by this run"):
+                fixture._owned_resource_id_if_present("network", fixture.network_name, deadline)
+        with inspected(dict(fixture.labels)):
+            self.assertEqual(fixture._assert_owned("network", fixture.network_name, "network-id", deadline)["Id"],
+                             "network-id")
+            self.assertEqual(fixture._owned_resource_id_if_present("network", fixture.network_name, deadline),
+                             "network-id")
 
     def test_running_operations_forward_without_exposing_internal_ready_proof(self):
         owner = self.backend()

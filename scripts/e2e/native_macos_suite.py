@@ -7,6 +7,7 @@ wallets, chain state, ports, controllers and evidence are never shared.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import fcntl
 import json
 import math
 import os
@@ -200,6 +201,40 @@ def _write_report(path, report):
         output.write("\n")
 
 
+def _claim_run_owner(evidence, run_id, checkout):
+    """Hold the run's liveness lock for this runner; the JSON beside it is diagnostic.
+
+    A held lock is the only proof that a run is alive. The descriptor is not
+    inherited by children, so the kernel releases it when this process exits.
+    """
+    descriptor = os.open(evidence/"run-owner.lock", os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                # Only a momentary liveness probe can hold this new lock.
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        _write_report(evidence/"run-owner.json", {"schema_version":1, "run_id":run_id, "pid":os.getpid(),
+            "started_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "host":platform.node(),
+            "checkout":str(checkout)})
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _retained_totals(retained):
+    return {"cases":len(retained), "namespaces":[item["namespace"] for item in retained],
+            "docker_fixtures":sum(item["docker"] is not None for item in retained),
+            "simulators":sum(item["simulator"] is not None for item in retained),
+            "macos_namespaces":sum(item["macos_support"] is not None for item in retained)}
+
+
 def _size(count):
     for unit in ("B", "KiB", "MiB"):
         if count < 1024:
@@ -366,6 +401,8 @@ def execute_case(root, run_id, worker_id, scenario, *, helper, artifact, source_
             except BaseException as cleanup:
                 result["cleanup_errors"].append(str(cleanup))
                 cancel.set()
+        # What this failed case left in place; a report, never deletion authority.
+        result["retained"] = worker.retained_resources() if worker is not None else []
     finally:
         # Failed preparation retains/joins its original owner before freeing a
         # slot. Unproven retention sets cancellation before another admission.
@@ -403,14 +440,19 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         raise ValueError("the private E2E log directory must not be a symlink")
     evidence = logs/("native-suite-"+run_id)
     evidence.mkdir(mode=0o700)
+    owner = _claim_run_owner(evidence, run_id, root)
     builds = evidence/"builds"
     builds.mkdir(mode=0o700)
     builds_id = tree.identity(builds.lstat())
     cancel = threading.Event()
-    previous = {number:signal.getsignal(number) for number in (signal.SIGINT,signal.SIGTERM)}
-    for number in previous:
-        signal.signal(number, lambda *_:cancel.set())
+    # A closed terminal (SIGHUP) cancels like Ctrl-C, so owned resources are
+    # retained or closed rather than orphaned. Keep an inherited nohup.
+    previous = {number:signal.getsignal(number) for number in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP)}
+    for number, handler in previous.items():
+        if number != signal.SIGHUP or handler != signal.SIG_IGN:
+            signal.signal(number, lambda *_:cancel.set())
     started = time.monotonic()
+    retained = []
 
     def build_case(index, scenario, platform="macos"):
         return NativeCaseLifecycle(prepare_native_case_workspace(builds, platform=platform,
@@ -504,6 +546,7 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
                 repetition,index = submitted[future]
                 item = future.result()
                 results[repetition].append((index,item))
+                retained.extend(item.get("retained") or ())
                 print("Completed " + item["scenario_id"] + ": " + item["status"] +
                     " (" + str(item.get("duration_seconds", 0)) + "s)",file=sys.stderr,flush=True)
         for index,((repeated,repeated_id),items) in enumerate(zip(repetitions,results)):
@@ -519,8 +562,13 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         report["error"] = str(error)
     try:
         report["duration_seconds"] = round(time.monotonic()-started,3)
+        report["retained"] = totals = _retained_totals(retained)
         _write_report(evidence/"summary.json",report)
         print(json.dumps(report,indent=2,allow_nan=False))
+        print("Retained by native-suite-" + run_id + ": " + ("none" if not totals["cases"] else
+            f"{totals['cases']} failed case(s) ({', '.join(totals['namespaces'])}): "
+            f"{totals['docker_fixtures']} Docker fixture(s), {totals['simulators']} Simulator(s), "
+            f"{totals['macos_namespaces']} macOS namespace(s); evidence {evidence}"), file=sys.stderr, flush=True)
         passed = report["error"] is None and all(item["failed"] == 0 for item in report["repetition_reports"])
         # Handlers stay installed so a signal stops this sweep cooperatively.
         if passed and report["repetition_reports"] and not cancel.is_set():
@@ -528,4 +576,5 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
+        os.close(owner)
     return 0 if passed else 1

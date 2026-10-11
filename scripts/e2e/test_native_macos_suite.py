@@ -1,6 +1,7 @@
 """Coordinator models; native signing, wallet assertions and Docker are not real."""
 import contextlib
 from dataclasses import replace
+import fcntl
 import hashlib
 import io
 import json
@@ -49,6 +50,7 @@ class SuiteTests(unittest.TestCase):
         self.observed = []
         self.fail = False
         self.on_build = None
+        self.retained = []
 
     def git(self, command, **kwargs):
         if "runtimes" in command:
@@ -214,7 +216,7 @@ class SuiteTests(unittest.TestCase):
             slots.release()
             raise RuntimeError("model stops before backend execution")
         session.prepare_zakura_backend = backend
-        worker = SimpleNamespace(prepare_case=prepared,retain=Mock())
+        worker = SimpleNamespace(prepare_case=prepared,retain=Mock(),retained_resources=Mock(return_value=[]))
         with patch.object(SUITE,"prepare_native_worker_lifecycle",return_value=worker):
             result = SUITE.execute_case(self.root,"a"*10,0,scenario,helper=self.helper,
                 artifact=self.signer,source_root=self.root,dart=Path("/model/dart"),
@@ -234,7 +236,8 @@ class SuiteTests(unittest.TestCase):
         def retain(**kwargs):
             self.assertFalse(slots.acquire(blocking=False))
             raise RuntimeError("preparation writer join unproven")
-        worker = SimpleNamespace(prepare_case=Mock(side_effect=RuntimeError("preparation failed")),retain=retain)
+        worker = SimpleNamespace(prepare_case=Mock(side_effect=RuntimeError("preparation failed")),retain=retain,
+                                 retained_resources=Mock(return_value=[]))
         with patch.object(SUITE,"prepare_native_worker_lifecycle",return_value=worker) as allocate:
             result = SUITE.execute_case(self.root,"a"*10,0,scenario,helper=self.helper,
                 artifact=self.signer,source_root=self.root,dart=Path("/model/dart"),
@@ -258,7 +261,7 @@ class SuiteTests(unittest.TestCase):
             backend=SimpleNamespace(mine=Mock(), closed=True), close=Mock(),
             prepare_zakura_backend=Mock(), prepare_zakura_front=Mock(), prepare_zakura_control=Mock())
         worker = SimpleNamespace(prepare_case=Mock(return_value=session), close=Mock(),
-                                 retain=Mock(side_effect=retain))
+                                 retain=Mock(side_effect=retain), retained_resources=Mock(return_value=self.retained))
         executor = Mock(side_effect=execute, return_value={"assertions_passed":True})
         target = "execute_native_ios_case" if scenario_id.startswith("flutter.ios.") else "execute_native_macos_case"
         with patch.object(SUITE, "prepare_native_worker_lifecycle", return_value=worker), \
@@ -401,7 +404,8 @@ class SuiteTests(unittest.TestCase):
     def test_unproven_retention_cancels_following_case_before_allocation(self):
         cancel = threading.Event()
         worker = SimpleNamespace(prepare_case=Mock(side_effect=RuntimeError("case failed")),
-                                 retain=Mock(side_effect=RuntimeError("writer join unproven")))
+                                 retain=Mock(side_effect=RuntimeError("writer join unproven")),
+                                 retained_resources=Mock(return_value=[]))
         with patch.object(SUITE,"prepare_native_worker_lifecycle",return_value=worker) as allocate:
             first = SUITE.execute_case(self.root,"a" * 10,0,self.scenarios[0],helper=self.helper,
                 artifact=self.signer,source_root=self.root,dart=Path("/model/dart"),args=self.args,cancel=cancel)
@@ -533,6 +537,94 @@ class SuiteTests(unittest.TestCase):
                     self.assertTrue((case/path).exists(), path)
                 self.assertFalse((case.parent.parent/"build-prune.json").exists())
                 self.assertNotIn("build intermediates", self.errors.getvalue())
+
+    def test_run_owner_lock_is_held_for_the_whole_run_and_released_after(self):
+        held = []
+        def execute(root, run_id, worker_id, scenario, **kwargs):
+            # Another open file description conflicts with the runner's flock.
+            descriptor = os.open(root.parent/"run-owner.lock", os.O_RDONLY|os.O_NOFOLLOW)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX|fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(descriptor)
+            return {"scenario_id":scenario.id, "status":"passed"}
+        self.execute = execute
+        code, summary, _, _ = self.invoke()
+        self.assertEqual((code, held), (0, [True, True]))
+        evidence = self.root/".regtest-logs"/("native-suite-"+summary["run_id"])
+        self.assertEqual(stat.S_IMODE((evidence/"run-owner.lock").stat().st_mode), 0o600)
+        owner = json.loads((evidence/"run-owner.json").read_text())
+        self.assertEqual({key: owner[key] for key in ("schema_version", "run_id", "pid", "checkout")},
+                         {"schema_version":1, "run_id":summary["run_id"], "pid":os.getpid(), "checkout":str(self.root)})
+        self.assertTrue(owner["started_at"].endswith("Z") and owner["host"])
+        probe = ("import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_RDONLY)\n"
+                 "try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+                 "except BlockingIOError: sys.exit(23)\n")
+        self.assertEqual(subprocess.run([sys.executable, "-c", probe, str(evidence/"run-owner.lock")],
+                                        timeout=5).returncode, 0)
+
+    def test_sighup_cancels_like_sigint_unless_nohup_ignores_it(self):
+        observed = []
+        def execute(root, run_id, worker_id, scenario, **kwargs):
+            handler = signal.getsignal(signal.SIGHUP)
+            observed.append(handler)
+            if callable(handler):
+                handler(signal.SIGHUP, None)
+            return {"scenario_id":scenario.id, "status":"passed"}
+        self.execute = execute
+        original = signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        try:
+            for inherited in (signal.SIG_DFL, signal.SIG_IGN):
+                with self.subTest(inherited=inherited):
+                    signal.signal(signal.SIGHUP, inherited)
+                    observed.clear()
+                    code, summary, _, _ = self.invoke()
+                    self.assertEqual(code, 0)
+                    self.assertEqual(callable(observed[0]), inherited == signal.SIG_DFL)
+                    self.assertEqual(signal.getsignal(signal.SIGHUP), inherited)
+                    builds = self.root/".regtest-logs"/("native-suite-"+summary["run_id"])/"builds"
+                    # A cancelled run is interrupted, so it keeps every build output.
+                    self.assertEqual((builds/"build-prune.json").exists(), inherited == signal.SIG_IGN)
+        finally:
+            signal.signal(signal.SIGHUP, original)
+
+    def test_failed_case_reports_retained_resources_through_the_worker(self):
+        self.retained = [{"namespace":"vizor_aaaaaaaaaa_w0_1", "evidence":"/model/case", "workspace":"/model/w",
+            "docker":{"fixture_run_id":"a"*32, "stopped":True, "identity":None}, "simulator":None,
+            "macos_support":"/model/support", "port_locks_held":False}]
+        def execute(session, **kwargs):
+            raise SUITE.runtime.RunnerError("original Driver reported failing assertions")
+        failed, _, worker = self.run_case("flutter.macos.custom-endpoint-no-fallback", execute=execute)
+        self.assertEqual(failed["retained"], self.retained)
+        worker.retained_resources.assert_called_once_with()
+        passed, _, worker = self.run_case("flutter.macos.custom-endpoint-no-fallback")
+        self.assertNotIn("retained", passed)
+        worker.retained_resources.assert_not_called()
+
+    def test_summary_totals_and_one_stderr_line_report_retained_state(self):
+        def execute(root, run_id, worker_id, scenario, **kwargs):
+            namespace = "vizor_"+run_id+"_w0_1"
+            return {"scenario_id":scenario.id, "status":"failed", "retained":[{"namespace":namespace,
+                "docker":{"fixture_run_id":"b"*32}, "simulator":None, "macos_support":"/model/"+namespace}]}
+        self.execute = execute
+        code, summary, _, _ = self.invoke()
+        self.assertEqual(code, 1)
+        totals = summary["retained"]
+        self.assertEqual({key: totals[key] for key in ("cases", "docker_fixtures", "simulators", "macos_namespaces")},
+                         {"cases":2, "docker_fixtures":2, "simulators":0, "macos_namespaces":2})
+        self.assertEqual(len(totals["namespaces"]), 2)
+        lines = [line for line in self.errors.getvalue().splitlines() if line.startswith("Retained by ")]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("native-suite-"+summary["run_id"]+": 2 failed case(s) (", lines[0])
+        self.assertIn("2 Docker fixture(s), 0 Simulator(s), 2 macOS namespace(s); evidence ", lines[0])
+        self.execute = lambda root, run_id, worker_id, scenario, **kwargs: {"scenario_id":scenario.id, "status":"passed"}
+        code, summary, _, _ = self.invoke()
+        self.assertEqual(summary["retained"], {"cases":0, "namespaces":[], "docker_fixtures":0,
+                                               "simulators":0, "macos_namespaces":0})
+        self.assertIn("Retained by native-suite-"+summary["run_id"]+": none\n", self.errors.getvalue())
 
     def test_a_failed_repetition_remains_rerunnable_and_makes_the_batch_fail(self):
         self.fail = True

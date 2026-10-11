@@ -430,6 +430,21 @@ class MacWorkerTests(unittest.TestCase):
         self.assertTrue(session.lease.lock_descriptors)
         self.assertIsNone(worker._failure)
 
+    def test_retained_resources_report_unfinished_cases_through_their_owners(self):
+        finished = self.worker(1)
+        done = self.case(finished)
+        done.close(timeout=3)
+        self.assertEqual(finished.retained_resources(), [])
+        worker = self.worker()
+        session = self.case(worker)
+        self.prepare_backend(session)
+        session.retain(timeout=3)
+        self.assertEqual(worker.retained_resources(), [{"namespace": session.case.workspace.namespace,
+            "evidence": str(session.case.workspace.root), "workspace": str(session.mutable_directory),
+            "docker": {"fixture_run_id": session.backend._fixture.run_id, "stopped": True, "identity": None},
+            "simulator": None, "macos_support": str(session.storage.path), "port_locks_held": False}])
+        self.assertTrue(session.storage.path.exists())
+
     def test_completed_backend_is_not_retained_again_after_native_cleanup_failure(self):
         worker = self.worker()
         session = self.case(worker)
@@ -488,6 +503,15 @@ class IosWorkerTests(unittest.TestCase):
         self.assertTrue(self.native.model.device_root(session.simulator.udid).exists())
         self.assertTrue(self.worker.workspace.exists())
         self.assertFalse(any(call[0] == "delete" for call in self.native.model.calls))
+
+    def test_failed_ios_case_reports_its_retained_device(self):
+        session = self.case()
+        session.storage.start_app(timeout=15)
+        session.retain(timeout=15)
+        retained = self.worker.retained_resources()
+        self.assertEqual([item["simulator"] for item in retained],
+                         [{"udid": session.simulator.udid, "name": session.simulator.name}])
+        self.assertEqual((retained[0]["docker"], retained[0]["macos_support"]), (None, None))
 
     def test_failed_ios_preparation_keeps_native_owner_device_and_worker_state(self):
         self.native.model.failures["install"] = 1

@@ -274,8 +274,23 @@ Evidence stays in `.regtest-logs/native-suite-<id>/`. Each repetition's
 `run.json` is a schema-2 report accepted by the existing `--failed-from` selector;
 `summary.json` records the batch/build counts and which environment names the
 build keys hashed, never their values. Failed cases keep state/logs,
-and uncertain cleanup remains failure. Cancellation stops owned children and
-new assignment without terminating ordinary wallet processes.
+and uncertain cleanup remains failure. SIGINT, SIGTERM and SIGHUP (a closed
+terminal) cancel cooperatively: cancellation stops owned children and new
+assignment without terminating ordinary wallet processes. A SIGHUP that was
+already ignored, as under `nohup`, stays ignored.
+
+The runner holds an exclusive lock on `run-owner.lock` in the run folder for
+its whole lifetime, created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600;
+child processes do not inherit it, so it is released when the runner exits.
+Only a held lock shows that a run is alive. `run-owner.json` beside it (run ID,
+PID, start time, host, checkout) is diagnostic, never liveness evidence.
+
+Each failed case result records under `retained` what its worker left in
+place: case namespace, evidence and workspace paths, the Docker fixture run ID
+and stopped identities, the Simulator UUID and name, the macOS support path
+and whether port locks are still held. `summary.json` adds run totals, and the
+runner prints one stderr line naming them (or `none`). This is a report from
+the original owners, not deletion authority.
 
 After `summary.json` is written for a fully passing run (no report error, no
 failed, timed-out or cancelled case, no interruption), the runner removes the
@@ -951,6 +966,9 @@ session. Session close runs the original native owner internally, verifies
 process completion and releases the original port handles. Neither close API accepts caller-provided cleanup
 booleans, JSON, report receipts or PIDs. The result is cleanup, not scenario PASS.
 Port locks remain held when any owned writer/device stop is unproven.
+`worker.retained_resources()` lists, for each unfinished case, what its original
+owners kept (namespace, evidence/workspace paths, Docker fixture identity,
+Simulator UUID, macOS support path, held port locks); it grants no cleanup.
 
 Worker close requires all originally allocated cases to have completed through
 their sessions, rechecks original worker/case directory and marker identities,
@@ -996,8 +1014,14 @@ The returned value proves raw fixture readiness, not wallet readiness or PASS.
 new private `zakura-backend` directory under the original case evidence root.
 Every helper artifact write uses its originally opened directory descriptor and
 rechecks attachment; replacement directories are not adopted. The adapter
-overrides artifact writes only, not the pinned helper's Docker ownership checks.
-Existing fixture data, external backend handles and cleanup JSON are not accepted.
+overrides artifact writes and adds `com.keplr.vizor.e2e.namespace` (and, inside
+a suite run folder, `com.keplr.vizor.e2e.suite-run`) to the helper's own
+labels; the pinned helper then creates resources with, and ownership-checks,
+the full label set. Its Docker ownership checks are otherwise unchanged. Before
+Docker starts, `fixture-identity.json` records the fixture run ID, name prefix,
+resource names, subnet and labels, so resources left by a killed runner still
+map to their case. Existing fixture data, external backend handles and cleanup
+JSON are not accepted.
 
 On successful session close, the original native app and case/control groups
 stop first. iOS independently proves its SDK app job absent before joining its

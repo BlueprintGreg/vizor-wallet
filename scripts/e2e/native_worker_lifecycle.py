@@ -339,6 +339,24 @@ class NativeWorkerLifecycle:
                 raise primary from cleanup
             raise
 
+    def retained_resources(self):
+        """Report state kept by unfinished cases; listing grants no cleanup authority."""
+        retained = []
+        for case in self._cases:
+            if case._completed:
+                continue
+            native = not case._native_finalized
+            retained.append({"namespace": case.case.workspace.namespace,
+                "evidence": str(case.case.workspace.root),
+                "workspace": str(case.mutable_directory) if case._mutable_id is not None else None,
+                "docker": case._backend.retained_resources() if case._backend is not None else None,
+                "simulator": ({"udid": case.simulator.udid, "name": case.simulator.name}
+                              if native and case.simulator is not None else None),
+                "macos_support": (str(case.storage.path) if native
+                                  and isinstance(case.storage, mac_storage.MacCaseStorage) else None),
+                "port_locks_held": bool(case.lease.lock_descriptors)})
+        return retained
+
     def retain(self, *, timeout=60.0):
         """Stop assignments/writers; retain workspace, case state and evidence."""
         ios_simulator._deadline(timeout)

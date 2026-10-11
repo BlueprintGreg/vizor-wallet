@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import uuid
 
@@ -168,6 +169,14 @@ class OwnedNativeZakuraBackend:
             self._failure = "backend finalization unproven"
             raise
 
+    def retained_resources(self):
+        """Docker identity this original owner left in place; it grants no deletion."""
+        if self._fixture is None or self._resources_finalized:
+            return None
+        retention = self._retention or {}
+        return {"fixture_run_id": self._fixture.run_id, "stopped": retention.get("complete") is True,
+                "identity": copy.deepcopy(retention.get("identity"))}
+
     def retain(self):
         """Stop original Docker writers without permitting later deletion/retry."""
         if self._control is not None and not self._control.closed:
@@ -225,8 +234,17 @@ def prepare_native_zakura_backend(case: NativeCaseLifecycle, *,
             tree.check(os.fstat(descriptor), directory=True, private=True)
         owner = OwnedNativeZakuraBackend(case, source, root, descriptor, identity, _TOKEN)
         owner.verify_owned()
+        labels = {"com.keplr.vizor.e2e.namespace": case.workspace.namespace}
+        suites = [part for part in case.workspace.root.parts if re.fullmatch(r"native-suite-[0-9a-f]{10}", part)]
+        if len(suites) == 1:
+            labels["com.keplr.vizor.e2e.suite-run"] = suites[0].removeprefix("native-suite-")
 
         class AnchoredFixture(source.fixture_class):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                # The pinned helper creates and ownership-checks with this full set.
+                self.labels = {**self.labels, **labels}
+
             def _write_text(self, name, text):
                 owner._write_text(name, text)
 
@@ -239,6 +257,13 @@ def prepare_native_zakura_backend(case: NativeCaseLifecycle, *,
             run_id=fixture_run_id, miner_address=miner_address, network_subnet=network_subnet,
             profile="zakura-direct-height1" if activation == 1 else "zakura-direct-activation500")
         owner._write_text("source-identity.json", json.dumps(source.identity(), sort_keys=True) + "\n")
+        # Before Docker starts, so a network or volume left by a killed runner still maps here.
+        fixture = owner._fixture
+        owner._write_text("fixture-identity.json", json.dumps({"schema_version": 1, "run_id": fixture.run_id,
+            "prefix": "zakura-proof-" + fixture.run_id[:12], "names": {"network": fixture.network_name,
+                "node": fixture.node_name, "donor": fixture.donor_name, "lightwalletd": fixture.lwd_name,
+                "lightwalletd_volume": fixture.lwd_volume},
+            "network_subnet": network_subnet, "labels": fixture.labels}, sort_keys=True) + "\n")
         return owner
     except BaseException:
         if owner is not None:
