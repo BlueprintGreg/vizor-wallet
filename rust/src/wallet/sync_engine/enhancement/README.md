@@ -429,7 +429,7 @@ until an account is promoted.
   run, `Failed`, which skips the account, or `Cancelled`; none carries detail.
 - **Trusted qualification (D1).** The source settles a `Ready` batch
   (`RecoverySource::apply`): the transparent PIR source hands it to the
-  adapter's `apply_and_acknowledge`, which applies the commits in order, each
+  adapter's `settle_latest`, which applies the commits in order, each
   in its own library transaction, then acknowledges the batch. The wallet
   write lock is held across that whole call, as the adapter asks, so a
   foreground wallet write waits for the batch being settled; no lock is held
@@ -800,10 +800,10 @@ trusted, since every commit comes from the configured origin.
   publication's end and confirms each filter match by private retrieval, so a
   filter false positive never offers an empty account; it stores nothing and
   opens no companion or wallet. The answer keeps the public batch rule (stop
-  after a batch of accounts with no history). Only a complete answer counts. A
-  pass its query or byte budget stopped keeps what it confirmed, and another
-  pass asks about the rest, so one heavily used address cannot exhaust the
-  check; an outage, a lagging publication, the 300 s deadline or anything else
+  after a batch of accounts with no history). Only a complete answer counts. When
+  its query or byte budget stops a pass, the library keeps what it confirmed
+  and runs another pass over the rest with the filters it already has, so one
+  heavily used address cannot exhaust the check; an outage, a lagging publication, the 300 s deadline or anything else
   fails the import with a retry message, never a shorter list. Into an
   existing wallet the message also names the Settings toggle; a first wallet
   has no Settings yet. The
@@ -1115,7 +1115,7 @@ well as the 49-bit and 44-bit full queries; Status needs `06a972db` or later.
 The production fleets run `9d2cbda0`.
 It retains the parent's private-recovery and compact txid-display changes and
 adds durable privacy-policy resolution at each sensitive read plus optional
-SQLite `apply_and_acknowledge`. Vizor supplies explicit trust, then the library
+SQLite settlement (`settle_latest`). Vizor supplies explicit trust, then the library
 commits wallet facts and quarantine before acknowledging the opaque batch.
 A failed or interrupted batch remains replayable; trusted qualification
 reconciles provisional revision replacement. Scheduling, network routing,

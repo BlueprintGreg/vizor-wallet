@@ -11,6 +11,7 @@
 //! [`isolated_test`]: crate::wallet::db::isolated_test
 
 use transparent::address::TransparentAddress;
+use zakura_pir_transparent::testing::{transparent_filter, transparent_shard};
 
 use super::pir::{assert_private, BIRTHDAY, TOP};
 use super::qualification::disclosing;
