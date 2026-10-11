@@ -200,8 +200,10 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
 
   /// `attempt` re-arms once and reports whether the obligation is satisfied.
   func request(_ attempt: @escaping Attempt, completion: @escaping (Bool) -> Void) {
-    BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
     lock.lock()
+    // Recorded under the lock that a finishing attempt clears it under, so
+    // that attempt cannot erase this request's obligation before it runs.
+    BackgroundMigrationDirectRouteRearm.markPending(defaults: defaults)
     waiting.append(completion)
     if running {
       rerun = true

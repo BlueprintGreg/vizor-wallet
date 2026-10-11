@@ -280,7 +280,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 35 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 36 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

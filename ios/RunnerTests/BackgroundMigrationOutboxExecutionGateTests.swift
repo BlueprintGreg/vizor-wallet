@@ -359,6 +359,30 @@ final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
     XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
   }
 
+  func testANewRequestKeepsItsObligationWhileTheLastAttemptFinishes() throws {
+    // A request that arrives as an attempt is finishing must not have its
+    // obligation cleared by that attempt's success.
+    let suite = "vizor.test.rearm." + UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let serializer = BackgroundMigrationRearmSerializer(defaults: defaults)
+    var attempts: [(Bool) -> Void] = []
+    let attempt: BackgroundMigrationRearmSerializer.Attempt = { done in
+      attempts.append(done)
+    }
+    serializer.request(attempt) { _ in }
+    // The first attempt finishes successfully before the next request.
+    attempts[0](true)
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+    serializer.request(attempt) { _ in }
+    // While the new attempt is in flight its obligation is recorded, so an
+    // app suspended now still retries on the next foreground entry.
+    XCTAssertEqual(attempts.count, 2)
+    XCTAssertTrue(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+    attempts[1](true)
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+  }
+
   func testAPendingWakeIsKeptRatherThanReplaced() {
     // Replacing cancels first; a failed replacement would revoke a wake that
     // a concurrent re-arm had already confirmed.
