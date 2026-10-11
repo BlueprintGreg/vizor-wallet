@@ -42,16 +42,18 @@ def identity(details: os.stat_result, *, build_output=False) -> tuple[int, ...]:
 def check(details: os.stat_result, *, directory: bool, private=False, allow_links=False, build_output=False):
     link = not directory and allow_links and stat.S_ISLNK(details.st_mode)
     valid_type = stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode) or link
-    # Cargo hard-links its outputs and SDK files can be group-writable. Such
-    # regular files are unlinked as names, never written through or traversed.
-    output = build_output and not directory and not link
+    # Below a private build-output root no other user can reach an entry, so its
+    # write bits grant nothing: Cargo hard-links its outputs, SDK files can be
+    # group-writable and Xcode package checkouts create 0777 directories. Such
+    # entries are unlinked or descended as names, never written through.
+    output = build_output and not link
     if (not valid_type or details.st_uid != os.getuid()
-        or (not link and details.st_mode & (0o002 if output else 0o077 if private else 0o022))
+        or (not link and not output and details.st_mode & (0o077 if private else 0o022))
         or (not directory and not output and details.st_nlink != 1)):
         raise OwnedTreeError("tree entry must have its original owned regular identity")
 
 
-def open_directory(stack: contextlib.ExitStack, path, *, dir_fd=None, private=False):
+def open_directory(stack: contextlib.ExitStack, path, *, dir_fd=None, private=False, build_output=False):
     """Open an owned directory; one opened below dir_fd must be on dir_fd's filesystem.
 
     O_NOFOLLOW stops links, not mount points: a volume mounted inside a tree
@@ -60,7 +62,7 @@ def open_directory(stack: contextlib.ExitStack, path, *, dir_fd=None, private=Fa
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
     stack.callback(os.close, descriptor)
     details = os.fstat(descriptor)
-    check(details, directory=True, private=private)
+    check(details, directory=True, private=private, build_output=build_output)
     if dir_fd is not None and details.st_dev != os.fstat(dir_fd).st_dev:
         raise OwnedTreeError("tree directory crosses a filesystem boundary")
     return descriptor
@@ -69,6 +71,8 @@ def open_directory(stack: contextlib.ExitStack, path, *, dir_fd=None, private=Fa
 def scan(directory_fd: int, depth=0, *, allow_links=False, marker="", build_output=False) -> tuple[Entry, ...]:
     if depth > 64:
         raise OwnedTreeError("tree depth exceeds cleanup bound")
+    if build_output and depth == 0:  # write bits below are tolerated only under a private root
+        check(os.fstat(directory_fd), directory=True, private=True)
     entries = []
     # Keep the caller's original marker until all other entries are removed.
     for name in sorted(os.listdir(directory_fd), key=lambda item: (item == marker, item)):
@@ -78,7 +82,7 @@ def scan(directory_fd: int, depth=0, *, allow_links=False, marker="", build_outp
         children = None
         if directory:
             with contextlib.ExitStack() as stack:
-                child_fd = open_directory(stack, name, dir_fd=directory_fd)
+                child_fd = open_directory(stack, name, dir_fd=directory_fd, build_output=build_output)
                 if identity(os.fstat(child_fd)) != identity(details):
                     raise OwnedTreeError("tree child changed during inspection")
                 children = scan(child_fd, depth + 1, allow_links=allow_links, marker=marker,
@@ -140,7 +144,7 @@ def remove_output(directory_fd: int, entries: tuple[Entry, ...], verify_attachme
             raise OwnedTreeError("tree child changed before removal")
         if entry.children is not None:
             with contextlib.ExitStack() as stack:
-                child_fd = open_directory(stack, entry.name, dir_fd=directory_fd)
+                child_fd = open_directory(stack, entry.name, dir_fd=directory_fd, build_output=True)
                 if identity(os.fstat(child_fd)) != entry.identity:
                     raise OwnedTreeError("tree child changed during removal")
                 def verify_child_attachment():

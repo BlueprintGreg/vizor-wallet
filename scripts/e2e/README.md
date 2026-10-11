@@ -1082,8 +1082,11 @@ support owner's strict link rejection. Mutable build workspaces may contain
 owned symlinks; they are unlinked as entries, never traversed. Hardlinks, unsafe
 entries, replaced parents or uncertain cleanup retain remaining state and seal
 new assignment. Only its explicit build-output mode, used for producer
-intermediates after a passing run, unlinks hard-linked or group-writable regular
-files; it still never follows links and stops on any identity change. Closing
+intermediates after a passing run and by prune, accepts hard-linked files and
+entries with group or other write bits, such as the 0777 directories Xcode
+leaves in package checkouts. It does so only below a private (0700) root that no
+other user can enter; it still refuses special files, never follows links and
+stops on any identity change. Closing
 an unfinished worker stops its case writers and retains workspace/state instead
 of deleting it. The runner never removes evidence, including after successful
 cleanup, and partial failures never become successful reruns.

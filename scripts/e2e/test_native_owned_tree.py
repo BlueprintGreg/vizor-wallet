@@ -80,17 +80,33 @@ class OwnedTreeTests(unittest.TestCase):
         self.assertEqual((self.outside / "shared").read_text(), "preserve")
         self.assertEqual((self.outside / "shared").stat().st_nlink, 1)
 
-    def test_build_output_still_refuses_other_writable_files_and_unsafe_directories(self):
-        for name, prepare in (("world", lambda path: ((path / "file").write_text("x"),
-                                                      (path / "file").chmod(0o666))),
-                              ("directory", lambda path: (path / "shared").mkdir(mode=0o775) or
-                                                         (path / "shared").chmod(0o775)),
-                              ("fifo", lambda path: os.mkfifo(path / "pipe"))):
+    def test_build_output_refuses_special_files_and_a_shared_root(self):
+        for name, prepare in (("fifo", lambda path: os.mkfifo(path / "pipe")),
+                              ("shared-root", lambda path: path.chmod(0o755))):
             with self.subTest(name), contextlib.ExitStack() as stack:
                 path = self.tree(name)
                 prepare(path)
                 with self.assertRaises(TREE.OwnedTreeError):
                     TREE.scan(TREE.open_directory(stack, path), allow_links=True, build_output=True)
+
+    def test_build_output_removes_writable_package_entries_below_a_private_root(self):
+        path = self.tree()
+        package = path / "SourcePackages" / "checkouts" / "hw-transport-ios-ble" / ".swiftpm"
+        (package / "xcode").mkdir(parents=True)
+        for directory in (package, package / "xcode"):
+            directory.chmod(0o777)  # as Xcode leaves them
+        (package / "xcode" / "settings").write_text("x")
+        (package / "xcode" / "settings").chmod(0o666)
+        with contextlib.ExitStack() as stack:
+            descriptor = TREE.open_directory(stack, path, private=True)
+            entries = TREE.scan(descriptor, allow_links=True, build_output=True)
+            TREE.remove_output(descriptor, entries, lambda: None)
+        self.assertEqual(os.listdir(path), [])
+        default = self.tree("default")
+        (default / "shared").mkdir()
+        (default / "shared").chmod(0o777)
+        with contextlib.ExitStack() as stack, self.assertRaises(TREE.OwnedTreeError):
+            TREE.scan(TREE.open_directory(stack, default), allow_links=True)
 
     def test_producer_sweep_keeps_logs_markers_and_their_parents(self):
         builds, case = self.producer()
@@ -105,6 +121,17 @@ class OwnedTreeTests(unittest.TestCase):
             "voting-build/build-proof.json", "workspace-owner.json"])
         self.assertEqual((self.outside / "shared").read_text(), "preserve")
         self.assertEqual(TREE.prune_build_outputs(builds), {"removed": [], "bytes": 0, "errors": []})
+
+    def test_producer_sweep_removes_xcode_package_directories(self):
+        builds, case = self.producer()
+        package = case / "ios-build" / "SourcePackages" / "checkouts" / "pkg" / ".swiftpm"
+        (package / "xcode").mkdir(parents=True)
+        for directory in (package, package / "xcode"):
+            directory.chmod(0o777)
+        record = TREE.prune_build_outputs(builds)
+        self.assertEqual(record["errors"], [])
+        self.assertIn("e2e/" + case.name + "/ios-build", record["removed"])
+        self.assertFalse((case / "ios-build").exists())
 
     def test_symlinked_roots_are_refused_without_touching_targets(self):
         builds, case = self.producer()
