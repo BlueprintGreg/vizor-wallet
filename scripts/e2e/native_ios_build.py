@@ -83,37 +83,71 @@ def build_native_ios_cohort(case, *, source_root, flutter, timeout=1800.0,
             "--dart-define=VIZOR_PAYMENT_LINK_REGTEST_ENABLED=true",
             "--dart-define=ZCASH_E2E_FIRST_UNLOCK_MNEMONIC_KEYCHAIN=true"]
         inputs = None
+        lookup = {}
         def current_inputs():
             return cache.collect_native_cache_inputs(root, {path:_capture(path) for path in source}, tool,
                 platform="ios", architecture=architecture, command=command,
                 environment=environment, cancel=cancel)
+        def reuse(candidate):
+            # A miss keeps this key's lease for the caller; a hit rechecks and joins.
+            nonlocal lease
+            lease = cache.NativeCohortCacheLease(cache_root, candidate,
+                timeout=max(0.001, deadline-time.monotonic()), cancel_event=cancel, roles=("cohort",))
+            lease.__enter__()
+            cached = lease.load()
+            if cached is None:
+                return None
+            copies = lease.materialize(case, cached)
+            captured = capture_ios_cohort(copies["cohort"])
+            if current_inputs() != candidate:
+                raise NativeIosBuildError("iOS inputs changed during cache publication")
+            changed = cache.native_source_changes(root, source, "ios")
+            if changed:
+                raise NativeIosBuildError("iOS source/tool changed during cache reuse: " + ", ".join(changed[:8]))
+            receipt = case.close()
+            captured.verify_unchanged()
+            checkout_lease._check()
+            return captured, {"ios_app_build_count":0,
+                "cache_hit":True, "cache_key":lease.key,
+                "architecture":captured.architecture,
+                "joined_build_processes":case.launched_process_count, "exit_codes":receipt.exit_codes,
+                "persistent_cache_attestation":True, "wallet_or_catalog_pass":False, **lookup}
         if cache_root is not None:
+            # Missing Cargokit targets change sysroot identity, so prepare them
+            # before any lookup. Configuration runs only after an early miss or
+            # when the existing configuration cannot be collected yet.
+            cache.prepare_native_rust_targets(root, platform="ios", architecture=architecture,
+                flutter=tool, environment=environment, command=command)
+            early = unavailable = None
+            try:
+                early = current_inputs()
+            except runtime.Cancelled:
+                raise
+            except Exception as error:
+                # Configuration can supply what this could not read (a Pod lock,
+                # engine artifacts, a first Flutter run's output); the configured
+                # collection decides and fails as before.
+                unavailable = type(error).__name__
+            if early is not None:
+                lookup = {"early_lookup":"hit"}
+                hit = reuse(early)
+                if hit is not None:
+                    return hit
+                lease.__exit__()
+                lease = None
             command(configure, in_source=True)
             if not (root/"ios/Pods").is_dir():
                 raise NativeIosBuildError("prepared iOS Pod sandbox is missing")
-            cache.prepare_native_rust_targets(root, platform="ios", architecture=architecture,
-                flutter=tool, environment=environment, command=command)
             changed = cache.native_source_changes(root, source, "ios")
             if changed:
                 raise NativeIosBuildError("iOS preparation changed source/tool: " + ", ".join(changed[:8]))
             inputs = current_inputs()
-            lease = cache.NativeCohortCacheLease(cache_root, inputs,
-                timeout=max(0.001, deadline-time.monotonic()), cancel_event=cancel, roles=("cohort",))
-            lease.__enter__()
-            cached = lease.load()
-            if cached is not None:
-                copies = lease.materialize(case, cached)
-                captured = capture_ios_cohort(copies["cohort"])
-                if current_inputs() != inputs:
-                    raise NativeIosBuildError("iOS inputs changed during cache publication")
-                receipt = case.close()
-                captured.verify_unchanged()
-                checkout_lease._check()
-                return captured, {"ios_app_build_count":0,
-                    "cache_hit":True, "cache_key":lease.key,
-                    "architecture":captured.architecture,
-                    "joined_build_processes":case.launched_process_count, "exit_codes":receipt.exit_codes,
-                    "persistent_cache_attestation":True, "wallet_or_catalog_pass":False}
+            lookup = {"early_lookup":"unavailable", "early_lookup_error":unavailable} if early is None else {"early_lookup":"miss",
+                "early_lookup_changed_inputs":sorted(name for name in set(early) | set(inputs)
+                                                     if early.get(name) != inputs.get(name))}
+            hit = reuse(inputs)
+            if hit is not None:
+                return hit
         # Configure Flutter once, then build a thin, signed Simulator app into
         # this original producer's private derived-data directory.
         if cache_root is None:
@@ -142,7 +176,7 @@ def build_native_ios_cohort(case, *, source_root, flutter, timeout=1800.0,
             "checked_source_files_sha256":hashlib.sha256(json.dumps({
                 str(path.relative_to(root)) if path.is_relative_to(root) else str(path):record[1]
                 for path,record in source.items()}, sort_keys=True).encode()).hexdigest(),
-            "persistent_cache_attestation":lease is not None, "wallet_or_catalog_pass":False}
+            "persistent_cache_attestation":lease is not None, "wallet_or_catalog_pass":False, **lookup}
     except BaseException as primary:
         try:
             case.close()

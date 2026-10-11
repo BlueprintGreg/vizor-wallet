@@ -1300,7 +1300,7 @@ configured tools. The signer and voting builders use the same collector and
 recheck its inputs before publication, including after the original owner seals.
 
 macOS and iOS producers share one checkout-wide lock under
-`.regtest-logs/native-build-locks` from configuration through publication, even
+`.regtest-logs/native-build-locks` from source capture through publication, even
 with different artifact keys/cache roots or with caching disabled. Different
 checkouts remain independent; case-worker parallelism is unchanged. The shared
 lock also protects common Flutter-generated files. Waiting uses the original
@@ -1311,13 +1311,24 @@ producers, not unrelated developer builds.
 
 Only the original source-checking native builder with positively joined
 successful command groups can publish.
-Before lookup, `flutter build --config-only --no-pub` prepares the selected
-platform's configuration/Pod sandbox without app compilation. Missing Rust
-toolchains/targets in the captured Cargokit inventory are prepared before
-sysroot identity is collected; installed targets are not reinstalled or updated.
-Installed Pod
-contents bind the key alongside normalized lock metadata and package sources;
-preparation and build still reject changed project/wallet/tool inputs.
+Missing Rust toolchains/targets in the captured Cargokit inventory are prepared
+before sysroot identity is collected; installed targets are not reinstalled or
+updated. The first lookup collects inputs from the checkout's existing
+configuration without running `flutter build`. Only an early miss, or an early
+collection that fails for any reason other than cancellation (a missing Pod lock
+or engine artifact, or the progress a self-updating Flutter prints on its first
+command), runs `flutter build --config-only --no-pub`, which prepares the
+selected platform's configuration/Pod sandbox without app compilation; inputs are
+then collected and looked up again, and a failure that remains fails the
+producer as before. Builds publish only under that configured key. An early hit
+runs neither Flutter configuration nor CocoaPods, so the Pod lock, Pod sandbox and
+Xcode project stay untouched; after an early miss they are prepared as before.
+Installed Pod contents bind the key alongside normalized lock metadata and
+package sources; preparation and build still reject changed project/wallet/tool
+inputs. Reports record `early_lookup` (`hit`, `miss` or `unavailable`), the
+exception type of an unavailable early collection in `early_lookup_error` and,
+after an early miss, the top-level input names that differ between the two
+collections in `early_lookup_changed_inputs`.
 The Flutter SDK inventory includes material-font artifact bytes copied into
 these Material-enabled debug apps, not just compiler and engine artifacts.
 The same bounded per-key lock and

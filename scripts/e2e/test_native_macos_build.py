@@ -1,5 +1,7 @@
 """Real private source files; modeled SDK commands/signatures/native artifacts."""
 from pathlib import Path
+import contextlib
+import json
 import os
 import posixpath
 import re
@@ -66,9 +68,53 @@ class BuildTests(unittest.TestCase):
         self.mode = "same-project-bytes"
         self.native_arguments = None
         self.installed_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+        self.leases, self.published = [], set()
+
+    def model_inputs(self, *args, **kwargs):
+        """Model collector: Pod sandbox presence plus one checked wallet source."""
+        return {"pods":(self.source/"macos/Pods").is_dir(), "app":(self.source/"lib/app.dart").read_text()}
+
+    @contextlib.contextmanager
+    def modeled_cache(self, *published):
+        test = self
+        test.published.update(json.dumps(item, sort_keys=True) for item in published)
+        class Lease:
+            def __init__(self, root, inputs, **options):
+                self.root, self.inputs, self.exited = root, inputs, False
+                self.key = str(len(test.leases)).rjust(64, "0")
+                test.leases.append(self)
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                self.exited = True
+            def load(self):
+                if test.mode == "corrupt-entry":
+                    raise BUILD.cache.NativeBuildCacheError("native cache attachment/inventory changed")
+                if json.dumps(self.inputs, sort_keys=True) not in test.published:
+                    return None
+                return {role:self.root/(role+".app") for role in ("cohort", "helper")}
+            def materialize(self, case, paths):
+                test.commands.append(["materialize"])
+                if test.mode == "changed-during-reuse":
+                    (test.source/"lib/app.dart").write_text("changed while copying")
+                return {role:case.workspace.root/"native-publication"/(role+".app") for role in paths}
+            def publish(self, producer):
+                test.published.add(json.dumps(self.inputs, sort_keys=True))
+        with patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=self.model_inputs) as collect, \
+             patch.object(BUILD.cache, "NativeCohortCacheLease", Lease), \
+             patch.object(BUILD.cache, "ProducedNativeCohort", lambda case, captured, inputs, token: inputs):
+            yield collect
+
+    def configurations(self):
+        return [args for args in self.commands if "--config-only" in args]
+
+    def app_builds(self):
+        return [args for args in self.commands if "--target" in args and "--config-only" not in args]
 
     def command(self, arguments, **kwargs):
         self.commands.append(arguments)
+        if "--config-only" in arguments:
+            self.assertTrue(all(lease.exited for lease in self.leases), "a key lease is held during configuration")
         actual = arguments[4:] if arguments[0] == sys.executable else arguments
         if actual[:3] == ["rustup", "toolchain", "list"]:
             return runtime.CommandResult(0,("stable\n",))
@@ -123,7 +169,7 @@ class BuildTests(unittest.TestCase):
                             timeout=0.05,cancel_event=threading.Event()):
                         pass
             return original(arguments, **options)
-        with patch.object(self,"command",side_effect=command):
+        with patch.object(self,"command",side_effect=command), self.modeled_cache():
             with self.assertRaisesRegex(BUILD.NativeMacosBuildError,"lib/app.dart"):
                 self.build(cache_root=self.root/"cache")
         with BUILD.cache.NativeCheckoutBuildLease(self.source,
@@ -132,7 +178,8 @@ class BuildTests(unittest.TestCase):
 
     def test_unproven_join_retains_the_checkout_without_authorizing_next_build(self):
         self.mode = "changed-wallet-source"
-        with patch.object(self.case,"close",side_effect=RuntimeError("unproven original join")):
+        with patch.object(self.case,"close",side_effect=RuntimeError("unproven original join")), \
+             self.modeled_cache():
             with self.assertRaisesRegex(BUILD.NativeMacosBuildError,"lib/app.dart"):
                 self.build(cache_root=self.root/"cache")
         with self.assertRaisesRegex(BUILD.cache.NativeBuildCacheError,"unjoined retained"):
@@ -141,17 +188,116 @@ class BuildTests(unittest.TestCase):
                 pass
         self.case.close()
 
-    def test_pods_are_prepared_without_app_compilation_before_cache_lookup(self):
+    def test_pods_are_prepared_without_app_compilation_only_after_an_early_miss(self):
         def inputs(*args, **kwargs):
-            self.assertTrue((self.source/"macos/Pods").is_dir())
-            self.assertTrue(any("--config-only" in args for args in self.commands))
+            configured = bool(self.configurations())
+            self.assertEqual((self.source/"macos/Pods").is_dir(), configured)
             self.assertFalse(any("add" in args for args in self.commands))
             self.assertFalse(any("install" in args for args in self.commands))
             self.assertFalse(any("swift" in args for args in self.commands))
-            raise RuntimeError("cache lookup boundary")
-        with patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=inputs):
+            if configured:
+                raise RuntimeError("cache lookup boundary")
+            return self.model_inputs()
+        with self.modeled_cache(), patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=inputs):
             with self.assertRaisesRegex(RuntimeError, "cache lookup boundary"):
                 self.build(cache_root=self.root/"cache")
+        self.assertEqual(len(self.configurations()), 1)
+        self.assertTrue(self.leases[0].exited)
+
+    def test_early_hit_skips_configuration_and_checkout_writes(self):
+        stamp = self.project.stat().st_mtime_ns
+        with self.modeled_cache({"pods":False, "app":"model source"}) as collect:
+            _, proof = self.build(cache_root=self.root/"cache")
+        self.assertEqual(self.configurations(), [])
+        self.assertEqual(self.app_builds(), [])
+        self.assertFalse((self.source/"macos/Pods").exists())
+        self.assertEqual(self.project.stat().st_mtime_ns, stamp)
+        self.assertEqual((proof["cache_hit"], proof["app_build_count"], proof["early_lookup"]), (True, 0, "hit"))
+        self.assertNotIn("early_lookup_changed_inputs", proof)
+        self.assertEqual(len(self.leases), 1)
+        self.assertEqual(collect.call_count, 2)  # The early lookup and the recheck after copying.
+
+    def test_early_miss_configures_once_then_reuses_the_configured_entry(self):
+        with self.modeled_cache({"pods":True, "app":"model source"}) as collect:
+            _, proof = self.build(cache_root=self.root/"cache")
+        self.assertEqual(len(self.configurations()), 1)
+        self.assertEqual(self.app_builds(), [])
+        self.assertTrue(self.leases[0].exited)
+        self.assertEqual([lease.inputs["pods"] for lease in self.leases], [False, True])
+        self.assertEqual((proof["cache_hit"], proof["early_lookup"], proof["early_lookup_changed_inputs"]),
+                         (True, "miss", ["pods"]))
+        self.assertEqual(collect.call_count, 3)  # Early, configured and the recheck after copying.
+
+    def test_cache_miss_configures_once_and_publishes_the_configured_key(self):
+        with self.modeled_cache():
+            _, proof = self.build(cache_root=self.root/"cache")
+        self.assertEqual((len(self.configurations()), len(self.app_builds())), (1, 1))
+        self.assertEqual(self.published, {json.dumps({"app":"model source", "pods":True}, sort_keys=True)})
+        self.assertEqual((proof["cache_hit"], proof["app_build_count"], proof["early_lookup"]), (False, 1, "miss"))
+
+    def test_missing_pre_configuration_state_falls_back_to_configuration(self):
+        def inputs(*args, **kwargs):
+            if not (self.source/"macos/Pods").is_dir():
+                raise FileNotFoundError("macos/Podfile.lock")
+            return self.model_inputs()
+        with self.modeled_cache({"pods":True, "app":"model source"}), \
+             patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=inputs):
+            _, proof = self.build(cache_root=self.root/"cache")
+        self.assertEqual(len(self.configurations()), 1)
+        self.assertEqual((proof["cache_hit"], proof["early_lookup"], proof["early_lookup_error"]),
+                         (True, "unavailable", "FileNotFoundError"))
+        self.assertNotIn("early_lookup_changed_inputs", proof)
+
+    def test_unparsable_first_flutter_output_falls_back_to_configuration(self):
+        # A Flutter that bootstraps on its first command prints progress before
+        # its --version JSON; configuration used to absorb that first run.
+        def inputs(*args, **kwargs):
+            if not self.configurations():
+                raise json.JSONDecodeError("Expecting value", "Building flutter tool...", 0)
+            return self.model_inputs()
+        with self.modeled_cache({"pods":True, "app":"model source"}), \
+             patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=inputs):
+            _, proof = self.build(cache_root=self.root/"cache")
+        self.assertEqual((len(self.configurations()), self.app_builds()), (1, []))
+        self.assertEqual((proof["cache_hit"], proof["early_lookup"], proof["early_lookup_error"]),
+                         (True, "unavailable", "JSONDecodeError"))
+
+    def test_early_lookup_does_not_mask_cancellation(self):
+        with self.modeled_cache(), patch.object(BUILD.cache, "collect_native_cache_inputs",
+                                                side_effect=runtime.Cancelled()):
+            with self.assertRaises(runtime.Cancelled):
+                self.build(cache_root=self.root/"cache")
+        self.assertEqual(self.configurations(), [])
+
+    def test_collector_command_failure_after_configuration_fails_the_producer(self):
+        failure = BUILD.NativeMacosBuildError("owned native build/signing failed; retain original logs", 1)
+        with self.modeled_cache(), \
+             patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=failure) as collect:
+            with self.assertRaisesRegex(BUILD.NativeMacosBuildError, "retain original logs"):
+                self.build(cache_root=self.root/"cache")
+        self.assertEqual((len(self.configurations()), collect.call_count, self.leases), (1, 2, []))
+
+    def test_unprotected_input_after_configuration_fails_the_producer(self):
+        failure = BUILD.cache.NativeBuildCacheError("native tool input is not a protected bounded file: /model")
+        with self.modeled_cache(), \
+             patch.object(BUILD.cache, "collect_native_cache_inputs", side_effect=failure) as collect:
+            with self.assertRaisesRegex(BUILD.cache.NativeBuildCacheError, "protected bounded file"):
+                self.build(cache_root=self.root/"cache")
+        self.assertEqual((len(self.configurations()), collect.call_count, self.leases), (1, 2, []))
+
+    def test_corrupt_early_entry_fails_without_configuration_or_rebuild(self):
+        self.mode = "corrupt-entry"
+        with self.modeled_cache():
+            with self.assertRaisesRegex(BUILD.cache.NativeBuildCacheError, "inventory changed"):
+                self.build(cache_root=self.root/"cache")
+        self.assertEqual((self.configurations(), self.app_builds()), ([], []))
+
+    def test_early_hit_rejects_wallet_source_changed_during_reuse(self):
+        self.mode = "changed-during-reuse"
+        with self.modeled_cache({"pods":False, "app":"model source"}):
+            with self.assertRaisesRegex(BUILD.NativeMacosBuildError, "changed during cache publication"):
+                self.build(cache_root=self.root/"cache")
+        self.assertEqual(self.configurations(), [])
 
     def test_imported_test_support_is_in_cache_input_inventory(self):
         def inputs(root, source, *args, **kwargs):
@@ -172,19 +318,21 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(sorted(path for path in closure if path.startswith("test/")
                                 and not path.startswith("test/support/")), [])
 
-    def test_preparation_test_support_changes_are_rejected_before_cache_lookup(self):
+    def test_preparation_test_support_changes_are_rejected_before_configured_lookup(self):
         self.mode = "changed-test-support"
-        with patch.object(BUILD.cache,"collect_native_cache_inputs") as inputs:
+        with self.modeled_cache() as inputs:
             with self.assertRaisesRegex(BUILD.NativeMacosBuildError,"legacy_payment_link.dart"):
                 self.build(cache_root=self.root/"cache")
-            inputs.assert_not_called()
+        self.assertEqual(inputs.call_count, 1)  # The early lookup only.
+        self.assertEqual(len(self.leases), 1)
 
-    def test_preparation_source_changes_are_rejected_before_cache_lookup(self):
+    def test_preparation_source_changes_are_rejected_before_configured_lookup(self):
         self.mode = "changed-wallet-source"
-        with patch.object(BUILD.cache, "collect_native_cache_inputs") as inputs:
+        with self.modeled_cache() as inputs:
             with self.assertRaisesRegex(BUILD.NativeMacosBuildError, "lib/app.dart"):
                 self.build(cache_root=self.root/"cache")
-            inputs.assert_not_called()
+        self.assertEqual(inputs.call_count, 1)  # The early lookup only.
+        self.assertEqual(len(self.leases), 1)
 
     def test_sdk_project_metadata_rewrite_preserves_identical_input_bytes(self):
         _,proof = self.build()
