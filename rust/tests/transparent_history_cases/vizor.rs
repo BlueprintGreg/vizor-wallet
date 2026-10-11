@@ -442,7 +442,7 @@ impl VizorWallet {
             account.uuid.clone(),
             account.mnemonic.as_bytes().to_vec(),
         )
-        .unwrap_or_else(|e| panic!("V shield {}: {e}", account.name));
+        .unwrap_or_else(|e| panic!("V shield {}: {}", account.name, e.message));
         assert!(
             result.broadcasted_count > 0 && result.broadcasted_count == result.total_count,
             "V shield not broadcast: {} {:?}",
@@ -686,7 +686,7 @@ pub fn balance_of(db: &str, uuid: &str) -> Result<Balance, String> {
                 sync_api::TransparentStopReason::LegacyDiscrepancy => "legacy_discrepancy",
                 sync_api::TransparentStopReason::Withdrawn => "withdrawn",
                 sync_api::TransparentStopReason::Stalled => "stalled",
-                sync_api::TransparentStopReason::NotSelected => "not_selected",
+                sync_api::TransparentStopReason::OptOutUnfinished => "opt_out_unfinished",
             }
             .into()
         }),

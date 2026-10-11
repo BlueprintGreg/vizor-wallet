@@ -1216,10 +1216,10 @@ impl Ctx {
                 ));
             }
             if b["transparent_authority"] != json!("stopped")
-                || b["transparent_stop"] != json!("not_selected")
+                || b["transparent_stop"] != json!("opt_out_unfinished")
             {
                 problems.push(format!(
-                    "{}: expected recovery stopped as not selected in a process with private queries unset: {b}",
+                    "{}: expected recovery stopped, the wallet still private, in a process with private queries unset: {b}",
                     account.name
                 ));
             }
