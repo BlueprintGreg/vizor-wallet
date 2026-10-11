@@ -194,11 +194,20 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
   private var rerun = false
   private var waiting: [(Bool) -> Void] = []
   /// Advanced by [reset]; an attempt records its result only if no reset
-  /// happened since it started.
+  /// happened since the request it serves was registered.
   private var epoch = 0
+  /// The epoch a queued rerun was registered in.
+  private var rerunEpoch = 0
+  /// Runs after a request is registered and before its attempt starts; tests
+  /// use it to reset in exactly that gap.
+  private let afterRegistration: (() -> Void)?
 
-  init(defaults: UserDefaults = .standard) {
+  init(
+    defaults: UserDefaults = .standard,
+    afterRegistration: (() -> Void)? = nil
+  ) {
     self.defaults = defaults
+    self.afterRegistration = afterRegistration
   }
 
   /// `attempt` re-arms once and reports whether the obligation is satisfied.
@@ -210,12 +219,17 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
     waiting.append(completion)
     if running {
       rerun = true
+      rerunEpoch = epoch
       lock.unlock()
       return
     }
     running = true
+    // Captured with the registration, so a reset before the attempt starts
+    // still invalidates it.
+    let registeredEpoch = epoch
     lock.unlock()
-    run(attempt)
+    afterRegistration?()
+    run(attempt, epoch: registeredEpoch)
   }
 
   /// Drops the obligation of a wallet that no longer exists: clears the
@@ -230,20 +244,18 @@ final class BackgroundMigrationRearmSerializer: @unchecked Sendable {
     lock.unlock()
   }
 
-  private func run(_ attempt: @escaping Attempt) {
-    lock.lock()
-    let startedEpoch = epoch
-    lock.unlock()
+  private func run(_ attempt: @escaping Attempt, epoch registeredEpoch: Int) {
     attempt { [self] satisfied in
       lock.lock()
       if rerun {
         rerun = false
+        let next = rerunEpoch
         lock.unlock()
-        run(attempt)
+        run(attempt, epoch: next)
         return
       }
       running = false
-      if epoch == startedEpoch {
+      if epoch == registeredEpoch {
         if satisfied {
           BackgroundMigrationDirectRouteRearm.clear(defaults: defaults)
         } else {

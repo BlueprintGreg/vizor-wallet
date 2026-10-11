@@ -406,6 +406,29 @@ final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
     XCTAssertTrue(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
   }
 
+  func testAResetBetweenRegistrationAndAttemptInvalidatesThatRequest() throws {
+    let suite = "vizor.test.rearm." + UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    var serializer: BackgroundMigrationRearmSerializer!
+    var resetOnce = true
+    serializer = BackgroundMigrationRearmSerializer(defaults: defaults) {
+      // The wallet is reset after the request registered, before its
+      // attempt starts.
+      if resetOnce {
+        resetOnce = false
+        serializer.reset()
+      }
+    }
+    var attempts: [(Bool) -> Void] = []
+    serializer.request({ done in attempts.append(done) }) { _ in }
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+    attempts[0](false)
+    // The request belonged to the deleted wallet, so its failure must not
+    // record the obligation again.
+    XCTAssertFalse(BackgroundMigrationDirectRouteRearm.isPending(defaults: defaults))
+  }
+
   func testAPendingWakeIsKeptRatherThanReplaced() {
     // Replacing cancels first; a failed replacement would revoke a wake that
     // a concurrent re-arm had already confirmed.
