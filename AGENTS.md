@@ -724,7 +724,8 @@ policy-aware openers and fails closed while Tor is starting or broken.
   unsatisfied, a tracker refused because Tor is saved counts as stopping
   (never armed) while it cleans up, a tracker that stops retires its watchdog
   and then lets a still-pending obligation own the re-arm before completing,
-  a route-deferred tracker completes its task only after re-arming, and only
+  a route-deferred tracker keeps its task until a re-arm is confirmed (expiry,
+  a time limit, or a stop completes it as failed), and only
   saving Tor again or a wallet reset drops it; a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
   screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet

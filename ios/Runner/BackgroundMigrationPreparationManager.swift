@@ -693,6 +693,12 @@ final class MigrationPreparationCompletionLatch {
     fired = true
     return true
   }
+
+  var isClaimed: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return fired
+  }
 }
 
 /// The continuation scopes to record when the foreground claims a running
@@ -1026,6 +1032,7 @@ final class BackgroundMigrationPreparationManager {
   /// has to be short: the expiration path reaches here with very little time
   /// left, and never completing the task is worse than an unarmed re-arm.
   private static let rearmSubmissionTimeout: TimeInterval = 10
+  private static let deferredRearmRetryDelay: TimeInterval = 1
   private static let busyRetryDelay: TimeInterval = 60
   private static let transientRetryDelay: TimeInterval = 60
   private static let confirmationTarget: UInt64 = 3
@@ -1929,10 +1936,43 @@ final class BackgroundMigrationPreparationManager {
       return
     }
     // A direct-route hook that ran during cleanup saw the running guard and
-    // could not re-arm. Re-arm now, and complete the task only once that has
-    // finished: iOS may suspend the app as soon as the task completes.
-    BackgroundMigrationManager.shared.savedRouteBecameDirect { _ in
-      task.setTaskCompleted(success: notificationSubmitted)
+    // could not re-arm. Re-arm now, and keep this task's execution until a
+    // re-arm is confirmed: iOS may suspend the app as soon as the task
+    // completes. Expiry, the time limit, or a stop completes it as failed,
+    // never as armed; the durable obligation then keeps retrying.
+    let latch = MigrationPreparationCompletionLatch()
+    let complete = { (rearmed: Bool) in
+      guard latch.claim() else { return }
+      task.setTaskCompleted(success: notificationSubmitted && rearmed)
+    }
+    task.expirationHandler = { complete(false) }
+    queue.asyncAfter(deadline: .now() + Self.rearmSubmissionTimeout) {
+      complete(false)
+    }
+    rearmDeferredTracker(latch: latch, complete: complete)
+  }
+
+  /// Retries the direct-route re-arm until it is confirmed, the task has
+  /// completed, or a wallet mutation or disabled notifications stop it.
+  private func rearmDeferredTracker(
+    latch: MigrationPreparationCompletionLatch,
+    complete: @escaping (Bool) -> Void
+  ) {
+    BackgroundMigrationManager.shared.savedRouteBecameDirect { [weak self] rearmed in
+      guard let self, !rearmed else {
+        complete(rearmed)
+        return
+      }
+      let stopped = self.stateLock.withPreparationLock {
+        self.mutationQuiesced || self.notificationAuthorization.isDisabled
+      }
+      guard !stopped, !latch.isClaimed else {
+        complete(false)
+        return
+      }
+      self.queue.asyncAfter(deadline: .now() + Self.deferredRearmRetryDelay) {
+        self.rearmDeferredTracker(latch: latch, complete: complete)
+      }
     }
   }
 

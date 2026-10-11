@@ -164,6 +164,7 @@ def method(header):
 headers = [
     '  private func finishRouteDeferredTrackingTask(',
     '  private func finishForegroundOnlyTask(',
+    '  private func rearmDeferredTracker(',
 ]
 for optional in [
     '  private func completeForegroundOnlyTask(',
@@ -172,8 +173,17 @@ for optional in [
     if optional in manager:
         headers.append(optional)
 
+latch_start = manager.index('final class MigrationPreparationCompletionLatch')
+latch_body = manager.index('{', latch_start)
+depth, cursor = 1, latch_body + 1
+while depth:
+    depth += (manager[cursor] == '{') - (manager[cursor] == '}')
+    cursor += 1
+latch = manager[latch_start:cursor]
+
 Path(sys.argv[1]).write_text('''
 import XCTest
+''' + latch + '''
 private extension NSLock {
   func withPreparationLock<T>(_ body: () -> T) -> T {
     lock(); defer { unlock() }; return body()
@@ -190,11 +200,16 @@ private enum BackgroundMigrationPrivateRecovery {
 }
 private final class BGContinuedProcessingTask {
   let completed = DispatchSemaphore(value: 0)
+  var expirationHandler: (() -> Void)?
   /// Whether the replacement wake already existed when the task completed;
   /// iOS may suspend the app as soon as it does.
   var replacementAtCompletion: Bool?
+  var success: Bool?
+  var completions = 0
   func setTaskCompleted(success: Bool) {
+    completions += 1
     replacementAtCompletion = BGTaskScheduler.shared.hasReplacement
+    self.success = success
     completed.signal()
   }
 }
@@ -211,13 +226,24 @@ private final class BGTaskScheduler {
 private final class RouteHandoffManager {
   static let shared = RouteHandoffManager()
   var rearm: (() -> Void)?
+  /// Results of successive re-arm attempts; empty means success. Reported
+  /// asynchronously, as the native completion is.
+  var results: [Bool] = []
+  var attempts = 0
   func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
-    if !RouteHandoffTorRoute.isSelected() { rearm?() }
-    completion(true)
+    attempts += 1
+    let succeeded = results.isEmpty ? true : results.removeFirst()
+    if succeeded && !RouteHandoffTorRoute.isSelected() { rearm?() }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) {
+      completion(succeeded)
+    }
   }
 }
 private final class PreparationRouteHandoffProbe {
   static let taskIdentifier = "test.preparation"
+  static var rearmSubmissionTimeout: TimeInterval = 2
+  static let deferredRearmRetryDelay: TimeInterval = 0.01
+  var mutationQuiesced = false
   let queue = DispatchQueue(label: "test.preparation.route-handoff")
   let stateLock = NSLock()
   var taskRunning = true
@@ -257,13 +283,45 @@ private final class PreparationRouteHandoffProbe {
 ''' + '\n'.join(method(header) for header in headers) + '''
 }
 final class BackgroundMigrationPreparationRouteHandoffTests: XCTestCase {
+  func testAFailedReArmIsRetriedBeforeTheTaskCompletes() {
+    // The re-arm during cleanup and the first one after it both fail; the
+    // task keeps its execution and retries until the replacement is in place.
+    RouteHandoffManager.shared.results = [false, false, true]
+    defer { RouteHandoffManager.shared.results = [] }
+    let task = verifyCompletion(turnDirect: true)
+    XCTAssertEqual(task.success, true)
+    XCTAssertEqual(task.completions, 1)
+    XCTAssertEqual(RouteHandoffManager.shared.attempts, 3)
+  }
+  func testAReArmThatNeverSucceedsCompletesAsFailed() {
+    PreparationRouteHandoffProbe.rearmSubmissionTimeout = 0.2
+    RouteHandoffManager.shared.results = Array(repeating: false, count: 1_000)
+    defer {
+      PreparationRouteHandoffProbe.rearmSubmissionTimeout = 2
+      RouteHandoffManager.shared.results = []
+    }
+    RouteHandoffTorRoute.setSaved(true)
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: "test.preparation")
+    let probe = PreparationRouteHandoffProbe()
+    probe.makeDirectDuringCleanup = true
+    let task = BGContinuedProcessingTask()
+    probe.run(task)
+    XCTAssertEqual(task.completed.wait(timeout: .now() + 3), .success)
+    // Never reported as armed tracking when no re-arm succeeded.
+    XCTAssertEqual(task.success, false)
+    XCTAssertEqual(task.replacementAtCompletion, false)
+    Thread.sleep(forTimeInterval: 0.1)
+    XCTAssertEqual(task.completions, 1)
+  }
   func testDirectSaveDuringCleanupRearmsAfterTheOldTaskFinishes() {
     verifyCompletion(turnDirect: true)
   }
   func testSavedTorCompletesWithoutRearmingBackgroundRequests() {
     verifyCompletion(turnDirect: false)
   }
-  private func verifyCompletion(turnDirect: Bool) {
+  @discardableResult
+  private func verifyCompletion(turnDirect: Bool) -> BGContinuedProcessingTask {
+    RouteHandoffManager.shared.attempts = 0
     RouteHandoffTorRoute.setSaved(true)
     BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: "test.preparation")
     let probe = PreparationRouteHandoffProbe()
@@ -280,6 +338,7 @@ final class BackgroundMigrationPreparationRouteHandoffTests: XCTestCase {
     XCTAssertEqual(BGTaskScheduler.shared.hasReplacement, turnDirect)
     // The re-arm is in place before the task completes, not after.
     XCTAssertEqual(task.replacementAtCompletion, turnDirect)
+    return task
   }
 }
 ''')
@@ -295,7 +354,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 40 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 42 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"
