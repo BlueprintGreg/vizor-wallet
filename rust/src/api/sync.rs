@@ -75,8 +75,9 @@ pub enum ApiWalletErrorCode {
     /// Transparent broadcast authority refused the transaction for good
     /// before anything was sent.
     AuthorityRefused,
-    /// The checkpointed Ledger operation can never be broadcast and has been
-    /// discarded.
+    /// The Ledger operation can never go through; do not offer a retry.
+    /// After a broadcast it has been discarded. After a checkpoint, a
+    /// different signed transaction is already saved under its ID.
     LedgerOperationTerminal,
     /// Private recovery has not yet covered the transparent funds.
     RecoveryIncomplete,

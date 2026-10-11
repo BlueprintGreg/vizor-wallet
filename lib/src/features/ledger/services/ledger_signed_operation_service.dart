@@ -315,8 +315,10 @@ String newLedgerSignedOperationId({
   return '${kind.wireName}:$accountUuid:$nonce';
 }
 
-/// Whether Rust discarded the checkpointed Ledger operation because it can
-/// never be broadcast. Read from Rust's code, never the message.
+/// Whether Rust refused the Ledger operation for good, so no retry can help.
+/// After a broadcast, Rust has discarded the operation. After a checkpoint, a
+/// different signed transaction already holds its ID. Read from Rust's code,
+/// never the message.
 bool isTerminalLedgerSignedOperationError(Object error) =>
     walletErrorCode(error) ==
     rust_sync.ApiWalletErrorCode.ledgerOperationTerminal;

@@ -1620,8 +1620,9 @@ enum ApiWalletErrorCode {
   /// before anything was sent.
   authorityRefused,
 
-  /// The checkpointed Ledger operation can never be broadcast and has been
-  /// discarded.
+  /// The Ledger operation can never go through; do not offer a retry.
+  /// After a broadcast it has been discarded. After a checkpoint, a
+  /// different signed transaction is already saved under its ID.
   ledgerOperationTerminal,
 
   /// Private recovery has not yet covered the transparent funds.
