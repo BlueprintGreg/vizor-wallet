@@ -138,30 +138,63 @@ AppBootstrapState _bootstrapWith(AppSyncSnapshot snapshot) => AppBootstrapState(
   passwordRotationRecoveryFailed: false,
 );
 
-/// A public, current startup read of `account-1`.
-AppSyncSnapshot _publicSnapshot({bool private = false}) => AppSyncSnapshot(
-  transparentPrivate: private,
-  accountUuid: _accountUuid,
-  hasAccountScopedData: true,
-  scannedHeight: 10,
-  chainTipHeight: 10,
-  percentage: 1,
-  transparentBalance: BigInt.from(5),
-  saplingBalance: BigInt.zero,
-  orchardBalance: BigInt.zero,
-  ironwoodBalance: BigInt.zero,
-  orchardLockedBalance: BigInt.zero,
-  transparentPendingBalance: BigInt.from(2),
-  saplingPendingBalance: BigInt.zero,
-  orchardPendingBalance: BigInt.zero,
-  ironwoodPendingBalance: BigInt.zero,
-  canShieldTransparentBalance: true,
-  shieldTransparentFee: BigInt.zero,
-  shieldTransparentAmount: BigInt.zero,
-  spendableBalance: BigInt.zero,
-  totalBalance: BigInt.from(7),
-  recentTransactions: const [],
-);
+/// A public, current startup read of `account-1`, whose whole total is
+/// transparent: 5 spendable, 2 pending, and [locked].
+AppSyncSnapshot _publicSnapshot({bool private = false, BigInt? locked}) =>
+    AppSyncSnapshot(
+      transparentPrivate: private,
+      accountUuid: _accountUuid,
+      hasAccountScopedData: true,
+      scannedHeight: 10,
+      chainTipHeight: 10,
+      percentage: 1,
+      transparentBalance: BigInt.from(5),
+      saplingBalance: BigInt.zero,
+      orchardBalance: BigInt.zero,
+      ironwoodBalance: BigInt.zero,
+      orchardLockedBalance: BigInt.zero,
+      transparentPendingBalance: BigInt.from(2),
+      transparentLockedBalance: locked,
+      saplingPendingBalance: BigInt.zero,
+      orchardPendingBalance: BigInt.zero,
+      ironwoodPendingBalance: BigInt.zero,
+      canShieldTransparentBalance: true,
+      shieldTransparentFee: BigInt.zero,
+      shieldTransparentAmount: BigInt.zero,
+      spendableBalance: BigInt.zero,
+      totalBalance: BigInt.from(7) + (locked ?? BigInt.zero),
+      recentTransactions: const [],
+    );
+
+/// A startup read of `account-1` under `PrivateRequired`, whose recovery is
+/// stopped for [reason] with a last-known amount of 7.
+AppSyncSnapshot _stoppedSnapshot(rust_sync.TransparentStopReason reason) =>
+    AppSyncSnapshot(
+      transparentPrivate: true,
+      transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
+      transparentLastKnownBalance: BigInt.from(7),
+      transparentStop: reason,
+      accountUuid: _accountUuid,
+      hasAccountScopedData: true,
+      scannedHeight: 10,
+      chainTipHeight: 10,
+      percentage: 1,
+      transparentBalance: BigInt.zero,
+      saplingBalance: BigInt.zero,
+      orchardBalance: BigInt.zero,
+      ironwoodBalance: BigInt.zero,
+      orchardLockedBalance: BigInt.zero,
+      transparentPendingBalance: BigInt.zero,
+      saplingPendingBalance: BigInt.zero,
+      orchardPendingBalance: BigInt.zero,
+      ironwoodPendingBalance: BigInt.zero,
+      canShieldTransparentBalance: false,
+      shieldTransparentFee: BigInt.zero,
+      shieldTransparentAmount: BigInt.zero,
+      spendableBalance: BigInt.zero,
+      totalBalance: BigInt.zero,
+      recentTransactions: const [],
+    );
 
 /// [shielded] is the total without the demoted transparent amount.
 void _expectDemoted(SyncState state, {required BigInt shielded}) {
@@ -570,6 +603,35 @@ void main() {
       }
     });
 
+    test('demotes transparent funds a pending spend holds with the rest', () {
+      for (final (spendable, pending, locked) in [(5, 2, 3), (0, 0, 4)]) {
+        final transparent = spendable + pending + locked;
+        final current = SyncState(
+          accountUuid: _accountUuid,
+          hasAccountScopedData: true,
+          transparentBalance: BigInt.from(spendable),
+          transparentPendingBalance: BigInt.from(pending),
+          transparentLockedBalance: BigInt.from(locked),
+          totalBalance: _currentShielded + BigInt.from(transparent),
+          transparentAuthority: rust_sync.TransparentBalanceAuthority.current,
+          canShieldTransparentBalance: true,
+        );
+        final carried = current.carryingTransparentAuthority(
+          privatePolicyMayApply: false,
+          crossesTip: false,
+          policyChanged: true,
+        );
+        expect(
+          carried.transparentAuthority,
+          rust_sync.TransparentBalanceAuthority.lastKnown,
+        );
+        expect(carried.transparentLastKnownBalance, BigInt.from(transparent));
+        expect(carried.transparentLockedBalance, BigInt.zero);
+        expect(carried.totalBalance, _currentShielded);
+        expect(carried.displayTotalBalance, _currentShielded);
+      }
+    });
+
     test('leaves an amount that is not current unchanged', () {
       final stopped = SyncState(
         accountUuid: _accountUuid,
@@ -671,6 +733,107 @@ void main() {
         }
       },
     );
+
+    test('a startup that finished an opt-out applies the public policy to '
+        'the snapshot read before it', () async {
+      for (final mode in rust_sync.ApiTransparentLedgerMode.values) {
+        final private =
+            mode == rust_sync.ApiTransparentLedgerMode.privateRequired;
+        final container = ProviderContainer(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(
+              _bootstrapWith(
+                _stoppedSnapshot(rust_sync.TransparentStopReason.notSelected),
+              ),
+            ),
+            accountProvider.overrideWith(_Accounts.new),
+            enhancePirProvider.overrideWith(() => _EnhancePir(false)),
+            transparentPolicyStartupProvider.overrideWithValue(
+              TransparentPolicyStartup(appliedPolicy: _policy(mode, 3)),
+            ),
+            syncProvider.overrideWith(() => _LiveSync()),
+          ],
+        );
+        addTearDown(container.dispose);
+        addTearDown(pumpEventQueue);
+        container.listen(syncProvider, (_, _) {});
+        final initial = await container.read(syncProvider.future);
+        await pumpEventQueue();
+
+        expect(initial.transparentPrivate, private, reason: '$mode');
+        // A public policy stops no account; a private one keeps its reason.
+        expect(
+          initial.transparentStop,
+          private ? rust_sync.TransparentStopReason.notSelected : null,
+          reason: '$mode',
+        );
+        // The amount still waits for a fresh read either way.
+        expect(
+          initial.transparentAuthority,
+          rust_sync.TransparentBalanceAuthority.stopped,
+        );
+        expect(initial.transparentLastKnownBalance, BigInt.from(7));
+        // The single toggle stays on only while the opt-out is unfinished.
+        expect(container.read(walletTransparentPrivateProvider), private);
+        expect(container.read(privateQueriesControlEnabledProvider), private);
+      }
+    });
+
+    test(
+      'a startup that reported no policy keeps the snapshot policy',
+      () async {
+        final container = ProviderContainer(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(
+              _bootstrapWith(
+                _stoppedSnapshot(rust_sync.TransparentStopReason.notSelected),
+              ),
+            ),
+            accountProvider.overrideWith(_Accounts.new),
+            enhancePirProvider.overrideWith(() => _EnhancePir(false)),
+            syncProvider.overrideWith(() => _LiveSync()),
+          ],
+        );
+        addTearDown(container.dispose);
+        addTearDown(pumpEventQueue);
+        container.listen(syncProvider, (_, _) {});
+        final initial = await container.read(syncProvider.future);
+        expect(initial.transparentPrivate, isTrue);
+        expect(
+          initial.transparentStop,
+          rust_sync.TransparentStopReason.notSelected,
+        );
+      },
+    );
+
+    test('a startup read keeps or demotes its locked transparent amount '
+        'with the rest', () async {
+      for (final privateQueries in [false, true]) {
+        final container = ProviderContainer(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(
+              _bootstrapWith(_publicSnapshot(locked: BigInt.from(3))),
+            ),
+            accountProvider.overrideWith(_Accounts.new),
+            enhancePirProvider.overrideWith(() => _EnhancePir(privateQueries)),
+            syncProvider.overrideWith(() => _LiveSync()),
+          ],
+        );
+        addTearDown(container.dispose);
+        addTearDown(pumpEventQueue);
+        container.listen(syncProvider, (_, _) {});
+        final initial = await container.read(syncProvider.future);
+        if (privateQueries) {
+          expect(initial.transparentLastKnownBalance, BigInt.from(10));
+          expect(initial.transparentLockedBalance, BigInt.zero);
+          expect(initial.totalBalance, BigInt.zero);
+        } else {
+          _expectCurrent(initial);
+          expect(initial.transparentLockedBalance, BigInt.from(3));
+          expect(initial.totalBalance, BigInt.from(10));
+        }
+      }
+    });
 
     test('publishes whether the wallet reads transparent privately', () async {
       for (final private in [false, true]) {

@@ -110,6 +110,11 @@ class SyncState {
   final BigInt orchardLockedBalance;
   final BigInt transparentPendingBalance;
 
+  /// Transparent funds a pending spend holds. Like the other transparent
+  /// amounts, it is zero without current authority, and part of
+  /// [totalBalance] only with it.
+  final BigInt transparentLockedBalance;
+
   /// Whether the transparent balances are current. When they are not, they
   /// are zero because nothing is spendable, and [transparentLastKnownBalance]
   /// holds the informational prior amount, if any.
@@ -324,6 +329,7 @@ class SyncState {
       ironwoodBalance: balance?.ironwood,
       orchardLockedBalance: balance?.orchardLocked,
       transparentPendingBalance: balance?.transparentPending,
+      transparentLockedBalance: balance?.transparentLocked,
       transparentAuthority: balance?.transparentAuthority,
       transparentLastKnownBalance: balance?.transparentLastKnown,
       transparentStop: balance?.transparentStop,
@@ -397,6 +403,7 @@ class SyncState {
     BigInt? ironwoodBalance,
     BigInt? orchardLockedBalance,
     BigInt? transparentPendingBalance,
+    BigInt? transparentLockedBalance,
     rust_sync.TransparentBalanceAuthority? transparentAuthority,
     this.transparentLastKnownBalance,
     this.transparentStop,
@@ -435,6 +442,7 @@ class SyncState {
        ironwoodBalance = ironwoodBalance ?? BigInt.zero,
        orchardLockedBalance = orchardLockedBalance ?? BigInt.zero,
        transparentPendingBalance = transparentPendingBalance ?? BigInt.zero,
+       transparentLockedBalance = transparentLockedBalance ?? BigInt.zero,
        transparentAuthority =
            transparentAuthority ??
            rust_sync.TransparentBalanceAuthority.current,
@@ -491,6 +499,7 @@ class SyncState {
     BigInt? ironwoodBalance,
     BigInt? orchardLockedBalance,
     BigInt? transparentPendingBalance,
+    BigInt? transparentLockedBalance,
     rust_sync.TransparentBalanceAuthority? transparentAuthority,
     BigInt? transparentLastKnownBalance,
     rust_sync.TransparentStopReason? transparentStop,
@@ -548,6 +557,8 @@ class SyncState {
       orchardLockedBalance: orchardLockedBalance ?? this.orchardLockedBalance,
       transparentPendingBalance:
           transparentPendingBalance ?? this.transparentPendingBalance,
+      transparentLockedBalance:
+          transparentLockedBalance ?? this.transparentLockedBalance,
       transparentAuthority: transparentAuthority ?? this.transparentAuthority,
       // The last-known amount and stop reason travel with their authority: a
       // new authority replaces them, including with none.
@@ -639,12 +650,16 @@ class SyncState {
     if (!stale) return this;
     // The totals drop the demoted amount too, as a read without transparent
     // authority would report them.
-    final demoted = transparentBalance + transparentPendingBalance;
+    final demoted =
+        transparentBalance +
+        transparentPendingBalance +
+        transparentLockedBalance;
     final remaining = totalBalance - demoted;
     final total = remaining < BigInt.zero ? BigInt.zero : remaining;
     return copyWith(
       transparentBalance: BigInt.zero,
       transparentPendingBalance: BigInt.zero,
+      transparentLockedBalance: BigInt.zero,
       transparentAuthority: rust_sync.TransparentBalanceAuthority.lastKnown,
       transparentLastKnownBalance: demoted,
       canShieldTransparentBalance: false,
@@ -1263,6 +1278,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       transparentPendingBalance: initialBelongsToActiveAccount
           ? initial.transparentPendingBalance
           : BigInt.zero,
+      transparentLockedBalance: initialBelongsToActiveAccount
+          ? initial.transparentLockedBalance
+          : BigInt.zero,
       transparentAuthority: initialBelongsToActiveAccount
           ? initial.transparentAuthority
           : rust_sync.TransparentBalanceAuthority.current,
@@ -1312,16 +1330,24 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         .read(transparentPolicyStartupProvider)
         .appliedPolicy;
     _appliedTransparentPolicy ??= startupApplied;
-    return initialBelongsToActiveAccount
-        ? initialState.carryingTransparentAuthority(
-            privatePolicyMayApply: _privatePolicyMayApply,
-            crossesTip: false,
-            // Bootstrap has no policy generation. Reconciliation may find a
-            // generation another connection changed after the snapshot read,
-            // even when it makes no change itself.
-            policyChanged: startupApplied != null,
-          )
-        : initialState;
+    if (!initialBelongsToActiveAccount) return initialState;
+    // The snapshot's policy flag and stop reason describe the policy before
+    // reconciliation, which may have completed an interrupted opt-out.
+    final reconciled = startupApplied == null
+        ? initialState
+        : initialState.underTransparentPolicy(
+            private:
+                startupApplied.mode ==
+                rust_sync.ApiTransparentLedgerMode.privateRequired,
+          );
+    return reconciled.carryingTransparentAuthority(
+      privatePolicyMayApply: _privatePolicyMayApply,
+      crossesTip: false,
+      // Bootstrap has no policy generation. Reconciliation may find a
+      // generation another connection changed after the snapshot read, even
+      // when it makes no change itself.
+      policyChanged: startupApplied != null,
+    );
   }
 
   SyncState? _previousScopedState(SyncState? prev, String? accountUuid) {
@@ -1545,6 +1571,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         ironwoodBalance: scopedPrev?.ironwoodBalance,
         orchardLockedBalance: scopedPrev?.orchardLockedBalance,
         transparentPendingBalance: carried?.transparentPendingBalance,
+        transparentLockedBalance: carried?.transparentLockedBalance,
         transparentAuthority: carried?.transparentAuthority,
         transparentLastKnownBalance: carried?.transparentLastKnownBalance,
         transparentStop: carried?.transparentStop,
@@ -1930,6 +1957,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         ironwoodBalance: scopedPrev?.ironwoodBalance,
         orchardLockedBalance: scopedPrev?.orchardLockedBalance,
         transparentPendingBalance: scopedPrev?.transparentPendingBalance,
+        transparentLockedBalance: scopedPrev?.transparentLockedBalance,
         transparentAuthority: scopedPrev?.transparentAuthority,
         transparentLastKnownBalance: scopedPrev?.transparentLastKnownBalance,
         transparentStop: scopedPrev?.transparentStop,
@@ -2057,6 +2085,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         ironwoodBalance: scopedPrev?.ironwoodBalance,
         orchardLockedBalance: scopedPrev?.orchardLockedBalance,
         transparentPendingBalance: scopedPrev?.transparentPendingBalance,
+        transparentLockedBalance: scopedPrev?.transparentLockedBalance,
         transparentAuthority: scopedPrev?.transparentAuthority,
         transparentLastKnownBalance: scopedPrev?.transparentLastKnownBalance,
         transparentStop: scopedPrev?.transparentStop,
@@ -2821,6 +2850,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     BigInt? ironwood;
     BigInt? orchardLocked;
     BigInt? transparentPending;
+    BigInt? transparentLocked;
     rust_sync.TransparentBalanceAuthority? transparentAuthority;
     BigInt? transparentLastKnown;
     rust_sync.TransparentStopReason? transparentStop;
@@ -2856,6 +2886,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           ironwood = balance.ironwood;
           orchardLocked = balance.orchardLocked;
           transparentPending = balance.transparentPending;
+          transparentLocked = balance.transparentLocked;
           transparentAuthority = balance.transparentAuthority;
           transparentLastKnown = balance.transparentLastKnown;
           transparentStop = balance.transparentStop;
@@ -3042,6 +3073,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         transparentPendingBalance: useFetchedBalance
             ? transparentPending
             : carriedPrev?.transparentPendingBalance,
+        transparentLockedBalance: useFetchedBalance
+            ? transparentLocked
+            : carriedPrev?.transparentLockedBalance,
         transparentAuthority: useFetchedBalance
             ? transparentAuthority
             : carriedPrev?.transparentAuthority,
@@ -3457,6 +3491,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     BigInt? ironwood;
     BigInt? orchardLocked;
     BigInt? transparentPending;
+    BigInt? transparentLocked;
     rust_sync.TransparentBalanceAuthority? transparentAuthority;
     BigInt? transparentLastKnown;
     rust_sync.TransparentStopReason? transparentStop;
@@ -3501,6 +3536,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         ironwood = balance.ironwood;
         orchardLocked = balance.orchardLocked;
         transparentPending = balance.transparentPending;
+        transparentLocked = balance.transparentLocked;
         transparentAuthority = balance.transparentAuthority;
         transparentLastKnown = balance.transparentLastKnown;
         transparentStop = balance.transparentStop;
@@ -3651,6 +3687,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             orchardLocked ?? accountFallback?.orchardLockedBalance,
         transparentPendingBalance:
             transparentPending ?? accountFallback?.transparentPendingBalance,
+        transparentLockedBalance:
+            transparentLocked ?? accountFallback?.transparentLockedBalance,
         transparentAuthority:
             transparentAuthority ?? accountFallback?.transparentAuthority,
         transparentLastKnownBalance: transparentAuthority != null
