@@ -279,9 +279,16 @@ def owned_ledger(chain, ownership, account):
     for txid in txids:
         tx = chain.raw(txid, attempts=10)
         if tx is None:
-            raise SystemExit(
-                f"the address index names {txid}, which the node cannot return"
+            # The node returns every best-chain transaction (txindex), so one
+            # it cannot return is not in the best chain and holds no output
+            # the account received there: the address index can keep an entry
+            # of a block a reorg disconnected.
+            print(
+                f"[oracle] skipping {txid}: named by the address index, "
+                "not in the best chain",
+                file=sys.stderr,
             )
+            continue
         for vout in tx["vout"]:
             script = vout["scriptPubKey"]["hex"]
             if script in scripts:
