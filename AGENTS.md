@@ -721,7 +721,8 @@ policy-aware openers and fails closed while Tor is starting or broken.
   needed state-0 tracker counts only once it is running and not being stopped,
   or pending (not while another submission is in flight; an armed tracker is
   not resubmitted), a needed state-0 tracker that fails to submit leaves it
-  unsatisfied, and only
+  unsatisfied, a tracker that stops retries a still-pending obligation, a
+  route-deferred tracker completes its task only after re-arming, and only
   saving Tor again or a wallet reset drops it; a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
   screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet

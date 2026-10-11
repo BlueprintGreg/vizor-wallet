@@ -164,8 +164,12 @@ headers = [
     '  private func finishRouteDeferredTrackingTask(',
     '  private func finishForegroundOnlyTask(',
 ]
-if '  private func completeForegroundOnlyTask(' in manager:
-    headers.append('  private func completeForegroundOnlyTask(')
+for optional in [
+    '  private func completeForegroundOnlyTask(',
+    '  private func prepareForegroundOnlyCompletion(',
+]:
+    if optional in manager:
+        headers.append(optional)
 
 Path(sys.argv[1]).write_text('''
 import XCTest
@@ -185,7 +189,13 @@ private enum BackgroundMigrationPrivateRecovery {
 }
 private final class BGContinuedProcessingTask {
   let completed = DispatchSemaphore(value: 0)
-  func setTaskCompleted(success: Bool) { completed.signal() }
+  /// Whether the replacement wake already existed when the task completed;
+  /// iOS may suspend the app as soon as it does.
+  var replacementAtCompletion: Bool?
+  func setTaskCompleted(success: Bool) {
+    replacementAtCompletion = BGTaskScheduler.shared.hasReplacement
+    completed.signal()
+  }
 }
 private final class BGTaskScheduler {
   static let shared = BGTaskScheduler()
@@ -266,6 +276,8 @@ final class BackgroundMigrationPreparationRouteHandoffTests: XCTestCase {
     while Date() < deadline { RunLoop.current.run(until: deadline) }
     XCTAssertFalse(probe.stateLock.withPreparationLock { probe.taskRunning })
     XCTAssertEqual(BGTaskScheduler.shared.hasReplacement, turnDirect)
+    // The re-arm is in place before the task completes, not after.
+    XCTAssertEqual(task.replacementAtCompletion, turnDirect)
   }
 }
 ''')

@@ -1892,7 +1892,7 @@ final class BackgroundMigrationPreparationManager {
     )
     // Keep the running guard through cancellation of the old request. A
     // direct-route save must not submit a replacement this cleanup cancels.
-    completeForegroundOnlyTask(task)
+    let notificationSubmitted = prepareForegroundOnlyCompletion()
     stateLock.withPreparationLock {
       taskRunning = false
       taskProgress = nil
@@ -1900,12 +1900,15 @@ final class BackgroundMigrationPreparationManager {
       latestTrackingProgress = nil
       foregroundHandoffRequested = false
     }
+    guard !BackgroundMigrationTorRoute.isSelected() else {
+      task.setTaskCompleted(success: notificationSubmitted)
+      return
+    }
     // A direct-route hook that ran during cleanup saw the running guard and
-    // could not re-arm. Recheck after cleanup so that wake is not lost.
-    if !BackgroundMigrationTorRoute.isSelected() {
-      DispatchQueue.main.async {
-        BackgroundMigrationManager.shared.savedRouteBecameDirect { _ in }
-      }
+    // could not re-arm. Re-arm now, and complete the task only once that has
+    // finished: iOS may suspend the app as soon as the task completes.
+    BackgroundMigrationManager.shared.savedRouteBecameDirect { _ in
+      task.setTaskCompleted(success: notificationSubmitted)
     }
   }
 
@@ -1921,8 +1924,15 @@ final class BackgroundMigrationPreparationManager {
     }
   }
 
-  /// Finishes foreground-only work on the preparation queue before re-arming.
+  /// Finishes foreground-only work on the preparation queue.
   private func completeForegroundOnlyTask(_ task: BGContinuedProcessingTask) {
+    task.setTaskCompleted(success: prepareForegroundOnlyCompletion())
+  }
+
+  /// Everything a foreground-only completion does before `setTaskCompleted`:
+  /// the recovery notification and cancelling the pending request. Returns
+  /// whether the notification was submitted, the task's success.
+  private func prepareForegroundOnlyCompletion() -> Bool {
     let notificationsDisabled = stateLock.withPreparationLock {
       notificationAuthorization.isDisabled
     }
@@ -1940,7 +1950,7 @@ final class BackgroundMigrationPreparationManager {
       // registered, and report failure rather than silently parking the run.
       recordSchedulingState("foreground_notification_failed")
     }
-    task.setTaskCompleted(success: notificationSubmitted)
+    return notificationSubmitted
   }
 
   private func runConfirmationTrackingPass(
@@ -2531,6 +2541,12 @@ final class BackgroundMigrationPreparationManager {
       BGTaskScheduler.shared.cancel(
         taskRequestWithIdentifier: Self.taskIdentifier
       )
+    }
+    // A direct-route re-arm refused while this tracker was stopping (a
+    // foreground handoff marks it so) has no other in-session retry. Now that
+    // the tracker has stopped and its request is settled, retry it.
+    if BackgroundMigrationDirectRouteRearm.isPending() {
+      BackgroundMigrationManager.shared.resumePendingDirectRouteRearm()
     }
     if runtime.handedOff {
       recordSchedulingState("handed_off_to_foreground")
