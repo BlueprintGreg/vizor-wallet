@@ -31,7 +31,8 @@ type Served = Arc<std::collections::HashMap<[u8; 32], (Vec<u8>, u64)>>;
 /// with no transaction when `history_tx` is empty;
 /// transaction lookups answer "not found" unless the transaction is served,
 /// `GetLatestBlock` reports
-/// `tip_height`, and UTXO streams are empty.
+/// `tip_height` (with a zero hash unless started with
+/// [`Self::start_at_tip`]), and UTXO streams are empty.
 pub(crate) struct CapturingLwd {
     pub(crate) client: CompactTxStreamerClient<Channel>,
     /// The transport `client` uses, for calls that layer services over it.
@@ -72,6 +73,7 @@ impl CapturingLwd {
             false,
             None,
             Served::default(),
+            vec![0; 32],
         )
         .await
     }
@@ -94,6 +96,7 @@ impl CapturingLwd {
             false,
             None,
             Arc::new(served),
+            vec![0; 32],
         )
         .await
     }
@@ -107,6 +110,7 @@ impl CapturingLwd {
             true,
             None,
             Served::default(),
+            vec![0; 32],
         )
         .await
     }
@@ -125,11 +129,29 @@ impl CapturingLwd {
             true,
             Some(gate.clone()),
             Served::default(),
+            vec![0; 32],
         )
         .await;
         (lwd, gate)
     }
 
+    /// Like [`Self::start`], but `GetLatestBlock` reports a tip at
+    /// `tip_height` with `tip_hash` (internal byte order), so a wallet scanned
+    /// through that block sees no reorg and a whole sync can complete.
+    pub(crate) async fn start_at_tip(tip_height: u64, tip_hash: [u8; 32]) -> Self {
+        Self::start_inner(
+            Vec::new(),
+            tip_height,
+            |_| {},
+            false,
+            None,
+            Served::default(),
+            tip_hash.to_vec(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn start_inner(
         history_tx: Vec<u8>,
         tip_height: u64,
@@ -137,6 +159,7 @@ impl CapturingLwd {
         accept_broadcast: bool,
         send_gate: Option<Arc<tokio::sync::Notify>>,
         served: Served,
+        tip_hash: Vec<u8>,
     ) -> Self {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let response_gates = Arc::new(Mutex::new(std::collections::HashMap::<
@@ -157,6 +180,7 @@ impl CapturingLwd {
                 let history_tx = history_tx.clone();
                 let send_gate = send_gate.clone();
                 let served = served.clone();
+                let tip_hash = tip_hash.clone();
                 tokio::spawn(async move {
                     let service =
                         service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
@@ -172,6 +196,7 @@ impl CapturingLwd {
                             let history_tx = history_tx.clone();
                             let send_gate = send_gate.clone();
                             let served = served.clone();
+                            let tip_hash = tip_hash.clone();
                             async move {
                                 if let Some(gate) = response_gate {
                                     gate.notified().await;
@@ -222,7 +247,7 @@ impl CapturingLwd {
                                 } else if path.ends_with("/GetLatestBlock") {
                                     let message = BlockId {
                                         height: tip_height,
-                                        hash: vec![0; 32],
+                                        hash: tip_hash,
                                     };
                                     grpc.header("grpc-status", "0")
                                         .body(Full::new(grpc_frame(&message)))

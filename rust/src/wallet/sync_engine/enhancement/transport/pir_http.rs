@@ -410,6 +410,92 @@ mod tests {
         (exchange, observer)
     }
 
+    /// A loopback HTTPS origin no request can complete: the listener accepts
+    /// TCP and never speaks TLS.
+    fn listener() -> (std::net::TcpListener, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("https://{}", listener.local_addr().unwrap());
+        (listener, origin)
+    }
+
+    /// With Tor wanted but broken, a request fails closed: it is unreachable
+    /// and nothing dials the service directly. No observer stands in for the
+    /// route here, so this exercises the real route selection.
+    #[test]
+    fn tor_wanted_but_broken_fails_closed_without_dialing_the_service() {
+        let _policy = crate::network_privacy::test_route_policy::lock_route_policy();
+        crate::network_privacy::begin_tor_enable();
+        crate::network_privacy::fail_tor_enable();
+        let (listener, origin) = listener();
+        let runtime = runtime();
+        let exit = || false;
+        for exchange in [
+            RoutedExchange::transparent(&origin, &exit, runtime.handle().clone()).unwrap(),
+            RoutedExchange::txid(&origin, &exit, runtime.handle().clone()).unwrap(),
+        ] {
+            let reply = exchange.send(&request(HttpMethod::Post, 0));
+            assert!(matches!(reply, Err(HttpFailure::Unreachable)), "{reply:?}");
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing reached the service directly"
+        );
+    }
+
+    /// With Tor off, a request takes the direct route: it really dials the
+    /// service. The listener speaks no TLS, so the request then fails.
+    #[test]
+    fn the_direct_route_dials_the_service() {
+        let _policy = crate::network_privacy::test_route_policy::lock_route_policy();
+        let (listener, origin) = listener();
+        let accepted = std::thread::spawn(move || listener.accept().map(|_| ()));
+        let runtime = runtime();
+        let exit = || false;
+        let exchange =
+            RoutedExchange::transparent(&origin, &exit, runtime.handle().clone()).unwrap();
+        let reply = exchange.send(&request(HttpMethod::Get, 0));
+        assert!(reply.is_err(), "no TLS service answered: {reply:?}");
+        accepted
+            .join()
+            .unwrap()
+            .expect("the direct route dialed the service");
+    }
+
+    /// An app launch's first TLS use can be a private-service request
+    /// (private import discovery sends lightwalletd nothing), with no rustls
+    /// provider installed yet. The transport installs one itself (#947);
+    /// before that fix this request panicked. Runs alone in a fresh process,
+    /// with no helper that installs a provider first.
+    #[test]
+    fn the_first_https_request_of_a_launch_selects_a_provider() {
+        if crate::wallet::db::isolated_test(
+            module_path!(),
+            "the_first_https_request_of_a_launch_selects_a_provider",
+        ) {
+            return;
+        }
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_none(),
+            "a fresh process has no provider yet"
+        );
+        let (listener, origin) = listener();
+        let accepted = std::thread::spawn(move || listener.accept().map(|_| ()));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let exit = || false;
+        let exchange =
+            RoutedExchange::transparent(&origin, &exit, runtime.handle().clone()).unwrap();
+        let reply = exchange.send(&request(HttpMethod::Get, 0));
+        assert!(reply.is_err(), "no TLS service answered: {reply:?}");
+        accepted.join().unwrap().expect("the request was sent");
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+
     #[test]
     fn plaintext_origins_are_refused_and_the_wallet_route_is_used() {
         let runtime = runtime();

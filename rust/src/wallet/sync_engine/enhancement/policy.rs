@@ -344,6 +344,79 @@ mod tests {
         assert_eq!(policy.payload_mode(), EnhancementMode::Standard);
     }
 
+    /// A supplemental source guard: release builds must ignore every
+    /// development switch, so each environment read in the crate's sources
+    /// sits under a debug-build gate (`cfg(debug_assertions)` or
+    /// `cfg!(debug_assertions)` at most a few lines above it, or the
+    /// debug-only `origin_override` it hands its reader to), or in a test.
+    /// It cannot prove a gate is correct; it catches a new read added without
+    /// one. Run the gate tests themselves with `cargo test --release` to see
+    /// the switches off.
+    #[test]
+    fn every_environment_switch_is_read_only_in_debug_builds_or_tests() {
+        fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        const WINDOW: usize = 12;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        let mut ungated = Vec::new();
+        for path in files {
+            let relative = path.strip_prefix(&root).unwrap();
+            // Test-only files: a `tests/` module directory or `*tests.rs`.
+            if path.ends_with("frb_generated.rs")
+                || relative.components().any(|part| part.as_os_str() == "tests")
+                || relative
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"))
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = source.lines().collect();
+            // Everything after a file's `#[cfg(test)] mod tests` is test code.
+            let test_module = (1..lines.len())
+                .find(|&index| {
+                    lines[index - 1].trim() == "#[cfg(test)]"
+                        && lines[index].trim_start().starts_with("mod tests")
+                })
+                .unwrap_or(lines.len());
+            for (index, line) in lines.iter().enumerate().take(test_module) {
+                let code = line.trim_start();
+                let reads = ["env::var(", "env::var_os("]
+                    .iter()
+                    .any(|read| code.contains(read) && !code.contains(&format!("\"{read}")));
+                if code.starts_with("//") || !reads {
+                    continue;
+                }
+                let gated = code.contains("origin_override(")
+                    || lines[index.saturating_sub(WINDOW)..=index].iter().any(|above| {
+                        above.contains("cfg(debug_assertions)")
+                            || above.contains("cfg!(debug_assertions)")
+                            || above.contains("#[test]")
+                            || above.contains("#[tokio::test")
+                            || above.contains("#[cfg(test)]")
+                    });
+                if !gated {
+                    ungated.push(format!("{}:{}: {}", relative.display(), index + 1, code));
+                }
+            }
+        }
+        assert!(
+            ungated.is_empty(),
+            "environment reads outside a debug-build gate or a test:\n{}",
+            ungated.join("\n")
+        );
+    }
+
     #[test]
     fn private_preference_is_unavailable_off_mainnet() {
         for network in [WalletNetwork::Test, WalletNetwork::Regtest] {
