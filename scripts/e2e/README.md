@@ -277,6 +277,17 @@ build keys hashed, never their values. Failed cases keep state/logs,
 and uncertain cleanup remains failure. Cancellation stops owned children and
 new assignment without terminating ordinary wallet processes.
 
+After `summary.json` is written for a fully passing run (no report error, no
+failed, timed-out or cancelled case, no interruption), the runner removes the
+producer build intermediates under `builds/e2e/` (Cargo targets, source
+snapshots, DerivedData, helper/voting outputs and publication copies). It
+keeps each producer's `*.log`, `workspace-owner.json`, `case-manifest.json` and
+`build-proof.json`, writes the removed paths, bytes and any errors to a
+read-only `builds/build-prune.json` and prints one stderr line. Removal stays
+anchored to the original `builds` directory; errors are recorded, not fatal,
+and reports are never rewritten. Failed, cancelled or interrupted runs keep
+every build output, for example to symbolicate a crash.
+
 Build artifact reuse does not establish a wallet PASS or a general measured
 speedup. Resource/performance comparison
 and final-source all-green catalog are still pending. No CI behavior changes.
@@ -948,9 +959,12 @@ The [shared owned-tree primitive](native_owned_tree.py) retains the macOS
 support owner's strict link rejection. Mutable build workspaces may contain
 owned symlinks; they are unlinked as entries, never traversed. Hardlinks, unsafe
 entries, replaced parents or uncertain cleanup retain remaining state and seal
-new assignment. Closing an unfinished worker stops its case writers and retains
-workspace/state instead of deleting it. Evidence is never removed, including
-after successful cleanup, and partial failures never become successful reruns.
+new assignment. Only its explicit build-output mode, used for producer
+intermediates after a passing run, unlinks hard-linked or group-writable regular
+files; it still never follows links and stops on any identity change. Closing
+an unfinished worker stops its case writers and retains workspace/state instead
+of deleting it. Evidence is never removed, including after successful cleanup,
+and partial failures never become successful reruns.
 
 Operations are cooperative/single-owner; all writers must use the owned case
 groups/native app APIs. Phase SDK/native allowances and per-group termination
@@ -961,7 +975,7 @@ not implemented by this primitive. It does not itself enable catalog cases;
 see the composed macOS executor above.
 
 ```bash
-python3 -B -m unittest scripts/e2e/test_native_worker_lifecycle.py scripts/e2e/test_native_mac_case_storage.py scripts/e2e/test_native_ios_case_storage.py
+python3 -B -m unittest scripts/e2e/test_native_worker_lifecycle.py scripts/e2e/test_native_owned_tree.py scripts/e2e/test_native_mac_case_storage.py scripts/e2e/test_native_ios_case_storage.py
 ```
 
 These host models compose private signed-artifact/native-output fixtures,
@@ -1067,7 +1081,8 @@ explicit rustc host target and 1–8 jobs (default four). Cold publication requi
 JSON for this exact example/source, not a test harness, and positive completion
 of every original process group/output writer. Cargo's output may be hard-linked;
 only after joining writers is it copied into a new private single-link read-only
-publication. Shared file ownership invariants are not relaxed for Cargo aliases.
+publication. Publication ownership checks are not relaxed for Cargo aliases;
+only the passing-run removal of producer intermediates unlinks them, as names.
 An explicit `RUSTC` or the PATH compiler is resolved to the executable actually
 probed (including rustup proxy resolution), then passed as Cargo's `RUSTC`.
 Compiler wrappers are disabled so Cargo cannot silently substitute a compiler.

@@ -30,6 +30,7 @@ from native_ios_execution import IOS_LAUNCH_TIMEOUT_SECONDS, IOS_SCENARIOS, exec
 from native_ios_migration import IOS_MIGRATION_SCENARIOS, derive_ios_migration_addresses, fund_ios_migration
 from native_voting_build import build_voting_artifacts
 from native_rust_execution import RUST_CASES, RUST_PROFILES, execute_native_rust_case
+import native_owned_tree as tree
 from native_worker_lifecycle import prepare_native_worker_lifecycle
 from native_workspace import prepare_native_case_workspace
 import toolchain_inputs
@@ -197,6 +198,39 @@ def _write_report(path, report):
     with path.open("x", encoding="utf-8") as output:
         json.dump(report, output, indent=2, allow_nan=False)
         output.write("\n")
+
+
+def _size(count):
+    for unit in ("B", "KiB", "MiB"):
+        if count < 1024:
+            return f"{count:.0f} {unit}" if unit == "B" else f"{count:.1f} {unit}"
+        count /= 1024
+    return f"{count:.1f} GiB"
+
+
+def _prune_passing_builds(builds, expected, run_id, cancel):
+    """Drop producer intermediates once every case passed; never rewrite reports.
+
+    Failed, cancelled or interrupted runs keep them to symbolicate crashes.
+    Removal errors are recorded in builds/build-prune.json, never raised.
+    """
+    try:
+        record = tree.prune_build_outputs(builds, expected=expected, cancel=cancel)
+    except Exception as error:
+        record = {"removed":[], "bytes":0, "errors":[str(error)]}
+    path = builds/"build-prune.json"
+    try:
+        descriptor = os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o400)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump({"schema_version":1, "run_id":run_id, "trigger":"passed-run", **record},
+                      output, indent=2, allow_nan=False)
+            output.write("\n")
+    except OSError as error:
+        record["errors"].append(f"record: {error}")
+    print(f"Removed passing-run build intermediates: {_size(record['bytes'])} in "
+          f"{len(record['removed'])} entries, logs and markers kept"
+          + (f"; {len(record['errors'])} error(s)" if record["errors"] else "") + f"; see {path}",
+          file=sys.stderr, flush=True)
 
 
 def _ios_launch_timeout(args):
@@ -371,6 +405,7 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
     evidence.mkdir(mode=0o700)
     builds = evidence/"builds"
     builds.mkdir(mode=0o700)
+    builds_id = tree.identity(builds.lstat())
     cancel = threading.Event()
     previous = {number:signal.getsignal(number) for number in (signal.SIGINT,signal.SIGTERM)}
     for number in previous:
@@ -482,10 +517,15 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
                 "failed":sum(item["status"] != "passed" for item in items)})
     except BaseException as error:
         report["error"] = str(error)
+    try:
+        report["duration_seconds"] = round(time.monotonic()-started,3)
+        _write_report(evidence/"summary.json",report)
+        print(json.dumps(report,indent=2,allow_nan=False))
+        passed = report["error"] is None and all(item["failed"] == 0 for item in report["repetition_reports"])
+        # Handlers stay installed so a signal stops this sweep cooperatively.
+        if passed and report["repetition_reports"] and not cancel.is_set():
+            _prune_passing_builds(builds, builds_id, run_id, cancel)
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
-    report["duration_seconds"] = round(time.monotonic()-started,3)
-    _write_report(evidence/"summary.json",report)
-    print(json.dumps(report,indent=2,allow_nan=False))
-    return 0 if report["error"] is None and all(item["failed"] == 0 for item in report["repetition_reports"]) else 1
+    return 0 if passed else 1

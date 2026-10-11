@@ -4,7 +4,10 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +48,7 @@ class SuiteTests(unittest.TestCase):
         self.barrier = threading.Barrier(2)
         self.observed = []
         self.fail = False
+        self.on_build = None
 
     def git(self, command, **kwargs):
         if "runtimes" in command:
@@ -60,15 +64,43 @@ class SuiteTests(unittest.TestCase):
         return {"scenario_id":scenario.id,"target":scenario.target,"test":scenario.test,
                 "status":"failed" if self.fail and root.name == "repetition-0" else "passed"}
 
+    def build_signer(self, producer, **kwargs):
+        if self.on_build is not None:
+            # Earlier invocations in one test already wrote their summaries.
+            self.on_build(next(path for path in (self.root/".regtest-logs").glob("native-suite-*")
+                               if not (path/"summary.json").exists()))
+        return self.signer
+
+    def model_producer(self, evidence):
+        """Producer outputs as left by real builders: logs, markers, Cargo links, SDK modes."""
+        case = evidence/"builds/e2e"/("vizor_"+evidence.name.removeprefix("native-suite-")+"_w0_1")
+        for path in (case.parent, case):
+            path.mkdir(mode=0o700)
+        for name in ("process-0000.log", "workspace-owner.json", "case-manifest.json"):
+            (case/name).write_text(name)
+        target = case/"funder-build/target/debug"
+        (target/"deps").mkdir(parents=True)
+        (target/"deps/regtest_direct_funder-0a1b").write_bytes(b"f"*2048)
+        os.link(target/"deps/regtest_direct_funder-0a1b", target/"regtest_direct_funder")
+        (case/"funder-build/publication").mkdir()
+        (case/"funder-build/publication/regtest_direct_funder").write_bytes(b"p"*1024)
+        (case/"voting-build").mkdir()
+        (case/"voting-build/build-proof.json").write_text("{}")
+        (case/"native-publication/cohort.app").mkdir(parents=True)
+        (case/"native-publication/cohort.app/MaterialIcons.otf").write_bytes(b"m"*512)
+        (case/"native-publication/cohort.app/MaterialIcons.otf").chmod(0o664)
+        return case
+
     def invoke(self):
         output = io.StringIO()
+        self.errors = io.StringIO()
         with patch.object(SUITE.sys,"platform","darwin"), \
              patch.object(SUITE.subprocess,"run",side_effect=self.git), \
              patch.object(SUITE,"NativeCaseLifecycle",side_effect=lambda x:x), \
              patch.object(SUITE,"prepare_native_case_workspace",return_value=object()), \
              patch.object(SUITE,"build_native_macos_cohort",return_value=(self.helper,self.macos_build_proof)) as build, \
              patch.object(SUITE,"build_native_ios_cohort",return_value=(self.helper,self.ios_build_proof)) as ios_build, \
-             patch.object(SUITE,"build_regtest_funder",return_value=self.signer) as signer, \
+             patch.object(SUITE,"build_regtest_funder",side_effect=self.build_signer) as signer, \
              patch.object(SUITE,"build_voting_artifacts",return_value=(self.voting,self.voting_build_proof)) as voting, \
              patch.object(SUITE,"derive_payment_addresses",return_value={"desktop_transparent":"tm-public-sdk-model",
                  "receiver_tex":"texregtest1publicsdkmodel"}) as payment_addresses, \
@@ -76,7 +108,7 @@ class SuiteTests(unittest.TestCase):
                  "note_addresses":tuple("uregtest1model"+str(index) for index in range(500)),
                  "send_recipient":"uregtest1receivermodel"}) as ios_addresses, \
              patch.object(SUITE,"execute_case",side_effect=self.execute), \
-             contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(self.errors):
             code = SUITE.run_native_suite(self.args,self.catalog,self.scenarios,
                 {"kind":"scenario","values":[self.scenarios[0].id]},source_root=self.root)
         self.voting_builder = voting
@@ -459,6 +491,48 @@ class SuiteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profile does not match"):
                 SUITE.validate_options(self.args, (replace(migration, profile="flutter-direct-height1"),))
         self.assertFalse((self.root/".regtest-logs").exists())
+
+    def test_fully_passing_run_removes_only_producer_intermediates(self):
+        produced = []
+        self.on_build = lambda evidence: produced.append(self.model_producer(evidence))
+        code, summary, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        case = produced[0]
+        self.assertEqual(sorted(item.relative_to(case).as_posix() for item in case.rglob("*")), [
+            "case-manifest.json", "process-0000.log", "voting-build", "voting-build/build-proof.json",
+            "workspace-owner.json"])
+        builds = case.parent.parent
+        record = json.loads((builds/"build-prune.json").read_text())
+        prefix = "e2e/"+case.name+"/"
+        self.assertEqual(record, {"schema_version":1, "run_id":summary["run_id"], "trigger":"passed-run",
+            "removed":[prefix+"funder-build", prefix+"native-publication"], "bytes":2048+1024+512, "errors":[]})
+        self.assertEqual(stat.S_IMODE((builds/"build-prune.json").stat().st_mode), 0o400)
+        self.assertIn("Removed passing-run build intermediates: 3.5 KiB in 2 entries", self.errors.getvalue())
+        # Reports were written before the sweep and are never rewritten by it.
+        self.assertEqual(json.loads((builds.parent/"summary.json").read_text()), summary)
+
+    def test_failed_interrupted_or_errored_runs_keep_every_producer_output(self):
+        def interrupted(root, run_id, worker_id, scenario, **kwargs):
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            return {"scenario_id":scenario.id, "status":"passed"}
+        def coordinator_error(root, run_id, worker_id, scenario, **kwargs):
+            raise RuntimeError("model coordinator failure")
+        original = self.execute
+        for name, execute, fail in (("failed", original, True), ("interrupted", interrupted, False),
+                                    ("report-error", coordinator_error, False)):
+            with self.subTest(name):
+                produced = []
+                self.on_build = lambda evidence: produced.append(self.model_producer(evidence))
+                self.execute, self.fail, self.barrier = execute, fail, threading.Barrier(2)
+                code, summary, _, _ = self.invoke()
+                self.assertEqual(code, 0 if name == "interrupted" else 1)
+                self.assertEqual(summary["error"], "model coordinator failure" if name == "report-error" else None)
+                case = produced[0]
+                for path in ("funder-build/target/debug/regtest_direct_funder", "funder-build/publication",
+                             "native-publication/cohort.app/MaterialIcons.otf", "voting-build/build-proof.json"):
+                    self.assertTrue((case/path).exists(), path)
+                self.assertFalse((case.parent.parent/"build-prune.json").exists())
+                self.assertNotIn("build intermediates", self.errors.getvalue())
 
     def test_a_failed_repetition_remains_rerunnable_and_makes_the_batch_fail(self):
         self.fail = True
