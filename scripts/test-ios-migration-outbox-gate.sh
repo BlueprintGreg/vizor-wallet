@@ -165,6 +165,7 @@ headers = [
     '  private func finishRouteDeferredTrackingTask(',
     '  private func finishForegroundOnlyTask(',
     '  private func rearmDeferredTracker(',
+    '  private func isDeferredRearmStopped(',
 ]
 for optional in [
     '  private func completeForegroundOnlyTask(',
@@ -310,8 +311,29 @@ final class BackgroundMigrationPreparationRouteHandoffTests: XCTestCase {
     // Never reported as armed tracking when no re-arm succeeded.
     XCTAssertEqual(task.success, false)
     XCTAssertEqual(task.replacementAtCompletion, false)
+    // A retry already queued when the task completed sends nothing more.
+    let attemptsAtCompletion = RouteHandoffManager.shared.attempts
     Thread.sleep(forTimeInterval: 0.1)
     XCTAssertEqual(task.completions, 1)
+    XCTAssertEqual(RouteHandoffManager.shared.attempts, attemptsAtCompletion)
+  }
+  func testAStoppedTrackerSendsNoFurtherReArm() {
+    // A wallet mutation (or disabled notifications) stops the retry before
+    // it reaches native, so no obligation is registered again.
+    RouteHandoffManager.shared.results = Array(repeating: false, count: 10)
+    defer { RouteHandoffManager.shared.results = [] }
+    RouteHandoffManager.shared.attempts = 0
+    RouteHandoffTorRoute.setSaved(true)
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: "test.preparation")
+    let probe = PreparationRouteHandoffProbe()
+    probe.makeDirectDuringCleanup = true
+    probe.mutationQuiesced = true
+    let task = BGContinuedProcessingTask()
+    probe.run(task)
+    XCTAssertEqual(task.completed.wait(timeout: .now() + 3), .success)
+    XCTAssertEqual(task.success, false)
+    // Only the hook that ran during cleanup; none after the stop.
+    XCTAssertEqual(RouteHandoffManager.shared.attempts, 1)
   }
   func testDirectSaveDuringCleanupRearmsAfterTheOldTaskFinishes() {
     verifyCompletion(turnDirect: true)
@@ -354,7 +376,7 @@ suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 42 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 43 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

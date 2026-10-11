@@ -1952,21 +1952,34 @@ final class BackgroundMigrationPreparationManager {
     rearmDeferredTracker(latch: latch, complete: complete)
   }
 
+  private func isDeferredRearmStopped(
+    latch: MigrationPreparationCompletionLatch
+  ) -> Bool {
+    latch.isClaimed
+      || stateLock.withPreparationLock {
+        mutationQuiesced || notificationAuthorization.isDisabled
+      }
+  }
+
   /// Retries the direct-route re-arm until it is confirmed, the task has
   /// completed, or a wallet mutation or disabled notifications stop it.
   private func rearmDeferredTracker(
     latch: MigrationPreparationCompletionLatch,
     complete: @escaping (Bool) -> Void
   ) {
+    // Checked before any native request: a retry queued before the task
+    // completed or a stop began must not register an obligation again, which
+    // after a reset would belong to the deleted wallet.
+    guard !isDeferredRearmStopped(latch: latch) else {
+      complete(false)
+      return
+    }
     BackgroundMigrationManager.shared.savedRouteBecameDirect { [weak self] rearmed in
       guard let self, !rearmed else {
         complete(rearmed)
         return
       }
-      let stopped = self.stateLock.withPreparationLock {
-        self.mutationQuiesced || self.notificationAuthorization.isDisabled
-      }
-      guard !stopped, !latch.isClaimed else {
+      guard !self.isDeferredRearmStopped(latch: latch) else {
         complete(false)
         return
       }
