@@ -17,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import e2e_catalog
 import native_macos_suite as SUITE
 
+# Every selection requests this one signer build: all catalog Rust targets.
+BUILT_TARGETS = tuple(dict.fromkeys(target for target, _ in SUITE.RUST_CASES.values()))
+
 
 class SuiteTests(unittest.TestCase):
     def setUp(self):
@@ -68,7 +71,7 @@ class SuiteTests(unittest.TestCase):
              patch.object(SUITE,"build_regtest_funder",return_value=self.signer) as signer, \
              patch.object(SUITE,"build_voting_artifacts",return_value=(self.voting,self.voting_build_proof)) as voting, \
              patch.object(SUITE,"derive_payment_addresses",return_value={"desktop_transparent":"tm-public-sdk-model",
-                 "receiver_tex":"texregtest1publicsdkmodel"}), \
+                 "receiver_tex":"texregtest1publicsdkmodel"}) as payment_addresses, \
              patch.object(SUITE,"derive_ios_migration_addresses", return_value={
                  "note_addresses":tuple("uregtest1model"+str(index) for index in range(500)),
                  "send_recipient":"uregtest1receivermodel"}) as ios_addresses, \
@@ -78,6 +81,7 @@ class SuiteTests(unittest.TestCase):
                 {"kind":"scenario","values":[self.scenarios[0].id]},source_root=self.root)
         self.voting_builder = voting
         self.ios_builder = ios_build
+        self.payment_address_deriver = payment_addresses
         self.ios_address_deriver = ios_addresses
         return code,json.loads(output.getvalue()),build,signer
 
@@ -501,49 +505,84 @@ class SuiteTests(unittest.TestCase):
         written = json.loads(next((self.root/".regtest-logs").glob("native-suite-*/summary.json")).read_text())
         self.assertEqual(written["build_environment"], environment)
 
-    def test_rust_cases_build_selected_targets_once_without_an_app_or_helper(self):
+    def test_rust_cases_reuse_the_full_signer_build_without_an_app_or_helper(self):
         self.scenarios = tuple(self.catalog.scenarios_by_id[name] for name in (
             "rust.receive.sync", "rust.send.basic", "rust.import.bip39-passphrase"))
         code, summary, app, signer = self.invoke()
         self.assertEqual(code, 0)
         app.assert_not_called()
+        self.payment_address_deriver.assert_not_called()
         signer.assert_called_once()
-        self.assertEqual(signer.call_args.kwargs["test_targets"],
-                         ("regtest_receive_sync", "regtest_send", "regtest_import"))
+        self.assertEqual(signer.call_args.kwargs["test_targets"], BUILT_TARGETS)
+        self.assertEqual(summary["builds"]["rust_test_targets"],
+                         ["regtest_receive_sync", "regtest_send", "regtest_import"])
+        self.assertEqual(summary["builds"]["rust_built_test_targets"], list(BUILT_TARGETS))
         self.assertEqual(summary["builds"]["rust_build_count"], 1)
         self.assertTrue(all(item[3] is None for item in self.observed))
 
-    def test_ironwood_group_builds_two_exact_targets_and_rejects_wrong_profile(self):
+    def test_ironwood_group_reports_two_selected_targets_and_rejects_wrong_profile(self):
         self.scenarios = tuple(self.catalog.scenarios_by_id[name] for name in (
             "rust.ironwood.migration", "rust.ironwood.gift-card-claim"))
         code, summary, app, signer = self.invoke()
         self.assertEqual(code, 0)
         app.assert_not_called()
-        self.assertEqual(signer.call_args.kwargs["test_targets"],
-                         ("ironwood_regtest_migration", "ironwood_regtest_gift_card_claim"))
+        self.assertEqual(signer.call_args.kwargs["test_targets"], BUILT_TARGETS)
+        self.assertEqual(summary["builds"]["rust_test_targets"],
+                         ["ironwood_regtest_migration", "ironwood_regtest_gift_card_claim"])
         self.assertEqual(summary["builds"]["rust_build_count"], 1)
         with patch.object(SUITE.sys, "platform", "darwin"):
             with self.assertRaises(ValueError):
                 SUITE.validate_options(self.args, (replace(self.scenarios[0], profile="zakura-direct-height1"),))
 
-    def test_multi_account_selection_builds_its_one_target_and_signer_without_native_builds(self):
+    def test_multi_account_selection_reuses_the_full_signer_without_native_builds(self):
         self.scenarios = tuple(s for s in self.catalog.scenarios if s.target == "regtest_multi_account")
         self.assertEqual(len(self.scenarios), 8)
         code, summary, app, signer = self.invoke()
         self.assertEqual(code, 0)
         app.assert_not_called()
         signer.assert_called_once()
-        self.assertEqual(signer.call_args.kwargs["test_targets"], ("regtest_multi_account",))
+        self.assertEqual(signer.call_args.kwargs["test_targets"], BUILT_TARGETS)
+        self.assertEqual(summary["builds"]["rust_test_targets"], ["regtest_multi_account"])
         self.assertEqual(summary["builds"]["rust_build_count"], 1)
         self.assertTrue(all(item[3] is None for item in self.observed))
 
     def test_mixed_engine_selection_shares_the_signer_and_worker_budget(self):
         self.scenarios += (self.catalog.scenarios_by_id["rust.receive.sync"],)
-        code, _, app, signer = self.invoke()
+        code, summary, app, signer = self.invoke()
         self.assertEqual(code, 0)
         app.assert_called_once()
         signer.assert_called_once()
-        self.assertEqual(signer.call_args.kwargs["test_targets"], ("regtest_receive_sync",))
+        self.assertEqual(signer.call_args.kwargs["test_targets"], BUILT_TARGETS)
+        self.assertEqual(summary["builds"]["rust_test_targets"], ["regtest_receive_sync"])
+
+    def test_any_selection_requests_the_same_full_signer_build(self):
+        self.args.ios_runtime, self.args.ios_device_type = "model-runtime", "model-device"
+        self.args.voting_sdk_cache = self.args.voting_pir_cache = self.root
+        self.execute = lambda root, run_id, index, case, **kwargs: {"scenario_id":case.id,"status":"passed"}
+        requests = set()
+        for names in (("rust.receive.sync",), ("rust.ironwood.migration", "rust.send.basic"),
+                      ("flutter.macos.import-sync",), ("flutter.ios.import-sync",), ("flutter.macos.voting",)):
+            with self.subTest(selection=names):
+                self.scenarios = tuple(self.catalog.scenarios_by_id[name] for name in names)
+                code, summary, _, signer = self.invoke()
+                self.assertEqual(code, 0)
+                requests.add((signer.call_args.kwargs["test_targets"], signer.call_args.kwargs["wallet_addresses"]))
+                self.assertEqual(summary["builds"]["rust_built_test_targets"], list(BUILT_TARGETS))
+        self.assertEqual(requests, {(BUILT_TARGETS, True)})
+        self.assertEqual(set(BUILT_TARGETS), {s.target for s in self.catalog.scenarios if s.engine == "rust"})
+
+    def test_non_payment_macos_selection_compiles_the_same_tex_fixture(self):
+        tex_addresses = []
+        for name in ("flutter.macos.import-sync", "flutter.macos.tex-send"):
+            with self.subTest(scenario=name):
+                self.scenarios = (self.catalog.scenarios_by_id[name],)
+                code, summary, app, signer = self.invoke()
+                self.assertEqual(code, 0)
+                self.payment_address_deriver.assert_called_once()
+                self.assertTrue(signer.call_args.kwargs["wallet_addresses"])
+                tex_addresses.append(app.call_args.kwargs["tex_address"])
+                self.assertEqual(summary["builds"]["rust_test_targets"], [])
+        self.assertEqual(tex_addresses, ["texregtest1publicsdkmodel"]*2)
 
     def test_build_failure_never_creates_a_passing_empty_batch(self):
         with patch.object(SUITE.sys,"platform","darwin"), \
@@ -551,6 +590,8 @@ class SuiteTests(unittest.TestCase):
              patch.object(SUITE,"NativeCaseLifecycle",side_effect=lambda x:x), \
              patch.object(SUITE,"prepare_native_case_workspace",return_value=object()), \
              patch.object(SUITE,"build_regtest_funder",return_value=self.signer), \
+             patch.object(SUITE,"derive_payment_addresses",return_value={"desktop_transparent":"tm-public-sdk-model",
+                 "receiver_tex":"texregtest1publicsdkmodel"}), \
              patch.object(SUITE,"build_native_macos_cohort",side_effect=RuntimeError("compiler failed")), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             code = SUITE.run_native_suite(self.args,self.catalog,self.scenarios,{},source_root=self.root)

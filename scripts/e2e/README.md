@@ -214,8 +214,11 @@ python3.11 -B -m unittest scripts/e2e/test_e2e_schedule.py scripts/e2e/test_run_
 ## Isolated macOS import and endpoint execution
 
 The selected native cohort/helper pair, offline signer and Rust test executables
-use immutable caches by default. A miss builds each selected artifact once;
+use immutable caches by default. A miss builds each needed artifact once;
 a hit records zero corresponding builds and creates fresh publication copies.
+The signer build always includes every catalog Rust test target and the address
+tool, and every macOS cohort compiles the same derived TEX fixture, so any
+selection reuses the same signer and macOS cohort entries.
 Each case has fresh wallet/Keychain/preferences storage,
 ports and its own pinned Zakura/lightwalletd containers. The existing import
 test still requires shielded **1.25** and transparent **0.75**; a completed
@@ -298,9 +301,10 @@ python3.11 -B scripts/e2e/run-suite.py \
 Replace `--plan` with `--run`, add the tooling paths and `--workers 2`.
 The original balance, fee, history, retry, locked-URI and ZIP320 return/shielding
 assertions remain. Funding uses exact integer zatoshis and independent inclusion
-checks. The existing public SDK address example derives the second wallet's TEX
-address in the same Cargo build; the TEX app alone receives its existing debug
-ephemeral-check flag. No production app or dependency code changes here.
+checks. The existing public SDK address example, built with the signer, derives
+the second wallet's TEX address, which every macOS cohort build compiles
+whichever cases are selected; only the TEX case's app receives its existing
+debug ephemeral-check flag. No production app or dependency code changes here.
 
 Copy/paste still uses the real OS clipboard. Only the copy/read section acquires
 a cooperative per-UID lock, shared across runner processes. A failed section
@@ -331,8 +335,11 @@ python3.11 -B scripts/e2e/run-suite.py \
 ```
 
 Replace `--plan` with `--run`, add the tooling paths and `--workers 2`.
-Commit Rust inputs first. One offline Cargo invocation builds the selected test
-targets and signer from that committed subtree. Rust-only selections build no
+Commit Rust inputs first. One offline Cargo invocation builds the signer, the
+address tool and every catalog Rust test target from that committed subtree,
+whichever cases are selected, so later subsets reuse the same cache entry; only
+the selected tests run. The commit must contain all of those targets and the
+address example. Rust-only selections build no
 native app/helper; mixed Rust/macOS selections use the same signer and bounded
 worker queue. Only read-only executables are shared, never wallet DBs or chains.
 Rust execution currently targets the host macOS platform; it is not Linux coverage.
@@ -412,8 +419,8 @@ python3.11 -B scripts/e2e/run-suite.py \
   --scenario rust.ironwood.migration --scenario rust.ironwood.gift-card-claim --plan
 ```
 
-Use `--run`, the tooling paths above and `--workers 2` to execute both with one
-Cargo signer/two-target build and independent chains/DBs. All iOS execution
+Use `--run`, the tooling paths above and `--workers 2` to execute both with the
+one shared Cargo signer/test build and independent chains/DBs. All iOS execution
 and persistent cache/resource/performance gates remain pending.
 
 ## macOS mempool and Gift execution
@@ -1075,8 +1082,9 @@ without starting another Cargo build, but each owns its own process/output.
 
 The suite enables `.regtest-logs/build-cache/funder-v1` by default. Keys bind the
 complete Rust Git/blob inventory, compiler/Cargo identity and executable bytes,
-host target, exact selected tests/address tool, producer implementation, Cargo
-configuration contents and the build-relevant environment described under
+host target, exact requested tests/address tool (the suite requests every
+catalog Rust test target and the address tool for any selection), producer
+implementation, Cargo configuration contents and the build-relevant environment described under
 "Build environment in cache keys" below. The invocation ID, Git
 commit outside the Rust subtree, target directory and build job count are not
 compilation inputs in this key. The manifest stores SHA-256 digests of
@@ -1084,7 +1092,9 @@ configuration contents and of those environment values, never the values
 themselves. A hit still inventories the exact current source,
 joins its original owner and copies binaries into a fresh private publication;
 it never accepts a loose old executable or adopts an old case. Reports record
-`signer_cache_hit`, `signer_cache_key` and actual signer/Rust build counts.
+`signer_cache_hit`, `signer_cache_key`, actual signer/Rust build counts, the
+built targets as `rust_built_test_targets` and the selected cases' targets as
+`rust_test_targets`.
 
 Locked Cargo metadata binds the actual external registry, Git and vendored
 dependency source trees, not only their versions or replacement directory paths.
@@ -1120,7 +1130,8 @@ never read, migrated or deleted.
 The inputs bind checked wallet/test/native/Rust sources, the macOS helper and
 builder implementation, actual Dart package contents, semantic package
 configuration, locked Pod versions, Flutter/engine/Dart identity, Xcode/SDK, Cargokit compiler
-identity, Cargo configuration, build-relevant environment and platform/architecture/TEX fixture.
+identity, Cargo configuration, build-relevant environment and platform/architecture/TEX fixture
+(derived for every macOS selection).
 The wallet's package-config generation timestamp and workspace-local Podspec
 checksums are not keys; the local package sources are checked instead. External
 package inventories exclude generated directories only at their roots; a

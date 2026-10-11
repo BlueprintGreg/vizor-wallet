@@ -398,23 +398,26 @@ def run_native_suite(args, catalog, scenarios, selection, *, source_root):
         if report["resource_budget"]["ios_preparation_slots"] else None)
     try:
         print("Building selected native artifacts once; logs: "+str(evidence),file=sys.stderr,flush=True)
-        targets = tuple(dict.fromkeys(s.target for s in scenarios if s.engine == "rust"))
-        needs_addresses = any(s.id in {"flutter.macos.multi-account-send", "flutter.macos.tex-send"}
-                              for s in scenarios)
+        # Selection-independent inputs: the signer always carries every catalog
+        # Rust target and the address tool, and every macOS cohort compiles the
+        # same derived TEX fixture, so any subset reuses the same cache entries.
+        targets = tuple(dict.fromkeys(target for target, _ in RUST_CASES.values()))
+        selected_targets = tuple(dict.fromkeys(s.target for s in scenarios if s.engine == "rust"))
+        needs_addresses = any(s.engine == "flutter-macos" for s in scenarios)
         needs_ios_addresses = any(s.id in IOS_MIGRATION_SCENARIOS for s in scenarios)
-        producer = build_case(1, "rust.signer-build", "rust") if targets else build_case(1,"flutter.macos.signer-build")
+        producer = build_case(1, "rust.signer-build", "rust")
         cache_parent = logs / "build-cache"
         cache_parent.mkdir(mode=0o700, exist_ok=True)
         artifact = build_regtest_funder(producer,
             source_root=root, source_commit=commit, jobs=args.build_jobs, timeout=1200,
-            cancel_event=cancel, test_targets=targets, wallet_addresses=needs_addresses or needs_ios_addresses,
+            cancel_event=cancel, test_targets=targets, wallet_addresses=True,
             cache_root=cache_parent / "funder-v1")
         identity = artifact.identity()
         report["builds"]["signer_build_count"] = identity["cargo_build_count"]
         report["builds"]["signer_cache_hit"] = identity["cache_hit"]
         report["builds"]["signer_cache_key"] = identity.get("cache_key")
-        if targets:
-            report["builds"].update(rust_build_count=identity["cargo_build_count"], rust_test_targets=list(targets))
+        report["builds"].update(rust_build_count=identity["cargo_build_count"],
+            rust_built_test_targets=list(targets), rust_test_targets=list(selected_targets))
         payment_addresses = {}
         ios_addresses = None
         if needs_ios_addresses:
