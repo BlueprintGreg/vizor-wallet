@@ -3482,6 +3482,26 @@ final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
     )
   }
 
+  func testTrackingIsArmedOnlyWhenRunningOrPending() {
+    let identifier = "com.keplr.vizor.ironwood-preparation"
+    // Another caller's submission still in flight is not yet a tracker.
+    XCTAssertFalse(
+      migrationPreparationTrackerArmed(
+        taskRunning: false, pendingIdentifiers: [], identifier: identifier
+      )
+    )
+    XCTAssertTrue(
+      migrationPreparationTrackerArmed(
+        taskRunning: false, pendingIdentifiers: [identifier], identifier: identifier
+      )
+    )
+    XCTAssertTrue(
+      migrationPreparationTrackerArmed(
+        taskRunning: true, pendingIdentifiers: [], identifier: identifier
+      )
+    )
+  }
+
   func testOnlyASavedTorRouteEndsRunningTracking() {
     // A Tor save in progress refuses lookups only until it lifts or lands;
     // a saved Tor route refuses every lookup until the foreground runs.

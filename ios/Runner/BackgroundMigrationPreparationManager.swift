@@ -361,6 +361,18 @@ func migrationPreparationDirectRouteNeedsTracking(
     && !notificationsDisabled
 }
 
+/// Whether confirmation tracking is actually armed: a tracker is running or
+/// its request is pending with the system. `start` also reports success while
+/// another caller's submission is still in flight, and that submission can
+/// still fail, so the direct-route re-arm checks this instead.
+func migrationPreparationTrackerArmed(
+  taskRunning: Bool,
+  pendingIdentifiers: [String],
+  identifier: String
+) -> Bool {
+  taskRunning || pendingIdentifiers.contains(identifier)
+}
+
 /// Whether a lookup the route gate refused should end a running tracking task.
 ///
 /// A refusal while Tor is only being saved is transient: the save either
@@ -1283,8 +1295,9 @@ final class BackgroundMigrationPreparationManager {
   }
 
   /// Re-arms confirmation tracking after the saved route became direct.
-  /// Completes true when nothing needs tracking or tracking is armed or
-  /// running, and false when a needed tracker could not be submitted.
+  /// Completes true when nothing needs tracking or a tracker is actually
+  /// running or pending, and false otherwise, including while another
+  /// submission is still in flight, so the re-arm retries until it lands.
   func rearmConfirmationTrackingForDirectRoute(
     completion: @escaping (Bool) -> Void
   ) {
@@ -1303,7 +1316,22 @@ final class BackgroundMigrationPreparationManager {
       completion(true)
       return
     }
-    start(completion: completion)
+    start { [weak self] _ in
+      guard let self else {
+        completion(false)
+        return
+      }
+      BGTaskScheduler.shared.getPendingTaskRequests { requests in
+        let running = self.stateLock.withPreparationLock { self.taskRunning }
+        completion(
+          migrationPreparationTrackerArmed(
+            taskRunning: running,
+            pendingIdentifiers: requests.map(\.identifier),
+            identifier: Self.taskIdentifier
+          )
+        )
+      }
+    }
   }
 
   func acknowledgeForegroundContinuation(

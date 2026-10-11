@@ -1198,6 +1198,62 @@ void main() {
       expect(calls, 2);
     });
 
+    test('an enable that wrote Tor before a disable owes a re-arm', () async {
+      final events = <String>[];
+      var calls = 0;
+      final fence = _FakeBackgroundRouteFence(events, drained: true);
+      final endHeld = Completer<void>();
+      fence.holdEnd = endHeld.future;
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(
+            _FakeStore(events),
+          ),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(fence),
+          networkPrivacyRearmRetryDelaysProvider.overrideWithValue(const [
+            Duration.zero,
+          ]),
+          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+            () async {
+              calls++;
+              return true;
+            },
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      // The enable has written Tor and is still ending its fence, so the
+      // published state still says the saved route is direct.
+      final enable = notifier.setTorEnabled(true);
+      while (!events.contains('store:true')) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+      await notifier.setTorEnabled(false);
+      endHeld.complete();
+      await enable;
+      await settle();
+
+      // Saving direct over the Tor the enable wrote must re-arm.
+      expect(calls, 1);
+    });
+
     test('stops once Tor is saved again', () async {
       final events = <String>[];
       var calls = 0;
@@ -1738,6 +1794,7 @@ class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
   final began = <String>[];
   final ended = <String>[];
   Future<void>? holdBegin;
+  Future<void>? holdEnd;
 
   @override
   Future<bool> beginTorSave(String leaseId) async {
@@ -1751,6 +1808,7 @@ class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
   Future<void> endTorSave(String leaseId) async {
     events.add('fence-end');
     ended.add(leaseId);
+    await holdEnd;
   }
 }
 

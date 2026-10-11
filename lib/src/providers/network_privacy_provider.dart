@@ -723,6 +723,16 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   /// one (a Tor save and a new direct save happened while it was in flight)
   /// cannot satisfy it.
   var _rearmRevision = 0;
+
+  /// The route the last completed preference write saved, or null before any
+  /// write in this process (the published state is then authoritative).
+  /// Updated the moment a write completes, ahead of the published state, so
+  /// an overlapping toggle reads the preference as it actually is.
+  bool? _savedTorRoute;
+
+  /// Counts completed Tor writes, so a direct write can tell that a Tor
+  /// write landed while it was in flight.
+  var _torRouteWrites = 0;
   var _rearmRunning = false;
   var _disposed = false;
 
@@ -780,6 +790,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
 
   /// Records that a wallet reset removed the saved route preference.
   void markSavedRouteClearedAfterReset() {
+    _savedTorRoute = false;
     final cleared = NetworkPrivacyState(
       torEnabled: state.torEnabled,
       status: state.status,
@@ -871,6 +882,8 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         // Release this lease without overwriting that newer saved route.
         if (generation != _generation) return;
         await store.writeTorEnabled(true);
+        _savedTorRoute = true;
+        _torRouteWrites++;
       } catch (error) {
         if (generation != _generation) return;
         // Undo the updater preflight so software updates are not left routed
@@ -965,8 +978,15 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           // mirror of the enable ordering above. Saved any earlier, a
           // relaunch would read direct while this process was still
           // enforcing Tor.
+          // Whether background work was held back is a property of the saved
+          // preference, not of the state this toggle started from: an
+          // overlapping enable may have written Tor since then.
+          final savedBefore = _savedTorRoute ?? savedTorEnabled;
+          final torWritesBefore = _torRouteWrites;
           await store.writeTorEnabled(false);
-          final heldBackByTor = savedTorEnabled;
+          final heldBackByTor =
+              savedBefore || _torRouteWrites != torWritesBefore;
+          _savedTorRoute = false;
           savedTorEnabled = false;
           // Background work deferred while Tor was saved has nothing else
           // to wake it, so re-arm it here, once, now that the saved route

@@ -712,7 +712,10 @@ policy-aware openers and fails closed while Tor is starting or broken.
   records it durably (`BackgroundMigrationDirectRouteRearm`) and retries it on
   foreground entry and cold foreground launch, native attempts are serialized
   (`BackgroundMigrationRearmSerializer`) and never cancel a pending wake, a
-  needed state-0 tracker that fails to submit leaves it unsatisfied, and only
+  needed state-0 tracker counts only once it is running or pending (not while
+  another submission is in flight), whether work was held back follows the
+  completed preference writes rather than the state a toggle started from,
+  a needed state-0 tracker that fails to submit leaves it unsatisfied, and only
   saving Tor again or a wallet reset drops it; a failed save re-arms nothing and
   leaves the saved Tor route authoritative, including for the migration
   screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). A wallet
