@@ -87,7 +87,8 @@ but does not prefix storage. The executor proves a successful case's cleanup by
 deleting that device and observing that its inventory entry and device
 directory are gone; a failed case keeps the shut-down device until
 [`native-prune.py`](README.md#retained-resources-and-pruning) deletes it by
-exact UUID after its run is proven dead.
+exact UUID after its run is proven dead, or after an explicit
+`--assume-dead-after` policy assumes a run of unknown liveness dead.
 
 iOS processes keep their production background-task registration, inside the
 case's own Simulator. Positive OS background scheduling is outside this

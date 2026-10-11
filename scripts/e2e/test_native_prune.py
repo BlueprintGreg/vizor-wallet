@@ -265,6 +265,46 @@ class PruneTests(unittest.TestCase):
         self.assertTrue((self.logs / "prune" / "prune.lock").exists())
         self.assertIn("5 item(s) removed, 0 failed; receipt: ", output)
 
+    def test_receipt_is_written_before_output_that_fails(self):
+        self.dead_run_with_resources("abababab0a", state="Shutdown")
+        def closed_pipe(line):
+            raise BrokenPipeError(32, "Broken pipe")  # As under `native-prune.py --apply | head -3`.
+        with self.assertRaises(BrokenPipeError):
+            RETENTION.prune(self.checkout, apply=True, home=self.home, docker=self.docker, simctl=self.simctl,
+                            out=closed_pipe)
+        receipts = list((self.logs / "prune").glob("prune-*.json"))
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(receipts[0].read_text())
+        self.assertTrue(receipt["complete"])
+        self.assertEqual(sorted((item["kind"], item["result"]) for item in receipt["items"]), [
+            ("container", "deleted"), ("container", "deleted"), ("network", "deleted"),
+            ("simulator", "deleted"), ("volume", "deleted")])
+
+    def test_interrupted_apply_records_what_it_removed_and_releases_its_locks(self):
+        self.dead_run_with_resources("abababab0c", state="Shutdown")
+        model = self.docker
+        def interrupted(arguments):
+            if tuple(arguments[:2]) == ("volume", "rm"):
+                raise KeyboardInterrupt  # Ctrl-C once both containers are gone.
+            return model(arguments)
+        with self.assertRaises(KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+            CLI.main(["--apply"], checkout=self.checkout, home=self.home, docker=interrupted, simctl=self.simctl)
+        receipts = list((self.logs / "prune").glob("prune-*.json"))
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(receipts[0].read_text())
+        self.assertEqual(set(receipt), {"schema_version", "checkout", "started_at", "finished_at", "options",
+                                        "unavailable", "runs", "items", "complete"})
+        self.assertFalse(receipt["complete"])
+        self.assertEqual(sorted((item["kind"], item["result"]) for item in receipt["items"]), [
+            ("container", "deleted"), ("container", "deleted"), ("network", None), ("simulator", None),
+            ("volume", None)])
+        self.assertEqual(self.names(), ["zakura-proof-005a93ffd4a4-lwd-data", "zakura-proof-005a93ffd4a4-net"])
+        code, _, _ = self.prune("--apply")  # Neither lock is still held; the rest goes now.
+        self.assertEqual(code, 0)
+        self.assertEqual(self.names(), [])
+        self.assertEqual(self.simctl.mutations(), [("delete", UDID)])
+        self.assertEqual(len(list((self.logs / "prune").glob("prune-*.json"))), 2)
+
     def test_liveness_comes_from_the_run_lock_or_a_legacy_summary_only(self):
         alive = self.run_folder("aaaaaaaaaa")
         stop = self.hold(alive / "run-owner.lock")
@@ -361,6 +401,22 @@ class PruneTests(unittest.TestCase):
         self.assertEqual(self.docker.removals(), [])
         self.assertEqual(self.simctl.mutations(), [])
         self.assertFalse(run.exists())  # Nothing maps to the run itself.
+
+    def test_moved_checkout_keeps_the_folder_whose_evidence_names_the_old_path(self):
+        run, case, ids = self.dead_run_with_resources("abababab0b", state="Shutdown")
+        moved = self.root / "moved-checkout"
+        self.checkout.rename(moved)  # As after `git worktree move` or renaming the workspace.
+        self.checkout, self.logs = moved, moved / ".regtest-logs"
+        code, output, _ = self.prune("--apply", "--folders", "--run", "abababab0b")
+        self.assertEqual(code, 0)
+        self.assertRegex(output, r"keep +folder +native-suite-abababab0b .*case evidence "
+                         + case.name + " names another workspace path")
+        self.assertRegex(output, r"(?m)^unmapped +container +zakura-proof-005a93ffd4a4-node .*outside this checkout")
+        self.assertRegex(output, r"(?m)^unmapped +simulator +Vizor E2E " + case.name + " .*name-only match")
+        self.assertEqual((self.docker.removals(), self.simctl.mutations()), ([], []))
+        # The only files that still name the fixture and the Simulator stay.
+        for name in ("zakura-backend/fixture-identity.json", "simulator-owner.json"):
+            self.assertTrue((self.logs / run.name / case.relative_to(run) / name).exists(), name)
 
     def test_intent_create_log_maps_only_its_exact_uuid(self):
         run = self.run_folder("abababab01")

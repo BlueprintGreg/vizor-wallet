@@ -123,6 +123,8 @@ class Run:
     liveness: str
     reason: str
     cases: list
+    # Names of case directories whose workspace marker names another path (a moved checkout).
+    stale: list = dataclasses.field(default_factory=list)
 
 
 def _device(case):
@@ -221,14 +223,18 @@ def scan_runs(logs, *, assume_dead_after=None, now=None):
     for path in _children(logs, _RUN_RE):
         details = path.lstat()
         liveness, reason = run_liveness(path, assume_dead_after=assume_dead_after, now=now)
-        cases = [case for repetition in _children(path, re.compile(r"repetition-[0-9]+\Z"))
-                 for workers in _children(repetition, re.compile(r"native-workers\Z"))
-                 for worker in _children(workers, re.compile(r"[0-9a-f]{10}-w[0-9]+\Z"))
-                 for evidence in _children(worker, re.compile(r"evidence\Z"))
-                 for cases in _children(evidence, re.compile(r"e2e\Z"))
-                 for case in map(_case, _children(cases, _NAMESPACE_RE)) if case is not None]
+        directories = [case for repetition in _children(path, re.compile(r"repetition-[0-9]+\Z"))
+                       for workers in _children(repetition, re.compile(r"native-workers\Z"))
+                       for worker in _children(workers, re.compile(r"[0-9a-f]{10}-w[0-9]+\Z"))
+                       for evidence in _children(worker, re.compile(r"evidence\Z"))
+                       for cases in _children(evidence, re.compile(r"e2e\Z"))
+                       for case in _children(cases, _NAMESPACE_RE)]
+        # Markers of a moved or renamed checkout name its old path and map nothing here.
+        stale = [directory.name for directory in directories
+                 if (_json(directory / "workspace-owner.json") or {}).get("workspace") not in (None, str(directory))]
+        cases = [case for case in map(_case, directories) if case is not None]
         runs.append(Run(_RUN_RE.fullmatch(path.name).group(1), path, tree.identity(details), details.st_mtime,
-                        _entry(path / "run-owner.lock") is not None, liveness, reason, cases))
+                        _entry(path / "run-owner.lock") is not None, liveness, reason, cases, stale=stale))
     return runs
 
 
@@ -460,7 +466,9 @@ def _plan(found, selected, docker_map, device_map, namespaces, *, builds, folder
                               why + "; keeps producer logs and markers" if action == "delete" else why))
         if folders:
             blocker = None if action == "delete" else why
-            blocker = blocker or incomplete or _blocker(run, items, planned=True)
+            # The folder holds the only evidence naming whatever its moved cases left behind.
+            moved = f"case evidence {run.stale[0]} names another workspace path" if run.stale else None
+            blocker = blocker or incomplete or moved or _blocker(run, items, planned=True)
             items.append(Item("folder", "", run.path.name, run, None, "keep" if blocker else "remove",
                               blocker or why + "; no mapped resource remains"))
     return items
@@ -648,6 +656,21 @@ def _utc():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _write_receipt(logs, checkout, started, options, unavailable, selected, items, *, interrupted):
+    """The read-only record of one --apply; incomplete when an item failed or acting stopped early."""
+    failed = sum(item.result == "failed" for item in items)
+    path = logs / "prune" / (time.strftime("prune-%Y%m%dT%H%M%SZ-", time.gmtime()) + secrets.token_hex(4) + ".json")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump({"schema_version": 1, "checkout": str(checkout), "started_at": started, "finished_at": _utc(),
+                   "options": options, "unavailable": unavailable, "complete": not failed and not interrupted,
+                   "runs": [{"run_id": run.run_id, "liveness": run.liveness, "reason": run.reason}
+                            for run in selected],
+                   "items": [item.record() for item in items]}, output, indent=2, sort_keys=True)
+        output.write("\n")
+    return path
+
+
 def prune(checkout, *, runs=(), older_than=None, keep_last=0, assume_dead_after=None, builds=False,
           folders=False, apply=False, home=None, docker=run_docker, simctl=run_simctl, out=print, now=None):
     """List by default; with apply, remove exact IDs of selected dead runs only.
@@ -684,7 +707,16 @@ def prune(checkout, *, runs=(), older_than=None, keep_last=0, assume_dead_after=
         items = _plan(found, selected, docker_map, device_map, namespaces, builds=builds, folders=folders,
                       incomplete="inventory incomplete: " + ", ".join(sorted(unavailable)) if unavailable else None)
         if apply:
-            _apply(selected, items, logs, home, docker, simctl)
+            interrupted = True
+            try:
+                _apply(selected, items, logs, home, docker, simctl)
+                interrupted = False
+            finally:
+                # Before any output: a closed stdout or Ctrl-C must not lose the record of removals.
+                receipt = _write_receipt(logs, checkout, started, {
+                    "runs": list(runs), "older_than_seconds": older_than, "keep_last": keep_last,
+                    "assume_dead_after_seconds": assume_dead_after, "builds": builds, "folders": folders},
+                    unavailable, selected, items, interrupted=interrupted)
         out(("Applying to" if apply else "Dry run, nothing changes; --apply acts on")
             + f" {len(selected)} selected run(s) in {logs}")
         for name, error in sorted(unavailable.items()):
@@ -701,18 +733,6 @@ def prune(checkout, *, runs=(), older_than=None, keep_last=0, assume_dead_after=
             out(f"{sum(item.action in ('delete', 'strip', 'remove') for item in items)} item(s) would be removed")
             return 0
         failed = sum(item.result == "failed" for item in items)
-        name = time.strftime("prune-%Y%m%dT%H%M%SZ-", time.gmtime()) + secrets.token_hex(4) + ".json"
-        descriptor = os.open(logs / "prune" / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump({"schema_version": 1, "checkout": str(checkout), "started_at": started, "finished_at": _utc(),
-                       "options": {"runs": list(runs), "older_than_seconds": older_than, "keep_last": keep_last,
-                                   "assume_dead_after_seconds": assume_dead_after, "builds": builds,
-                                   "folders": folders},
-                       "unavailable": unavailable, "complete": not failed,
-                       "runs": [{"run_id": run.run_id, "liveness": run.liveness, "reason": run.reason}
-                                for run in selected],
-                       "items": [item.record() for item in items]}, output, indent=2, sort_keys=True)
-            output.write("\n")
         removed = sum(item.result in ("deleted", "stripped", "removed") for item in items)
-        out(f"{removed} item(s) removed, {failed} failed; receipt: {logs / 'prune' / name}")
+        out(f"{removed} item(s) removed, {failed} failed; receipt: {receipt}")
         return 1 if failed else 0

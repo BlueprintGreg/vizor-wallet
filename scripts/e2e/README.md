@@ -116,7 +116,8 @@ UUID, then requires that UUID to be absent from the device inventory and
 A failed case stops its writers and keeps the shut-down device, workspace and
 evidence. The runner never deletes them later; only
 [`native-prune.py --apply`](#retained-resources-and-pruning) does, by exact UUID,
-after the run is proven dead.
+after the run is proven dead or an explicit `--assume-dead-after` policy
+assumes it dead.
 
 The builder always passes `--dart-define=VIZOR_E2E_IOS_COHORT=true`, and the
 builder's own source is a cache-key input. Capture does not statically check
@@ -291,8 +292,10 @@ that can no longer reach a closed terminal or pipe are dropped, so every
 The runner holds an exclusive lock on `run-owner.lock` in the run folder for
 its whole lifetime, created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600;
 child processes do not inherit it, so it is released when the runner exits.
-Only a held lock shows that a run is alive. `run-owner.json` beside it (run ID,
-PID, start time, host, checkout) is diagnostic, never liveness evidence.
+Only a held lock shows that a run is alive. The runner writes `run-owner.json`
+beside it (run ID, PID, start time, host, checkout) only after it first holds
+the lock: its existence lets prune read a free lock as a dead run, while its
+contents are diagnostic, never liveness evidence.
 
 Each failed case result records under `retained` what its worker left in
 place: case namespace, evidence and workspace paths, the Docker fixture run ID
@@ -555,7 +558,8 @@ The runner itself never deletes what a failed, cancelled or killed case keeps:
 stopped Docker fixtures, shut-down Simulators, macOS namespaces, worker
 workspaces and evidence. A stderr line at run end names them. `native-prune.py`
 lists that state for this checkout and removes it only with `--apply`, by exact
-ID, once the owning run is proven dead:
+ID, once the owning run is proven dead or, under an explicit
+`--assume-dead-after` policy, assumed dead:
 
 ```bash
 # Dry run: list only. Then act on one dead run, or on old runs and folders.
@@ -586,12 +590,17 @@ mapping evidence; authority comes only from a dead run and an explicit
 - macOS namespaces are listed only; their Keychain items and preferences need
   the signed cleanup helper.
 
-A run is alive while its runner holds `run-owner.lock` and dead once the lock
-is free. A run from before this lock existed is dead only if `summary.json`
-exists; otherwise its liveness is unknown and it is skipped, unless
-`--assume-dead-after SECONDS` (at least 7200) is given. That option is a
+A run is alive while its runner holds `run-owner.lock`, and dead once that
+lock is free and `run-owner.json` exists; the runner writes that JSON only
+after it first holds the lock. When either file is missing and no runner holds
+the lock (a run from before this lock existed, or one whose runner stopped
+between creating the lock and writing the JSON), the run is dead only if
+`summary.json` exists; otherwise its liveness is unknown and it is skipped,
+unless `--assume-dead-after SECONDS` (at least 7200) is given. That option is a
 policy based on the newest change in the run tree and is reported as such, not
-as proof. Timestamps and PIDs never prove liveness.
+as proof. A `run-owner.lock` that exists but cannot be opened, or is not a
+single-link regular file you own, leaves the run unknown even under that
+policy. Timestamps and PIDs never prove liveness.
 
 By default, `--apply` removes the retained backends and Simulators of the
 selected dead runs. Select runs with `--run ID` (repeatable), `--older-than
@@ -601,7 +610,11 @@ runs like the passing-run cleanup above, keeping logs, markers and all case
 evidence. `--folders` also removes whole dead run folders, including their own
 `run-owner.lock`, and requires `--run` or `--older-than`. A folder stays while
 anything still maps to it: a failed or skipped deletion, a listed macOS
-namespace, conflicting evidence or an unavailable inventory.
+namespace, conflicting evidence or an unavailable inventory. It also stays
+while any case evidence in it names another workspace path, as after the
+checkout was moved or renamed: that evidence is the only record of the
+fixtures and Simulators the case left, and prune maps them again once the
+checkout is back at that path.
 
 While acting on a run, prune holds that dead run's `run-owner.lock`,
 re-inspects each resource right before removing it and skips anything that
@@ -609,7 +622,9 @@ changed. Docker removal goes containers, then volumes, then networks; a
 Simulator is shut down, deleted, and then proven absent from the inventory and
 from its device directory. `.regtest-logs/prune/prune.lock` serializes prunes
 of a checkout, and each `--apply` writes a read-only receipt
-`.regtest-logs/prune/prune-<UTC>-<random>.json`. Prune never runs
+`.regtest-logs/prune/prune-<UTC>-<random>.json` before it prints its results;
+an `--apply` stopped with Ctrl-C still writes one, with `complete` false and
+no result for the items it did not finish. Prune never runs
 `docker ... prune`, removes Docker images or build cache, runs `simctl erase`
 or `delete all`, signals processes, touches port, clipboard, build or cache
 lock files, `.retained` denial markers or `.regtest-logs/build-cache`, or
