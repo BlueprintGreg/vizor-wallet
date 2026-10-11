@@ -130,7 +130,7 @@ void main() {
       for (final change in changes) {
         await expectLater(
           change(),
-          throwsA(isA<LinuxWalletMutationBusyException>()),
+          throwsA(isA<WalletMutationBusyException>()),
         );
       }
       expect(

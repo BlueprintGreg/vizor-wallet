@@ -117,7 +117,7 @@ void main() {
       expect(nativeCalls, 1);
       await expectLater(
         coordinator.runMutation(() async => fail('second mutation')),
-        throwsA(isA<LinuxWalletMutationBusyException>()),
+        throwsA(isA<WalletMutationBusyException>()),
       );
       await coordinator.retry(requestId: requestId);
       expect(await mutation, 42);
@@ -175,7 +175,7 @@ void main() {
         expect(writes, 1);
         await expectLater(
           coordinator.runMutation(() async => fail('new mutation')),
-          throwsA(isA<LinuxWalletMutationBusyException>()),
+          throwsA(isA<WalletMutationBusyException>()),
         );
       },
     );
@@ -259,7 +259,7 @@ void main() {
         expect(local.hasPendingMutation, isTrue);
         await expectLater(
           local.runMutation(() async => competingCalls++),
-          throwsA(isA<LinuxWalletMutationBusyException>()),
+          throwsA(isA<WalletMutationBusyException>()),
         );
         expect(
           competingCalls,
