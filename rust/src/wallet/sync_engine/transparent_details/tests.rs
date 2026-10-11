@@ -928,6 +928,39 @@ async fn a_cancelled_public_enhance_stores_nothing() {
     );
 }
 
+/// Account deletion and wallet reset wait for public loads, so one still
+/// waiting for a Tor route to bootstrap ends when they cancel it, not at the
+/// route deadline, and sends nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_public_enhance_waiting_for_the_route_ends_when_cancelled() {
+    let _route = crate::network_privacy::test_route_policy::lock_route_policy();
+    let fixture = wallet();
+    let tx = utxo_receipt(&fixture, 0xae, TOP - 1);
+    let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
+    // Tor is wanted and never finishes bootstrapping.
+    crate::network_privacy::begin_tor_enable();
+    let (path, url, txid) = (fixture.path.clone(), lwd.url.clone(), *tx.txid().as_ref());
+    let account = fixture.account;
+    let load =
+        tokio::task::spawn_blocking(move || super::enhance_publicly(&path, MAIN, &url, account, txid));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!load.is_finished(), "the load waits for the route");
+
+    let started = Instant::now();
+    // Repeated in case the load registers after the first cancellation.
+    while !load.is_finished() && started.elapsed() < Duration::from_secs(10) {
+        super::cancel_public_loads_at(&fixture.path);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let result = load.await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "cancellation did not end the route wait"
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(lwd.count("/GetTransaction"), 0);
+}
+
 /// A file replacement invalidates the original consent even when the copied
 /// wallet retains the same account UUIDs and policy generation.
 #[tokio::test(flavor = "multi_thread")]

@@ -208,6 +208,16 @@ pub(crate) async fn open_isolated_lwd_transport(
     open_lwd_transport_for_route(lightwalletd_url, true, || false).await
 }
 
+/// [`open_isolated_lwd_transport`] that stops waiting for the route once
+/// `cancelled` reports true, for a user-started request that a lock or a
+/// destructive wallet change must not wait out.
+pub(crate) async fn open_isolated_lwd_transport_until(
+    lightwalletd_url: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Channel, SyncError> {
+    open_lwd_transport_for_route(lightwalletd_url, true, cancelled).await
+}
+
 /// Opens a lightwalletd channel that is always direct, bypassing the
 /// process-wide route policy entirely.
 ///
