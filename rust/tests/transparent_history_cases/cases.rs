@@ -1272,8 +1272,19 @@ impl Ctx {
         let scratch = tempfile::tempdir().expect("discovery dir");
         let db = scratch.path().join("zcash_wallet.db");
         // One discovery at the default budget, then one at the lowered
-        // budget. Each pass fetches the shard map, so the lowered one must
-        // fetch more maps: the passes the continuation added.
+        // budget. A complete pass over the same candidates and publication
+        // always does the same private work, and the library runs every
+        // continuation pass inside one call over the shard map it already
+        // has. So a lowered run whose private work differs from the default
+        // run's had a pass its budget stopped, and since only a further pass
+        // turns that stop into a complete answer, finding the same accounts
+        // proves the continuation ran.
+        const WORK: [(&str, &str); 4] = [
+            ("manifests", "/manifest"),
+            ("setups", "/setup/"),
+            ("directory queries", "/query/directory"),
+            ("page queries", "/query/pages"),
+        ];
         let discover = |budget: Option<&str>| {
             let before = publisher.route_counts();
             if let Some(budget) = budget {
@@ -1294,36 +1305,41 @@ impl Ctx {
             let grew = |pattern: &str| -> usize {
                 after
                     .iter()
-                    .filter(|(route, _)| route.contains(pattern))
+                    .filter(|(route, _)| route.contains(pattern) && !route.contains("/txid/"))
                     .map(|(route, n)| n - before.get(route).copied().unwrap_or(0))
                     .sum()
             };
             let found: Result<Vec<u32>, String> =
                 result.map(|r| r.accounts.iter().map(|a| a.zip32_account_index).collect());
-            (
-                found,
-                grew("GET /v1/filters/shards"),
-                grew("/query/directory"),
-                grew("/query/pages"),
-            )
+            (found, WORK.map(|(_, pattern)| grew(pattern)))
+        };
+        let describe = |work: &[usize; 4]| {
+            WORK.iter()
+                .zip(work)
+                .map(|((name, _), n)| format!("{n} {name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         let funded: Vec<u32> = ERIN_FUNDED.iter().map(|&(account, _)| account).collect();
-        let (baseline, baseline_maps, directory, pages) = discover(None);
+        let (baseline, baseline_work) = discover(None);
         notes.push(format!(
-            "discovery at the default budget: {baseline:?}, {baseline_maps} shard maps, {directory} directory and {pages} page queries"
+            "discovery at the default budget: {baseline:?}, {}",
+            describe(&baseline_work)
         ));
-        let (budgeted, maps, directory, pages) = discover(Some(DISCOVERY_MAX_QUERIES));
+        let (budgeted, work) = discover(Some(DISCOVERY_MAX_QUERIES));
         notes.push(format!(
-            "discovery at query budget {DISCOVERY_MAX_QUERIES}: {budgeted:?}, {maps} shard maps, {directory} directory and {pages} page queries"
+            "discovery at query budget {DISCOVERY_MAX_QUERIES}: {budgeted:?}, {}",
+            describe(&work)
         ));
         if baseline.as_ref() != Ok(&funded) {
             problems.push(format!(
                 "discovery at the default budget found {baseline:?}, the funded accounts are {funded:?}"
             ));
         }
-        if maps <= baseline_maps {
+        if work == baseline_work {
             problems.push(format!(
-                "the lowered budget fetched {maps} shard maps, the default {baseline_maps}: no pass was stopped by its budget, so the continuation was not exercised"
+                "the lowered budget did the default budget's private work ({}): no pass was stopped by its budget, so the continuation was not exercised",
+                describe(&work)
             ));
         }
         let found = match budgeted {
