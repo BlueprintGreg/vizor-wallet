@@ -804,7 +804,8 @@ void main() {
           isRecoveryRetry ? isEmpty : [(BigInt.one, 'test-send-flow')],
         );
         expect(outcome?.phase, SendBroadcastPhase.failed);
-        expect(outcome?.proposalConsumed, isTrue);
+        // A retained recovery retry is the caller's to release on leaving.
+        expect(outcome?.proposalConsumed, !isRecoveryRetry);
         expect(outcome?.canRetryBroadcast, isRecoveryRetry);
       },
     );
@@ -954,6 +955,43 @@ void main() {
       },
     );
   }
+
+  testWidgets('leaving a Keystone retry releases the retained signed batch '
+      'once', (tester) async {
+    rustApi.storeError = Exception(
+      'hardware_recovery_retryable: Private transparent recovery is catching '
+      'up; retry after sync',
+    );
+    final args = _reviewArgs();
+    await _setDesktopViewport(tester);
+    await tester.pumpWidget(
+      _harness(
+        args,
+        keystone: KeystoneBroadcastArgs(
+          reviewArgs: args,
+          pcztWithProofs: const [
+            [3, 3, 3],
+          ],
+          pcztWithSignatures: const [
+            [9, 9],
+          ],
+        ),
+        isHardware: true,
+      ),
+    );
+    await tester.pump();
+    await _flushBroadcast(tester);
+    // Kept for a retry while the receipt stays open.
+    expect(find.text('Retry'), findsOneWidget);
+    expect(rustApi.discardCalls, isEmpty);
+
+    // Leaving without retrying hands the inputs back. Rust keeps them locked
+    // if a submission had already started.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('home-route'), findsOneWidget);
+    expect(rustApi.discardCalls, [(BigInt.one, 'test-send-flow')]);
+  });
 
   testWidgets('Keystone definite rejection surfaces as a send failure', (
     tester,

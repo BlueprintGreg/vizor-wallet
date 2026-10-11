@@ -1222,9 +1222,11 @@ mod tests {
         assert_eq!(remaining, vec![submitted.as_bytes().to_vec()]);
     }
 
-    #[test]
-    fn discarding_a_signing_request_returns_its_ephemeral_address() {
-        use super::super::{discard_stored_proposal, StoredProposalLock, PROPOSAL_STORE};
+    /// A transparent single-step proposal for tests that store a lock.
+    fn stored_proposal_fixture() -> zcash_client_backend::proposal::Proposal<
+        super::super::send::WalletFeeRule,
+        zcash_client_sqlite::ReceivedNoteId,
+    > {
         use transparent::{
             address::TransparentAddress,
             bundle::{OutPoint, TxOut},
@@ -1239,9 +1241,6 @@ mod tests {
         use zcash_keys::address::Address;
         use zcash_protocol::value::Zatoshis;
 
-        let wallet = ephemeral_wallet();
-        let owner = LockOwner::new([61; 32]);
-        let address = reserve_for(&wallet, owner).unwrap();
         let recipient = TransparentAddress::PublicKeyHash([7; 20]);
         let utxo = WalletTransparentOutput::from_parts(
             OutPoint::new([9; 32], 0),
@@ -1261,7 +1260,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let proposal = Proposal::single_step(
+        Proposal::single_step(
             TransactionRequest::new(vec![payment]).unwrap(),
             BTreeMap::from([(0, PoolType::TRANSPARENT)]),
             vec![utxo],
@@ -1274,7 +1273,17 @@ mod tests {
             false,
             false,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn discarding_a_signing_request_returns_its_ephemeral_address() {
+        use super::super::{discard_stored_proposal, StoredProposalLock, PROPOSAL_STORE};
+
+        let wallet = ephemeral_wallet();
+        let owner = LockOwner::new([61; 32]);
+        let address = reserve_for(&wallet, owner).unwrap();
+        let proposal = stored_proposal_fixture();
         let id = 9_200_001u64;
         let flow = "ephemeral-return-flow";
         PROPOSAL_STORE.lock().unwrap().locks.insert(
@@ -1292,6 +1301,38 @@ mod tests {
 
         assert!(!PROPOSAL_STORE.lock().unwrap().locks.contains_key(&id));
         assert!(!is_reserved(&wallet, &address));
+    }
+
+    /// A receipt left while a hardware batch waits for a retry discards its
+    /// proposal; that release is safe only because a submission that started
+    /// keeps the inputs locked.
+    #[test]
+    fn discarding_after_a_submission_started_keeps_the_reservation() {
+        use super::super::{discard_stored_proposal, StoredProposalLock, PROPOSAL_STORE};
+
+        let wallet = ephemeral_wallet();
+        let owner = LockOwner::new([62; 32]);
+        let address = reserve_for(&wallet, owner).unwrap();
+        let id = 9_200_002u64;
+        let flow = "submitted-retry-flow";
+        PROPOSAL_STORE.lock().unwrap().locks.insert(
+            id,
+            StoredProposalLock {
+                proposal: stored_proposal_fixture(),
+                network: WalletNetwork::Test,
+                db_path: wallet.path.clone(),
+                owner,
+                send_flow_id: flow.to_string(),
+            },
+        );
+        mark_retain_until_expiry(&wallet.path, owner).unwrap();
+
+        discard_stored_proposal(id, flow).unwrap();
+
+        assert!(PROPOSAL_STORE.lock().unwrap().locks.contains_key(&id));
+        assert!(is_reserved(&wallet, &address));
+        assert!(is_durable(&wallet.path, owner).unwrap());
+        PROPOSAL_STORE.lock().unwrap().locks.remove(&id);
     }
 
     #[test]
