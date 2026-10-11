@@ -50,11 +50,37 @@ ACCOUNT_ASSERTS = {
     "final": ["ledger", "utxos", "balance", "coverage"],
     "pending": ["ledger", "utxos"],
     "pre_reorg": ["ledger", "utxos"],
+    # Private profile: H13's fault restores once settled, and N_spend.
+    "h13_recovered": ["ledger", "utxos", "balance", "coverage"],
+    "spend": ["ledger", "utxos", "balance", "coverage"],
 }
+
+# Checkpoints whose account checks belong to one case whatever transaction a
+# problem names: the case that declares the variant observed there.
+CHECKPOINT_CASE = {"h13_recovered": "H13", "spend": "H07"}
 
 
 def variant_kind(cases, variant):
     return cases.get("variant_kinds", {}).get(variant, "complete")
+
+
+def built_by(record):
+    """The variant that built a Vizor (`V`) transaction: the reference wallet
+    R unless the manifest names another (`links.built_by`, e.g. N_spend).
+    None for transactions Vizor did not build."""
+    if record["builder"] != "V":
+        return None
+    return (record.get("links") or {}).get("built_by", "R")
+
+
+def retains(record, variant):
+    """Whether `variant` built this transaction, so holds it from creation:
+    R and its reopened copy O for R's own, or the variant the manifest
+    names."""
+    builder = built_by(record)
+    return builder is not None and (
+        builder == variant or (builder == "R" and variant in RETAINED)
+    )
 
 
 def status_fields(facts):
@@ -280,7 +306,7 @@ def knows(record, facts, variant, kind):
     """Whether a variant can learn this tx through public sync paths."""
     if facts["status"] == "mined":
         return True
-    return variant in RETAINED and record["builder"] == "V" and kind == "complete"
+    return retains(record, variant) and kind == "complete"
 
 
 def activity(context):
@@ -293,7 +319,7 @@ def activity(context):
         (case_id, variant)
         for case_id, case in cases["cases"].items()
         for variant in case["checkpoints"].get(checkpoint, [])
-        if variant_kind(cases, variant) != "complete"
+        if variant_kind(cases, variant) in ("pre_enrichment", "fault")
     }
     for record in cases["txs"]:
         case = cases["cases"][record["case"]]
@@ -323,7 +349,7 @@ def activity(context):
                 row_sets, constraints = expectations(
                     record["intent"], facts, effect, record, account, context
                 )
-                if facts["status"] != "mined" and variant in RETAINED:
+                if facts["status"] != "mined" and retains(record, variant):
                     # Unmined rows the reference wallet built date from creation.
                     for rows in row_sets or []:
                         for row in rows:
@@ -362,7 +388,7 @@ def retained_vs_fresh(context):
     sources = set(h04.get("source_cases", []))
     items = []
     for record in cases["txs"]:
-        if record["case"] not in sources or record["builder"] != "V":
+        if record["case"] not in sources or built_by(record) != "R":
             continue
         facts = context["facts"][record["txid"]]
         if facts["status"] != "mined":
@@ -424,14 +450,15 @@ def account_checks(context):
                     }
                 )
             elif kind == "complete" and checkpoint in ACCOUNT_ASSERTS:
-                checks.append(
-                    {
-                        "variant": variant,
-                        "account": account,
-                        "assert": ACCOUNT_ASSERTS[checkpoint],
-                        "authority": ["current"],
-                    }
-                )
+                check = {
+                    "variant": variant,
+                    "account": account,
+                    "assert": ACCOUNT_ASSERTS[checkpoint],
+                    "authority": ["current"],
+                }
+                if checkpoint in CHECKPOINT_CASE:
+                    check["case"] = CHECKPOINT_CASE[checkpoint]
+                checks.append(check)
     # H04: the reopened copy must equal the reference database exactly.
     h04 = cases["cases"].get("H04")
     if h04 and checkpoint in h04["checkpoints"] and {"R", "O"} <= set(h04["checkpoints"][checkpoint]):
@@ -449,15 +476,22 @@ def account_checks(context):
 
 
 def request_policy(context, alice_addresses, related_txids):
-    v_built = sorted(r["txid"] for r in context["cases"]["txs"] if r["builder"] == "V")
+    sends = {}
+    for record in context["cases"]["txs"]:
+        builder = built_by(record)
+        if builder is not None:
+            sends.setdefault(builder, []).append(record["txid"])
+    # Only the wallet that built a transaction may broadcast it: the reference
+    # wallet (and its reopened copy, which resubmits unmined unexpired
+    # transactions it created), or the variant the manifest names.
+    send_txids = {variant: sorted(txids) for variant, txids in sends.items()}
+    send_txids["O"] = send_txids.get("R", [])
     return {
         "allowed_methods": ALLOWED_METHODS,
         "address_methods": ADDRESS_METHODS,
         "allowed_addresses": alice_addresses,
         "allowed_txids": related_txids,
-        # Only the reference wallet (and its reopened copy, which resubmits
-        # unmined unexpired transactions it created) may broadcast.
-        "send_txids": {"R": v_built, "O": v_built},
+        "send_txids": send_txids,
     }
 
 
