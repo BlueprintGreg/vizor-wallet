@@ -89,7 +89,8 @@ def build_native_ios_cohort(case, *, source_root, flutter, timeout=1800.0,
                 platform="ios", architecture=architecture, command=command,
                 environment=environment, cancel=cancel)
         def reuse(candidate):
-            # A miss keeps this key's lease for the caller; a hit rechecks and joins.
+            # A miss keeps this key's lease for the caller. A hit builds nothing
+            # from the collected inputs, so it rechecks only checkout sources.
             nonlocal lease
             lease = cache.NativeCohortCacheLease(cache_root, candidate,
                 timeout=max(0.001, deadline-time.monotonic()), cancel_event=cancel, roles=("cohort",))
@@ -99,8 +100,6 @@ def build_native_ios_cohort(case, *, source_root, flutter, timeout=1800.0,
                 return None
             copies = lease.materialize(case, cached)
             captured = capture_ios_cohort(copies["cohort"])
-            if current_inputs() != candidate:
-                raise NativeIosBuildError("iOS inputs changed during cache publication")
             changed = cache.native_source_changes(root, source, "ios")
             if changed:
                 raise NativeIosBuildError("iOS source/tool changed during cache reuse: " + ", ".join(changed[:8]))

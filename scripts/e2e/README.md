@@ -1373,7 +1373,13 @@ installation cannot populate a staged read-only app directory. Cache entries
 remain sealed; neither the originals nor sibling publications are unsealed.
 The normal capture runs on those copies: signature, role, entitlement and team
 checks for macOS, and file identities, architecture and one signature
-verification for iOS. Inputs are checked again before joining the new owner.
+verification for iOS. Before joining the new owner, a hit rechecks the checked
+checkout sources against their first capture (identity and bytes; the Xcode
+project by bytes) and the copies' captured identities, but does not collect the
+toolchain, SDK and package inputs again: nothing between its lookup and the
+join builds from them. A hit therefore no longer shows that those inputs stayed
+unchanged until its producer ended; a miss still collects every input again
+after its build and refuses to publish if any changed.
 Reports retain real build counts (macOS app/helper, iOS app), cache hit/key and
 joined process outcomes. `persistent_cache_attestation` describes this
 cooperative local publication, not portable hermetic provenance or a

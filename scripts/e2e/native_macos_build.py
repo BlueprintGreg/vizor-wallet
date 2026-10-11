@@ -97,7 +97,8 @@ def build_native_macos_cohort(case, *, source_root, flutter, timeout=1200.0, can
                 platform="macos", architecture=platform.machine(), command=command,
                 environment=environment, cancel=cancel, tex_address=tex_address)
         def reuse(candidate):
-            # A miss keeps this key's lease for the caller; a hit rechecks and joins.
+            # A miss keeps this key's lease for the caller. A hit builds nothing
+            # from the collected inputs, so it rechecks only checkout sources.
             nonlocal lease
             lease = cache.NativeCohortCacheLease(cache_root, candidate,
                 timeout=max(0.001, deadline-time.monotonic()), cancel_event=cancel)
@@ -107,8 +108,6 @@ def build_native_macos_cohort(case, *, source_root, flutter, timeout=1200.0, can
                 return None
             copies = lease.materialize(case, cached)
             captured = capture_mac_cleanup_helper(copies["helper"], cohort_app=copies["cohort"])
-            if current_inputs() != candidate:
-                raise NativeMacosBuildError("native inputs changed during cache publication")
             changed = cache.native_source_changes(root, source, "macos")
             if changed:
                 raise NativeMacosBuildError("native source/tool changed during cache reuse: " + ", ".join(changed[:8]))

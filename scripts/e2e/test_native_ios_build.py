@@ -183,7 +183,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(project.stat().st_mtime_ns, stamp)
         self.assertEqual((proof["cache_hit"], proof["ios_app_build_count"], proof["early_lookup"]), (True, 0, "hit"))
         self.capture.assert_called_once_with(self.case.workspace.root/"native-publication/cohort.app")
-        self.assertEqual(collect.call_count, 2)  # The early lookup and the recheck after copying.
+        self.assertEqual(collect.call_count, 1)  # The early lookup only; a hit rechecks sources.
 
     def test_early_miss_configures_once_then_reuses_the_configured_entry(self):
         with self.modeled_cache({"pods":True, "app":"model source"}) as collect:
@@ -193,7 +193,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual([lease.inputs["pods"] for lease in self.leases], [False, True])
         self.assertEqual((proof["cache_hit"], proof["early_lookup"], proof["early_lookup_changed_inputs"]),
                          (True, "miss", ["pods"]))
-        self.assertEqual(collect.call_count, 3)  # Early, configured and the recheck after copying.
+        self.assertEqual(collect.call_count, 2)  # The early and configured lookups only.
 
     def test_cache_miss_configures_once_before_one_simulator_build(self):
         with self.modeled_cache():
@@ -261,10 +261,10 @@ class BuildTests(unittest.TestCase):
 
     def test_early_hit_rejects_wallet_source_changed_during_reuse(self):
         self.entry_state = "changed-during-reuse"
-        with self.modeled_cache({"pods":False, "app":"model source"}):
-            with self.assertRaisesRegex(BUILD.NativeIosBuildError, "changed during cache publication"):
+        with self.modeled_cache({"pods":False, "app":"model source"}) as collect:
+            with self.assertRaisesRegex(BUILD.NativeIosBuildError, "changed during cache reuse: lib/app.dart"):
                 self.build(cache_root=self.root/"cache")
-        self.assertEqual(self.configurations(), [])
+        self.assertEqual((self.configurations(), collect.call_count), ([], 1))
 
     def test_imported_test_support_is_in_cache_input_inventory(self):
         def inputs(root, source, *args, **kwargs):
