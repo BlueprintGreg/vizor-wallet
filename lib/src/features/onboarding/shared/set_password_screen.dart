@@ -106,7 +106,7 @@ class _SetPasswordScreenState extends ConsumerState<SetPasswordScreen> {
       await ref
           .read(linuxKeyringCoordinatorProvider)
           .runMutation(_submitWithOwnership);
-    } on LinuxWalletMutationBusyException catch (error) {
+    } on WalletMutationBusyException catch (error) {
       if (!mounted) return;
       setState(() => _submitError = error.toString());
     }
