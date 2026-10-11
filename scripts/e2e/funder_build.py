@@ -437,8 +437,10 @@ def build_regtest_funder(case: NativeCaseLifecycle, *, source_root: Path,
                      *(("regtest_wallet_addresses",) if wallet_addresses else ()))
             lease = FunderCacheLease(cache_root, cache_inputs, names, timeout=timeout, cancel_event=cancellation)
             lease.__enter__()
-            verify_cache_inputs()
         cached = lease.load() if lease is not None else None
+        # Only a miss builds from these inputs; a hit checks them once, after sealing.
+        if cached is None:
+            verify_cache_inputs()
         lines = () if cached is not None else command([cargo_executable, "build", "--offline", "--locked", "--manifest-path",
             str(root / "source/rust/Cargo.toml"), "--example", "regtest_direct_funder",
             *(["--example", "regtest_wallet_addresses"] if wallet_addresses else []),
@@ -484,7 +486,8 @@ def build_regtest_funder(case: NativeCaseLifecycle, *, source_root: Path,
                 raise FunderBuildError("Cargo executable path is not canonical")
             output.relative_to(lease.entry if cached is not None else target)
         _verify_source(root / "source", records, source_directories)
-        verify_cache_inputs()
+        if cached is None:
+            verify_cache_inputs()
         case.close()
         _verify_root(case, root, root_id)
         publication = root / "publication"

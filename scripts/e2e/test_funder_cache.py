@@ -39,6 +39,37 @@ class FunderCacheTests(unittest.TestCase):
         cold.verify_unchanged()
         warm.verify_unchanged()
 
+    def test_miss_checks_inputs_around_its_build_and_hit_once_after_sealing(self):
+        inputs = FIXTURES.BUILD.toolchain_inputs
+        observed = []
+        for _ in range(2):
+            collected, rechecked = [], []
+            def collect(*args, original=inputs.rust_toolchain_inputs, **kwargs):
+                collected.append(self.model.compile_calls)
+                return original(*args, **kwargs)
+            def recheck(*args, original=inputs.rust_inputs_unchanged, **kwargs):
+                rechecked.append(self.model.compile_calls)
+                return original(*args, **kwargs)
+            with patch.object(inputs, "rust_toolchain_inputs", side_effect=collect), \
+                 patch.object(inputs, "rust_inputs_unchanged", side_effect=recheck):
+                self.build()
+            observed.append((collected, rechecked))
+        # Compiler runs seen by each check. A miss collects for its key, before
+        # and after its build, then rechecks after sealing; a hit collects only
+        # for its key and rechecks once after sealing.
+        self.assertEqual(observed, [([0, 0, 1], [1]), ([1], [1])])
+
+    def test_hit_rejects_inputs_changed_before_its_single_check(self):
+        self.build()
+        copy = FIXTURES.BUILD._copy_cargo_executable
+        def changed(*args):
+            (self.model.cargo_dependency/"lib.rs").write_text("patched while publishing")
+            return copy(*args)
+        with patch.object(FIXTURES.BUILD, "_copy_cargo_executable", side_effect=changed), \
+             self.assertRaisesRegex(FIXTURES.BUILD.FunderBuildError, "Cargo dependency sources changed"):
+            self.build()
+        self.assertEqual(self.model.compile_calls, 1)
+
     def test_unrelated_commit_and_build_job_count_do_not_invalidate_rust(self):
         first = self.build(jobs=1)
         (self.model.source / "README.md").write_text("unrelated runner/documentation change")

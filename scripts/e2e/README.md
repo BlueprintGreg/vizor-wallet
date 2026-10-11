@@ -1237,7 +1237,15 @@ compilation inputs in this key. The manifest stores SHA-256 digests of
 configuration contents and of those environment values, never the values
 themselves. A hit still inventories the exact current source,
 joins its original owner and copies binaries into a fresh private publication;
-it never accepts a loose old executable or adopts an old case. Reports record
+it never accepts a loose old executable or adopts an old case. A miss compares
+the collected toolchain, SDK, configured-tool and dependency inputs with its key
+after taking the key lock and again after its Cargo build; every producer
+compares them once more after its original owner seals. A hit runs no build in
+between, so that last comparison is its only one. It rehashes the recorded paths
+without running `xcrun`, `which` or `cargo metadata` again, so a hit does not
+notice a selection changed after its key was computed (`xcode-select`, another
+SDK, another `cc` or `ar` on PATH, other dependency roots); it returns the
+artifact published under that key. Reports record
 `signer_cache_hit`, `signer_cache_key`, actual signer/Rust build counts, the
 built targets as `rust_built_test_targets` and the selected cases' targets as
 `rust_test_targets`.
