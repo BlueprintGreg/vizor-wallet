@@ -147,9 +147,9 @@ void main() {
       await apply(_ready(enabled: false));
       expect(applied, [
         'reconcile:false',
-        'rust:false',
+        'rust:$available',
         'confirmed:true',
-        'native:false',
+        'native:$available',
         'companions',
       ]);
       expect(optOut.value, isTrue);

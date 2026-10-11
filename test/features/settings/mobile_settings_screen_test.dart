@@ -640,7 +640,7 @@ void main() {
 
   testWidgets('off mainnet a durably private wallet can still be returned to '
       'public lookups', (tester) async {
-    final enhancePir = _RecordingEnhancePir();
+    final enhancePir = _RecordingToggle(false);
     await tester.pumpWidget(
       _app(
         network: 'regtest',
@@ -652,16 +652,16 @@ void main() {
 
     expect(
       find.byKey(const ValueKey('mobile_settings_enhance_pir_toggle')),
-      findsNothing,
+      findsOneWidget,
     );
     final button = find.byKey(
-      const ValueKey('mobile_settings_transparent_opt_out_button'),
+      const ValueKey('mobile_settings_enhance_pir_row'),
     );
     await tester.scrollUntilVisible(button, 200);
     expect(button, findsOneWidget);
     await tester.ensureVisible(button);
     await tester.pumpAndSettle();
-    // Finishing sends transparent lookups to the server, so it asks.
+    // Turning off sends transparent lookups to the server, so it asks.
     await tester.tap(button);
     await tester.pumpAndSettle();
     expect(_turnOffSheet, findsOneWidget);
@@ -669,7 +669,7 @@ void main() {
       find.byKey(const ValueKey('private_queries_turn_off_confirm')),
     );
     await tester.pumpAndSettle();
-    expect(enhancePir.finishes, 1);
+    expect(enhancePir.toggles, 1);
   });
 
   group('turning private queries off on mobile', () {
@@ -742,25 +742,25 @@ void main() {
       final enhancePir = await tapToggle(
         tester,
         enabled: false,
-        walletPrivate: true,
+        walletPrivate: false,
       );
       expect(_turnOffSheet, findsNothing);
       expect(enhancePir.toggles, 1);
     });
   });
 
-  testWidgets('off mainnet nothing to finish shows no opt-out action', (
+  testWidgets('off mainnet a public wallet shows no private queries control', (
     tester,
   ) async {
     await tester.pumpWidget(_app(network: 'regtest'));
     await tester.pumpAndSettle();
-    // The privacy card is built; only the action is absent.
+    // The privacy card is built; the private queries control is absent.
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('mobile_settings_tor_description')),
       200,
     );
     expect(
-      find.byKey(const ValueKey('mobile_settings_transparent_opt_out_button')),
+      find.byKey(const ValueKey('mobile_settings_enhance_pir_toggle')),
       findsNothing,
     );
   });
@@ -1703,16 +1703,6 @@ double _leadingIconOpacityIn(WidgetTester tester, ValueKey<String> rowKey) {
         find.descendant(of: find.byKey(rowKey), matching: find.byType(Opacity)),
       )
       .opacity;
-}
-
-class _RecordingEnhancePir extends EnhancePirNotifier {
-  int finishes = 0;
-
-  @override
-  bool build() => false;
-
-  @override
-  Future<void> finishTransparentOptOut() async => finishes++;
 }
 
 final _turnOffSheet = find.byKey(

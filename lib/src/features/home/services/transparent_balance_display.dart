@@ -85,7 +85,6 @@ class TransparentBalanceDisplay {
           'again later.',
     rust_sync.TransparentStopReason.notSelected =>
       'Private transparent recovery is not selected. Turn off Private '
-          'queries to look up transparent funds publicly. If it is already '
-          'off, choose Finish turning off in Settings.',
+          'queries in Settings to look up transparent funds publicly.',
   };
 }

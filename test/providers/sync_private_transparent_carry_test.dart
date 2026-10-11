@@ -401,7 +401,7 @@ void main() {
       await container.read(syncProvider.future);
       await pumpEventQueue();
       expect(container.read(walletTransparentPrivateProvider), isTrue);
-      expect(container.read(transparentOptOutActionProvider), isTrue);
+      expect(container.read(privateQueriesControlEnabledProvider), isTrue);
 
       // The lowering applied; the wallet path never resolves, so no balance
       // is read, as while offline or waiting for Tor.
@@ -417,7 +417,7 @@ void main() {
         isFalse,
       );
       expect(container.read(walletTransparentPrivateProvider), isFalse);
-      expect(container.read(transparentOptOutActionProvider), isFalse);
+      expect(container.read(privateQueriesControlEnabledProvider), isFalse);
       expect(container.read(privateQueriesTurnOffDisclosesProvider), isFalse);
     });
 
@@ -690,8 +690,8 @@ void main() {
         await container.read(syncProvider.future);
         await pumpEventQueue();
         expect(container.read(walletTransparentPrivateProvider), private);
-        // Settings offers to lower a private wallet with private queries off.
-        expect(container.read(transparentOptOutActionProvider), private);
+        // The single toggle stays on until the private wallet is lowered.
+        expect(container.read(privateQueriesControlEnabledProvider), private);
       }
     });
 

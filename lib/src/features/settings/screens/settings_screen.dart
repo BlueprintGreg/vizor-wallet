@@ -36,7 +36,6 @@ import '../widgets/network_privacy_control.dart';
 import '../widgets/enhance_pir_privacy_control.dart';
 import '../widgets/private_queries_turn_off.dart';
 import '../widgets/settings_new_badge.dart';
-import '../widgets/transparent_opt_out_action.dart';
 import '../widgets/windows_update_download_flow.dart';
 
 const _settingsRowActivationShortcuts = <ShortcutActivator, Intent>{
@@ -514,8 +513,9 @@ class _SettingsList extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final enhancePirEnabled = ref.watch(enhancePirProvider);
-    final enhancePirAvailable = ref.watch(enhancePirAvailableProvider);
+    final enhancePirEnabled = ref.watch(privateQueriesControlEnabledProvider);
+    final enhancePirAvailable =
+        ref.watch(enhancePirAvailableProvider) || enhancePirEnabled;
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
     return Column(
@@ -629,8 +629,6 @@ class _SettingsList extends ConsumerWidget {
                     : () => unawaited(togglePrivateQueries(context, ref)),
               ),
             ],
-            // Not gated on availability: see [TransparentOptOutAction].
-            TransparentOptOutAction(showTransition: !enhancePirAvailable),
           ],
         ),
         const SizedBox(height: AppSpacing.md),

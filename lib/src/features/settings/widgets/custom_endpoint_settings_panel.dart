@@ -18,7 +18,6 @@ import '../../../providers/sync_provider.dart';
 import 'network_privacy_control.dart';
 import 'enhance_pir_privacy_control.dart';
 import 'private_queries_turn_off.dart';
-import 'transparent_opt_out_action.dart';
 
 class CustomEndpointSettingsPanel extends ConsumerStatefulWidget {
   const CustomEndpointSettingsPanel({
@@ -130,8 +129,8 @@ class _CustomEndpointSettingsPanelState
     final isDark = AppTheme.of(context) == AppThemeData.dark;
     final current = ref.watch(rpcEndpointProvider);
     final latencyState = ref.watch(rpcEndpointLatencyProvider);
-    final available = ref.watch(enhancePirAvailableProvider);
-    final enabled = ref.watch(enhancePirProvider);
+    final enabled = ref.watch(privateQueriesControlEnabledProvider);
+    final available = ref.watch(enhancePirAvailableProvider) || enabled;
     final transition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = transition == kEnhancePirChangingMessage;
 
@@ -174,12 +173,6 @@ class _CustomEndpointSettingsPanelState
                                 ),
                         ),
                       ],
-                      // Not gated on availability: see
-                      // [TransparentOptOutAction].
-                      TransparentOptOutAction(
-                        keyPrefix: 'network_settings',
-                        showTransition: !available,
-                      ),
                       const SizedBox(height: AppSpacing.md),
                       CurrentEndpointText(
                         current: current,
