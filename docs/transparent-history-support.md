@@ -27,8 +27,19 @@ Private: all 13 cases pass, no privacy violation in any request (now also
 checked for every chain txid), and 262 txid display requests. The first
 private run failed only where the oracle still expected a recovered whole fee
 to stand in for an unknown account fee; #839 `30d252d06` stopped that on
-purpose, and the oracle follows it. The app layers were not rerun on
-`b7f8d4cc7`; the app-layer results below are from the earlier runs.
+purpose, and the oracle follows it.
+
+Desktop app layer, 2026-10-11 on #839 `58aeb9986`:
+- **Private:** all 48 rows pass, with no privacy violation. Receipts made 36
+  txid display requests, and lightwalletd got 45 requests, none with a
+  transparent subject. With display facts served, a fully funded transparent
+  send's receipt is complete; a self-transfer's legs, and rows whose role
+  only display facts can establish, may show either state.
+- **Public:** 46 of 49 rows pass; the 3 failures are the H12 rows of G4.
+
+The app layer now chooses "Import secret passphrase" on the import method
+screen, and reads #839's single "Net change" receipt label. The mobile app
+layer was not rerun.
 
 Earlier runs: 2026-10-07, on #839 `3d7810c4a`, wallet-libraries main
 `a3dee2ab5`, wallet-pir `648264bb`.
