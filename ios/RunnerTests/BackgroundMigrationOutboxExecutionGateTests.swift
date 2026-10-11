@@ -91,7 +91,7 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
   func testCancellationBeforeDispatchLeavesTheItemArmedWithoutAnAttempt() throws {
     // The transport reports `.cancelled` only when nothing was sent, so the
     // outbox records a definite non-attempt rather than an uncertain one.
-    let (store, directory) = try makeArmedStore()
+    let (store, directory) = try makeArmedOutboxStore()
     defer { try? FileManager.default.removeItem(at: directory) }
     let result = BackgroundMigrationOutboxRunner.runOnce(
       store: store, cancellation: BackgroundMigrationCancellation(),
@@ -115,7 +115,7 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
     // A foreground handoff cancels the pass while its broadcast is in flight.
     // The transport drains the dispatched request and returns its response,
     // which the outbox records as accepted, not as an uncertain attempt.
-    let (store, directory) = try makeArmedStore()
+    let (store, directory) = try makeArmedOutboxStore()
     defer { try? FileManager.default.removeItem(at: directory) }
     _ = BackgroundMigrationOutboxRunner.runOnce(
       store: store, cancellation: BackgroundMigrationCancellation(),
@@ -132,31 +132,6 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
     XCTAssertEqual(snapshot.receipts.map(\.outcome), [.accepted])
   }
 
-  private func makeArmedStore() throws -> (BackgroundMigrationOutboxStore, URL) {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let store = BackgroundMigrationOutboxStore(
-      fileURL: directory.appendingPathComponent("outbox.bin"),
-      keyProvider: { Data(repeating: 0xCD, count: 32) }
-    )
-    let item = BackgroundMigrationOutboxItem(
-      itemId: "item-a", partIndex: 0, txidHex: String(repeating: "a", count: 64),
-      rawTransaction: Data([1, 2]), anchorBoundaryHeight: 0,
-      scheduledHeight: 100, scheduleStartHeight: 99, expiryHeight: 69_120
-    )
-    let batch = BackgroundMigrationOutboxBatch(
-      batchId: "batch-a", network: "test", accountUuid: "a", runId: "run-a",
-      lightwalletdUrl: "https://example.invalid", timingMeanBlocks: 144,
-      timingMaxBlocks: 576, createdAt: Date(), armedAt: nil,
-      nextProofHeight: nil, proofReadyNotificationPendingAt: nil,
-      proofReadyNotifiedAt: nil, items: [item]
-    )
-    _ = try store.update {
-      try $0.stage(batch)
-      try $0.armBatch(batchId: batch.batchId,
-        expectedDigests: [item.itemId: item.payloadDigestHex], at: Date())
-    }
-    return (store, directory)
-  }
 
   func testReleasedLeaseCannotAuthorizeLatePauseDuringRetry() {
     let gate = BackgroundMigrationOutboxExecutionGate()
@@ -468,28 +443,89 @@ final class BackgroundMigrationRouteGateTests: XCTestCase {
     let gate = BackgroundMigrationRouteGate()
     XCTAssertTrue(gate.beginTorSave(leaseId: "save", timeout: 1))
     defer { gate.endTorSave(leaseId: "save") }
-    let dependencies = BackgroundMigrationOutboxRunnerDependencies.background(
-      torSelected: { false },
-      gate: gate,
-      transport: BackgroundMigrationOutboxRunnerDependencies(
-        latestBlockHeight: { _, _ in
-          XCTFail("A background tip query went out during a Tor save")
-          return .success(1)
-        },
-        sendTransaction: { _, _, _ in
-          XCTFail("A background broadcast went out during a Tor save")
-          return .failure(.timedOut)
-        }
-      )
+    let transport = BackgroundMigrationOutboxRunnerDependencies(
+      latestBlockHeight: { _, _ in
+        XCTFail("A background tip query went out during a Tor save")
+        return .success(1)
+      },
+      sendTransaction: { _, _, _ in
+        XCTFail("A background broadcast went out during a Tor save")
+        return .failure(.timedOut)
+      }
     )
     let cancellation = BackgroundMigrationCancellation()
-    switch dependencies.latestBlockHeight("https://example.invalid", cancellation) {
-    case .failure(.routeDeferredToForeground): break
-    default: XCTFail("Expected the tip query to defer to the foreground")
+    // A save still in progress may abort and leave the route direct, so the
+    // refusal must stay retryable rather than wait for the foreground.
+    let pending = BackgroundMigrationOutboxRunnerDependencies.background(
+      torSelected: { false }, gate: gate, transport: transport
+    )
+    XCTAssertEqual(
+      pending.latestBlockHeight("https://example.invalid", cancellation),
+      .failure(.routeBlocked)
+    )
+    switch pending.sendTransaction("https://example.invalid", Data([1]), cancellation) {
+    case .failure(.routeBlocked): break
+    default: XCTFail("Expected the broadcast to stay retryable")
     }
-    switch dependencies.sendTransaction("https://example.invalid", Data([1]), cancellation) {
-    case .failure(.routeDeferredToForeground): break
-    default: XCTFail("Expected the broadcast to defer to the foreground")
-    }
+    // Once Tor is saved, the request belongs to the foreground.
+    let saved = BackgroundMigrationOutboxRunnerDependencies.background(
+      torSelected: { true }, gate: gate, transport: transport
+    )
+    XCTAssertEqual(
+      saved.latestBlockHeight("https://example.invalid", cancellation),
+      .failure(.routeDeferredToForeground)
+    )
   }
+
+  func testAWakeRefusedByAnAbortedTorSaveIsRetried() throws {
+    // The save that refused this wake then aborts, so Tor is never saved.
+    // The wake must be rescheduled, not parked for a foreground that has no
+    // route change left to re-arm it.
+    let gate = BackgroundMigrationRouteGate()
+    XCTAssertTrue(gate.beginTorSave(leaseId: "save", timeout: 1))
+    let (store, directory) = try makeArmedOutboxStore()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let result = BackgroundMigrationOutboxRunner.runOnce(
+      store: store, cancellation: BackgroundMigrationCancellation(),
+      dependencies: .background(
+        torSelected: { false },
+        gate: gate,
+        transport: BackgroundMigrationOutboxRunnerDependencies(
+          latestBlockHeight: { _, _ in .success(100) },
+          sendTransaction: { _, _, _ in .failure(.timedOut) }
+        )
+      )
+    )
+    gate.endTorSave(leaseId: "save")
+    XCTAssertEqual(result.transport, .temporarilyUnavailable)
+    let item = try XCTUnwrap(store.read().batches.first?.items.first)
+    XCTAssertEqual(item.status, .armed)
+    XCTAssertEqual(item.attemptCount, 0)
+  }
+}
+
+fileprivate func makeArmedOutboxStore() throws -> (BackgroundMigrationOutboxStore, URL) {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  let store = BackgroundMigrationOutboxStore(
+    fileURL: directory.appendingPathComponent("outbox.bin"),
+    keyProvider: { Data(repeating: 0xCD, count: 32) }
+  )
+  let item = BackgroundMigrationOutboxItem(
+    itemId: "item-a", partIndex: 0, txidHex: String(repeating: "a", count: 64),
+    rawTransaction: Data([1, 2]), anchorBoundaryHeight: 0,
+    scheduledHeight: 100, scheduleStartHeight: 99, expiryHeight: 69_120
+  )
+  let batch = BackgroundMigrationOutboxBatch(
+    batchId: "batch-a", network: "test", accountUuid: "a", runId: "run-a",
+    lightwalletdUrl: "https://example.invalid", timingMeanBlocks: 144,
+    timingMaxBlocks: 576, createdAt: Date(), armedAt: nil,
+    nextProofHeight: nil, proofReadyNotificationPendingAt: nil,
+    proofReadyNotifiedAt: nil, items: [item]
+  )
+  _ = try store.update {
+    try $0.stage(batch)
+    try $0.armBatch(batchId: batch.batchId,
+      expectedDigests: [item.itemId: item.payloadDigestHex], at: Date())
+  }
+  return (store, directory)
 }

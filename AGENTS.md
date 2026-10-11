@@ -695,7 +695,9 @@ policy-aware openers and fails closed while Tor is starting or broken.
   never read direct and send after Tor was saved. Each save holds its own
   lease, so overlapping toggles cannot release each other's fence; the drain
   covers the 10s connect plus 20s RPC deadlines. A fence that cannot drain
-  aborts the enable before anything is saved. A running tracking task refused
+  aborts the enable before anything is saved. A background outbox request
+  refused only by a save in progress is a retryable route block, not a
+  deferral to the foreground, because that save may still abort. A running tracking task refused
   because Tor is now saved ends through the foreground-only path instead of
   heartbeating with no queries. With Tor saved, the outbox defers to the
   foreground (`deferredToForeground`, no reschedule) and preparation tracking

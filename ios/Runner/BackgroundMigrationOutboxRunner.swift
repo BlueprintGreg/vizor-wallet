@@ -46,16 +46,22 @@ struct BackgroundMigrationOutboxRunnerDependencies {
     gate: BackgroundMigrationRouteGate = .shared,
     transport: BackgroundMigrationOutboxRunnerDependencies = .foreground
   ) -> BackgroundMigrationOutboxRunnerDependencies {
-    BackgroundMigrationOutboxRunnerDependencies(
+    // Only a saved Tor route defers to the foreground, which schedules no
+    // further wake. A refusal by a save still in progress is transient: that
+    // save may abort and leave the route direct, so the wake must retry.
+    let refusal = { () -> NativeLightwalletdError in
+      torSelected() ? .routeDeferredToForeground : .routeBlocked
+    }
+    return BackgroundMigrationOutboxRunnerDependencies(
       latestBlockHeight: { endpoint, cancellation in
         gate.admitDirect(torSaved: torSelected) {
           transport.latestBlockHeight(endpoint, cancellation)
-        } ?? .failure(.routeDeferredToForeground)
+        } ?? .failure(refusal())
       },
       sendTransaction: { endpoint, rawTransaction, cancellation in
         gate.admitDirect(torSaved: torSelected) {
           transport.sendTransaction(endpoint, rawTransaction, cancellation)
-        } ?? .failure(.routeDeferredToForeground)
+        } ?? .failure(refusal())
       }
     )
   }
