@@ -361,16 +361,19 @@ func migrationPreparationDirectRouteNeedsTracking(
     && !notificationsDisabled
 }
 
-/// Whether confirmation tracking is actually armed: a tracker is running or
-/// its request is pending with the system. `start` also reports success while
-/// another caller's submission is still in flight, and that submission can
-/// still fail, so the direct-route re-arm checks this instead.
+/// Whether confirmation tracking is actually armed: a tracker is running and
+/// not being stopped, or its request is pending with the system. `start` also
+/// reports success while another caller's submission is still in flight, and
+/// that submission can still fail, so the direct-route re-arm checks this
+/// instead. A running tracker that a foreground handoff, expiry, mutation, or
+/// notification change is stopping does not count: it ends without re-arming.
 func migrationPreparationTrackerArmed(
   taskRunning: Bool,
+  stopping: Bool,
   pendingIdentifiers: [String],
   identifier: String
 ) -> Bool {
-  taskRunning || pendingIdentifiers.contains(identifier)
+  (taskRunning && !stopping) || pendingIdentifiers.contains(identifier)
 }
 
 /// Whether a lookup the route gate refused should end a running tracking task.
@@ -1316,21 +1319,41 @@ final class BackgroundMigrationPreparationManager {
       completion(true)
       return
     }
-    start { [weak self] _ in
+    // Already armed: submitting again would only replace that request.
+    trackerArmed { [weak self] armed in
       guard let self else {
         completion(false)
         return
       }
-      BGTaskScheduler.shared.getPendingTaskRequests { requests in
-        let running = self.stateLock.withPreparationLock { self.taskRunning }
-        completion(
-          migrationPreparationTrackerArmed(
-            taskRunning: running,
-            pendingIdentifiers: requests.map(\.identifier),
-            identifier: Self.taskIdentifier
-          )
-        )
+      guard !armed else {
+        completion(true)
+        return
       }
+      self.start { [weak self] _ in
+        guard let self else {
+          completion(false)
+          return
+        }
+        self.trackerArmed(completion: completion)
+      }
+    }
+  }
+
+  private func trackerArmed(completion: @escaping (Bool) -> Void) {
+    BGTaskScheduler.shared.getPendingTaskRequests { [weak self] requests in
+      guard let self else {
+        completion(false)
+        return
+      }
+      let running = self.stateLock.withPreparationLock { self.taskRunning }
+      completion(
+        migrationPreparationTrackerArmed(
+          taskRunning: running,
+          stopping: self.isTrackingStopRequested,
+          pendingIdentifiers: requests.map(\.identifier),
+          identifier: Self.taskIdentifier
+        )
+      )
     }
   }
 

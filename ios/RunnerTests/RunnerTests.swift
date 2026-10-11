@@ -3487,17 +3487,27 @@ final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
     // Another caller's submission still in flight is not yet a tracker.
     XCTAssertFalse(
       migrationPreparationTrackerArmed(
-        taskRunning: false, pendingIdentifiers: [], identifier: identifier
+        taskRunning: false, stopping: false, pendingIdentifiers: [],
+        identifier: identifier
       )
     )
     XCTAssertTrue(
       migrationPreparationTrackerArmed(
-        taskRunning: false, pendingIdentifiers: [identifier], identifier: identifier
+        taskRunning: false, stopping: false, pendingIdentifiers: [identifier],
+        identifier: identifier
       )
     )
     XCTAssertTrue(
       migrationPreparationTrackerArmed(
-        taskRunning: true, pendingIdentifiers: [], identifier: identifier
+        taskRunning: true, stopping: false, pendingIdentifiers: [],
+        identifier: identifier
+      )
+    )
+    // A tracker a foreground handoff is stopping ends without re-arming.
+    XCTAssertFalse(
+      migrationPreparationTrackerArmed(
+        taskRunning: true, stopping: true, pendingIdentifiers: [],
+        identifier: identifier
       )
     )
   }

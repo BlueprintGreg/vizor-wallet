@@ -730,9 +730,6 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   /// an overlapping toggle reads the preference as it actually is.
   bool? _savedTorRoute;
 
-  /// Counts completed Tor writes, so a direct write can tell that a Tor
-  /// write landed while it was in flight.
-  var _torRouteWrites = 0;
   var _rearmRunning = false;
   var _disposed = false;
 
@@ -849,7 +846,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: previousState.status,
           targetTorEnabled: true,
-          savedTorEnabled: savedTorEnabled,
+          savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
           softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
           error: error.toString(),
           startupNotice: kTorUpdateInProgressNotice,
@@ -882,8 +879,15 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         // Release this lease without overwriting that newer saved route.
         if (generation != _generation) return;
         await store.writeTorEnabled(true);
+        // Everything that follows from the saved preference happens at the
+        // write, not when this toggle finishes: a newer toggle may complete
+        // first, and must not have its obligations undone by this one.
         _savedTorRoute = true;
-        _torRouteWrites++;
+        // Saved Tor refuses every background request, so a re-arm still owed
+        // for the direct route has nothing left to do; the next direct save
+        // takes on a new one.
+        _rearmPending = false;
+        _rearmRevision++;
       } catch (error) {
         if (generation != _generation) return;
         // Undo the updater preflight so software updates are not left routed
@@ -900,7 +904,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: NetworkPrivacyConnectionStatus.failed,
           targetTorEnabled: true,
-          savedTorEnabled: savedTorEnabled,
+          savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
           softwareUpdatesAvailable: softwareUpdatesAvailable,
           error: error.toString(),
         );
@@ -909,11 +913,6 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         await _endTorSave(backgroundRoute, saveLease);
       }
       savedTorEnabled = true;
-      // Saved Tor refuses every background request, so a re-arm still owed
-      // for the direct route has nothing left to do; the next direct save
-      // takes on a new one.
-      _rearmPending = false;
-      _rearmRevision++;
       if (generation != _generation) return;
       runtime.beginEnable();
     } else {
@@ -921,7 +920,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         torEnabled: previousState.torEnabled,
         status: NetworkPrivacyConnectionStatus.connecting,
         targetTorEnabled: false,
-        savedTorEnabled: savedTorEnabled,
+        savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
         softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
       );
       try {
@@ -935,7 +934,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: previousState.status,
           targetTorEnabled: false,
-          savedTorEnabled: savedTorEnabled,
+          savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
           softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
           error: error.toString(),
           startupNotice: kTorDisableUpdateInProgressNotice,
@@ -957,7 +956,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       torEnabled: enabled ? true : previousState.torEnabled,
       status: NetworkPrivacyConnectionStatus.connecting,
       targetTorEnabled: enabled,
-      savedTorEnabled: savedTorEnabled,
+      savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
       softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
     );
 
@@ -978,25 +977,17 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           // mirror of the enable ordering above. Saved any earlier, a
           // relaunch would read direct while this process was still
           // enforcing Tor.
-          // Whether background work was held back is a property of the saved
-          // preference, not of the state this toggle started from: an
-          // overlapping enable may have written Tor since then.
-          final savedBefore = _savedTorRoute ?? savedTorEnabled;
-          final torWritesBefore = _torRouteWrites;
           await store.writeTorEnabled(false);
-          final heldBackByTor =
-              savedBefore || _torRouteWrites != torWritesBefore;
           _savedTorRoute = false;
           savedTorEnabled = false;
-          // Background work deferred while Tor was saved has nothing else
-          // to wake it, so re-arm it here, once, now that the saved route
-          // is direct.
-          if (heldBackByTor) {
-            _requestDirectRouteRearm(
-              savedRouteDirect,
-              ref.read(networkPrivacyRearmRetryDelaysProvider),
-            );
-          }
+          // Background work deferred while Tor was saved has nothing else to
+          // wake it. Native re-arming is idempotent (nothing owed is success,
+          // a pending wake is kept), so every direct write re-arms instead of
+          // inferring from earlier state whether Tor had been saved.
+          _requestDirectRouteRearm(
+            savedRouteDirect,
+            ref.read(networkPrivacyRearmRetryDelaysProvider),
+          );
         } finally {
           // The gate follows the runtime, not the preference. Rust is on the
           // direct route with its Tor client dropped, so a gate left shut
@@ -1028,7 +1019,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       state = NetworkPrivacyState(
         torEnabled: runtime.isTorEnabled(),
         status: nextStatus ?? NetworkPrivacyConnectionStatus.failed,
-        savedTorEnabled: savedTorEnabled,
+        savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
         softwareUpdatesAvailable: softwareUpdatesAvailable,
         startupNotice: startupNotice,
       );
@@ -1056,7 +1047,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         torEnabled: effectiveTorEnabled,
         status: NetworkPrivacyConnectionStatus.failed,
         targetTorEnabled: enabled,
-        savedTorEnabled: savedTorEnabled,
+        savedTorEnabled: _savedTorRoute ?? savedTorEnabled,
         softwareUpdatesAvailable: softwareUpdatesAvailable,
         error: error.toString(),
         startupNotice: startupNotice,
@@ -1080,16 +1071,17 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     }
   }
 
-  /// Takes on the obligation to re-arm background work for the direct route.
-  /// A later toggle does not cancel it, even one that saves direct again and
-  /// so takes on no obligation of its own; it ends only as described in
-  /// [_runDirectRouteRearm]. One loop serves every request.
+  /// Takes on the obligation to re-arm background work for the direct route
+  /// and reaches native at once, even while an earlier call is in flight:
+  /// native records the obligation durably and serializes attempts, so a new
+  /// obligation is never held only in this process's memory. A later toggle
+  /// does not cancel it; it ends only as described in [_runDirectRouteRearm].
   void _requestDirectRouteRearm(
     NetworkPrivacySavedRouteDirectHook savedRouteDirect,
     List<Duration> retryDelays,
   ) {
     _rearmPending = true;
-    _rearmRevision++;
+    unawaited(_attemptDirectRouteRearm(savedRouteDirect, ++_rearmRevision));
     if (_rearmRunning) return;
     _rearmRunning = true;
     unawaited(
@@ -1100,38 +1092,46 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     );
   }
 
-  /// Retries until native confirms the re-arm, Tor is saved again (a
-  /// background request would be refused anyway, and the next direct save
-  /// re-arms), a wallet reset, or disposal. Native also records the
-  /// obligation durably and retries it on the next foreground entry.
+  /// One native call. Its success satisfies the obligation only if no newer
+  /// obligation arrived while it was in flight.
+  Future<void> _attemptDirectRouteRearm(
+    NetworkPrivacySavedRouteDirectHook savedRouteDirect,
+    int revision,
+  ) async {
+    try {
+      if (await savedRouteDirect() && revision == _rearmRevision) {
+        _rearmPending = false;
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        'NetworkPrivacyNotifier: failed to re-arm background work for the '
+        'direct route: $error\n$stackTrace',
+      );
+    }
+  }
+
+  /// Retries until native confirms the current obligation, Tor is saved
+  /// again (a background request would be refused anyway, and the next direct
+  /// save re-arms), a wallet reset, or disposal. Backoff follows
+  /// [retryDelays] after the immediate attempt and then repeats its last
+  /// entry. Native also retries a pending obligation on foreground entry.
   Future<void> _runDirectRouteRearm(
     NetworkPrivacySavedRouteDirectHook savedRouteDirect,
     List<Duration> retryDelays,
   ) async {
-    for (var attempt = 0; ; attempt++) {
+    for (var attempt = 1; ; attempt++) {
       final delay =
           retryDelays[attempt < retryDelays.length
               ? attempt
               : retryDelays.length - 1];
-      if (delay > Duration.zero) await Future<void>.delayed(delay);
-      if (!_rearmPending || _disposed) return;
-      final revision = _rearmRevision;
-      try {
-        if (await savedRouteDirect()) {
-          if (revision == _rearmRevision) {
-            _rearmPending = false;
-            return;
-          }
-          // A newer obligation arrived while this call was in flight; it
-          // needs a call of its own, made straight away.
-          attempt = -1;
-        }
-      } catch (error, stackTrace) {
-        debugPrint(
-          'NetworkPrivacyNotifier: failed to re-arm background work for the '
-          'direct route: $error\n$stackTrace',
-        );
+      if (delay > Duration.zero) {
+        await Future<void>.delayed(delay);
+      } else {
+        await Future<void>.delayed(Duration.zero);
       }
+      if (!_rearmPending || _disposed) return;
+      await _attemptDirectRouteRearm(savedRouteDirect, _rearmRevision);
+      if (!_rearmPending || _disposed) return;
     }
   }
 

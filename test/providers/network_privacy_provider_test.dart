@@ -1007,6 +1007,53 @@ void main() {
       expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
     });
 
+    test(
+      'a failed disable publishes the Tor an overlapping enable saved',
+      () async {
+        final events = <String>[];
+        final fence = _FakeBackgroundRouteFence(events, drained: true);
+        final endHeld = Completer<void>();
+        fence.holdEnd = endHeld.future;
+        final container = ProviderContainer(
+          overrides: [
+            networkPrivacyPreferenceStoreProvider.overrideWithValue(
+              _WriteFailingStore(events, failOn: false),
+            ),
+            networkPrivacyRuntimeProvider.overrideWithValue(
+              _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+            ),
+            networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+              _FakeNativeUpdateCoordinator(events),
+            ),
+            networkPrivacyDirectRequestGateProvider.overrideWithValue(
+              _FakeDirectRequestGate(events),
+            ),
+            networkPrivacyTransportRestartProvider.overrideWithValue((
+              update,
+            ) async {
+              await update();
+            }),
+            networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(fence),
+            networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+              () async => true,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        final notifier = container.read(networkPrivacyProvider.notifier);
+
+        final enable = notifier.setTorEnabled(true);
+        while (!events.contains('store:true')) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        // The only completed write saved Tor; the disable's write fails.
+        await notifier.setTorEnabled(false);
+        expect(container.read(networkPrivacyProvider).torRouteSaved, isTrue);
+        endHeld.complete();
+        await enable;
+      },
+    );
+
     test('not when saving the direct route fails', () async {
       final events = <String>[];
       final container = containerFor(
@@ -1254,6 +1301,91 @@ void main() {
       expect(calls, 1);
     });
 
+    test(
+      'a newer obligation reaches native while an older call is in flight',
+      () async {
+        final events = <String>[];
+        final firstCall = Completer<bool>();
+        var calls = 0;
+        final container = rearmContainer(
+          events,
+          const [Duration.zero, Duration(seconds: 30)],
+          () {
+            calls++;
+            return calls == 1 ? firstCall.future : Future.value(true);
+          },
+        );
+        final notifier = container.read(networkPrivacyProvider.notifier);
+
+        await notifier.setTorEnabled(true);
+        await notifier.setTorEnabled(false);
+        await notifier.setTorEnabled(true);
+        await notifier.setTorEnabled(false);
+        await Future<void>.delayed(Duration.zero);
+
+        // Native records each obligation durably, so the newer one must reach
+        // it now rather than wait for the older call to return.
+        expect(calls, 2);
+        firstCall.complete(true);
+      },
+    );
+
+    test(
+      'an older enable finishing late cannot cancel a newer re-arm',
+      () async {
+        final events = <String>[];
+        var calls = 0;
+        final fence = _FakeBackgroundRouteFence(events, drained: true);
+        final endHeld = Completer<void>();
+        fence.holdEnd = endHeld.future;
+        final container = ProviderContainer(
+          overrides: [
+            networkPrivacyPreferenceStoreProvider.overrideWithValue(
+              _FakeStore(events),
+            ),
+            networkPrivacyRuntimeProvider.overrideWithValue(
+              _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+            ),
+            networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+              _FakeNativeUpdateCoordinator(events),
+            ),
+            networkPrivacyDirectRequestGateProvider.overrideWithValue(
+              _FakeDirectRequestGate(events),
+            ),
+            networkPrivacyTransportRestartProvider.overrideWithValue((
+              update,
+            ) async {
+              await update();
+            }),
+            networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(fence),
+            networkPrivacyRearmRetryDelaysProvider.overrideWithValue(const [
+              Duration.zero,
+              Duration(milliseconds: 5),
+            ]),
+            networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+              () async => ++calls > 1,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        final notifier = container.read(networkPrivacyProvider.notifier);
+
+        final enable = notifier.setTorEnabled(true);
+        while (!events.contains('store:true')) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        // The disable saves direct and its first re-arm fails while the older
+        // enable is still ending its fence.
+        await notifier.setTorEnabled(false);
+        expect(calls, 1);
+        endHeld.complete();
+        await enable;
+        await settle();
+
+        expect(calls, 2);
+      },
+    );
+
     test('stops once Tor is saved again', () async {
       final events = <String>[];
       var calls = 0;
@@ -1296,16 +1428,20 @@ void main() {
       expect(calls, 1);
     });
 
-    test('not when the saved route was already direct', () async {
+    test('an already-direct save re-arms idempotently, once', () async {
+      // Native treats nothing owed as success and keeps a pending wake, so
+      // re-arming on every direct write costs one call and schedules nothing
+      // extra; inferring from earlier state whether Tor was saved is what
+      // missed overlapping enables.
       final events = <String>[];
       final container = containerFor(events, _FakeStore(events));
 
       await container
           .read(networkPrivacyProvider.notifier)
           .setTorEnabled(false);
+      await Future<void>.delayed(Duration.zero);
 
-      expect(events, contains('store:false'));
-      expect(events, isNot(contains('rearm')));
+      expect(events.where((event) => event == 'rearm'), hasLength(1));
     });
 
     test('a failed Tor save keeps the direct route saved', () async {
