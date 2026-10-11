@@ -399,7 +399,7 @@ final class BackgroundMigrationRouteGateTests: XCTestCase {
     var drained = false
     DispatchQueue.global().async {
       saveStarted.signal()
-      drained = gate.beginTorSave(timeout: 5)
+      drained = gate.beginTorSave(leaseId: "save", timeout: 5)
       saveDone.signal()
     }
     XCTAssertEqual(saveStarted.wait(timeout: .now() + 5), .success)
@@ -414,7 +414,7 @@ final class BackgroundMigrationRouteGateTests: XCTestCase {
     XCTAssertEqual(saveDone.wait(timeout: .now() + 5), .success)
     XCTAssertTrue(drained)
     // An aborted save admits again while the saved route is still direct.
-    gate.endTorSave()
+    gate.endTorSave(leaseId: "save")
     XCTAssertEqual(gate.admitDirect(torSaved: { false }) { 1 }, 1)
     XCTAssertNil(gate.admitDirect(torSaved: { true }) { 1 })
   }
@@ -432,16 +432,42 @@ final class BackgroundMigrationRouteGateTests: XCTestCase {
       requestDone.signal()
     }
     XCTAssertEqual(inside.wait(timeout: .now() + 5), .success)
-    XCTAssertFalse(gate.beginTorSave(timeout: 0.05))
+    XCTAssertFalse(gate.beginTorSave(leaseId: "save", timeout: 0.05))
     release.signal()
     XCTAssertEqual(requestDone.wait(timeout: .now() + 5), .success)
-    gate.endTorSave()
+    // A timed-out save keeps its lease until its caller ends it.
+    XCTAssertNil(gate.admitDirect(torSaved: { false }) { 1 })
+    gate.endTorSave(leaseId: "save")
+    XCTAssertEqual(gate.admitDirect(torSaved: { false }) { 1 }, 1)
+  }
+
+  func testOverlappingSavesCannotReleaseEachOther() {
+    // An earlier save that failed or timed out ends while a later save is
+    // still draining or writing. Its end must not reopen admission.
+    let gate = BackgroundMigrationRouteGate()
+    XCTAssertTrue(gate.beginTorSave(leaseId: "earlier", timeout: 1))
+    XCTAssertTrue(gate.beginTorSave(leaseId: "later", timeout: 1))
+    gate.endTorSave(leaseId: "earlier")
+    var ran = false
+    XCTAssertNil(gate.admitDirect(torSaved: { false }) { ran = true })
+    XCTAssertFalse(ran)
+    // Ending a lease twice, or one never taken, changes nothing either.
+    gate.endTorSave(leaseId: "earlier")
+    gate.endTorSave(leaseId: "unknown")
+    XCTAssertNil(gate.admitDirect(torSaved: { false }) { 1 })
+    gate.endTorSave(leaseId: "later")
+    XCTAssertEqual(gate.admitDirect(torSaved: { false }) { 1 }, 1)
+  }
+
+  func testTheDrainCoversConnectAndRpcDeadlines() {
+    // 10-second connect plus 20-second unary RPC, with room for teardown.
+    XCTAssertGreaterThan(BackgroundMigrationRouteGate.saveDrainTimeout, 30)
   }
 
   func testBackgroundOutboxRequestsAreRefusedDuringATorSave() {
     let gate = BackgroundMigrationRouteGate()
-    XCTAssertTrue(gate.beginTorSave(timeout: 1))
-    defer { gate.endTorSave() }
+    XCTAssertTrue(gate.beginTorSave(leaseId: "save", timeout: 1))
+    defer { gate.endTorSave(leaseId: "save") }
     let dependencies = BackgroundMigrationOutboxRunnerDependencies.background(
       torSelected: { false },
       gate: gate,

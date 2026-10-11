@@ -343,6 +343,19 @@ func migrationPreparationTrackingBatch(
 private enum BackgroundMigrationPreparationTrackingPass {
   case batch(MigrationPreparationTrackingBatch)
   case cancelled
+  /// Tor became the saved route while the task was running.
+  case deferredToForeground
+}
+
+/// Whether a lookup the route gate refused should end a running tracking task.
+///
+/// A refusal while Tor is only being saved is transient: the save either
+/// fails and lifts its fence, or succeeds and Tor is saved. Once Tor is saved
+/// no background lookup can succeed until the foreground runs, so the task
+/// hands off through the foreground-only path instead of heartbeating with no
+/// queries until the system expires it.
+func migrationPreparationRouteRefusalEndsTracking(torSaved: Bool) -> Bool {
+  torSaved
 }
 
 private enum BackgroundMigrationPreparationStepResult {
@@ -1766,9 +1779,36 @@ final class BackgroundMigrationPreparationManager {
             completionPresentation: nil
           )
           return
+        case .deferredToForeground:
+          self.finishRouteDeferredTrackingTask(task)
+          return
         }
       }
     }
+  }
+
+  /// Ends a running task after Tor became the saved route, the same way a task
+  /// launched under saved Tor ends: record only runs that genuinely need the
+  /// foreground, then present the foreground notification. Confirmation
+  /// tracking for state-0 runs re-arms when the saved route becomes direct.
+  private func finishRouteDeferredTrackingTask(
+    _ task: BGContinuedProcessingTask
+  ) {
+    stopAuthorizationMonitoring()
+    stateLock.withPreparationLock {
+      taskRunning = false
+      taskProgress = nil
+      trackingCancellation = nil
+      latestTrackingProgress = nil
+      foregroundHandoffRequested = false
+    }
+    recordSchedulingState("blocked_tor_route_while_tracking")
+    markForegroundContinuationsReadyForLaunch(
+      resumeTarget: preparationResumeTarget(),
+      privateRecovery: BackgroundMigrationPrivateRecovery.isEnabled(),
+      torSelected: true
+    )
+    finishForegroundOnlyTask(task)
   }
 
   private func finishForegroundOnlyTask(
@@ -1973,6 +2013,11 @@ final class BackgroundMigrationPreparationManager {
           }
         )
       else {
+        if migrationPreparationRouteRefusalEndsTracking(
+          torSaved: BackgroundMigrationTorRoute.isSelected()
+        ) {
+          return .deferredToForeground
+        }
         results.append(
           MigrationPreparationScopeTrackingResult(scope: scope, disposition: .retry)
         )
@@ -2015,6 +2060,11 @@ final class BackgroundMigrationPreparationManager {
         case .failure(.coverageIncomplete):
           // No observation was made. Retry this wave without failing background work.
           queryFailed = true
+        case .failure(.routeDeferredToForeground)
+        where migrationPreparationRouteRefusalEndsTracking(
+          torSaved: BackgroundMigrationTorRoute.isSelected()
+        ):
+          return .deferredToForeground
         case .failure(let error):
           print("[BGPreparation] transaction status query failed error=\(error)")
           queryFailed = true

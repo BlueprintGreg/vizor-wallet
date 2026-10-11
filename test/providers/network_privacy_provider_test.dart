@@ -822,6 +822,7 @@ void main() {
       List<String> events,
       NetworkPrivacyPreferenceStore store, {
       bool drained = true,
+      _FakeBackgroundRouteFence? fence,
     }) {
       final container = ProviderContainer(
         overrides: [
@@ -841,7 +842,7 @@ void main() {
             await update();
           }),
           networkPrivacyBackgroundRouteFenceProvider.overrideWithValue(
-            _FakeBackgroundRouteFence(events, drained: drained),
+            fence ?? _FakeBackgroundRouteFence(events, drained: drained),
           ),
         ],
       );
@@ -888,6 +889,32 @@ void main() {
       expect(state.status, NetworkPrivacyConnectionStatus.failed);
       expect(state.torEnabled, isFalse);
       expect(state.torRouteSaved, isFalse);
+    });
+
+    test('overlapping Tor saves each end only their own lease', () async {
+      final events = <String>[];
+      final fence = _FakeBackgroundRouteFence(events, drained: true);
+      final release = Completer<void>();
+      fence.holdBegin = release.future;
+      final container = containerFor(events, _FakeStore(events), fence: fence);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      // The first save already holds its lease when the second begins.
+      final first = notifier.setTorEnabled(true);
+      while (fence.began.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      final second = notifier.setTorEnabled(true);
+      while (fence.began.length < 2) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      release.complete();
+      await Future.wait([first, second]);
+
+      expect(fence.began, hasLength(2));
+      expect(fence.began.toSet(), hasLength(2));
+      expect(fence.ended.toSet(), fence.began.toSet());
+      expect(fence.ended, hasLength(2));
     });
 
     test('a failed Tor save still ends the fence', () async {
@@ -1485,16 +1512,22 @@ class _FakeBackgroundRouteFence implements NetworkPrivacyBackgroundRouteFence {
 
   final List<String> events;
   final bool drained;
+  final began = <String>[];
+  final ended = <String>[];
+  Future<void>? holdBegin;
 
   @override
-  Future<bool> beginTorSave() async {
+  Future<bool> beginTorSave(String leaseId) async {
     events.add('fence-begin');
+    began.add(leaseId);
+    await holdBegin;
     return drained;
   }
 
   @override
-  Future<void> endTorSave() async {
+  Future<void> endTorSave(String leaseId) async {
     events.add('fence-end');
+    ended.add(leaseId);
   }
 }
 

@@ -3447,6 +3447,13 @@ final class BackgroundMigrationPreparationTorDeferralTests: XCTestCase {
     )
   }
 
+  func testOnlyASavedTorRouteEndsRunningTracking() {
+    // A Tor save in progress refuses lookups only until it lifts or lands;
+    // a saved Tor route refuses every lookup until the foreground runs.
+    XCTAssertTrue(migrationPreparationRouteRefusalEndsTracking(torSaved: true))
+    XCTAssertFalse(migrationPreparationRouteRefusalEndsTracking(torSaved: false))
+  }
+
   func testForegroundOwnedLaunchesStillRecordEveryEligibleRun() {
     // Private recovery hands confirmation tracking to the foreground, and a
     // background-processing target needs the app. Both keep the blanket mark.

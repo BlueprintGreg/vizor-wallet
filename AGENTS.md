@@ -692,8 +692,12 @@ policy-aware openers and fails closed while Tor is starting or broken.
   through `BackgroundMigrationRouteGate`, and Dart fences saving Tor with it
   (`beginTorRouteSave` / `endTorRouteSave`): new background requests are
   refused and admitted ones finish before Tor is written, so a request can
-  never read direct and send after Tor was saved. A fence that cannot drain
-  aborts the enable before anything is saved. With Tor saved, the outbox defers to the
+  never read direct and send after Tor was saved. Each save holds its own
+  lease, so overlapping toggles cannot release each other's fence; the drain
+  covers the 10s connect plus 20s RPC deadlines. A fence that cannot drain
+  aborts the enable before anything is saved. A running tracking task refused
+  because Tor is now saved ends through the foreground-only path instead of
+  heartbeating with no queries. With Tor saved, the outbox defers to the
   foreground (`deferredToForeground`, no reschedule) and preparation tracking
   stays foreground-only. A tracking task launched under saved Tor records only
   runs that need the foreground, never state-0 runs still counting

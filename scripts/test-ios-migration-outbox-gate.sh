@@ -88,6 +88,7 @@ for header in [
     'func migrationPreparationPendingTrackableScopes(',
     'func migrationPreparationHandoffContinuationScopes(',
     'func migrationPreparationForegroundOnlyLaunchContinuationScopes(',
+    'func migrationPreparationRouteRefusalEndsTracking(',
 ]:
     parts.append(declaration(manager, header))
 parts.append(declaration(tests, 'final class BackgroundMigrationPreparationTorDeferralTests'))
@@ -103,7 +104,7 @@ suite.addTest(BackgroundMigrationRouteGateTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 22 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 25 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"

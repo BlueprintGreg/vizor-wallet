@@ -89,13 +89,17 @@ enum BackgroundMigrationTorRoute {
 /// requests to finish (each is bounded by its RPC deadline). A request is thus
 /// either admitted before the save starts and completes before it is written,
 /// or refused.
+///
+/// Each save holds its own lease, so overlapping saves cannot release each
+/// other: requests stay refused until every lease has ended.
 final class BackgroundMigrationRouteGate: @unchecked Sendable {
   static let shared = BackgroundMigrationRouteGate()
-  /// Covers an admitted request's 20-second RPC deadline plus teardown.
-  static let saveDrainTimeout: TimeInterval = 25
+  /// Covers an admitted request's whole life: the 10-second connect deadline,
+  /// the 20-second unary RPC deadline, and teardown.
+  static let saveDrainTimeout: TimeInterval = 35
 
   private let condition = NSCondition()
-  private var torSavePending = false
+  private var torSaveLeases = Set<String>()
   private var admitted = 0
 
   init() {}
@@ -104,7 +108,7 @@ final class BackgroundMigrationRouteGate: @unchecked Sendable {
   /// sent nothing, when refused.
   func admitDirect<T>(torSaved: () -> Bool, _ request: () -> T) -> T? {
     condition.lock()
-    guard !torSavePending, !torSaved() else {
+    guard torSaveLeases.isEmpty, !torSaved() else {
       condition.unlock()
       return nil
     }
@@ -119,13 +123,16 @@ final class BackgroundMigrationRouteGate: @unchecked Sendable {
     return request()
   }
 
-  /// Refuses new background requests and waits for admitted ones. Returns
-  /// false if they did not finish in time; the caller must then not save Tor
-  /// and must call [endTorSave].
-  func beginTorSave(timeout: TimeInterval = saveDrainTimeout) -> Bool {
+  /// Takes a save lease: refuses new background requests and waits for
+  /// admitted ones. Returns false if they did not finish in time; the caller
+  /// must then not save Tor. Either way the lease holds until [endTorSave].
+  func beginTorSave(
+    leaseId: String,
+    timeout: TimeInterval = saveDrainTimeout
+  ) -> Bool {
     condition.lock()
     defer { condition.unlock() }
-    torSavePending = true
+    torSaveLeases.insert(leaseId)
     let deadline = Date().addingTimeInterval(timeout)
     while admitted > 0 {
       if !condition.wait(until: deadline) { return admitted == 0 }
@@ -133,11 +140,11 @@ final class BackgroundMigrationRouteGate: @unchecked Sendable {
     return true
   }
 
-  /// Ends a save started with [beginTorSave], written or not. A written Tor
-  /// route keeps refusing through the saved-route check.
-  func endTorSave() {
+  /// Ends only this save's lease, written or not. A written Tor route keeps
+  /// refusing through the saved-route check.
+  func endTorSave(leaseId: String) {
     condition.lock()
-    torSavePending = false
+    torSaveLeases.remove(leaseId)
     condition.unlock()
   }
 }

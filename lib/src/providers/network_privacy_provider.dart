@@ -646,12 +646,14 @@ final networkPrivacySavedRouteDirectHookProvider =
 /// Orders native background migration requests against saving Tor as the
 /// route (`BackgroundMigrationRouteGate` on iOS).
 abstract interface class NetworkPrivacyBackgroundRouteFence {
-  /// Refuses new background direct requests and waits for admitted ones.
-  /// False means they did not finish, so Tor must not be saved.
-  Future<bool> beginTorSave();
+  /// Takes the lease [leaseId]: refuses new background direct requests and
+  /// waits for admitted ones. False means they did not finish, so Tor must
+  /// not be saved. The lease holds until [endTorSave].
+  Future<bool> beginTorSave(String leaseId);
 
-  /// Ends a fence started by [beginTorSave], whether or not Tor was saved.
-  Future<void> endTorSave();
+  /// Ends only the lease [leaseId], whether or not Tor was saved, so an
+  /// overlapping save keeps its own fence.
+  Future<void> endTorSave(String leaseId);
 }
 
 class PlatformNetworkPrivacyBackgroundRouteFence
@@ -659,19 +661,22 @@ class PlatformNetworkPrivacyBackgroundRouteFence
   const PlatformNetworkPrivacyBackgroundRouteFence();
 
   @override
-  Future<bool> beginTorSave() async {
+  Future<bool> beginTorSave(String leaseId) async {
     // Only iOS runs background migration requests outside the Rust route.
     if (!Platform.isIOS) return true;
     return await _backgroundMigrationChannel.invokeMethod<bool>(
           'beginTorRouteSave',
+          {'leaseId': leaseId},
         ) ??
         false;
   }
 
   @override
-  Future<void> endTorSave() async {
+  Future<void> endTorSave(String leaseId) async {
     if (!Platform.isIOS) return;
-    await _backgroundMigrationChannel.invokeMethod<bool>('endTorRouteSave');
+    await _backgroundMigrationChannel.invokeMethod<bool>('endTorRouteSave', {
+      'leaseId': leaseId,
+    });
   }
 }
 
@@ -692,6 +697,9 @@ final networkPrivacyTransportRestartProvider =
 
 class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
   var _generation = 0;
+
+  /// Numbers each Tor save's background route fence lease.
+  var _torSaveLeases = 0;
 
   @override
   NetworkPrivacyState build() {
@@ -819,8 +827,9 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       // request, so the save is fenced: new background requests are refused
       // and admitted ones finish first. Otherwise one could read direct, and
       // send after Tor was saved while this process is still direct.
+      final saveLease = 'tor-save-${++_torSaveLeases}';
       try {
-        if (!await backgroundRoute.beginTorSave()) {
+        if (!await backgroundRoute.beginTorSave(saveLease)) {
           throw StateError(
             'Background migration requests did not stop in time.',
           );
@@ -848,7 +857,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         );
         return;
       } finally {
-        await _endTorSave(backgroundRoute);
+        await _endTorSave(backgroundRoute, saveLease);
       }
       savedTorEnabled = true;
       if (generation != _generation) return;
@@ -989,9 +998,12 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     }
   }
 
-  Future<void> _endTorSave(NetworkPrivacyBackgroundRouteFence fence) async {
+  Future<void> _endTorSave(
+    NetworkPrivacyBackgroundRouteFence fence,
+    String leaseId,
+  ) async {
     try {
-      await fence.endTorSave();
+      await fence.endTorSave(leaseId);
     } catch (error, stackTrace) {
       // A written Tor route keeps refusing background requests on its own;
       // an unwritten one leaves them refused until the next save or launch.

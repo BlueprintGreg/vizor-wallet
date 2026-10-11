@@ -126,14 +126,24 @@ import UIKit
         BackgroundMigrationManager.shared.schedule { scheduled in
           DispatchQueue.main.async { result(scheduled) }
         }
-      case "beginTorRouteSave":
+      case "beginTorRouteSave", "endTorRouteSave":
+        guard let arguments = call.arguments as? [String: Any],
+          let leaseId = arguments["leaseId"] as? String
+        else {
+          result(FlutterError(code: "invalid_arguments", message: "Missing route save lease.", details: nil))
+          return
+        }
+        if call.method == "endTorRouteSave" {
+          BackgroundMigrationRouteGate.shared.endTorSave(leaseId: leaseId)
+          result(true)
+          return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
-          let drained = BackgroundMigrationRouteGate.shared.beginTorSave()
+          let drained = BackgroundMigrationRouteGate.shared.beginTorSave(
+            leaseId: leaseId
+          )
           DispatchQueue.main.async { result(drained) }
         }
-      case "endTorRouteSave":
-        BackgroundMigrationRouteGate.shared.endTorSave()
-        result(true)
       case "savedRouteBecameDirect":
         BackgroundMigrationManager.shared.savedRouteBecameDirect { rearmed in
           DispatchQueue.main.async { result(rearmed) }
