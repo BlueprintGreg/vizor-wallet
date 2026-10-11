@@ -41,12 +41,13 @@ class TransparentBalanceDisplay {
   /// Why private recovery stopped, when [authority] is `stopped`.
   final rust_sync.TransparentStopReason? stop;
 
-  /// Whether Home shows the transparent row. An unknown balance or a stopped
-  /// recovery is shown so the user sees that transparent funds are
-  /// unavailable.
+  /// Whether Home shows the transparent row. A known zero amount keeps the
+  /// card compact, including when recovery stopped. Unknown funds remain
+  /// visible so the user sees that their balance is unavailable.
   bool get visible => switch (authority) {
     rust_sync.TransparentBalanceAuthority.unavailable ||
-    rust_sync.TransparentBalanceAuthority.stopped => true,
+    rust_sync.TransparentBalanceAuthority.stopped =>
+      amount == null || amount! > BigInt.zero,
     _ => (amount ?? BigInt.zero) > BigInt.zero,
   };
 

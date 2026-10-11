@@ -24,6 +24,29 @@ void main() {
       expect(TransparentBalanceDisplay.of(SyncState()).visible, isFalse);
     });
 
+    test('hides a last-known zero balance', () {
+      final display = TransparentBalanceDisplay.of(
+        SyncState(
+          transparentAuthority: rust_sync.TransparentBalanceAuthority.lastKnown,
+          transparentLastKnownBalance: BigInt.zero,
+        ),
+      );
+      expect(display.visible, isFalse);
+    });
+
+    test('hides a stopped recovery with a last-known zero balance', () {
+      for (final reason in rust_sync.TransparentStopReason.values) {
+        final display = TransparentBalanceDisplay.of(
+          SyncState(
+            transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
+            transparentLastKnownBalance: BigInt.zero,
+            transparentStop: reason,
+          ),
+        );
+        expect(display.visible, isFalse, reason: '$reason');
+      }
+    });
+
     test('marks a last-known amount and never shows it as spendable', () {
       final display = TransparentBalanceDisplay.of(
         SyncState(

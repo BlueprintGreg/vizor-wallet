@@ -88,6 +88,13 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'desktop-home-stopped-empty-transparent',
+    description:
+        'Desktop home with stopped recovery and no known transparent funds',
+    builder: buildDesktopHomeStoppedEmptyTransparentUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
     id: 'desktop-home-setup',
     description: 'Desktop Home backup and education reminders',
     builder: buildDesktopHomeSetupUseCase,

@@ -2165,6 +2165,21 @@ Widget buildMobileHomeAccountsModalUseCase(BuildContext context) {
   );
 }
 
+Widget buildDesktopHomeStoppedEmptyTransparentUseCase(BuildContext context) {
+  return _buildDesktopHomeUseCase(
+    accountState: _accountsDesignState,
+    syncState: _homeSyncedState(ironwoodBalance: BigInt.from(11_994_800_000))
+        .copyWith(
+          transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
+          transparentLastKnownBalance: BigInt.zero,
+          transparentStop: rust_sync.TransparentStopReason.stalled,
+          transparentPrivate: true,
+        ),
+    migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+    privateQueries: true,
+  );
+}
+
 Widget buildDesktopHomeIronwoodMigrationRequiredUseCase(BuildContext context) {
   return _buildDesktopHomeUseCase(
     accountState: _accountsDesignState,

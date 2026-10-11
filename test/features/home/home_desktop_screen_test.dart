@@ -1173,6 +1173,38 @@ void main() {
     expect(find.text('Shield now'), findsOneWidget);
   });
 
+  for (final authority in [
+    rust_sync.TransparentBalanceAuthority.current,
+    rust_sync.TransparentBalanceAuthority.lastKnown,
+    rust_sync.TransparentBalanceAuthority.stopped,
+  ]) {
+    testWidgets('hides an empty transparent tray with $authority authority', (
+      tester,
+    ) async {
+      final state = SyncState(
+        accountUuid: 'account-1',
+        hasAccountScopedData: true,
+        percentage: 1.0,
+        orchardBalance: BigInt.from(14_312_000_000),
+        transparentAuthority: authority,
+        transparentLastKnownBalance: BigInt.zero,
+        transparentStop:
+            authority == rust_sync.TransparentBalanceAuthority.stopped
+            ? rust_sync.TransparentStopReason.stalled
+            : null,
+        transparentPrivate: true,
+      );
+      await tester.pumpWidget(_appHarness('/home', syncState: state));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('home_desktop_transparent_balance_strip')),
+        findsNothing,
+      );
+      expect(find.textContaining('Transparent:'), findsNothing);
+    });
+  }
+
   testWidgets('home desktop shows a stopped recovery with its reason', (
     tester,
   ) async {
