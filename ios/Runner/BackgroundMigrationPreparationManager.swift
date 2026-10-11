@@ -1795,6 +1795,15 @@ final class BackgroundMigrationPreparationManager {
     _ task: BGContinuedProcessingTask
   ) {
     stopAuthorizationMonitoring()
+    recordSchedulingState("blocked_tor_route_while_tracking")
+    markForegroundContinuationsReadyForLaunch(
+      resumeTarget: preparationResumeTarget(),
+      privateRecovery: BackgroundMigrationPrivateRecovery.isEnabled(),
+      torSelected: true
+    )
+    // Keep the running guard through cancellation of the old request. A
+    // direct-route save must not submit a replacement this cleanup cancels.
+    completeForegroundOnlyTask(task)
     stateLock.withPreparationLock {
       taskRunning = false
       taskProgress = nil
@@ -1802,13 +1811,13 @@ final class BackgroundMigrationPreparationManager {
       latestTrackingProgress = nil
       foregroundHandoffRequested = false
     }
-    recordSchedulingState("blocked_tor_route_while_tracking")
-    markForegroundContinuationsReadyForLaunch(
-      resumeTarget: preparationResumeTarget(),
-      privateRecovery: BackgroundMigrationPrivateRecovery.isEnabled(),
-      torSelected: true
-    )
-    finishForegroundOnlyTask(task)
+    // A direct-route hook that ran during cleanup saw the running guard and
+    // could not re-arm. Recheck after cleanup so that wake is not lost.
+    if !BackgroundMigrationTorRoute.isSelected() {
+      DispatchQueue.main.async {
+        BackgroundMigrationManager.shared.savedRouteBecameDirect { _ in }
+      }
+    }
   }
 
   private func finishForegroundOnlyTask(
@@ -1819,31 +1828,30 @@ final class BackgroundMigrationPreparationManager {
         task.setTaskCompleted(success: false)
         return
       }
-      let notificationsDisabled = self.stateLock.withPreparationLock {
-        self.notificationAuthorization.isDisabled
-      }
-      let notificationSubmitted =
-        !notificationsDisabled
-        && self.submitNotificationEvents(
-          self.foregroundRecoveryNotificationEvents(
-            ensureFallback: true
-          )
-        )
-      BGTaskScheduler.shared.cancel(
-        taskRequestWithIdentifier: Self.taskIdentifier
-      )
-      if notificationSubmitted {
-        self.recordSchedulingState("waiting_for_foreground")
-        self.cancelWatchdog()
-      } else {
-        // The watchdog was registered before this task launched. Keep it as a
-        // second recovery boundary when the immediate alert could not be
-        // registered, and report task failure instead of silently parking the
-        // migration.
-        self.recordSchedulingState("foreground_notification_failed")
-      }
-      task.setTaskCompleted(success: notificationSubmitted)
+      self.completeForegroundOnlyTask(task)
     }
+  }
+
+  /// Finishes foreground-only work on the preparation queue before re-arming.
+  private func completeForegroundOnlyTask(_ task: BGContinuedProcessingTask) {
+    let notificationsDisabled = stateLock.withPreparationLock {
+      notificationAuthorization.isDisabled
+    }
+    let notificationSubmitted =
+      !notificationsDisabled
+      && submitNotificationEvents(
+        foregroundRecoveryNotificationEvents(ensureFallback: true)
+      )
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
+    if notificationSubmitted {
+      recordSchedulingState("waiting_for_foreground")
+      cancelWatchdog()
+    } else {
+      // Keep the watchdog when the immediate recovery alert could not be
+      // registered, and report failure rather than silently parking the run.
+      recordSchedulingState("foreground_notification_failed")
+    }
+    task.setTaskCompleted(success: notificationSubmitted)
   }
 
   private func runConfirmationTrackingPass(

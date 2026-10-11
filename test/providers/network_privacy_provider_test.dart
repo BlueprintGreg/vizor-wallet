@@ -891,6 +891,30 @@ void main() {
       expect(state.torRouteSaved, isFalse);
     });
 
+    test('a superseded Tor enable does not save after its drain', () async {
+      final events = <String>[];
+      final fence = _FakeBackgroundRouteFence(events, drained: true);
+      final release = Completer<void>();
+      fence.holdBegin = release.future;
+      final container = containerFor(events, _FakeStore(events), fence: fence);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      final enable = notifier.setTorEnabled(true);
+      while (fence.began.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      await notifier.setTorEnabled(false);
+      release.complete();
+      await enable;
+
+      expect(events.where((event) => event.startsWith('store:')), [
+        'store:false',
+      ]);
+      expect(events, isNot(contains('begin-enable')));
+      expect(fence.ended, fence.began);
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+    });
+
     test('overlapping Tor saves each end only their own lease', () async {
       final events = <String>[];
       final fence = _FakeBackgroundRouteFence(events, drained: true);

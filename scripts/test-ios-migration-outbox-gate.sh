@@ -94,6 +94,137 @@ for header in [
 parts.append(declaration(tests, 'final class BackgroundMigrationPreparationTorDeferralTests'))
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PY
+# Exercise the production route-deferred completion methods with framework
+# stubs. A direct-route save during notification cleanup must not submit a
+# replacement that the old task subsequently cancels.
+python3 - "$test_dir/PreparationRouteHandoff.swift" <<'PY'
+from pathlib import Path
+import sys
+
+manager = Path('ios/Runner/BackgroundMigrationPreparationManager.swift').read_text()
+
+def method(header):
+    start = manager.index(header)
+    body = manager.index('{', start)
+    depth = 1
+    cursor = body + 1
+    while depth:
+        depth += (manager[cursor] == '{') - (manager[cursor] == '}')
+        cursor += 1
+    return manager[start:cursor].replace(
+        'BackgroundMigrationTorRoute', 'RouteHandoffTorRoute'
+    ).replace('BackgroundMigrationManager', 'RouteHandoffManager')
+
+headers = [
+    '  private func finishRouteDeferredTrackingTask(',
+    '  private func finishForegroundOnlyTask(',
+]
+if '  private func completeForegroundOnlyTask(' in manager:
+    headers.append('  private func completeForegroundOnlyTask(')
+
+Path(sys.argv[1]).write_text('''
+import XCTest
+private extension NSLock {
+  func withPreparationLock<T>(_ body: () -> T) -> T {
+    lock(); defer { unlock() }; return body()
+  }
+}
+private enum RouteHandoffTorRoute {
+  private static let lock = NSLock()
+  private static var saved = true
+  static func isSelected() -> Bool { lock.withPreparationLock { saved } }
+  static func setSaved(_ value: Bool) { lock.withPreparationLock { saved = value } }
+}
+private enum BackgroundMigrationPrivateRecovery {
+  static func isEnabled() -> Bool { false }
+}
+private final class BGContinuedProcessingTask {
+  let completed = DispatchSemaphore(value: 0)
+  func setTaskCompleted(success: Bool) { completed.signal() }
+}
+private final class BGTaskScheduler {
+  static let shared = BGTaskScheduler()
+  private let lock = NSLock()
+  private var pending = false
+  func submitReplacement() { lock.withPreparationLock { pending = true } }
+  func cancel(taskRequestWithIdentifier: String) {
+    lock.withPreparationLock { pending = false }
+  }
+  var hasReplacement: Bool { lock.withPreparationLock { pending } }
+}
+private final class RouteHandoffManager {
+  static let shared = RouteHandoffManager()
+  var rearm: (() -> Void)?
+  func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
+    if !RouteHandoffTorRoute.isSelected() { rearm?() }
+    completion(true)
+  }
+}
+private final class PreparationRouteHandoffProbe {
+  static let taskIdentifier = "test.preparation"
+  let queue = DispatchQueue(label: "test.preparation.route-handoff")
+  let stateLock = NSLock()
+  var taskRunning = true
+  var taskProgress: Int? = 1
+  var trackingCancellation: Int? = 1
+  var latestTrackingProgress: Int? = 1
+  var foregroundHandoffRequested = false
+  var notificationAuthorization = NotificationState()
+  var makeDirectDuringCleanup = false
+  struct NotificationState { var isDisabled = false }
+  func run(_ task: BGContinuedProcessingTask) {
+    queue.async { self.finishRouteDeferredTrackingTask(task) }
+  }
+  func tryStartReplacement() {
+    guard stateLock.withPreparationLock({ !taskRunning }) else { return }
+    BGTaskScheduler.shared.submitReplacement()
+  }
+  func stopAuthorizationMonitoring() {}
+  func recordSchedulingState(_ value: String) {}
+  func cancelWatchdog() {}
+  func preparationResumeTarget() -> BackgroundMigrationPreparationResumeTarget {
+    .continuedProcessing
+  }
+  func markForegroundContinuationsReadyForLaunch(
+    resumeTarget: BackgroundMigrationPreparationResumeTarget,
+    privateRecovery: Bool, torSelected: Bool
+  ) {}
+  func foregroundRecoveryNotificationEvents(ensureFallback: Bool) -> [Int] { [] }
+  func submitNotificationEvents(_ events: [Int]) -> Bool {
+    if makeDirectDuringCleanup {
+      RouteHandoffTorRoute.setSaved(false)
+      RouteHandoffManager.shared.savedRouteBecameDirect { _ in }
+    }
+    return true
+  }
+''' + '\n'.join(method(header) for header in headers) + '''
+}
+final class BackgroundMigrationPreparationRouteHandoffTests: XCTestCase {
+  func testDirectSaveDuringCleanupRearmsAfterTheOldTaskFinishes() {
+    verifyCompletion(turnDirect: true)
+  }
+  func testSavedTorCompletesWithoutRearmingBackgroundRequests() {
+    verifyCompletion(turnDirect: false)
+  }
+  private func verifyCompletion(turnDirect: Bool) {
+    RouteHandoffTorRoute.setSaved(true)
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: "test.preparation")
+    let probe = PreparationRouteHandoffProbe()
+    probe.makeDirectDuringCleanup = turnDirect
+    RouteHandoffManager.shared.rearm = { [weak probe] in probe?.tryStartReplacement() }
+    defer { RouteHandoffManager.shared.rearm = nil }
+    let task = BGContinuedProcessingTask()
+    probe.run(task)
+    XCTAssertEqual(task.completed.wait(timeout: .now() + 2), .success)
+    // Service the main-queue re-arm after terminal cleanup.
+    let deadline = Date().addingTimeInterval(0.1)
+    while Date() < deadline { RunLoop.current.run(until: deadline) }
+    XCTAssertFalse(probe.stateLock.withPreparationLock { probe.taskRunning })
+    XCTAssertEqual(BGTaskScheduler.shared.hasReplacement, turnDirect)
+  }
+}
+''')
+PY
 cat > "$test_dir/main.swift" <<'SWIFT'
 import XCTest
 import Darwin
@@ -103,8 +234,9 @@ suite.addTest(BackgroundMigrationSavedRouteDirectTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationRouteGateTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationForegroundHandoffTests.defaultTestSuite)
 suite.addTest(BackgroundMigrationPreparationTorDeferralTests.defaultTestSuite)
+suite.addTest(BackgroundMigrationPreparationRouteHandoffTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 25 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 27 ? 0 : 1)
 SWIFT
 test_frameworks="$(xcrun --show-sdk-platform-path)/Developer/Library/Frameworks"
 test_libraries="$(xcrun --show-sdk-platform-path)/Developer/usr/lib"
@@ -118,5 +250,6 @@ xcrun swiftc -swift-version 5 -Xlinker -rpath -Xlinker "$test_private_frameworks
   ios/RunnerTests/BackgroundMigrationOutboxExecutionGateTests.swift \
   "$test_dir/ForegroundLifecycle.swift" \
   "$test_dir/PreparationTorDeferral.swift" \
+  "$test_dir/PreparationRouteHandoff.swift" \
   "$test_dir/main.swift" -o "$test_dir/tests"
 "$test_dir/tests"

@@ -834,6 +834,9 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
             'Background migration requests did not stop in time.',
           );
         }
+        // A newer toggle or reset may have completed while the drain waited.
+        // Release this lease without overwriting that newer saved route.
+        if (generation != _generation) return;
         await store.writeTorEnabled(true);
       } catch (error) {
         if (generation != _generation) return;
