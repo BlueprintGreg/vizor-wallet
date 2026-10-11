@@ -1082,16 +1082,19 @@ void prioritizeTransparentDetails({
 /// asked to, then stores them as any enhancement payload. This reveals the
 /// transaction (`txid_hex`, as [`TransactionInfo::txid_hex`]) to the server,
 /// so the app calls it only from an explicit, disclosed user action, never
-/// automatically, and it runs whatever the transparent policy is.
+/// automatically, and it runs whatever the transparent policy is. Rust sends
+/// nothing unless `account_uuid` holds a transparent part of the transaction.
 Future<void> enhanceTransactionPublicly({
   required String dbPath,
   required String network,
   required String lightwalletdUrl,
+  required String accountUuid,
   required String txidHex,
 }) => RustLib.instance.api.crateApiSyncEnhanceTransactionPublicly(
   dbPath: dbPath,
   network: network,
   lightwalletdUrl: lightwalletdUrl,
+  accountUuid: accountUuid,
   txidHex: txidHex,
 );
 

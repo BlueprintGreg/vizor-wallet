@@ -470,10 +470,12 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
           // Never create a wallet database name for a load.
           final dbPath = await getExistingWalletDbPath();
           if (dbPath == null) throw StateError('The wallet is unavailable.');
+          if (accountUuid == null) throw StateError('No account is active.');
           await rust_sync.enhanceTransactionPublicly(
             dbPath: dbPath,
             network: endpoint.networkName,
             lightwalletdUrl: endpoint.lightwalletdUrl,
+            accountUuid: accountUuid,
             txidHex: tx.txidHex,
           );
         });

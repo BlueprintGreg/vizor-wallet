@@ -3160,17 +3160,20 @@ pub fn prioritize_transparent_details(db_path: String, txid_hex: String) -> Resu
 /// asked to, then stores them as any enhancement payload. This reveals the
 /// transaction (`txid_hex`, as [`TransactionInfo::txid_hex`]) to the server,
 /// so the app calls it only from an explicit, disclosed user action, never
-/// automatically, and it runs whatever the transparent policy is.
+/// automatically, and it runs whatever the transparent policy is. Rust sends
+/// nothing unless `account_uuid` holds a transparent part of the transaction.
 pub fn enhance_transaction_publicly(
     db_path: String,
     network: String,
     lightwalletd_url: String,
+    account_uuid: String,
     txid_hex: String,
 ) -> Result<(), String> {
     catch(|| {
         // Migration may create a database a reset just deleted. This explicit
         // load opens only existing storage, before any network request.
         let network = keys::parse_network(&network)?;
+        let account = keys::parse_account_uuid(&account_uuid)?;
         let txid: [u8; 32] = hex::decode(&txid_hex)
             .map_err(|e| format!("Invalid txid: {e}"))?
             .try_into()
@@ -3179,6 +3182,7 @@ pub fn enhance_transaction_publicly(
             &db_path,
             network,
             &lightwalletd_url,
+            account,
             txid,
         )
     })

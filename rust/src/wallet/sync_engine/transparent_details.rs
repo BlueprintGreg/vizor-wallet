@@ -775,6 +775,10 @@ pub(crate) fn cancel_public_loads_at(db_path: &str) {
 /// Errors carry no txid. Runs on the caller's thread, which must not be a
 /// runtime worker.
 ///
+/// Consent is the caller's to ask for, but the wallet decides what may be
+/// revealed: `account` must hold a transparent part of `txid`, or nothing is
+/// sent. An arbitrary txid never reaches lightwalletd through this path.
+///
 /// Retains the original existing SQLite handle and physical file identity.
 /// The network wait holds no SQL transaction or wallet write lock. A reset,
 /// file replacement, account change or policy transition discards the result;
@@ -786,11 +790,13 @@ pub(crate) fn enhance_publicly(
     db_path: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
+    account: AccountUuid,
     txid: [u8; 32],
 ) -> Result<(), String> {
     use crate::wallet::db::{
         open_existing_wallet_db_with_timeout, with_wallet_db_write_lock, WALLET_DB_BUSY_TIMEOUT,
     };
+    use zcash_client_backend::data_api::transparent_ledger::TransparentDetailRead;
     const CANCELLED: &str = "the lookup was cancelled; nothing was stored";
     let txid = TxId::from_bytes(txid);
     let load = PublicLoad::start(db_path);
@@ -806,9 +812,20 @@ pub(crate) fn enhance_publicly(
     if !same_file() {
         return Err("the wallet changed before the lookup; nothing was sent".to_owned());
     }
-    let started = db
-        .transactionally(|tx| PublicLoadIdentity::of(tx))
+    let (started, held) = db
+        .transactionally(|tx| {
+            Ok::<_, SqliteClientError>((
+                PublicLoadIdentity::of(tx)?,
+                tx.transparent_display_view(account, txid)?.is_some(),
+            ))
+        })
         .map_err(|error| format!("reading the wallet failed ({error})"))?;
+    if !held {
+        return Err(
+            "the account holds no transparent part of this transaction; nothing was sent"
+                .to_owned(),
+        );
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()

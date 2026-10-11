@@ -2591,6 +2591,7 @@ fn wire__crate__api__sync__enhance_transaction_publicly_impl(
             let api_db_path = <String>::sse_decode(&mut deserializer);
             let api_network = <String>::sse_decode(&mut deserializer);
             let api_lightwalletd_url = <String>::sse_decode(&mut deserializer);
+            let api_account_uuid = <String>::sse_decode(&mut deserializer);
             let api_txid_hex = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -2599,6 +2600,7 @@ fn wire__crate__api__sync__enhance_transaction_publicly_impl(
                         api_db_path,
                         api_network,
                         api_lightwalletd_url,
+                        api_account_uuid,
                         api_txid_hex,
                     )?;
                     Ok(output_ok)
