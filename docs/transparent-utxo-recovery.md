@@ -142,9 +142,10 @@ and the recovery sections after it):
   address schedule above do not run. The `.receive.redb` completion maps are
   neither read for a lookup nor advanced, and their recorded heights, like queued
   history ranges, stay as they were for a later public pass.
-- Ledger accounts are paused: recovery from the birthday would miss their
-  earlier history, and their public discovery is withheld. Their transparent
-  balance reports `Stopped(Ledger)` until Private queries is turned off.
+- Ledger accounts recover privately from their birthday like other accounts,
+  and their public discovery is withheld. A birthday later than the account's
+  first activity can omit earlier history; see
+  `docs/ledger/transparent-recovery.md`.
 - Turning Private queries off resumes public lookups for every transparent
   address of every account on the next sync.
 

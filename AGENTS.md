@@ -938,10 +938,12 @@ signs does not refuse the signature. Until private recovery covers the
 wallet's latest scanned block the refusal is `CatchingUp`; the broadcast waits
 up to 30 s (`CATCH_UP_WAIT`) for it, and a busy wallet DB is waited out the
 same way. If it still cannot dispatch, the refusal is retryable and the caller
-keeps the signed transaction rather than releasing it. Ledger accounts are
-paused under Private queries: recovery from the birthday would miss their
-earlier history, so their transparent funds report `Stopped(Ledger)` and
-cannot be spent or shielded until the setting is turned off.
+keeps the signed transaction rather than releasing it. Under Private queries,
+Ledger accounts recover privately from their stored birthday like other
+accounts (`docs/ledger/transparent-recovery.md`). A birthday later than the
+account's first activity can omit earlier transparent history; existing public
+records that private recovery cannot explain block activation, and turning
+the setting off restores public discovery from height 0.
 
 ### Wallet Creation
 
