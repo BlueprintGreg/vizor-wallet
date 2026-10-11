@@ -35,6 +35,7 @@ class NetworkPrivacyState {
     required this.torEnabled,
     required this.status,
     this.targetTorEnabled,
+    this.savedTorEnabled,
     this.softwareUpdatesAvailable = true,
     this.error,
     this.startupNotice,
@@ -44,6 +45,7 @@ class NetworkPrivacyState {
     : torEnabled = false,
       status = NetworkPrivacyConnectionStatus.off,
       targetTorEnabled = null,
+      savedTorEnabled = null,
       softwareUpdatesAvailable = true,
       error = null,
       startupNotice = null;
@@ -51,6 +53,10 @@ class NetworkPrivacyState {
   final bool torEnabled;
   final NetworkPrivacyConnectionStatus status;
   final bool? targetTorEnabled;
+
+  /// The route saved for the next launch, when it differs from [torEnabled]
+  /// or is known independently of it; see [torRouteSaved].
+  final bool? savedTorEnabled;
   final bool softwareUpdatesAvailable;
   final String? error;
   final String? startupNotice;
@@ -63,6 +69,12 @@ class NetworkPrivacyState {
   /// target true) and a disable that could not quiesce (`torEnabled` true,
   /// target false) both publish `failed` with the live route elsewhere.
   bool get torRouteRetained => torEnabled && (targetTorEnabled ?? true);
+
+  /// Whether Tor is the saved route, which is what iOS background migration
+  /// and a cold launch go by. It can be stricter than [torEnabled]: when
+  /// disabling Tor switches the runtime but saving the direct route fails, this
+  /// process is direct while background work still defers to the foreground.
+  bool get torRouteSaved => savedTorEnabled ?? torEnabled;
 }
 
 abstract interface class NetworkPrivacyPreferenceStore {
@@ -610,6 +622,27 @@ final networkPrivacyDirectRequestGateProvider =
       (_) => const AppNetworkPrivacyDirectRequestGate(),
     );
 
+/// Re-arms native background work that a saved Tor route held back. Called
+/// once, right after the direct route is saved over a saved Tor route.
+typedef NetworkPrivacySavedRouteDirectHook = Future<void> Function();
+
+const _backgroundMigrationChannel = MethodChannel(
+  'com.zcash.wallet/background_migration',
+);
+
+Future<void> _rearmBackgroundMigrationForDirectRoute() async {
+  // Only iOS background migration defers to a saved Tor route.
+  if (!Platform.isIOS) return;
+  await _backgroundMigrationChannel.invokeMethod<bool>(
+    'savedRouteBecameDirect',
+  );
+}
+
+final networkPrivacySavedRouteDirectHookProvider =
+    Provider<NetworkPrivacySavedRouteDirectHook>(
+      (_) => _rearmBackgroundMigrationForDirectRoute,
+    );
+
 typedef NetworkPrivacyTransportRestart =
     Future<void> Function(Future<void> Function() updateTransport);
 
@@ -663,6 +696,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       torEnabled: state.torEnabled,
       status: state.status,
       targetTorEnabled: state.targetTorEnabled,
+      savedTorEnabled: state.savedTorEnabled,
       softwareUpdatesAvailable: state.softwareUpdatesAvailable,
       error: state.error,
     );
@@ -679,6 +713,11 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
     );
     final restartTransport = ref.read(networkPrivacyTransportRestartProvider);
     final directRequests = ref.read(networkPrivacyDirectRequestGateProvider);
+    final savedRouteDirect = ref.read(
+      networkPrivacySavedRouteDirectHookProvider,
+    );
+    // Until a write succeeds, the route saved before this toggle stands.
+    var savedTorEnabled = previousState.torRouteSaved;
 
     // Native updaters do not use the embedded Tor client. Atomically reject an
     // active update session and pause future checks before accepting the route
@@ -693,6 +732,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: previousState.status,
           targetTorEnabled: true,
+          savedTorEnabled: savedTorEnabled,
           softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
           error: error.toString(),
           startupNotice: kTorUpdateInProgressNotice,
@@ -727,11 +767,13 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: NetworkPrivacyConnectionStatus.failed,
           targetTorEnabled: true,
+          savedTorEnabled: savedTorEnabled,
           softwareUpdatesAvailable: softwareUpdatesAvailable,
           error: error.toString(),
         );
         return;
       }
+      savedTorEnabled = true;
       if (generation != _generation) return;
       runtime.beginEnable();
     } else {
@@ -739,6 +781,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         torEnabled: previousState.torEnabled,
         status: NetworkPrivacyConnectionStatus.connecting,
         targetTorEnabled: false,
+        savedTorEnabled: savedTorEnabled,
         softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
       );
       try {
@@ -752,6 +795,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           torEnabled: previousState.torEnabled,
           status: previousState.status,
           targetTorEnabled: false,
+          savedTorEnabled: savedTorEnabled,
           softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
           error: error.toString(),
           startupNotice: kTorDisableUpdateInProgressNotice,
@@ -773,6 +817,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       torEnabled: enabled ? true : previousState.torEnabled,
       status: NetworkPrivacyConnectionStatus.connecting,
       targetTorEnabled: enabled,
+      savedTorEnabled: savedTorEnabled,
       softwareUpdatesAvailable: previousState.softwareUpdatesAvailable,
     );
 
@@ -794,6 +839,12 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
           // relaunch would read direct while this process was still
           // enforcing Tor.
           await store.writeTorEnabled(false);
+          final heldBackByTor = savedTorEnabled;
+          savedTorEnabled = false;
+          // Background work deferred while Tor was saved has nothing else
+          // to wake it, so re-arm it here, once, now that the saved route
+          // is direct.
+          if (heldBackByTor) unawaited(_rearmForDirectRoute(savedRouteDirect));
         } finally {
           // The gate follows the runtime, not the preference. Rust is on the
           // direct route with its Tor client dropped, so a gate left shut
@@ -825,6 +876,7 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       state = NetworkPrivacyState(
         torEnabled: runtime.isTorEnabled(),
         status: nextStatus ?? NetworkPrivacyConnectionStatus.failed,
+        savedTorEnabled: savedTorEnabled,
         softwareUpdatesAvailable: softwareUpdatesAvailable,
         startupNotice: startupNotice,
       );
@@ -852,9 +904,24 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
         torEnabled: effectiveTorEnabled,
         status: NetworkPrivacyConnectionStatus.failed,
         targetTorEnabled: enabled,
+        savedTorEnabled: savedTorEnabled,
         softwareUpdatesAvailable: softwareUpdatesAvailable,
         error: error.toString(),
         startupNotice: startupNotice,
+      );
+    }
+  }
+
+  Future<void> _rearmForDirectRoute(
+    NetworkPrivacySavedRouteDirectHook savedRouteDirect,
+  ) async {
+    try {
+      await savedRouteDirect();
+    } catch (error, stackTrace) {
+      // Best-effort: the next foreground poll can still re-arm the work.
+      debugPrint(
+        'NetworkPrivacyNotifier: failed to re-arm background work for the '
+        'direct route: $error\n$stackTrace',
       );
     }
   }
@@ -879,12 +946,14 @@ class NetworkPrivacyNotifier extends Notifier<NetworkPrivacyState> {
       state = NetworkPrivacyState(
         torEnabled: state.torEnabled,
         status: state.status,
+        savedTorEnabled: state.savedTorEnabled,
         softwareUpdatesAvailable: true,
       );
     } catch (error) {
       state = NetworkPrivacyState(
         torEnabled: state.torEnabled,
         status: state.status,
+        savedTorEnabled: state.savedTorEnabled,
         softwareUpdatesAvailable: false,
         error: error.toString(),
         startupNotice: state.torEnabled

@@ -1078,10 +1078,12 @@ class _MobileMigrationRedesignedStatusState
     // and only to the user it concerns: on iOS the background migration task
     // never uses Tor, so with Tor on it sends nothing and the next step waits
     // for the app, which sends it over Tor. Android has no background
-    // migration lane, so there is nothing to disclose there.
+    // migration lane, so there is nothing to disclose there. The background
+    // task follows the saved route, which stays Tor when saving a disable
+    // failed, so the disclosure follows it too.
     final torDisclosure =
         defaultTargetPlatform == TargetPlatform.iOS &&
-            ref.watch(networkPrivacyProvider).torEnabled
+            ref.watch(networkPrivacyProvider).torRouteSaved
         ? '\nWith Tor on, migration waits while Vizor is closed and '
               'continues when you open it.'
         : '';

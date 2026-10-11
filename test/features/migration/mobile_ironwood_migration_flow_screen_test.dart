@@ -7810,70 +7810,88 @@ void main() {
     );
   });
 
-  testWidgets(
-    'the backgrounding invitation discloses that Tor pauses background migration',
-    (tester) async {
-      // The background task never uses Tor, so with Tor on it sends nothing.
-      // The moment this screen invites a Tor user to background the app is
-      // the moment they need to know the next step waits for them. iOS only:
-      // Android has no background migration lane to disclose.
-      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-      _useMobileViewport(tester);
-      await tester.pumpWidget(
-        _productionApp(
-          initialLocation: '/migration/private/status',
-          migrationService: _migrationService(
-            ios: true,
-            getNotificationAuthorizationStatus: () async =>
-                IronwoodMigrationNotificationAuthorizationStatus.authorized,
-          ),
-          extraOverrides: [
-            networkPrivacyProvider.overrideWith(
-              _TorRouteNetworkPrivacyNotifier.new,
+  for (final (description, route, disclosed)
+      in <(String, NetworkPrivacyNotifier Function(), bool)>[
+        ('Tor on', _TorRouteNetworkPrivacyNotifier.new, true),
+        // Disabling switched the runtime but the direct route was not saved, so
+        // a cold background wake still defers to the foreground.
+        (
+          'Tor off but not saved',
+          _UnsavedDirectRouteNetworkPrivacyNotifier.new,
+          true,
+        ),
+        (
+          'Tor off and saved',
+          _SavedDirectRouteNetworkPrivacyNotifier.new,
+          false,
+        ),
+      ]) {
+    testWidgets(
+      'the backgrounding invitation follows the saved route: $description',
+      (tester) async {
+        // The background task never uses Tor, so with Tor saved it sends
+        // nothing. The moment this screen invites a Tor user to background
+        // the app is the moment they need to know the next step waits for
+        // them. iOS only: Android has no background migration lane to
+        // disclose.
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        _useMobileViewport(tester);
+        await tester.pumpWidget(
+          _productionApp(
+            initialLocation: '/migration/private/status',
+            migrationService: _migrationService(
+              ios: true,
+              getNotificationAuthorizationStatus: () async =>
+                  IronwoodMigrationNotificationAuthorizationStatus.authorized,
             ),
-          ],
-          status: _status(
-            phase: kIronwoodMigrationBroadcastingPhase,
-            nextActionHeight: 3_000_020,
-            targetValues: List<int>.filled(9, 100_000_000),
-            parts: [
-              for (var index = 0; index < 9; index++)
-                rust_sync.MigrationPartStatus(
-                  partIndex: index,
-                  valueZatoshi: BigInt.from(100_000_000),
-                  state: index < 8
-                      ? rust_sync.MigrationPartState.completed
-                      : rust_sync.MigrationPartState.scheduled,
-                  txidHex: 'tx-$index',
-                  scheduledHeight: 3_000_000 + index,
-                  confirmationCount: index < 8 ? 3 : 0,
-                  confirmationTarget: 3,
-                ),
-            ],
+            extraOverrides: [networkPrivacyProvider.overrideWith(route)],
+            status: _status(
+              phase: kIronwoodMigrationBroadcastingPhase,
+              nextActionHeight: 3_000_020,
+              targetValues: List<int>.filled(9, 100_000_000),
+              parts: [
+                for (var index = 0; index < 9; index++)
+                  rust_sync.MigrationPartStatus(
+                    partIndex: index,
+                    valueZatoshi: BigInt.from(100_000_000),
+                    state: index < 8
+                        ? rust_sync.MigrationPartState.completed
+                        : rust_sync.MigrationPartState.scheduled,
+                    txidHex: 'tx-$index',
+                    scheduledHeight: 3_000_000 + index,
+                    confirmationCount: index < 8 ? 3 : 0,
+                    confirmationTarget: 3,
+                  ),
+              ],
+            ),
+            syncState: SyncState(
+              accountUuid: 'account-1',
+              hasAccountScopedData: true,
+              scannedHeight: 3_000_000,
+              chainTipHeight: 3_000_000,
+            ),
           ),
-          syncState: SyncState(
-            accountUuid: 'account-1',
-            hasAccountScopedData: true,
-            scannedHeight: 3_000_000,
-            chainTipHeight: 3_000_000,
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      expect(
-        find.text(
-          'Next migration step expected in\n'
-          '~25 minutes.\n'
-          'Notifications are on. You can leave Vizor and check back later.\n'
-          'With Tor on, migration waits while Vizor is closed and continues '
-          'when you open it.',
-        ),
-        findsOneWidget,
-      );
-      debugDefaultTargetPlatformOverride = null;
-    },
-  );
+        const invitation =
+            'Next migration step expected in\n'
+            '~25 minutes.\n'
+            'Notifications are on. You can leave Vizor and check back later.';
+        expect(
+          find.text(
+            disclosed
+                ? '$invitation\n'
+                      'With Tor on, migration waits while Vizor is closed and '
+                      'continues when you open it.'
+                : invitation,
+          ),
+          findsOneWidget,
+        );
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
 
   testWidgets('keeps the actual batch number for Keystone broadcasting', (
     tester,
@@ -9102,5 +9120,24 @@ class _TorRouteNetworkPrivacyNotifier extends NetworkPrivacyNotifier {
   NetworkPrivacyState build() => const NetworkPrivacyState(
     torEnabled: true,
     status: NetworkPrivacyConnectionStatus.connected,
+  );
+}
+
+class _UnsavedDirectRouteNetworkPrivacyNotifier extends NetworkPrivacyNotifier {
+  @override
+  NetworkPrivacyState build() => const NetworkPrivacyState(
+    torEnabled: false,
+    status: NetworkPrivacyConnectionStatus.failed,
+    targetTorEnabled: false,
+    savedTorEnabled: true,
+  );
+}
+
+class _SavedDirectRouteNetworkPrivacyNotifier extends NetworkPrivacyNotifier {
+  @override
+  NetworkPrivacyState build() => const NetworkPrivacyState(
+    torEnabled: false,
+    status: NetworkPrivacyConnectionStatus.off,
+    savedTorEnabled: false,
   );
 }

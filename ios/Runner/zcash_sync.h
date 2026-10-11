@@ -62,7 +62,9 @@ int32_t zcash_status_pir_observe_transaction_v2(
 
 
 /// Broadcast on the process route, on an isolated Tor circuit when Tor is
-/// selected. ROUTE_BLOCKED means the transaction was not sent.
+/// selected. ROUTE_BLOCKED and CANCELLED both mean the transaction was not
+/// sent: cancellation applies only before dispatch. Once dispatched, the
+/// broadcast runs to its response or RPC deadline even if cancelled.
 int32_t zcash_lightwalletd_routed_send_transaction(
     const char* lightwalletd_url,
     const uint8_t* raw_transaction,

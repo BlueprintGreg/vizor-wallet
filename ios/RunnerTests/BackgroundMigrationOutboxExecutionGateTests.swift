@@ -88,6 +88,76 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
     }
   }
 
+  func testCancellationBeforeDispatchLeavesTheItemArmedWithoutAnAttempt() throws {
+    // The transport reports `.cancelled` only when nothing was sent, so the
+    // outbox records a definite non-attempt rather than an uncertain one.
+    let (store, directory) = try makeArmedStore()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let result = BackgroundMigrationOutboxRunner.runOnce(
+      store: store, cancellation: BackgroundMigrationCancellation(),
+      dependencies: BackgroundMigrationOutboxRunnerDependencies(
+        latestBlockHeight: { _, _ in .success(100) },
+        sendTransaction: { _, _, cancellation in
+          cancellation.cancel()
+          return .failure(.cancelled)
+        }
+      )
+    )
+    XCTAssertEqual(result.transport, .cancelled)
+    let item = try XCTUnwrap(store.read().batches.first?.items.first)
+    XCTAssertEqual(item.status, .armed)
+    XCTAssertEqual(item.attemptCount, 0)
+    XCTAssertNil(item.nextAttemptAt)
+    XCTAssertTrue(try store.read().receipts.isEmpty)
+  }
+
+  func testCancellationAfterDispatchPersistsTheResponse() throws {
+    // A foreground handoff cancels the pass while its broadcast is in flight.
+    // The transport drains the dispatched request and returns its response,
+    // which the outbox records as accepted, not as an uncertain attempt.
+    let (store, directory) = try makeArmedStore()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    _ = BackgroundMigrationOutboxRunner.runOnce(
+      store: store, cancellation: BackgroundMigrationCancellation(),
+      dependencies: BackgroundMigrationOutboxRunnerDependencies(
+        latestBlockHeight: { _, _ in .success(100) },
+        sendTransaction: { _, _, cancellation in
+          cancellation.cancel()
+          return .success(NativeLightwalletdSendResponse(errorCode: 0, errorMessage: ""))
+        }
+      )
+    )
+    let snapshot = try store.read()
+    XCTAssertEqual(snapshot.batches.first?.items.first?.attemptCount, 0)
+    XCTAssertEqual(snapshot.receipts.map(\.outcome), [.accepted])
+  }
+
+  private func makeArmedStore() throws -> (BackgroundMigrationOutboxStore, URL) {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = BackgroundMigrationOutboxStore(
+      fileURL: directory.appendingPathComponent("outbox.bin"),
+      keyProvider: { Data(repeating: 0xCD, count: 32) }
+    )
+    let item = BackgroundMigrationOutboxItem(
+      itemId: "item-a", partIndex: 0, txidHex: String(repeating: "a", count: 64),
+      rawTransaction: Data([1, 2]), anchorBoundaryHeight: 0,
+      scheduledHeight: 100, scheduleStartHeight: 99, expiryHeight: 69_120
+    )
+    let batch = BackgroundMigrationOutboxBatch(
+      batchId: "batch-a", network: "test", accountUuid: "a", runId: "run-a",
+      lightwalletdUrl: "https://example.invalid", timingMeanBlocks: 144,
+      timingMaxBlocks: 576, createdAt: Date(), armedAt: nil,
+      nextProofHeight: nil, proofReadyNotificationPendingAt: nil,
+      proofReadyNotifiedAt: nil, items: [item]
+    )
+    _ = try store.update {
+      try $0.stage(batch)
+      try $0.armBatch(batchId: batch.batchId,
+        expectedDigests: [item.itemId: item.payloadDigestHex], at: Date())
+    }
+    return (store, directory)
+  }
+
   func testReleasedLeaseCannotAuthorizeLatePauseDuringRetry() {
     let gate = BackgroundMigrationOutboxExecutionGate()
     gate.pause(leaseId: "expired")
@@ -255,5 +325,57 @@ final class BackgroundMigrationOutboxExecutionGateTests: XCTestCase {
     gate.resume(leaseId: leaseId)
     XCTAssertTrue(gate.tryBeginRun())
     gate.finishRun()
+  }
+}
+
+final class BackgroundMigrationSavedRouteDirectTests: XCTestCase {
+  func testDirectRouteReArmsHeldBackOutboxAndPreparationWork() {
+    XCTAssertEqual(
+      backgroundMigrationSavedRouteDirectActions(
+        torSelected: false,
+        hasRunnableOutboxWork: true,
+        hasResumablePreparationWork: true
+      ),
+      BackgroundMigrationSavedRouteDirectActions(
+        scheduleBackgroundWake: true,
+        restartPreparationTracking: true
+      )
+    )
+    XCTAssertEqual(
+      backgroundMigrationSavedRouteDirectActions(
+        torSelected: false,
+        hasRunnableOutboxWork: false,
+        hasResumablePreparationWork: true
+      ),
+      BackgroundMigrationSavedRouteDirectActions(
+        scheduleBackgroundWake: true,
+        restartPreparationTracking: true
+      )
+    )
+  }
+
+  func testNothingIsArmedWithoutWorkOrWhileTorIsSavedAgain() {
+    let none = BackgroundMigrationSavedRouteDirectActions(
+      scheduleBackgroundWake: false,
+      restartPreparationTracking: false
+    )
+    XCTAssertEqual(
+      backgroundMigrationSavedRouteDirectActions(
+        torSelected: false,
+        hasRunnableOutboxWork: false,
+        hasResumablePreparationWork: false
+      ),
+      none
+    )
+    // A stale call that arrives after Tor was saved again must not schedule
+    // a wake that would only defer.
+    XCTAssertEqual(
+      backgroundMigrationSavedRouteDirectActions(
+        torSelected: true,
+        hasRunnableOutboxWork: true,
+        hasResumablePreparationWork: true
+      ),
+      none
+    )
   }
 }

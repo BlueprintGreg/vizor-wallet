@@ -323,16 +323,17 @@ enum NativeLightwalletdClient {
         }
       }
     }
-    // Checked before cancellation: a refusal is a definite non-submission,
-    // which the outbox records differently from an interrupted one.
+    // Both mean nothing was sent: Rust honours cancellation only before the
+    // dispatch point.
     if code == ZCASH_LIGHTWALLETD_RESULT_ROUTE_BLOCKED {
       return .failure(.routeBlocked)
     }
-    guard code != ZCASH_LIGHTWALLETD_RESULT_CANCELLED,
-      !cancellation.isCancelled
-    else {
+    if code == ZCASH_LIGHTWALLETD_RESULT_CANCELLED {
       return .failure(.cancelled)
     }
+    // A response is returned even when cancellation arrived after dispatch:
+    // the transaction was submitted, and the outbox must persist what
+    // lightwalletd answered rather than an uncertain attempt.
     guard code == 0 else {
       return .failure(.transport("Rust lightwalletd send failed (code \(code))"))
     }

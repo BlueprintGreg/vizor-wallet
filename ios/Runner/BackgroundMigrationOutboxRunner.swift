@@ -75,6 +75,39 @@ enum BackgroundMigrationTorRoute {
   }
 }
 
+/// What to re-arm once the saved route has become direct.
+struct BackgroundMigrationSavedRouteDirectActions: Equatable {
+  /// Submit the outbox/preparation `BGProcessingTask` wake.
+  let scheduleBackgroundWake: Bool
+  /// Ask the preparation manager to submit confirmation tracking again.
+  let restartPreparationTracking: Bool
+}
+
+/// The re-arm decision for work a saved Tor route held back.
+///
+/// With Tor saved, a background wake defers to the foreground and schedules
+/// no further wake, and preparation tracking is not submitted. When the saved
+/// route becomes direct that work is runnable again, so it is re-armed exactly
+/// here rather than left for a later poll or sync that may never come before
+/// the app is closed. The saved route is read again by the caller: if Tor was
+/// saved again in the meantime, nothing is re-armed.
+func backgroundMigrationSavedRouteDirectActions(
+  torSelected: Bool,
+  hasRunnableOutboxWork: Bool,
+  hasResumablePreparationWork: Bool
+) -> BackgroundMigrationSavedRouteDirectActions {
+  guard !torSelected else {
+    return BackgroundMigrationSavedRouteDirectActions(
+      scheduleBackgroundWake: false,
+      restartPreparationTracking: false
+    )
+  }
+  return BackgroundMigrationSavedRouteDirectActions(
+    scheduleBackgroundWake: hasRunnableOutboxWork || hasResumablePreparationWork,
+    restartPreparationTracking: hasResumablePreparationWork
+  )
+}
+
 enum BackgroundMigrationOutboxRunner {
 
   static func runOnce(
@@ -291,19 +324,32 @@ enum BackgroundMigrationOutboxRunner {
       cancellation
     ) {
     case .failure(let error)
-    where error == .routeBlocked || error == .routeDeferredToForeground:
-      // The route refused before the transaction left this device, so this
+    where error == .routeBlocked || error == .routeDeferredToForeground
+      || error == .cancelled:
+      // Refused or cancelled before the transaction left this device, so this
       // is a definite non-attempt: the item stays armed for the next pass
-      // without counting a retry or waiting for expiry.
+      // without counting a retry or waiting for expiry. The transport ignores
+      // cancellation once a broadcast is dispatched and returns its response.
+      let reason: String
+      let transport: BackgroundMigrationTransportOutcome
+      switch error {
+      case .routeBlocked:
+        reason = "The selected network route is not available yet."
+        transport = .temporarilyUnavailable
+      case .cancelled:
+        reason = "Background execution stopped before submission."
+        transport = .cancelled
+      default:
+        reason = "Waiting for Vizor to open to submit over Tor."
+        transport = .deferredToForeground
+      }
       recordCancelledBeforeSubmission(
         store: store,
         itemId: selection.item.itemId,
-        error: error == .routeBlocked
-          ? "The selected network route is not available yet."
-          : "Waiting for Vizor to open to submit over Tor."
+        error: reason
       )
       return BackgroundMigrationOutboxRunResult(
-        transport: error == .routeBlocked ? .temporarilyUnavailable : .deferredToForeground,
+        transport: transport,
         proofReady: proofReady,
         broadcastComplete: broadcastComplete,
         transportAccountUuid: selection.accountUuid
@@ -316,7 +362,7 @@ enum BackgroundMigrationOutboxRunner {
         at: now
       )
       return BackgroundMigrationOutboxRunResult(
-        transport: error == .cancelled ? .cancelled : .temporarilyUnavailable,
+        transport: .temporarilyUnavailable,
         proofReady: proofReady,
         broadcastComplete: broadcastComplete,
         transportAccountUuid: selection.accountUuid

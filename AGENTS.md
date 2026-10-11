@@ -674,7 +674,11 @@ policy-aware openers and fails closed while Tor is starting or broken.
   (`DirectRouteCommitment`) just before sending, so a switch to Tor either
   refuses it first or drains it, never cancels it mid-flight. The drain
   (`DIRECT_ROUTE_DRAIN_TIMEOUT`) outlasts the broadcast's unary RPC deadline;
-  uncommitted direct requests are cancelled at once.
+  uncommitted direct requests are cancelled at once. The same dispatch point
+  bounds every cancellation source, including foreground handoff and task
+  expiry: cancellation before it sends nothing (`CANCELLED`, recorded as a
+  non-attempt), and after it the broadcast runs to its response or deadline
+  and the outbox persists the actual response.
 - **iOS background migration never uses Tor.** A background pass never brings
   Tor up or borrows the foreground's client, and a cold launch may not have
   applied the route, so it reads the saved route
@@ -684,7 +688,11 @@ policy-aware openers and fails closed while Tor is starting or broken.
   stays foreground-only. A tracking task launched under saved Tor records only
   runs that need the foreground, never state-0 runs still counting
   confirmations, so turning Tor off lets the next `startPreparation` re-arm
-  them. Foreground entry hands off the outbox on every
+  them. Saving the direct route over a saved Tor route re-arms held-back
+  outbox and preparation work through one path (`savedRouteBecameDirect`,
+  called once after the write succeeds); a failed save re-arms nothing and
+  leaves the saved Tor route authoritative, including for the migration
+  screen's pause disclosure (`NetworkPrivacyState.torRouteSaved`). Foreground entry hands off the outbox on every
   supported iOS version before settings can change; only continued-preparation
   handoff requires iOS 26. Already-pending proof notifications are returned
   even when network inspection is deferred. The mobile settings card and

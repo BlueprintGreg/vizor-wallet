@@ -198,6 +198,28 @@ fn send_transaction(server: &RecordingLwd, raw: &[u8]) -> (i32, i32, String) {
     (code, error_code, message)
 }
 
+fn send_transaction_with_cancellation(
+    server: &RecordingLwd,
+    raw: &[u8],
+    cancellation: &CLightwalletdCancellation,
+) -> (i32, i32, String) {
+    let mut error_code = -1;
+    let mut message = vec![0 as c_char; 4096];
+    let code = zcash_lightwalletd_routed_send_transaction(
+        server.url.as_ptr(),
+        raw.as_ptr(),
+        raw.len(),
+        &mut error_code,
+        message.as_mut_ptr(),
+        message.len(),
+        cancellation,
+    );
+    let message = unsafe { CStr::from_ptr(message.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    (code, error_code, message)
+}
+
 fn observe_transaction(server: &RecordingLwd) -> i32 {
     let mut output = CLightwalletdTransactionObservation::not_found();
     zcash_lightwalletd_observe_transaction(
@@ -276,7 +298,8 @@ async fn a_switch_to_tor_before_dispatch_refuses_the_broadcast() {
 
     // Tor is selected after the direct connection opened and before the
     // transaction is handed to it.
-    let result = routed_send_transaction(server.url_str(), &[1, 2, 3], begin_tor_enable).await;
+    let result =
+        routed_send_transaction(server.url_str(), &[1, 2, 3], None, begin_tor_enable).await;
 
     assert!(
         matches!(result, Err(RoutedRequestError::RouteBlocked(_))),
@@ -290,7 +313,7 @@ async fn a_switch_to_tor_before_dispatch_refuses_the_broadcast() {
 
     // Nothing new reaches the server afterwards either.
     let connections = server.connections();
-    let blocked = routed_send_transaction(server.url_str(), &[1, 2, 3], || {}).await;
+    let blocked = routed_send_transaction(server.url_str(), &[1, 2, 3], None, || {}).await;
     assert!(matches!(blocked, Err(RoutedRequestError::RouteBlocked(_))));
     let tip = routed_latest_block_height(server.url_str()).await;
     assert!(matches!(tip, Err(RoutedRequestError::RouteBlocked(_))));
@@ -307,7 +330,9 @@ async fn a_broadcast_already_dispatched_completes_across_a_switch_to_tor() {
 
     let url = server.url_str().to_owned();
     let broadcast =
-        tokio::spawn(async move { routed_send_transaction(&url, &[1, 2, 3, 4], || {}).await });
+        tokio::spawn(
+            async move { routed_send_transaction(&url, &[1, 2, 3, 4], None, || {}).await },
+        );
     tokio::time::timeout(Duration::from_secs(10), server.send_received.notified())
         .await
         .expect("the broadcast reached lightwalletd");
@@ -340,10 +365,90 @@ async fn a_broadcast_already_dispatched_completes_across_a_switch_to_tor() {
 
     // The next pass is refused without touching the network.
     let connections = server.connections();
-    let blocked = routed_send_transaction(server.url_str(), &[1, 2, 3, 4], || {}).await;
+    let blocked = routed_send_transaction(server.url_str(), &[1, 2, 3, 4], None, || {}).await;
     assert!(matches!(blocked, Err(RoutedRequestError::RouteBlocked(_))));
     assert_eq!(server.connections(), connections);
     assert_eq!(server.methods(), ["SendTransaction"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancellation_before_dispatch_sends_nothing() {
+    // Cancelled after connecting but before the dispatch point: the caller
+    // learns nothing was submitted, and lightwalletd never sees the broadcast.
+    let _policy = lock_route_policy();
+    disable_tor();
+    let server = RecordingLwd::start();
+    let cancellation = CLightwalletdCancellation {
+        cancelled: AtomicBool::new(false),
+    };
+    let result = routed_send_transaction(server.url_str(), &[1, 2, 3], Some(&cancellation), || {
+        cancellation.cancelled.store(true, Ordering::Release)
+    })
+    .await;
+    assert!(
+        matches!(result, Err(RoutedRequestError::Cancelled)),
+        "{result:?}"
+    );
+    assert!(server.methods().is_empty(), "{:?}", server.methods());
+
+    // The C ABI reports that as CANCELLED, which Swift records as not sent.
+    let (code, _, _) = tokio::task::block_in_place(|| {
+        send_transaction_with_cancellation(&server, &[1, 2, 3], &cancellation)
+    });
+    assert_eq!(code, LIGHTWALLETD_RESULT_CANCELLED);
+    assert!(server.methods().is_empty(), "{:?}", server.methods());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_committed_broadcast_returns_its_response() {
+    // A foreground handoff or task expiry cancels the background pass while
+    // its broadcast is waiting for lightwalletd. The bytes already left, so
+    // the C ABI must drain the request and report the actual response rather
+    // than CANCELLED, which the outbox could only record as uncertain.
+    let _policy = lock_route_policy();
+    disable_tor();
+    let server = RecordingLwd::start_holding_send();
+    let url = server.url.clone();
+    let cancellation = zcash_lightwalletd_cancellation_create() as usize;
+    let broadcast = std::thread::spawn(move || {
+        let mut error_code = -1;
+        let mut message = vec![0 as c_char; 64];
+        let code = zcash_lightwalletd_routed_send_transaction(
+            url.as_ptr(),
+            [1u8, 2, 3, 4].as_ptr(),
+            4,
+            &mut error_code,
+            message.as_mut_ptr(),
+            message.len(),
+            cancellation as *const CLightwalletdCancellation,
+        );
+        let message = unsafe { CStr::from_ptr(message.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        (code, error_code, message)
+    });
+    tokio::time::timeout(Duration::from_secs(10), server.send_received.notified())
+        .await
+        .expect("the broadcast reached lightwalletd");
+
+    zcash_lightwalletd_cancellation_cancel(cancellation as *mut CLightwalletdCancellation);
+    // Several cancellation polls pass with the response still outstanding.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !broadcast.is_finished(),
+        "a committed broadcast was abandoned on cancellation"
+    );
+    server.release_send.notify_one();
+
+    let (code, error_code, message) = tokio::task::spawn_blocking(move || broadcast.join())
+        .await
+        .expect("the join task")
+        .expect("the broadcast thread");
+    assert_eq!(code, 0);
+    assert_eq!(error_code, 0);
+    assert_eq!(message, "4 bytes");
+    assert_eq!(server.methods(), ["SendTransaction"]);
+    zcash_lightwalletd_cancellation_destroy(cancellation as *mut CLightwalletdCancellation);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -394,7 +499,9 @@ async fn the_tor_switch_drain_outlasts_a_committed_broadcast_deadline() {
 
     let url = server.url_str().to_owned();
     let broadcast =
-        tokio::spawn(async move { routed_send_transaction(&url, &[1, 2, 3, 4], || {}).await });
+        tokio::spawn(
+            async move { routed_send_transaction(&url, &[1, 2, 3, 4], None, || {}).await },
+        );
     tokio::time::timeout(Duration::from_secs(10), server.send_received.notified())
         .await
         .expect("the broadcast reached lightwalletd");

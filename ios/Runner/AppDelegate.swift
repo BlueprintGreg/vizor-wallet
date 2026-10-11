@@ -126,6 +126,10 @@ import UIKit
         BackgroundMigrationManager.shared.schedule { scheduled in
           DispatchQueue.main.async { result(scheduled) }
         }
+      case "savedRouteBecameDirect":
+        BackgroundMigrationManager.shared.savedRouteBecameDirect { rearmed in
+          DispatchQueue.main.async { result(rearmed) }
+        }
       case "setPrivateRecovery":
         guard let arguments = call.arguments as? [String: Any],
           let enabled = arguments["enabled"] as? Bool

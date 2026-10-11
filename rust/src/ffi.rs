@@ -184,6 +184,8 @@ where
 enum RoutedRequestError {
     /// Nothing was sent: the route policy refused the request.
     RouteBlocked(String),
+    /// Nothing was sent: the caller cancelled before the dispatch point.
+    Cancelled,
     Failed(String),
 }
 
@@ -219,23 +221,42 @@ async fn routed_latest_block_height(lightwalletd_url: &str) -> Result<u64, Route
 
 /// Broadcast on its own Tor circuit, or directly when Tor is off.
 ///
-/// `before_dispatch` runs between connecting and sending; tests use it to
-/// switch the route at exactly that point.
+/// One dispatch point separates two regimes. Before it, nothing has been
+/// sent: cancellation and a route change both stop the request, and the caller
+/// learns it was not submitted. Past it the transaction bytes are on their
+/// way, and stopping could only turn a known outcome into an uncertain one, so
+/// no cancellation source applies: the broadcast runs until lightwalletd
+/// answers or its own unary deadline expires, and the caller persists the
+/// actual response. On the direct route the dispatch point is
+/// [`DirectRouteCommitment::commit`](crate::network_privacy::DirectRouteCommitment::commit),
+/// which a switch to Tor drains rather than cancels.
+///
+/// `before_dispatch` runs between connecting and the dispatch point; tests use
+/// it to cancel or switch the route at exactly that point.
 async fn routed_send_transaction(
     lightwalletd_url: &str,
     raw_transaction: &[u8],
+    cancellation: Option<&CLightwalletdCancellation>,
     before_dispatch: impl FnOnce(),
 ) -> Result<zcash_client_backend::proto::service::SendResponse, RoutedRequestError> {
     // Captured before the route is resolved, so any switch from here on makes
     // the commit below fail rather than send.
     let commitment = crate::network_privacy::DirectRouteCommitment::new();
-    let mut channel = crate::wallet::sync_engine::open_native_migration_lwd_channel(
-        lightwalletd_url,
-        true,
-        Some(commitment.clone()),
+    // Connecting sends no transaction, so cancellation may abandon it.
+    let mut channel = await_lightwalletd_request_or_cancellation(
+        cancellation,
+        crate::wallet::sync_engine::open_native_migration_lwd_channel(
+            lightwalletd_url,
+            true,
+            Some(commitment.clone()),
+        ),
     )
-    .await?;
+    .await
+    .map_err(|()| RoutedRequestError::Cancelled)??;
     before_dispatch();
+    if cancellation.is_some_and(|cancellation| cancellation.cancelled.load(Ordering::Acquire)) {
+        return Err(RoutedRequestError::Cancelled);
+    }
     if channel.direct {
         commitment
             .commit()
@@ -284,6 +305,7 @@ pub extern "C" fn zcash_lightwalletd_routed_latest_block_height(
                 log::info!("ffi: lightwalletd latest block deferred: {message}");
                 LIGHTWALLETD_RESULT_ROUTE_BLOCKED
             }
+            Ok(Err(RoutedRequestError::Cancelled)) => LIGHTWALLETD_RESULT_CANCELLED,
             Ok(Err(RoutedRequestError::Failed(error))) => {
                 log::error!("ffi: get lightwalletd latest block: {error}");
                 1
@@ -524,8 +546,9 @@ pub extern "C" fn zcash_status_pir_observe_transaction_v2(
 }
 
 /// Submit one transaction on the process route, on an isolated Tor circuit
-/// when Tor is selected. `LIGHTWALLETD_RESULT_ROUTE_BLOCKED` means the
-/// transaction was not sent. The error message is copied into the caller-owned
+/// when Tor is selected. `LIGHTWALLETD_RESULT_ROUTE_BLOCKED` and
+/// `LIGHTWALLETD_RESULT_CANCELLED` both mean the transaction was not sent;
+/// cancellation after dispatch is ignored (see [`routed_send_transaction`]). The error message is copied into the caller-owned
 /// buffer and safely truncated if necessary.
 #[no_mangle]
 pub extern "C" fn zcash_lightwalletd_routed_send_transaction(
@@ -560,12 +583,16 @@ pub extern "C" fn zcash_lightwalletd_routed_send_transaction(
             }
         };
         let cancellation = unsafe { cancellation.as_ref() };
-        match runtime.block_on(await_lightwalletd_request_or_cancellation(
+        // Not wrapped in the cancellation wrapper: the send honours
+        // cancellation only up to its dispatch point.
+        match runtime.block_on(routed_send_transaction(
+            lightwalletd_url,
+            &raw_transaction,
             cancellation,
-            routed_send_transaction(lightwalletd_url, &raw_transaction, || {}),
+            || {},
         )) {
-            Err(()) => LIGHTWALLETD_RESULT_CANCELLED,
-            Ok(Ok(response)) => {
+            Err(RoutedRequestError::Cancelled) => LIGHTWALLETD_RESULT_CANCELLED,
+            Ok(response) => {
                 *response_error_code = response.error_code;
                 let bytes = response.error_message.as_bytes();
                 let copied_len = bytes
@@ -581,11 +608,11 @@ pub extern "C" fn zcash_lightwalletd_routed_send_transaction(
                 }
                 0
             }
-            Ok(Err(RoutedRequestError::RouteBlocked(message))) => {
+            Err(RoutedRequestError::RouteBlocked(message)) => {
                 log::info!("ffi: lightwalletd transaction submission deferred: {message}");
                 LIGHTWALLETD_RESULT_ROUTE_BLOCKED
             }
-            Ok(Err(RoutedRequestError::Failed(error))) => {
+            Err(RoutedRequestError::Failed(error)) => {
                 log::error!("ffi: send lightwalletd transaction: {error}");
                 1
             }

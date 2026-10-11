@@ -550,6 +550,28 @@ final class BackgroundMigrationManager {
     )
   }
 
+  /// The one re-arm path for background work a saved Tor route held back.
+  /// Dart calls it after saving the direct route; see
+  /// `backgroundMigrationSavedRouteDirectActions`. Submitting the wake
+  /// replaces any pending request, so a repeated call schedules nothing extra.
+  func savedRouteBecameDirect(completion: @escaping (Bool) -> Void) {
+    let actions = backgroundMigrationSavedRouteDirectActions(
+      torSelected: BackgroundMigrationTorRoute.isSelected(),
+      hasRunnableOutboxWork: hasRunnableOutboxWork(),
+      hasResumablePreparationWork: hasResumablePreparationWork()
+    )
+    if actions.restartPreparationTracking {
+      if #available(iOS 26.0, *) {
+        BackgroundMigrationPreparationManager.shared.start { _ in }
+      }
+    }
+    guard actions.scheduleBackgroundWake else {
+      completion(false)
+      return
+    }
+    schedule(completion: completion)
+  }
+
   func cancel() {
     stopActiveWork(quiesceForMutation: false)
   }

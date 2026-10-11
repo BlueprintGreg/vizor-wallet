@@ -817,6 +817,118 @@ void main() {
     },
   );
 
+  group('saved direct route re-arms held-back background work', () {
+    ProviderContainer containerFor(
+      List<String> events,
+      NetworkPrivacyPreferenceStore store,
+    ) {
+      final container = ProviderContainer(
+        overrides: [
+          networkPrivacyPreferenceStoreProvider.overrideWithValue(store),
+          networkPrivacyRuntimeProvider.overrideWithValue(
+            _FakeRuntime(events, NetworkPrivacyConnectionStatus.connected),
+          ),
+          networkPrivacyNativeUpdateCoordinatorProvider.overrideWithValue(
+            _FakeNativeUpdateCoordinator(events),
+          ),
+          networkPrivacyDirectRequestGateProvider.overrideWithValue(
+            _FakeDirectRequestGate(events),
+          ),
+          networkPrivacyTransportRestartProvider.overrideWithValue((
+            update,
+          ) async {
+            await update();
+          }),
+          networkPrivacySavedRouteDirectHookProvider.overrideWithValue(
+            () async => events.add('rearm'),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test('once, right after the direct route is saved over Tor', () async {
+      final events = <String>[];
+      final container = containerFor(events, _FakeStore(events));
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      expect(events, isNot(contains('rearm')));
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isTrue);
+      events.clear();
+      await notifier.setTorEnabled(false);
+
+      expect(
+        events.where((event) => event == 'store:false' || event == 'rearm'),
+        ['store:false', 'rearm'],
+      );
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+    });
+
+    test('not when saving the direct route fails', () async {
+      final events = <String>[];
+      final container = containerFor(
+        events,
+        _WriteFailingStore(events, failOn: false),
+      );
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      events.clear();
+      await notifier.setTorEnabled(false);
+
+      // The runtime is direct, but background work still follows the saved
+      // Tor route: nothing is re-armed and the saved route stays Tor.
+      expect(events, isNot(contains('rearm')));
+      final state = container.read(networkPrivacyProvider);
+      expect(state.torEnabled, isFalse);
+      expect(state.torRouteSaved, isTrue);
+    });
+
+    test('once on the retry that finally saves the direct route', () async {
+      final events = <String>[];
+      final store = _ToggleableWriteStore(events);
+      final container = containerFor(events, store);
+      final notifier = container.read(networkPrivacyProvider.notifier);
+
+      await notifier.setTorEnabled(true);
+      store.failDirectWrites = true;
+      await notifier.setTorEnabled(false);
+      expect(events, isNot(contains('rearm')));
+      store.failDirectWrites = false;
+      await notifier.retry();
+
+      expect(events.where((event) => event == 'rearm'), hasLength(1));
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+    });
+
+    test('not when the saved route was already direct', () async {
+      final events = <String>[];
+      final container = containerFor(events, _FakeStore(events));
+
+      await container
+          .read(networkPrivacyProvider.notifier)
+          .setTorEnabled(false);
+
+      expect(events, contains('store:false'));
+      expect(events, isNot(contains('rearm')));
+    });
+
+    test('a failed Tor save keeps the direct route saved', () async {
+      final events = <String>[];
+      final container = containerFor(
+        events,
+        _WriteFailingStore(events, failOn: true),
+      );
+
+      await container.read(networkPrivacyProvider.notifier).setTorEnabled(true);
+
+      expect(container.read(networkPrivacyProvider).torRouteSaved, isFalse);
+      expect(events, isNot(contains('rearm')));
+    });
+  });
+
   test('a failed direct save still opens the direct request gate', () async {
     final events = <String>[];
     final runtime = _FakeRuntime(
@@ -1268,6 +1380,25 @@ class _FakeStore implements NetworkPrivacyPreferenceStore {
 
   @override
   Future<void> writeTorEnabled(bool enabled) async {
+    events.add('store:$enabled');
+  }
+}
+
+class _ToggleableWriteStore implements NetworkPrivacyPreferenceStore {
+  _ToggleableWriteStore(this.events);
+
+  final List<String> events;
+  var failDirectWrites = false;
+
+  @override
+  Future<bool> readTorEnabled() async => false;
+
+  @override
+  Future<void> writeTorEnabled(bool enabled) async {
+    if (!enabled && failDirectWrites) {
+      events.add('store:write-failed');
+      throw StateError('Could not save the Tor preference.');
+    }
     events.add('store:$enabled');
   }
 }
