@@ -570,7 +570,6 @@ impl VizorWallet {
                         transparent_stop: b.transparent_stop.map(|reason| {
                             match reason {
                                 sync_api::TransparentStopReason::Quarantined => "quarantined",
-                                sync_api::TransparentStopReason::Ledger => "ledger",
                                 sync_api::TransparentStopReason::LegacyDiscrepancy => {
                                     "legacy_discrepancy"
                                 }
