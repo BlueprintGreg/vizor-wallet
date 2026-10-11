@@ -52,9 +52,17 @@ def check(details: os.stat_result, *, directory: bool, private=False, allow_link
 
 
 def open_directory(stack: contextlib.ExitStack, path, *, dir_fd=None, private=False):
+    """Open an owned directory; one opened below dir_fd must be on dir_fd's filesystem.
+
+    O_NOFOLLOW stops links, not mount points: a volume mounted inside a tree
+    shows its own root, so scans and removals would otherwise walk into it.
+    """
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
     stack.callback(os.close, descriptor)
-    check(os.fstat(descriptor), directory=True, private=private)
+    details = os.fstat(descriptor)
+    check(details, directory=True, private=private)
+    if dir_fd is not None and details.st_dev != os.fstat(dir_fd).st_dev:
+        raise OwnedTreeError("tree directory crosses a filesystem boundary")
     return descriptor
 
 

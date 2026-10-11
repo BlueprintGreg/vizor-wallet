@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_owned_tree as TREE
@@ -153,6 +154,32 @@ class OwnedTreeTests(unittest.TestCase):
         self.assertEqual((record["removed"], len(record["errors"])), ([], 1))
         self.assertIn("cancelled", record["errors"][0])
         self.assertTrue((case / "funder-build" / "source.tar").exists())
+
+    def test_a_directory_on_another_filesystem_stops_the_scan_before_any_removal(self):
+        builds, case = self.producer()
+        mounted = case / "funder-build"  # Stands in for a volume mounted inside the tree.
+        (mounted / "sentinel").write_text("another volume")
+        before = sorted(path.relative_to(case).as_posix() for path in case.rglob("*"))
+        target = mounted.stat()
+        def across_mount(real):
+            def observe(*args, **kwargs):
+                details = real(*args, **kwargs)
+                if (details.st_dev, details.st_ino) != (target.st_dev, target.st_ino):
+                    return details
+                # stat and fstat of a mount point both show the mounted root, on its own device.
+                return os.stat_result((*details[:2], details.st_dev + 1, *details[3:]))
+            return observe
+        with patch.object(TREE.os, "stat", side_effect=across_mount(os.stat)), \
+             patch.object(TREE.os, "fstat", side_effect=across_mount(os.fstat)):
+            with contextlib.ExitStack() as stack:
+                with self.assertRaisesRegex(TREE.OwnedTreeError, "crosses a filesystem boundary"):
+                    TREE.scan(TREE.open_directory(stack, case), allow_links=True, build_output=True)
+                TREE.open_directory(stack, mounted)  # A caller's own anchor may be on any filesystem.
+            record = TREE.prune_build_outputs(builds)
+        self.assertEqual((record["removed"], record["bytes"]), ([], 0))
+        self.assertEqual(record["errors"], [case.name + ": tree directory crosses a filesystem boundary"])
+        self.assertEqual(sorted(path.relative_to(case).as_posix() for path in case.rglob("*")), before)
+        self.assertEqual((mounted / "sentinel").read_text(), "another volume")
 
 
 if __name__ == "__main__":

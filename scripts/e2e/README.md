@@ -312,7 +312,8 @@ snapshots, DerivedData, helper/voting outputs and publication copies). It
 keeps each producer's `*.log`, `workspace-owner.json`, `case-manifest.json` and
 `build-proof.json`, writes the removed paths, bytes and any errors to a
 read-only `builds/build-prune.json` and prints one stderr line. Removal stays
-anchored to the original `builds` directory; errors are recorded, not fatal,
+anchored to the original `builds` directory and never descends into another
+filesystem; errors are recorded, not fatal,
 and reports are never rewritten. Failed, cancelled or interrupted runs keep
 every build output, for example to symbolicate a crash, until
 `native-prune.py --builds` strips them from a dead run.
@@ -618,7 +619,10 @@ checkout is back at that path.
 
 While acting on a run, prune holds that dead run's `run-owner.lock`,
 re-inspects each resource right before removing it and skips anything that
-changed. Docker removal goes containers, then volumes, then networks; a
+changed. Folder and build removal never descends into another filesystem: a
+volume mounted inside a run folder fails that folder's (or producer's) removal
+before anything in it is deleted.
+Docker removal goes containers, then volumes, then networks; a
 Simulator is shut down, deleted, and then proven absent from the inventory and
 from its device directory. `.regtest-logs/prune/prune.lock` serializes prunes
 of a checkout, and each `--apply` writes a read-only receipt
