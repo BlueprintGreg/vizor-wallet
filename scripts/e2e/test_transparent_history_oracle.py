@@ -602,5 +602,59 @@ class MempoolAwareBalanceTest(unittest.TestCase):
         self.assertEqual(len(balance_problems(exp, ledger, 279_990_000)), 1)
 
 
+class OtherBuilderTest(unittest.TestCase):
+    """A transaction a variant other than R built (N_spend's shield)."""
+
+    SHIELD = dict(
+        record("H07", "dd" * 32, "V", "shield", {"shielded_owner": "A0"}),
+        links={"built_by": "N_spend"},
+    )
+
+    def context(self):
+        ctx = context("spend")
+        cases = dict(ctx["cases"])
+        cases["txs"] = [self.SHIELD if r["txid"] == "dd" * 32 else r for r in CASES["txs"]]
+        cases["cases"] = dict(cases["cases"])
+        cases["cases"]["H07"] = {"id": "H07", "checkpoints": {"spend": ["N_spend"]}}
+        return dict(ctx, cases=cases)
+
+    def test_the_builder_keeps_the_public_rows(self):
+        ctx = self.context()
+        got = item(private.activity(ctx), "dd" * 32, "A0", "N_spend")
+        want = item(public.activity(ctx), "dd" * 32, "A0", "N_spend")
+        self.assertEqual(got, want)
+        self.assertEqual(got["row_sets"][0][0]["fee_state"], "known")
+
+    def test_only_its_builder_may_broadcast_it(self):
+        ctx = self.context()
+        sends = private.request_policy(ctx, [], [])["send_txids"]
+        self.assertIn("dd" * 32, sends["N_spend"])
+        self.assertNotIn("dd" * 32, sends.get("R", []))
+        self.assertNotIn("dd" * 32, sends.get("O", []))
+        self.assertIn("ee" * 32, sends["R"])
+        self.assertEqual(sends["O"], sends["R"])
+
+    def test_the_spend_checkpoint_belongs_to_h07(self):
+        ctx = self.context()
+        checks = private.account_checks(ctx)
+        self.assertTrue(checks)
+        for check in checks:
+            self.assertEqual(check["case"], "H07")
+            self.assertIn("balance", check["assert"])
+            self.assertEqual(check["authority"], ["current"])
+
+    def test_harness_variants_get_no_oracle_expectation(self):
+        ctx = self.context()
+        cases = dict(ctx["cases"])
+        cases["variant_kinds"] = dict(CASES["variant_kinds"], N_toggle="harness")
+        cases["cases"] = dict(
+            cases["cases"], H13={"id": "H13", "checkpoints": {"spend": ["N_toggle"]}}
+        )
+        ctx = dict(ctx, cases=cases)
+        variants = {i["variant"] for i in private.activity(ctx)}
+        self.assertNotIn("N_toggle", variants)
+        self.assertNotIn("N_toggle", {c["variant"] for c in private.account_checks(ctx)})
+
+
 if __name__ == "__main__":
     unittest.main()
