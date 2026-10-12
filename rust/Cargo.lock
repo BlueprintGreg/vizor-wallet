@@ -8607,7 +8607,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-backend"
 version = "0.1.0-rc7"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "ambassador",
  "arti-client",
@@ -8683,7 +8683,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-sqlite"
 version = "0.1.0-rc7"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "ambassador",
  "bip32",
@@ -8891,7 +8891,7 @@ dependencies = [
 [[package]]
 name = "zakura-pczt"
 version = "0.1.0-rc4"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "blake2b_simd",
  "document-features",
@@ -8920,7 +8920,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-enhance"
 version = "0.0.1-rc1"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -8944,12 +8944,12 @@ dependencies = [
 [[package]]
 name = "zakura-pir-enhance-types"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 
 [[package]]
 name = "zakura-pir-native"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "ipir-sp 0.1.0-rc.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.8.8",
@@ -8960,7 +8960,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-status"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "hex",
  "rand 0.8.8",
@@ -8974,7 +8974,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-transparent"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
@@ -9154,7 +9154,7 @@ dependencies = [
 [[package]]
 name = "zakura-transaction-status"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries?rev=762c28de7786fa313291dd3cbe73d036ce325f9f#762c28de7786fa313291dd3cbe73d036ce325f9f"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=0a97068ab4364bbc06ed5a5cf7120bf3dc720d37#0a97068ab4364bbc06ed5a5cf7120bf3dc720d37"
 dependencies = [
  "tokio",
  "tonic",
