@@ -68,7 +68,7 @@ use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
 
 /// The transparent PIR service mainnet wallets recover from.
-pub(crate) const DEFAULT_MAINNET_ORIGIN: &str = "https://transparent-pir.valargroup.dev";
+pub(crate) const DEFAULT_MAINNET_ORIGIN: &str = "https://transparent-pir-v12.valargroup.dev";
 
 /// Replaces the origin in debug builds only. A release build always uses
 /// [`DEFAULT_MAINNET_ORIGIN`].
