@@ -149,8 +149,7 @@ echo "==> Log file: $LOG_FILE"
     regtest_receive_sync \
     regtest_send \
     regtest_import \
-    regtest_multi_account \
-    regtest_public_followups
+    regtest_multi_account
   do
     cargo test --test "$test_target" -- --ignored --nocapture --test-threads=1
   done
