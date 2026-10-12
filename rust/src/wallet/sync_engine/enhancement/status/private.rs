@@ -18,10 +18,17 @@ use zcash_protocol::consensus::BlockHeight;
 
 const MAINNET_GENESIS_DISPLAY: &str =
     "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08";
+/// Debug builds only: overrides the Status PIR endpoint. Release builds
+/// always use [`DEFAULT_MAINNET_ENDPOINT`] and never read it.
+#[cfg(debug_assertions)]
 const ENDPOINT_ENV: &str = "VIZOR_STATUS_PIR_URL";
 
 fn status_endpoint() -> String {
-    std::env::var(ENDPOINT_ENV).unwrap_or_else(|_| DEFAULT_MAINNET_ENDPOINT.into())
+    #[cfg(debug_assertions)]
+    if let Ok(endpoint) = std::env::var(ENDPOINT_ENV) {
+        return endpoint;
+    }
+    DEFAULT_MAINNET_ENDPOINT.into()
 }
 
 fn now_ms() -> Result<u64, LookupError> {
@@ -67,31 +74,14 @@ pub(crate) struct PrivateStatusSource<'a, F> {
     db_path: &'a str,
     network: WalletNetwork,
     should_exit: &'a F,
-    route_policy: StatusRoutePolicy,
-}
-
-#[derive(Clone, Copy)]
-enum StatusRoutePolicy {
-    WalletPreference,
-    ForceDirect,
 }
 
 impl<'a, F: Fn() -> bool + Sync> PrivateStatusSource<'a, F> {
-    pub(crate) fn new(
-        db_path: &'a str,
-        network: WalletNetwork,
-        should_exit: &'a F,
-        direct_only: bool,
-    ) -> Self {
+    pub(crate) fn new(db_path: &'a str, network: WalletNetwork, should_exit: &'a F) -> Self {
         Self {
             db_path,
             network,
             should_exit,
-            route_policy: if direct_only {
-                StatusRoutePolicy::ForceDirect
-            } else {
-                StatusRoutePolicy::WalletPreference
-            },
         }
     }
 }
@@ -131,14 +121,9 @@ impl<'a, F: Fn() -> bool + Sync> StatusSource for PrivateStatusSource<'a, F> {
     type Session = PrivateStatusSession<'a, F>;
 
     async fn open(self) -> Result<Self::Session, StatusError> {
-        begin_from_db_path(
-            self.db_path,
-            self.network,
-            self.should_exit,
-            self.route_policy,
-        )
-        .await
-        .map_err(status_error)
+        begin_from_db_path(self.db_path, self.network, self.should_exit)
+            .await
+            .map_err(status_error)
     }
 }
 
@@ -310,16 +295,12 @@ async fn begin_from_db_path<'a, F: Fn() -> bool + Sync>(
     db_path: &'a str,
     network: WalletNetwork,
     should_exit: &'a F,
-    route_policy: StatusRoutePolicy,
 ) -> Result<PrivateStatusSession<'a, F>, LookupError> {
     if should_exit() {
         return Err(LookupError::Cancelled);
     }
     let endpoint = status_endpoint();
-    let route = match route_policy {
-        StatusRoutePolicy::WalletPreference => StatusPirTransport::new(should_exit),
-        StatusRoutePolicy::ForceDirect => StatusPirTransport::new_direct(should_exit),
-    };
+    let route = StatusPirTransport::new(should_exit);
     let client = initialize(&route, &endpoint, db_path, network).await?;
     Ok(PrivateStatusSession {
         route,

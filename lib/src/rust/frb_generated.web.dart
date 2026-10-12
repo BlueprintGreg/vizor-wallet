@@ -16,11 +16,15 @@ import 'api/sync.dart';
 import 'api/voting.dart';
 import 'api/voting_session.dart';
 import 'api/wallet.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'network_privacy.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
+
 import 'third_party/zcash_voting/config.dart';
 import 'third_party/zcash_voting/delegate.dart';
 import 'third_party/zcash_voting/share_policy.dart';
@@ -62,6 +66,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<ApiGiftCardCheckProgress>
+  dco_decode_StreamSink_api_gift_card_check_progress_Sse(dynamic raw);
+
+  @protected
   RustStreamSink<ApiMempoolTxEvent>
   dco_decode_StreamSink_api_mempool_tx_event_Sse(dynamic raw);
 
@@ -101,6 +109,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AddressValidationResult dco_decode_address_validation_result(dynamic raw);
 
   @protected
+  ApiAppliedTransparentPolicy dco_decode_api_applied_transparent_policy(
+    dynamic raw,
+  );
+
+  @protected
   ApiBallotIntent dco_decode_api_ballot_intent(dynamic raw);
 
   @protected
@@ -119,6 +132,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApiDynamicConfigMirrorFailure dco_decode_api_dynamic_config_mirror_failure(
     dynamic raw,
   );
+
+  @protected
+  ApiGiftCardCheckProgress dco_decode_api_gift_card_check_progress(dynamic raw);
 
   @protected
   ApiKeystoneSignatureBatchResult
@@ -180,7 +196,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_api_snapshot_bundle_precompute_result(dynamic raw);
 
   @protected
+  ApiSyncCheckingProgress dco_decode_api_sync_checking_progress(dynamic raw);
+
+  @protected
+  ApiSyncEventKind dco_decode_api_sync_event_kind(dynamic raw);
+
+  @protected
   ApiSyncProgressEvent dco_decode_api_sync_progress_event(dynamic raw);
+
+  @protected
+  ApiTransparentLedgerMode dco_decode_api_transparent_ledger_mode(dynamic raw);
 
   @protected
   ApiVotingEligibility dco_decode_api_voting_eligibility(dynamic raw);
@@ -192,6 +217,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApiVotingRoundContext dco_decode_api_voting_round_context(dynamic raw);
 
   @protected
+  ApiWalletError dco_decode_api_wallet_error(dynamic raw);
+
+  @protected
+  ApiWalletErrorCode dco_decode_api_wallet_error_code(dynamic raw);
+
+  @protected
   AuthenticatedRound dco_decode_authenticated_round(dynamic raw);
 
   @protected
@@ -199,6 +230,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  ApiAppliedTransparentPolicy
+  dco_decode_box_autoadd_api_applied_transparent_policy(dynamic raw);
 
   @protected
   ApiDelegationSignerInput dco_decode_box_autoadd_api_delegation_signer_input(
@@ -221,6 +256,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy
   dco_decode_box_autoadd_api_share_tracking_drive_policy(dynamic raw);
+
+  @protected
+  ApiSyncCheckingProgress dco_decode_box_autoadd_api_sync_checking_progress(
+    dynamic raw,
+  );
 
   @protected
   ApiVotingRoundContext dco_decode_box_autoadd_api_voting_round_context(
@@ -262,6 +302,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   double dco_decode_box_autoadd_f_64(dynamic raw);
+
+  @protected
+  int dco_decode_box_autoadd_i_32(dynamic raw);
 
   @protected
   ImmediateShareKey dco_decode_box_autoadd_immediate_share_key(dynamic raw);
@@ -348,6 +391,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SubmissionDiagnosticView dco_decode_box_autoadd_submission_diagnostic_view(
+    dynamic raw,
+  );
+
+  @protected
+  TransparentDetailsState dco_decode_box_autoadd_transparent_details_state(
+    dynamic raw,
+  );
+
+  @protected
+  TransparentStopReason dco_decode_box_autoadd_transparent_stop_reason(
     dynamic raw,
   );
 
@@ -770,6 +823,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TransactionInfo> dco_decode_list_transaction_info(dynamic raw);
 
   @protected
+  List<TransparentRecipient> dco_decode_list_transparent_recipient(dynamic raw);
+
+  @protected
   List<TxDataRequest> dco_decode_list_tx_data_request(dynamic raw);
 
   @protected
@@ -859,6 +915,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  ApiAppliedTransparentPolicy?
+  dco_decode_opt_box_autoadd_api_applied_transparent_policy(dynamic raw);
+
+  @protected
   ApiDelegationSignerInput?
   dco_decode_opt_box_autoadd_api_delegation_signer_input(dynamic raw);
 
@@ -875,6 +935,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy?
   dco_decode_opt_box_autoadd_api_share_tracking_drive_policy(dynamic raw);
+
+  @protected
+  ApiSyncCheckingProgress?
+  dco_decode_opt_box_autoadd_api_sync_checking_progress(dynamic raw);
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
@@ -911,6 +975,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   double? dco_decode_opt_box_autoadd_f_64(dynamic raw);
+
+  @protected
+  int? dco_decode_opt_box_autoadd_i_32(dynamic raw);
 
   @protected
   ImmediateShareKey? dco_decode_opt_box_autoadd_immediate_share_key(
@@ -999,6 +1066,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SubmissionDiagnosticView?
   dco_decode_opt_box_autoadd_submission_diagnostic_view(dynamic raw);
+
+  @protected
+  TransparentDetailsState? dco_decode_opt_box_autoadd_transparent_details_state(
+    dynamic raw,
+  );
+
+  @protected
+  TransparentStopReason? dco_decode_opt_box_autoadd_transparent_stop_reason(
+    dynamic raw,
+  );
 
   @protected
   int? dco_decode_opt_box_autoadd_u_16(dynamic raw);
@@ -1218,7 +1295,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransactionDetailOutput dco_decode_transaction_detail_output(dynamic raw);
 
   @protected
+  TransactionFeeState dco_decode_transaction_fee_state(dynamic raw);
+
+  @protected
   TransactionInfo dco_decode_transaction_info(dynamic raw);
+
+  @protected
+  TransparentBalanceAuthority dco_decode_transparent_balance_authority(
+    dynamic raw,
+  );
+
+  @protected
+  TransparentDetailsLookup dco_decode_transparent_details_lookup(dynamic raw);
+
+  @protected
+  TransparentDetailsState dco_decode_transparent_details_state(dynamic raw);
+
+  @protected
+  TransparentRecipient dco_decode_transparent_recipient(dynamic raw);
+
+  @protected
+  TransparentStopReason dco_decode_transparent_stop_reason(dynamic raw);
 
   @protected
   TxDataRequest dco_decode_tx_data_request(dynamic raw);
@@ -1314,6 +1411,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<ApiGiftCardCheckProgress>
+  sse_decode_StreamSink_api_gift_card_check_progress_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<ApiMempoolTxEvent>
   sse_decode_StreamSink_api_mempool_tx_event_Sse(SseDeserializer deserializer);
 
@@ -1365,6 +1468,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiAppliedTransparentPolicy sse_decode_api_applied_transparent_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ApiBallotIntent sse_decode_api_ballot_intent(SseDeserializer deserializer);
 
   @protected
@@ -1387,6 +1495,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ApiDynamicConfigMirrorFailure sse_decode_api_dynamic_config_mirror_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiGiftCardCheckProgress sse_decode_api_gift_card_check_progress(
     SseDeserializer deserializer,
   );
 
@@ -1474,7 +1587,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiSyncCheckingProgress sse_decode_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiSyncEventKind sse_decode_api_sync_event_kind(SseDeserializer deserializer);
+
+  @protected
   ApiSyncProgressEvent sse_decode_api_sync_progress_event(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiTransparentLedgerMode sse_decode_api_transparent_ledger_mode(
     SseDeserializer deserializer,
   );
 
@@ -1494,6 +1620,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiWalletError sse_decode_api_wallet_error(SseDeserializer deserializer);
+
+  @protected
+  ApiWalletErrorCode sse_decode_api_wallet_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AuthenticatedRound sse_decode_authenticated_round(
     SseDeserializer deserializer,
   );
@@ -1503,6 +1637,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  ApiAppliedTransparentPolicy
+  sse_decode_box_autoadd_api_applied_transparent_policy(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ApiDelegationSignerInput sse_decode_box_autoadd_api_delegation_signer_input(
@@ -1527,6 +1667,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy
   sse_decode_box_autoadd_api_share_tracking_drive_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiSyncCheckingProgress sse_decode_box_autoadd_api_sync_checking_progress(
     SseDeserializer deserializer,
   );
 
@@ -1578,6 +1723,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   double sse_decode_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_box_autoadd_i_32(SseDeserializer deserializer);
 
   @protected
   ImmediateShareKey sse_decode_box_autoadd_immediate_share_key(
@@ -1690,6 +1838,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SubmissionDiagnosticView sse_decode_box_autoadd_submission_diagnostic_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentDetailsState sse_decode_box_autoadd_transparent_details_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentStopReason sse_decode_box_autoadd_transparent_stop_reason(
     SseDeserializer deserializer,
   );
 
@@ -2232,6 +2390,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<TransparentRecipient> sse_decode_list_transparent_recipient(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TxDataRequest> sse_decode_list_tx_data_request(
     SseDeserializer deserializer,
   );
@@ -2343,6 +2506,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  ApiAppliedTransparentPolicy?
+  sse_decode_opt_box_autoadd_api_applied_transparent_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ApiDelegationSignerInput?
   sse_decode_opt_box_autoadd_api_delegation_signer_input(
     SseDeserializer deserializer,
@@ -2361,6 +2530,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy?
   sse_decode_opt_box_autoadd_api_share_tracking_drive_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiSyncCheckingProgress?
+  sse_decode_opt_box_autoadd_api_sync_checking_progress(
     SseDeserializer deserializer,
   );
 
@@ -2409,6 +2584,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer);
+
+  @protected
+  int? sse_decode_opt_box_autoadd_i_32(SseDeserializer deserializer);
 
   @protected
   ImmediateShareKey? sse_decode_opt_box_autoadd_immediate_share_key(
@@ -2521,6 +2699,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   SubmissionDiagnosticView?
   sse_decode_opt_box_autoadd_submission_diagnostic_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentDetailsState? sse_decode_opt_box_autoadd_transparent_details_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentStopReason? sse_decode_opt_box_autoadd_transparent_stop_reason(
     SseDeserializer deserializer,
   );
 
@@ -2802,7 +2990,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TransactionFeeState sse_decode_transaction_fee_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   TransactionInfo sse_decode_transaction_info(SseDeserializer deserializer);
+
+  @protected
+  TransparentBalanceAuthority sse_decode_transparent_balance_authority(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentDetailsLookup sse_decode_transparent_details_lookup(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentDetailsState sse_decode_transparent_details_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentRecipient sse_decode_transparent_recipient(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransparentStopReason sse_decode_transparent_stop_reason(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TxDataRequest sse_decode_tx_data_request(SseDeserializer deserializer);
@@ -2930,6 +3148,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_api_gift_card_check_progress_Sse(
+    RustStreamSink<ApiGiftCardCheckProgress> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_api_mempool_tx_event_Sse(
     RustStreamSink<ApiMempoolTxEvent> self,
     SseSerializer serializer,
@@ -2990,6 +3214,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_api_applied_transparent_policy(
+    ApiAppliedTransparentPolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_api_ballot_intent(
     ApiBallotIntent self,
     SseSerializer serializer,
@@ -3022,6 +3252,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_api_dynamic_config_mirror_failure(
     ApiDynamicConfigMirrorFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_gift_card_check_progress(
+    ApiGiftCardCheckProgress self,
     SseSerializer serializer,
   );
 
@@ -3128,8 +3364,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_sync_event_kind(
+    ApiSyncEventKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_api_sync_progress_event(
     ApiSyncProgressEvent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_transparent_ledger_mode(
+    ApiTransparentLedgerMode self,
     SseSerializer serializer,
   );
 
@@ -3152,6 +3406,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_api_wallet_error(
+    ApiWalletError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_error_code(
+    ApiWalletErrorCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_authenticated_round(
     AuthenticatedRound self,
     SseSerializer serializer,
@@ -3162,6 +3428,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_api_applied_transparent_policy(
+    ApiAppliedTransparentPolicy self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_api_delegation_signer_input(
@@ -3190,6 +3462,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_api_share_tracking_drive_policy(
     ApiShareTrackingDrivePolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
     SseSerializer serializer,
   );
 
@@ -3246,6 +3524,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_i_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_immediate_share_key(
@@ -3376,6 +3657,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_submission_diagnostic_view(
     SubmissionDiagnosticView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transparent_details_state(
+    TransparentDetailsState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transparent_stop_reason(
+    TransparentStopReason self,
     SseSerializer serializer,
   );
 
@@ -4046,6 +4339,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_transparent_recipient(
+    List<TransparentRecipient> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_tx_data_request(
     List<TxDataRequest> self,
     SseSerializer serializer,
@@ -4181,6 +4480,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_api_applied_transparent_policy(
+    ApiAppliedTransparentPolicy? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_api_delegation_signer_input(
     ApiDelegationSignerInput? self,
     SseSerializer serializer,
@@ -4201,6 +4506,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_api_share_tracking_drive_policy(
     ApiShareTrackingDrivePolicy? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress? self,
     SseSerializer serializer,
   );
 
@@ -4251,6 +4562,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_i_32(int? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_immediate_share_key(
@@ -4375,6 +4689,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_submission_diagnostic_view(
     SubmissionDiagnosticView? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_transparent_details_state(
+    TransparentDetailsState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_transparent_stop_reason(
+    TransparentStopReason? self,
     SseSerializer serializer,
   );
 
@@ -4715,8 +5041,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_transaction_fee_state(
+    TransactionFeeState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_transaction_info(
     TransactionInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transparent_balance_authority(
+    TransparentBalanceAuthority self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transparent_details_lookup(
+    TransparentDetailsLookup self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transparent_details_state(
+    TransparentDetailsState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transparent_recipient(
+    TransparentRecipient self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transparent_stop_reason(
+    TransparentStopReason self,
     SseSerializer serializer,
   );
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import 'package:zcash_wallet/src/core/formatting/sync_status_label.dart';
 import 'package:zcash_wallet/src/core/layout/app_desktop_shell.dart';
 import 'package:zcash_wallet/src/core/layout/app_main_sidebar.dart';
 import 'package:zcash_wallet/src/core/profile_pictures.dart';
+import 'package:zcash_wallet/src/core/storage/linux_keyring_coordinator.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_announcement_provider.dart';
@@ -34,6 +36,26 @@ void main() {
       ..addFont(rootBundle.load('assets/fonts/Geist-Medium.ttf'))
       ..addFont(rootBundle.load('assets/fonts/Geist-SemiBold.ttf'));
     await loader.load();
+  });
+
+  testWidgets('sidebar shows additional Checking progress', (tester) async {
+    await tester.pumpWidget(
+      _sidebarHarness(
+        SyncState(
+          isSyncing: true,
+          percentage: 1,
+          checking: const SyncCheckingProgress(
+            cycle: 1,
+            percentage: 0.75,
+            displayTargetPercentage: 0.75,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('75% checking'), findsOneWidget);
+    expect(find.text('99% Syncing...'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   const failureLabels = {
@@ -583,6 +605,44 @@ void main() {
       listBottom - lastRowBottom,
       moreOrLessEquals(AppSpacing.xs, epsilon: 0.1),
     );
+  });
+
+  testWidgets('busy wallet keeps the sidebar account switch on screen', (
+    tester,
+  ) async {
+    final coordinator = LinuxKeyringCoordinator.testing(enabled: false);
+    addTearDown(coordinator.dispose);
+    // The private queries toggle holds the wallet while it drains.
+    final release = Completer<void>();
+    final toggle = coordinator.runMutation(() => release.future);
+    await tester.pumpWidget(
+      _sidebarHarness(
+        _syncedSyncState,
+        accountState: _multiAccountState,
+        initialLocation: '/settings',
+        keyringCoordinator: coordinator,
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('sidebar_accounts_button')));
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('sidebar_account_popover_row_account-2')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('settings'), findsOneWidget);
+    expect(find.text('home route'), findsNothing);
+    expect(find.text('Primary Vault'), findsOneWidget);
+    expect(
+      find.text('Finish the current wallet operation before starting another.'),
+      findsOneWidget,
+    );
+    release.complete();
+    await toggle;
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('sidebar accounts popover closes on outside pane click', (
@@ -1227,6 +1287,7 @@ Widget _sidebarHarness(
       const IronwoodMigrationCoordinatorState(),
   NetworkPrivacyState networkPrivacyState = const NetworkPrivacyState.off(),
   bool suppressActiveSelection = false,
+  LinuxKeyringCoordinator? keyringCoordinator,
 }) {
   final bootstrap = _bootstrapFor(accountState ?? _singleAccountState);
   final router = GoRouter(
@@ -1348,6 +1409,8 @@ Widget _sidebarHarness(
       ironwoodMigrationCoordinatorProvider.overrideWith(
         () => _FakeMigrationCoordinator(migrationCoordinatorState),
       ),
+      if (keyringCoordinator != null)
+        linuxKeyringCoordinatorProvider.overrideWithValue(keyringCoordinator),
     ],
     child: MaterialApp.router(
       routerConfig: router,

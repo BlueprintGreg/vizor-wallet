@@ -401,7 +401,8 @@ void main() {
       await pumpEventQueue();
       final state = flowState(container)!;
       expect(state.canReview, isTrue);
-      expect(state.prefill, same(prefill));
+      expect(state.prefill.fingerprint, prefill.fingerprint);
+      expect(state.prefill.requestSource, PaymentRequestSource.qrCode);
       expect(state.view.memo, '  invoice 42  ');
       expect(state.reviewArgs!.amountZatoshi, BigInt.from(50000000));
       expect(state.reviewArgs!.requestedBy, 'Coffee shop');
@@ -429,11 +430,9 @@ void main() {
     final state = container.read(paymentRequestFlowProvider)!;
     expect(state.prefill.address, 'u1second');
     expect(state.reviewArgs!.proposalId, BigInt.two);
-    expect(
-      api.discarded,
-      [BigInt.one],
-      reason: 'the displaced request must not leave a proposal behind',
-    );
+    expect(api.discarded, [
+      BigInt.one,
+    ], reason: 'the displaced request must not leave a proposal behind');
   });
 
   test('edit clears the card, frees the proposal, and returns the '
@@ -1329,6 +1328,22 @@ void main() {
     );
   });
 
+  test('locking a scanned request reparks its QR provenance', () async {
+    final api = _FakeSendApi();
+    final container = makeContainer(api);
+    container
+        .read(paymentRequestFlowProvider.notifier)
+        .present(request('u1scanned'), source: PaymentRequestSource.qrCode);
+    await pumpEventQueue();
+    _securityNotifier(container).lockForTest();
+    await pumpEventQueue();
+    expect(flowState(container), isNull);
+    expect(
+      container.read(paymentUriPrefillProvider)?.requestSource,
+      PaymentRequestSource.qrCode,
+    );
+  });
+
   test('locking while syncing clears the card without re-checking', () async {
     final api = _FakeSendApi();
     final container = makeContainer(api, sync: scanningState());
@@ -1486,11 +1501,9 @@ void main() {
     await pumpEventQueue();
 
     expect(container.read(paymentRequestFlowProvider), isNull);
-    expect(
-      api.discarded,
-      [BigInt.one],
-      reason: 'the proposal is still handed back; only the request survives',
-    );
+    expect(api.discarded, [
+      BigInt.one,
+    ], reason: 'the proposal is still handed back; only the request survives');
 
     final claimed = container
         .read(paymentUriPrefillProvider.notifier)

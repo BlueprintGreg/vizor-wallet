@@ -8,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../../../main.dart' show log;
 import '../../../../core/config/swap_feature_config.dart';
 import '../../../../core/feedback/app_haptics.dart';
 import '../../../../core/feedback/app_review.dart';
@@ -20,12 +19,13 @@ import '../../../../core/layout/mobile/app_mobile_tab_bar.dart';
 import '../../../../core/layout/mobile/mobile_top_nav_account.dart';
 import '../../../../core/layout/mobile/mobile_top_scroll_fade.dart';
 import '../../../../core/privacy/privacy_mask.dart';
-import '../../../../core/storage/wallet_paths.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_toast.dart';
+import '../../../../core/widgets/app_tooltip.dart';
 import '../../../../providers/account_provider.dart';
+import '../../../../providers/enhance_pir_provider.dart';
 import '../../../../providers/voting/voting_home_entry_provider.dart';
 import '../../../../providers/voting/voting_home_cache_provider.dart';
 import '../../../../providers/voting/voting_config_source_provider.dart';
@@ -36,11 +36,13 @@ import '../../../../providers/sync_failure.dart';
 import '../../../../providers/sync_keep_awake_provider.dart';
 import '../../../../providers/sync_display_progress_provider.dart';
 import '../../../../providers/sync_provider.dart';
+import '../../../../providers/pending_activity_evidence_provider.dart';
 import '../../../../providers/zec_price_change_provider.dart';
 import '../../../../rust/api/sync.dart' as rust_sync;
 import '../../../accounts/widgets/mobile/mobile_accounts_sheet.dart';
 import '../../../activity/activity_feed_sections.dart';
 import '../../../activity/gift_card_activity_index.dart';
+import '../../../activity/activity_eta_provider.dart';
 import '../../../activity/activity_row_mapper.dart';
 import '../../../activity/screens/mobile/mobile_transaction_status_screen.dart';
 import '../../../activity/swap_activity_row_items_provider.dart';
@@ -55,6 +57,7 @@ import '../../../migration/widgets/mobile/mobile_ironwood_migration_announcement
 import '../../../swap/models/swap_activity_navigation.dart';
 import '../../../swap/providers/swap_state_provider.dart';
 import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
+import '../../services/transparent_balance_display.dart';
 import '../../providers/backup_reminder_provider.dart';
 import '../../widgets/mobile_home_carousel.dart';
 import '../../services/transparent_shielding_service.dart';
@@ -409,9 +412,9 @@ class _IronwoodMigrationAttentionHostState
           return MobileIronwoodMigrationAttentionSheetBody(
             kind: attention.kind,
             count: attention.count,
-            onOpenMigration: () =>
-                Navigator.of(sheetContext)
-                    .pop(_IronwoodAttentionAction.openMigration),
+            onOpenMigration: () => Navigator.of(
+              sheetContext,
+            ).pop(_IronwoodAttentionAction.openMigration),
             onLater: () =>
                 Navigator.of(sheetContext).pop(_IronwoodAttentionAction.later),
           );
@@ -479,9 +482,9 @@ class _IronwoodMigrationAnnouncementHostState
       final action = await showAppMobileSheet<_IronwoodAnnouncementAction>(
         context: context,
         builder: (sheetContext) => MobileIronwoodMigrationAnnouncementSheet(
-          onStartMigration: () =>
-              Navigator.of(sheetContext)
-                  .pop(_IronwoodAnnouncementAction.startMigration),
+          onStartMigration: () => Navigator.of(
+            sheetContext,
+          ).pop(_IronwoodAnnouncementAction.startMigration),
           onOpenReleaseNotes: () => unawaited(_openReleaseNotes()),
         ),
       );
@@ -779,14 +782,9 @@ class _ImportingBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = context.appTheme == AppThemeData.dark;
-    final assetName = isDark
-        ? 'assets/illustrations/home_importing_background_dark.png'
-        : 'assets/illustrations/home_importing_background_light.png';
-
     return Positioned.fill(
       child: Image.asset(
-        assetName,
+        'assets/illustrations/home_importing_background.webp',
         key: const ValueKey('mobile_home_importing_background'),
         fit: BoxFit.cover,
         alignment: Alignment.topCenter,
@@ -835,34 +833,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   bool _isShieldingBalance = false;
 
-  Future<void> _openTransactionStatus(
+  void _openTransactionStatus(
     BuildContext context,
     WidgetRef ref,
     rust_sync.TransactionInfo transaction, {
     GiftCardActivityMetadata? giftCard,
-  }) async {
+  }) {
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
     if (accountUuid == null) return;
-
-    rust_sync.TransactionDetail? detail;
-    try {
-      final dbPath = await getWalletDbPath();
-      final endpoint = ref.read(rpcEndpointProvider);
-      detail = await rust_sync.getTransactionDetail(
-        dbPath: dbPath,
-        network: endpoint.networkName,
-        accountUuid: accountUuid,
-        txidHex: transaction.txidHex,
-        txKind: transaction.txKind,
-      );
-    } catch (e, st) {
-      log('MobileHome: transaction detail load failed: $e\n$st');
-    }
-    if (!mounted) return;
-    if (accountUuid != ref.read(accountProvider).value?.activeAccountUuid) {
-      return;
-    }
-    if (!context.mounted) return;
 
     _pushUsedScreen(
       Uri(
@@ -873,7 +851,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         txidHex: transaction.txidHex,
         txKind: transaction.txKind,
         initialTransaction: transaction,
-        initialDetail: detail,
+        sourceAccountUuid: accountUuid,
         giftCard: giftCard,
       ),
     );
@@ -893,6 +871,17 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       row: buildTransactionActivityRow(
         context: context,
         transaction: transaction,
+        privateQueriesEnabled: ref.watch(enhancePirProvider),
+        showPendingEstimate: !ref
+            .watch(activityEtaExcludedTxidsProvider)
+            .contains(activityTxidKey(transaction.txidHex)),
+        pendingLabel:
+            activityEtaLabelFor(
+              transaction: transaction,
+              labels: ref.watch(activityEtaLabelsProvider),
+              giftCard: giftCard,
+            ) ??
+            ref.watch(activityPendingFallbackLabelProvider),
         giftCardKind: giftCard?.kind,
         giftCardAmountZatoshi: giftCard?.amountZatoshi,
         giftCardClaimInFlight: giftCard?.isClaimInFlight ?? false,
@@ -902,15 +891,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         privacyModeEnabled: privacyModeEnabled,
         dateOnlyTimestamp: true,
         onTap: () => unawaited(
-          duringAppReviewBusy(
-            ref,
-            () => _openTransactionStatus(
+          duringAppReviewBusy(ref, () async {
+            _openTransactionStatus(
               context,
               ref,
               transaction,
               giftCard: giftCard,
-            ),
-          ),
+            );
+          }),
         ),
       ),
     );
@@ -926,6 +914,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         txidHex: transaction.txidHex,
         txKind: transaction.txKind,
         initialTransaction: transaction,
+        sourceAccountUuid: ref.read(accountProvider).value?.activeAccountUuid,
       ),
     );
   }
@@ -1055,10 +1044,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               sync.saplingPendingBalance +
               sync.orchardPendingBalance +
               sync.ironwoodPendingBalance;
-    final transparentBalance =
-        sync.transparentBalance + sync.transparentPendingBalance;
+    final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
-        shieldedBalance > BigInt.zero || transparentBalance > BigInt.zero;
+        shieldedBalance > BigInt.zero ||
+        (transparentBalance.amount ?? BigInt.zero) > BigInt.zero;
     final zecUsdUnitPrice = ref.watch(zecHomeUsdUnitPriceProvider);
     final fiatBalanceText = _mobileHomeFiatTextForZatoshi(
       shieldedBalance,
@@ -1109,7 +1098,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             context,
             ref,
             tx,
-            giftCardActivityIndex.metadataFor(tx),
+            giftCardActivityIndex.metadataFor(
+              tx,
+              transactions: sync.recentTransactions,
+            ),
             privacyModeEnabled: privacyModeEnabled,
           ),
       for (final item in swapItems)
@@ -1152,7 +1144,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         if (sync.failure?.kind == SyncFailureKind.privateStatusCoverage) ...[
           _PrivateStatusCoverageNotice(
             message: sync.failure!.userMessage,
-            onSettings: () => _pushUsedScreen('/settings'),
+            onSettings: () {
+              _expectReviewVisit('/settings');
+              context.go('/settings');
+            },
           ),
           const SizedBox(height: AppSpacing.s),
         ],
@@ -1161,15 +1156,17 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             _BalanceCard(
               balanceText: privacyModeEnabled
                   ? fixedPrivacyMask()
-                  : ZecAmount.fromZatoshi(shieldedBalance)
-                        .compactBalance
-                        .amountText,
+                  : ZecAmount.fromZatoshi(
+                      shieldedBalance,
+                    ).compactBalance.amountText,
               fiatBalanceText: shieldedFiatBalanceText,
               priceChange24hPct: priceChange24hPct,
-              transparentBalanceText: ZecAmount.fromZatoshi(transparentBalance)
-                  .compactBalance
-                  .amountText,
-              hasTransparentBalance: transparentBalance > BigInt.zero,
+              transparentBalanceText: transparentBalance.text(
+                (amount) =>
+                    ZecAmount.fromZatoshi(amount).compactBalance.amountText,
+              ),
+              transparentBalanceHint: transparentBalance.hint,
+              hasTransparentBalance: transparentBalance.visible,
               canShieldBalance: sync.canShieldTransparentBalance,
               isShieldingBalance: _isShieldingBalance,
               privacyModeEnabled: privacyModeEnabled,
@@ -1739,6 +1736,7 @@ class _BalanceCard extends StatelessWidget {
     required this.fiatBalanceText,
     required this.priceChange24hPct,
     required this.transparentBalanceText,
+    this.transparentBalanceHint,
     required this.hasTransparentBalance,
     required this.canShieldBalance,
     required this.isShieldingBalance,
@@ -1754,6 +1752,9 @@ class _BalanceCard extends StatelessWidget {
   final String? fiatBalanceText;
   final double? priceChange24hPct;
   final String transparentBalanceText;
+
+  /// Why private transparent recovery stopped, shown on the transparent row.
+  final String? transparentBalanceHint;
   final bool hasTransparentBalance;
   final bool canShieldBalance;
   final bool isShieldingBalance;
@@ -1910,6 +1911,7 @@ class _BalanceCard extends StatelessWidget {
             _AnimatedMobileTransparentBalanceStrip(
               visible: hasTransparentBalance,
               balanceText: transparentBalanceText,
+              balanceHint: transparentBalanceHint,
               canShieldBalance: canShieldBalance,
               isShieldingBalance: isShieldingBalance,
               privacyModeEnabled: privacyModeEnabled,
@@ -1992,6 +1994,7 @@ class _AnimatedMobileTransparentBalanceStrip extends StatefulWidget {
   const _AnimatedMobileTransparentBalanceStrip({
     required this.visible,
     required this.balanceText,
+    this.balanceHint,
     required this.canShieldBalance,
     required this.isShieldingBalance,
     required this.privacyModeEnabled,
@@ -2000,6 +2003,7 @@ class _AnimatedMobileTransparentBalanceStrip extends StatefulWidget {
 
   final bool visible;
   final String balanceText;
+  final String? balanceHint;
   final bool canShieldBalance;
   final bool isShieldingBalance;
   final bool privacyModeEnabled;
@@ -2019,6 +2023,7 @@ class _AnimatedMobileTransparentBalanceStripState
   late final Animation<Offset> _offset;
 
   late String _balanceText;
+  String? _balanceHint;
   late bool _canShieldBalance;
   late bool _isShieldingBalance;
   late bool _privacyModeEnabled;
@@ -2084,6 +2089,7 @@ class _AnimatedMobileTransparentBalanceStripState
 
   void _cacheVisibleStrip() {
     _balanceText = widget.balanceText;
+    _balanceHint = widget.balanceHint;
     _canShieldBalance = widget.canShieldBalance;
     _isShieldingBalance = widget.isShieldingBalance;
     _privacyModeEnabled = widget.privacyModeEnabled;
@@ -2118,6 +2124,7 @@ class _AnimatedMobileTransparentBalanceStripState
               ignoring: !widget.visible,
               child: _MobileTransparentBalanceStrip(
                 balanceText: _balanceText,
+                balanceHint: _balanceHint,
                 canShieldBalance: _canShieldBalance,
                 isShieldingBalance: _isShieldingBalance,
                 privacyModeEnabled: _privacyModeEnabled,
@@ -2134,6 +2141,7 @@ class _AnimatedMobileTransparentBalanceStripState
 class _MobileTransparentBalanceStrip extends StatelessWidget {
   const _MobileTransparentBalanceStrip({
     required this.balanceText,
+    this.balanceHint,
     required this.canShieldBalance,
     required this.isShieldingBalance,
     required this.privacyModeEnabled,
@@ -2141,6 +2149,9 @@ class _MobileTransparentBalanceStrip extends StatelessWidget {
   });
 
   final String balanceText;
+
+  /// Why private recovery stopped, shown when the balance text is tapped.
+  final String? balanceHint;
   final bool canShieldBalance;
   final bool isShieldingBalance;
   final bool privacyModeEnabled;
@@ -2149,9 +2160,20 @@ class _MobileTransparentBalanceStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final hint = balanceHint;
     final displayedBalance = hideAmountIfPrivacyMode(
       '$balanceText $kZcashDefaultCurrencyTicker',
       privacyModeEnabled: privacyModeEnabled,
+    );
+    final balanceLabel = Text(
+      'Transparent: $displayedBalance',
+      key: const ValueKey('mobile_home_transparent_balance_text'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: _mobileHomeLabelMStyle.copyWith(
+        color: colors.text.primary,
+        fontWeight: FontWeight.w500,
+      ),
     );
 
     return SizedBox(
@@ -2174,18 +2196,16 @@ class _MobileTransparentBalanceStrip extends StatelessWidget {
                   ),
                   const SizedBox(width: AppSpacing.xs),
                   Flexible(
-                    child: Text(
-                      'Transparent: $displayedBalance',
-                      key: const ValueKey(
-                        'mobile_home_transparent_balance_text',
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: _mobileHomeLabelMStyle.copyWith(
-                        color: colors.text.primary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
+                    child: hint == null
+                        ? balanceLabel
+                        : AppTooltip(
+                            key: const ValueKey(
+                              'mobile_home_transparent_balance_hint',
+                            ),
+                            message: hint,
+                            tapToShow: true,
+                            child: balanceLabel,
+                          ),
                   ),
                 ],
               ),
@@ -2427,7 +2447,7 @@ class _MobileRestImage extends StatelessWidget {
                 left: _imageLeft * scale,
                 top: _imageTop * scale,
                 child: Image.asset(
-                  'assets/illustrations/home_rest_character.png',
+                  'assets/illustrations/home_rest_character.webp',
                   key: const ValueKey('mobile_home_rest_image'),
                   width: _imageWidth * scale,
                   height: _imageHeight * scale,

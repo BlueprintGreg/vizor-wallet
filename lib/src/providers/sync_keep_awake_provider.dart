@@ -182,11 +182,11 @@ final syncKeepAwakePrivacyLockModeProvider =
         return SyncKeepAwakePrivacyLockMode.hidden;
       }
       final sync = ref.watch(syncProvider).asData?.value;
-      if (sync?.isSyncing == true && sync?.isBackgroundMode != true) {
-        return SyncKeepAwakePrivacyLockMode.syncing;
-      }
       if (sync != null && isSyncKeepAwakeCompletedSync(sync)) {
         return SyncKeepAwakePrivacyLockMode.done;
+      }
+      if (sync?.isSyncing == true && sync?.isBackgroundMode != true) {
+        return SyncKeepAwakePrivacyLockMode.syncing;
       }
       return SyncKeepAwakePrivacyLockMode.interrupted;
     });
@@ -221,9 +221,16 @@ class SyncKeepAwakeEtaEstimate {
 }
 
 bool isNearTipCatchUp(SyncState sync) {
-  if (sync.chainTipHeight <= 0 || sync.scannedHeight <= 0) return false;
-  return sync.chainTipHeight - sync.scannedHeight <=
-      kSyncKeepAwakeNearTipBlockGap;
+  final remaining = sync.remainingScanBlocks;
+  if (remaining == null || remaining > kSyncKeepAwakeNearTipBlockGap) {
+    return false;
+  }
+  if (remaining == 0) return true;
+  final start = sync.pendingScanStartHeight;
+  if (start == null || start <= 0 || sync.chainTipHeight < start) return false;
+  // Scan ranges start inclusively. A range starting at tip is one block,
+  // whereas scannedHeight is the current batch's exclusive end.
+  return sync.chainTipHeight - start + 1 <= kSyncKeepAwakeNearTipBlockGap;
 }
 
 bool isSyncKeepAwakeEligibleSync(SyncState sync) {
@@ -245,27 +252,19 @@ bool isSyncKeepAwakeActiveSync(SyncState sync) {
     return false;
   }
 
-  final hasKnownHeights = sync.chainTipHeight > 0 && sync.scannedHeight > 0;
-
-  // A fresh foreground sync has started, but Rust has not necessarily emitted
-  // enough progress metadata to describe the remaining work yet. Keep the
-  // screen awake during this discovery window so a slow endpoint/Tor preflight
-  // cannot let the device sleep before the first progress event arrives. When
-  // heights are already known, preserve the near-tip catch-up exclusion.
-  if (isSyncPreparationPhase(sync.phase) && !hasKnownHeights) {
-    return true;
-  }
-
-  if (hasKnownHeights) {
-    return !isNearTipCatchUp(sync);
-  }
-
-  return sync.displayTargetBlocks > kSyncKeepAwakeNearTipBlockGap;
+  // Until this run's scan queue is known, old heights and the next batch
+  // size cannot prove this is a small catch-up. This also covers preparation
+  // after retries and importing an account into a previously synced wallet.
+  return !isNearTipCatchUp(sync);
 }
 
 bool isSyncKeepAwakeCompletedSync(SyncState sync) {
-  if (sync.isSyncing || sync.isBackgroundMode) return false;
-  if (sync.isSyncComplete || sync.percentage >= 1) return true;
+  if (sync.isBackgroundMode) return false;
+  // Keep-awake covers the main scan only. Final Checking work does not delay
+  // its completion screen or reactivate the native screen-awake setting.
+  if (sync.percentage >= 1) return true;
+  if (sync.isSyncing) return false;
+  if (sync.isSyncComplete) return true;
   return sync.chainTipHeight > 0 && sync.scannedHeight >= sync.chainTipHeight;
 }
 

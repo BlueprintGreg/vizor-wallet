@@ -89,6 +89,27 @@ the define cannot vary per test. Mobile-UI tests are opt-in via the
   define, so a mobile-lane run missing `--dart-define` fails loudly by
   name instead of as confusing metric mismatches.
 
+### Assets in widget tests
+
+- The mobile token lane automatically filters app `assets/**/desktop/`
+  artwork out of both asset loads and the asset manifest through
+  `test/flutter_test_config.dart`. It forwards allowed loads to the original
+  bundle; it does not copy assets or add a test wrapper command.
+- A desktop-only asset request fails the mobile test even when an image
+  `errorBuilder` consumes the error. Shared artwork belongs outside `desktop/`.
+  Keep asset references and the relevant mobile/desktop screen tests together
+  when adding, moving, or renaming files.
+- `test/core/platform_asset_contract_test.dart` checks that desktop artwork is
+  limited to Linux/macOS/Windows/web and that other runtime assets remain
+  shared. A new subdirectory needs its own pubspec declaration. Run this test
+  after changing assets or pubspec. The mobile-tagged
+  `test/core/mobile_asset_bundle_test.dart` also runs these contracts and the
+  filter regressions, so both normal test lanes validate them.
+- Native video player mocks must check the selected asset against
+  `AssetManifest.loadFromAssetBundle(rootBundle)`; a successful mock decoder
+  alone does not prove availability. Native integration tests use the actual
+  device bundle, not the host-test filter.
+
 Untagged tests may run in either lane and must be lane-agnostic:
 
 - Compare against token constants, not literal numbers:
@@ -177,6 +198,13 @@ header times every 1,000 blocks. The only request left is the chain tip.
 - Bootstrap or refresh before a release cut with
   `scripts/update-mainnet-block-times.py` (needs `grpcurl`); validate offline
   with `--check`. Never edit the data file by hand.
+
+## Image Assets
+
+New raster image assets must be converted to lossless WebP before inclusion.
+Preserve their dimensions and decoded pixels, and update app, Widgetbook, and
+test references to `.webp`. For illustrations, use
+`scripts/convert-illustrations-to-webp.py` (`--apply` writes verified conversions).
 
 ## Editing Figma
 
@@ -348,8 +376,19 @@ Account deletion/reset block new Ledger work and drain accepted operations befor
 invalidating the secret session or deleting wallet data. Keep the lease through
 swap/pay metadata persistence and outbox acknowledgement; do not cancel a
 broadcast after submission merely to unblock deletion. Device approval remains
-outside this durable-operation lease. Ledger account import uses the same Linux
-`runMutation` boundary as software and Keystone imports.
+outside this durable-operation lease. Ledger account import uses the same
+`runMutation` boundary as software and Keystone imports. That boundary
+(`runWithSyncPausedForAccountMutation` in
+`lib/src/providers/wallet_mutation_guard.dart`) serializes account mutations,
+a reset, and the Private queries toggle on every platform; only its keyring
+interception is Linux-specific.
+Each account's private transparent recovery companions live in the
+`{dbPath}.tpir` directory beside the wallet DB. Rust `delete_account` removes
+that account's companions after releasing the wallet write lock (a leftover is
+removed at the next sync start); a full reset deletes the whole directory with
+the DB and any `*.tpir` directory left by an earlier wallet. On iOS the
+directory is excluded from iCloud and device backups, since it records which
+transparent addresses had activity.
 
 **Account identification**: `AccountUuid` (UUID string like `"550e8400-e29b-41d4-a716-446655440000"`). Passed as `String` between Dart and Rust via `Uuid::parse_str()` / `Uuid::to_string()`.
 
@@ -411,6 +450,9 @@ SyncProvider (sync_provider.dart)
   ├── Polls getLatestBlockHeight every 10s after sync completes
   ├── Re-syncs automatically when new blocks detected or previous sync incomplete
   ├── Duplicate sync guard: _isSyncing (Dart) + isSyncRunning() (Rust)
+  ├── A start requested while its own stream still holds the Rust guard (its
+  │   post-sync follow-ups included) is queued and runs when the stream ends;
+  │   repeats coalesce, and a queued start is dropped if the app went background
   ├── `_sensitiveStateEpoch` discards late balance/progress updates after lock/sign-out
   ├── Passes activeAccountUuid to getBalance, getTransactionHistory
   ├── Sync itself is account-agnostic (covers all accounts)
@@ -467,7 +509,20 @@ The entire sync loop runs in Rust (`rust/src/wallet/sync_engine.rs`). A single c
    observe the transaction's mined state. During recovery, Vizor separately
    excludes previously mined transactions from resubmission while a pending
    scan range can still restore their mined heights.
-6. Progress streamed to Dart via FRB `StreamSink` per batch
+6. Progress streamed to Dart via FRB `StreamSink` per batch. Each event has a
+   `kind` (`SyncEventKind` in `sync_engine/mod.rs`, which replaced the old
+   `is_complete` flag): `Progress`, `Completed`, or `FollowupUpdated`.
+7. After `Completed`, two follow-up loops run under the same cancellation and
+   never fail the sync: private transparent recovery over the transparent PIR
+   service (`transparent_followup`,
+   `sync_engine/transparent_ledger.rs`, a no-op unless Private queries selects
+   it) and transparent txid details (`sync_engine/transparent_details.rs`, over
+   txid display PIR under private policy or gated `GetTransaction` otherwise).
+   Background preparation syncs (mode 2) skip both. When one changes wallet
+   data it reports `FollowupUpdated`, and Dart re-reads balances, history and
+   open receipts without counting a second completion. The stream and the
+   `SYNC_RUNNING` guard end only after the follow-ups (and the deferred
+   inactive-account UTXO refresh) finish.
 
 Single DB connection reused across entire sync (opened once, passed to all operations).
 
@@ -718,6 +773,15 @@ while an executed denomination preparation waits for confirmations.
 - Post-send: `refreshAfterSend()` for immediate pending TX display
 - Friendly error messages via `_friendlyError()` pattern matching
 
+### Ledger Device-App Limits
+
+Before changing a Ledger send, Gift Card, shielding, swap, or voting flow, read
+`docs/ledger/limitations.md`. **32 actions per pool does not mean 32 recipients:**
+the device can review only **4 external shielded outputs across both pools**;
+internal change is excluded. Numeric limits live in `rust/src/wallet/ledger/limits.rs`.
+Keep account-key verification before PCZT transmission and retain the
+Orchard-to-Ironwood gate until the actual supported app passes its canary.
+
 ### Signing Cancellation
 
 Keep desktop and mobile consistent when cancelling signing, not merely closing the QR scanner:
@@ -874,6 +938,22 @@ add_proofs_to_pczt, prepare_pczt_for_keystone_batch,
 store_and_broadcast_pczts_with_compact_signatures_for_proposal,
 discard_proposal}` with FRB wrappers in `rust/src/api/sync.rs`.
 
+**Transparent inputs under Private queries.** Every hardware broadcast path
+(Ledger outbox, Keystone compact and full batches, legacy PCZT) re-checks its
+transparent inputs just before `SendTransaction`
+(`rust/src/wallet/sync/hardware_authority.rs`). Under a private policy the
+check targets the wallet's own tip + 1, so a block that lands while the device
+signs does not refuse the signature. Until private recovery covers the
+wallet's latest scanned block the refusal is `CatchingUp`; the broadcast waits
+up to 30 s (`CATCH_UP_WAIT`) for it, and a busy wallet DB is waited out the
+same way. If it still cannot dispatch, the refusal is retryable and the caller
+keeps the signed transaction rather than releasing it. Under Private queries,
+Ledger accounts recover privately from their stored birthday like other
+accounts (`docs/ledger/transparent-recovery.md`). A birthday later than the
+account's first activity can omit earlier transparent history; existing public
+records that private recovery cannot explain block activation, and turning
+the setting off restores public discovery from height 0.
+
 ### Wallet Creation
 
 `create_wallet()` fetches chain tip from lightwalletd as birthday height before creating the account. This prevents new wallets from doing a full chain scan. Birthday fetch failure blocks wallet creation (network required).
@@ -929,11 +1009,18 @@ Seed-relevance rule:
   locked and discard late async completions via `_sensitiveStateEpoch`
 - Polling stops during `_checkAndSync` execution to prevent concurrent overlap, restarts after
 - Duplicate sync guard: `_isSyncing` (Dart-side bool) + `isSyncRunning()` (Rust AtomicBool)
+- `startSync()` / `startSyncAnyway()` called while this notifier's own stream is
+  still open (the Rust guard is held through post-sync follow-ups) queue one
+  start (`_queueSyncStart`) instead of being dropped. Repeats coalesce: a
+  forced request upgrades a plain one and the highest tip carries over. The
+  queued start runs when the stream ends, unless the app is now in the
+  background.
 
 **startSync() is fire-and-forget:**
 - Sets up FRB stream listener and returns immediately (no Completer, no await)
 - `_syncGen` generation counter: incremented by `stopSync()`, checked in `.then()` callbacks to invalidate pending operations after user-initiated stop
-- Stream `onDone` → `_onSyncDone()` (balance refresh + start polling)
+- Stream `onDone` → `_onSyncDone()` (balance refresh + start polling), then any queued start
+- `FollowupUpdated` event → `_onSyncFollowupUpdated()` (re-read balances and open receipts; not a new completion)
 - Stream `onError` → sets error state + starts polling for auto-retry
 
 **Sync control:**

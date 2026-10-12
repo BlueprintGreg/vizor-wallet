@@ -12,6 +12,7 @@ import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/core/profile_pictures.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operation_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_announcement_provider.dart';
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_coordinator_provider.dart';
@@ -19,6 +20,7 @@ import 'package:zcash_wallet/src/features/payment_links/models/gift_card_usage.d
 import 'package:zcash_wallet/src/features/payment_links/models/vizor_payment_link.dart';
 import 'package:zcash_wallet/src/features/payment_links/providers/gift_card_tracking_provider.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/gift_card_tracking_service.dart';
+import 'package:zcash_wallet/src/features/payment_links/services/gift_claim_import_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_clipboard.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_hardware_signing_service.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_ledger_funding_service.dart';
@@ -27,8 +29,9 @@ import 'package:zcash_wallet/src/features/payment_links/services/payment_link_qr
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_received_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_recovery_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_service.dart';
-import 'package:zcash_wallet/src/features/payment_links/widgets/mobile/payment_link_scan_sheet.dart';
+import 'package:zcash_wallet/src/features/payment_links/providers/payment_link_scanner_provider.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
+import 'package:zcash_wallet/src/providers/app_security_provider.dart';
 import 'package:zcash_wallet/src/providers/privacy_mode_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
@@ -46,6 +49,9 @@ Future<void> loadPaymentLinksTestFonts() async {
     ..addFont(rootBundle.load('assets/fonts/Geist-Medium.ttf'))
     ..addFont(rootBundle.load('assets/fonts/Geist-SemiBold.ttf'));
   await loader.load();
+  final displayLoader = FontLoader('Young Serif')
+    ..addFont(rootBundle.load('assets/fonts/YoungSerif-Regular.ttf'));
+  await displayLoader.load();
 }
 
 Future<void> pumpPaymentLinksScreen(
@@ -57,15 +63,19 @@ Future<void> pumpPaymentLinksScreen(
   PaymentLinkLedgerFundingService? ledgerFunding,
   PaymentLinkRecoveryStore? recoveryStore,
   LedgerPcztSigner? ledgerSigner,
+  LedgerSignedOperationService? ledgerOperations,
   PaymentLinkQrImageSaver? qrImageSaver,
   PaymentLinkQrShareHandler? qrShareHandler,
   PaymentLinkScanner? scanner,
+  GiftClaimImportStore? giftImportStore,
   AccountNotifier? accountNotifier,
+  AppSecurityNotifier? securityNotifier,
   AppBootstrapState? bootstrap,
   BigInt? spendableBalance,
   FakeSyncNotifier? syncNotifier,
   ZecMarketDataSource? marketDataSource,
   Future<int> Function()? birthdayPrefetch,
+  ZecHomeMarketDataNotifier? marketDataNotifier,
   bool? pricingEnabled,
   PrivacyModeNotifier? privacyNotifier,
   Map<String, GiftCardUsage>? giftCardUsages,
@@ -108,6 +118,8 @@ Future<void> pumpPaymentLinksScreen(
           swapFeatureEnabledProvider.overrideWithValue(pricingEnabled),
         if (accountNotifier != null)
           accountProvider.overrideWith(() => accountNotifier),
+        if (securityNotifier != null)
+          appSecurityProvider.overrideWith(() => securityNotifier),
         paymentLinkOperationsProvider.overrideWithValue(paymentLinkOperations),
         if (recoveryStore != null)
           paymentLinkRecoveryStoreProvider.overrideWithValue(recoveryStore),
@@ -118,10 +130,16 @@ Future<void> pumpPaymentLinksScreen(
           marketDataSource ?? const _PaymentLinksTestMarketDataSource(),
         ),
         zecMarketDataCacheProvider.overrideWithValue(FakeZecMarketDataCache()),
+        if (marketDataNotifier != null)
+          zecHomeMarketDataStateProvider.overrideWith(() => marketDataNotifier),
         if (qrImageSaver != null)
           paymentLinkQrImageSaverProvider.overrideWithValue(qrImageSaver),
         if (qrShareHandler != null)
           paymentLinkQrShareHandlerProvider.overrideWithValue(qrShareHandler),
+        giftClaimImportStoreProvider.overrideWithValue(
+          giftImportStore ??
+              GiftClaimImportStore(storage: _MemoryGiftImportStorage()),
+        ),
         if (scanner != null)
           paymentLinkScannerProvider.overrideWithValue(scanner),
         if (ledgerFunding != null)
@@ -136,6 +154,10 @@ Future<void> pumpPaymentLinksScreen(
                   .begin(accountUuid)('reviewing');
               return ledgerSigner(accountUuid, pcztBytes);
             },
+          ),
+        if (ledgerOperations != null)
+          ledgerSignedOperationServiceProvider.overrideWithValue(
+            ledgerOperations,
           ),
         if (ledgerFunding != null)
           ledgerOperationCancellerProvider.overrideWithValue(() async {}),
@@ -200,6 +222,19 @@ Future<void> pumpPaymentLinksScreen(
     await tester.pump(const Duration(milliseconds: 50));
   }
   await tester.pump(const Duration(milliseconds: 100));
+}
+
+class _MemoryGiftImportStorage implements GiftClaimImportStorage {
+  String? value;
+
+  @override
+  Future<String?> read() async => value;
+
+  @override
+  Future<void> write(String value) async => this.value = value;
+
+  @override
+  Future<void> delete() async => value = null;
 }
 
 class _PaymentLinksTestMarketDataSource implements ZecMarketDataSource {

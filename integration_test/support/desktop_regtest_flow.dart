@@ -30,7 +30,14 @@ var _nextE2ePointer = 1000;
 int _takeE2ePointer() => _nextE2ePointer++;
 
 Future<void> importDesktopRegtestWallet(WidgetTester tester) async {
-  await tapAppButton(tester, const ValueKey('welcome_import_wallet_button'));
+  await tapAppButton(
+    tester,
+    const ValueKey('welcome_import_wallet_button'),
+  );
+  await tapAppWidget(
+    tester,
+    const ValueKey('desktop_import_secret_passphrase_card'),
+  );
   await enterAppText(
     tester,
     const ValueKey('import_mnemonic_first_word_field'),
@@ -39,6 +46,7 @@ Future<void> importDesktopRegtestWallet(WidgetTester tester) async {
   await tapAppButton(tester, const ValueKey('import_secret_submit_button'));
   await tapAppButton(tester, const ValueKey('import_birthday_skip_button'));
   await tapAppButton(tester, const ValueKey('unknown_birthday_confirm_button'));
+  await finishDesktopAccountCustomisation(tester);
   await enterAppText(
     tester,
     const ValueKey('set_password_password_field'),
@@ -50,7 +58,7 @@ Future<void> importDesktopRegtestWallet(WidgetTester tester) async {
     desktopRegtestPassword,
   );
   await tapAppButton(tester, const ValueKey('set_password_submit_button'));
-  await finishDesktopAccountCustomisation(tester);
+
   await pumpUntil(
     tester,
     () => tester.any(
@@ -70,7 +78,14 @@ Future<void> importAdditionalDesktopRegtestWallet(WidgetTester tester) async {
         tester.any(find.byKey(const ValueKey('welcome_import_wallet_button'))),
     description: 'add-account import option',
   );
-  await tapAppButton(tester, const ValueKey('welcome_import_wallet_button'));
+  await tapAppButton(
+    tester,
+    const ValueKey('welcome_import_wallet_button'),
+  );
+  await tapAppWidget(
+    tester,
+    const ValueKey('desktop_import_secret_passphrase_card'),
+  );
   await enterAppText(
     tester,
     const ValueKey('import_mnemonic_first_word_field'),

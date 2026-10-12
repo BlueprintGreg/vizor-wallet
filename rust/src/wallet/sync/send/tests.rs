@@ -1127,14 +1127,6 @@ impl InputSource for RecordingConsolidationSource {
         Ok(None)
     }
 
-    fn anchor_computable(
-        &self,
-        _protocol: ShieldedPool,
-        _height: BlockHeight,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-
     fn select_spendable_notes(
         &self,
         _account: Self::AccountId,
@@ -3731,7 +3723,8 @@ fn many_utxo_shielding_builds_with_conservative_zip317_fee() {
 
     let shielding_threshold = Zatoshis::const_from_u64(SHIELDING_THRESHOLD_ZATOSHI);
     let (proposal, selected_value) =
-        build_shielding_proposal(&mut db, network, account_id, shielding_threshold).unwrap();
+        build_shielding_proposal(&mut db, db_path, network, account_id, shielding_threshold)
+            .unwrap();
     assert_eq!(u64::from(selected_value), 322_000_000);
 
     let seed = SecretVec::new(seed.expose_secret().to_vec());
@@ -3922,17 +3915,19 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
         create_shield_transparent_pczt_with_expiry(path, network, &uuid, None)
             .err()
             .unwrap()
+            .message
             .contains("incomplete")
     );
     assert!(get_ledger_shielding_progress(path, network, &uuid)
         .unwrap_err()
         .contains("incomplete"));
-    let progress = ledger_shielding_progress(&mut db, network, id).unwrap();
+    let progress = ledger_shielding_progress(&mut db, path, network, id).unwrap();
     assert_eq!(progress.input_limit, 32);
     assert_eq!(progress.input_count, 35);
     assert!(!progress.below_threshold);
     let (proposal, selected) =
-        build_shielding_proposal(&mut db, network, id, shielding_threshold().unwrap()).unwrap();
+        build_shielding_proposal(&mut db, path, network, id, shielding_threshold().unwrap())
+            .unwrap();
     assert_eq!(proposal.steps().head.transparent_inputs().len(), 32);
     assert_eq!(proposal.steps().head.balance().proposed_change().len(), 1);
     assert_eq!(selected, Zatoshis::const_from_u64(32_000_000));
@@ -3960,6 +3955,7 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
             account_index: 7,
             coin_type: 133,
             seed_fingerprint: fp,
+            device_public_key: [0; 33],
         },
     )
     .unwrap();
@@ -3970,10 +3966,11 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
     for input in proposal.steps().head.transparent_inputs() {
         conn.execute("DELETE FROM transparent_received_outputs WHERE transaction_id IN (SELECT id_tx FROM transactions WHERE txid=?1) AND output_index=?2",params![input.outpoint().hash().as_slice(),input.outpoint().n()]).unwrap();
     }
-    let progress = ledger_shielding_progress(&mut db, network, id).unwrap();
+    let progress = ledger_shielding_progress(&mut db, path, network, id).unwrap();
     assert_eq!(progress.input_count, 3);
     let (next, _) =
-        build_shielding_proposal(&mut db, network, id, shielding_threshold().unwrap()).unwrap();
+        build_shielding_proposal(&mut db, path, network, id, shielding_threshold().unwrap())
+            .unwrap();
     assert_eq!(next.steps().head.transparent_inputs().len(), 3);
     let first = proposal
         .steps()
@@ -3991,7 +3988,7 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
     conn.execute("DELETE FROM transparent_received_outputs", [])
         .unwrap();
     assert_eq!(
-        ledger_shielding_progress(&mut db, network, id)
+        ledger_shielding_progress(&mut db, path, network, id)
             .unwrap()
             .input_count,
         0
@@ -4013,10 +4010,157 @@ fn ledger_shielding_limits_inputs_and_preserves_account_scope_paths() {
     )
     .unwrap();
     db.put_received_transparent_utxo(&dust).unwrap();
-    let progress = ledger_shielding_progress(&mut db, network, id).unwrap();
+    let progress = ledger_shielding_progress(&mut db, path, network, id).unwrap();
     assert_eq!(progress.input_count, 1);
     assert!(progress.below_threshold);
 }
+#[test]
+fn durable_private_transparent_policy_blocks_shielding_and_survives_startup() {
+    use crate::wallet::keys::{self, HardwareSignerKind};
+    use transparent::keys::{IncomingViewingKey, NonHardenedChildIndex};
+    use zcash_address::unified::{Encoding, Fvk, Ufvk};
+    const DISCOVERY_FORBIDDEN: &str = "Public transparent discovery is forbidden";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.db");
+    let path = path.to_str().unwrap();
+    let network = WalletNetwork::Main;
+    let seed = keys::mnemonic_to_seed(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    )
+    .unwrap();
+    let ufvk = UnifiedSpendingKey::from_seed(
+        &network,
+        seed.expose_secret(),
+        zip32::AccountId::try_from(7).unwrap(),
+    )
+    .unwrap()
+    .to_unified_full_viewing_key();
+    let encoded = Ufvk::try_from_items(vec![
+        Fvk::Orchard(ufvk.orchard().unwrap().to_bytes()),
+        Fvk::P2pkh(ufvk.transparent().unwrap().serialize().try_into().unwrap()),
+    ])
+    .unwrap()
+    .encode(&network.network_type());
+    let fp = zip32::fingerprint::SeedFingerprint::from_seed(seed.expose_secret())
+        .unwrap()
+        .to_bytes();
+    let (uuid, _) = keys::import_hardware_account(
+        path,
+        network,
+        "Ledger",
+        &encoded,
+        &fp,
+        7,
+        Some(2_500_000),
+        HardwareSignerKind::Ledger,
+    )
+    .unwrap();
+    let id = parse_account_uuid(&uuid).unwrap();
+    let mut db = open_wallet_db(path, network).unwrap();
+    let tip = BlockHeight::from_u32(2_600_000);
+    db.update_chain_tip(tip).unwrap();
+    type CheckpointError = WalletError<
+        (),
+        commitment_tree::Error,
+        (),
+        <ConservativeZip317FeeRule as FeeRule>::Error,
+        (),
+        ReceivedNoteId,
+    >;
+    let _: Result<_, CheckpointError> = db.with_sapling_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+    let _: Result<_, CheckpointError> = db.with_orchard_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+    let _: Result<_, CheckpointError> = db.with_ironwood_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+    let external = ufvk.transparent().unwrap().derive_external_ivk().unwrap();
+    for i in 0..3u32 {
+        let address = external
+            .derive_address(NonHardenedChildIndex::from_index(i).unwrap())
+            .unwrap();
+        let utxo = WalletTransparentOutput::from_parts(
+            OutPoint::new([i as u8 + 1; 32], 0),
+            TxOut::new(Zatoshis::const_from_u64(1_000_000), address.script().into()),
+            Some(tip),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.put_received_transparent_utxo(&utxo).unwrap();
+    }
+    let threshold = shielding_threshold().unwrap();
+    // Under the public policy this build supports, the same wallet can shield.
+    build_shielding_proposal(&mut db, path, network, id, threshold).unwrap();
+
+    // A newer build durably applied PrivateRequired to this wallet.
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute("UPDATE tpir_meta SET applied_mode = 2", [])
+        .unwrap();
+    let policy = |conn: &rusqlite::Connection| {
+        conn.query_row(
+            "SELECT applied_mode, policy_generation, min_reader_version FROM tpir_meta",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    // The handle opened before the transition resolves under it, as a fresh
+    // handle does: private queries are off, so no private recovery runs, and
+    // shielding is refused and says so.
+    let error = build_shielding_proposal(&mut db, path, network, id, threshold).unwrap_err();
+    assert_eq!(
+        error,
+        crate::wallet::failure::WalletFailure::coded(
+            crate::wallet::failure::FailureCode::OptOutUnfinished,
+            crate::wallet::sync::send::PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+        )
+    );
+    let utxo = WalletTransparentOutput::from_parts(
+        OutPoint::new([0xaa; 32], 0),
+        TxOut::new(
+            Zatoshis::const_from_u64(1_000_000),
+            external
+                .derive_address(NonHardenedChildIndex::ZERO)
+                .unwrap()
+                .script()
+                .into(),
+        ),
+        Some(tip),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let error = db
+        .put_received_transparent_utxo(&utxo)
+        .unwrap_err()
+        .to_string();
+    // Nor does it record publicly discovered outputs under it.
+    assert!(error.contains(DISCOVERY_FORBIDDEN), "{error}");
+
+    // Startup migration keeps the stricter policy. A fresh handle honors it
+    // instead of failing on the conflict, and shielding stays refused. With
+    // private queries off no private recovery runs, so the refusal says so
+    // instead of promising a recovery that will not come.
+    keys::ensure_db_initialized(path, network).unwrap();
+    assert_eq!(policy(&conn), (2, 0, 1));
+    let mut reopened = open_wallet_db(path, network).unwrap();
+    let error = build_shielding_proposal(&mut reopened, path, network, id, threshold).unwrap_err();
+    assert_eq!(
+        error,
+        crate::wallet::failure::WalletFailure::coded(
+            crate::wallet::failure::FailureCode::OptOutUnfinished,
+            crate::wallet::sync::send::PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+        )
+    );
+    assert_eq!(policy(&conn), (2, 0, 1));
+}
+
 #[test]
 fn gift_card_ledger_preflight_counts_pool_actions_at_the_consensus_version() {
     use orchard::ValuePool;
@@ -4288,22 +4432,135 @@ fn gift_card_batch_keystone_counts_orchard_and_ironwood_signatures() {
 fn gift_card_batch_ledger_limits_orchard_actions() {
     use crate::wallet::keys::HardwareSignerKind::Ledger;
 
-    // Before NU6.3 an Orchard action pairs one spend with one output, so 30
-    // cards plus change fit beside up to 32 spends.
+    // Four displayed payments plus unreviewed change fit beside 32 spends.
+    // The action budget and the device-review budget are independent.
     assert_eq!(
         validate_batch(
-            &fabricated_batch_step(30, batch_orchard_inputs(32), 1),
+            &fabricated_batch_step(4, batch_orchard_inputs(32), 1),
             Some(Ledger)
         ),
         Ok(())
     );
     assert_eq!(
         validate_batch(
-            &fabricated_batch_step(30, batch_orchard_inputs(33), 1),
+            &fabricated_batch_step(4, batch_orchard_inputs(33), 1),
             Some(Ledger)
         )
         .unwrap_err(),
         "This group is too large for your Ledger to sign. \
          Try fewer cards or a smaller amount per card."
     );
+}
+
+/// Records the status observations actually sent.
+struct RecordingStatusSource {
+    observed: std::sync::Arc<std::sync::Mutex<Vec<TxId>>>,
+}
+impl zakura_transaction_status::StatusSource for RecordingStatusSource {
+    type Session = Self;
+    async fn open(self) -> Result<Self, zakura_transaction_status::StatusError> {
+        Ok(self)
+    }
+}
+impl zakura_transaction_status::StatusSession for RecordingStatusSource {
+    async fn observe(
+        &mut self,
+        request: zakura_transaction_status::StatusRequest,
+    ) -> Result<zakura_transaction_status::StatusObservation, zakura_transaction_status::StatusError>
+    {
+        self.observed.lock().unwrap().push(request.txid);
+        Ok(zakura_transaction_status::StatusObservation::NotFound)
+    }
+}
+
+#[tokio::test]
+async fn policy_transition_withholds_remaining_migration_status_checks() {
+    let network = WalletNetwork::Regtest;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
+    let seed =
+        crate::wallet::keys::mnemonic_to_seed(&crate::wallet::keys::generate_mnemonic()).unwrap();
+    crate::wallet::keys::init_db_and_create_account(&path, network, &seed, Some(100), "migration")
+        .unwrap();
+    let policy = sync_engine::enhancement::EnhancementPolicy::for_preference(network, false);
+    let mut status_db = super::super::open_wallet_db_for_read(&path, network).unwrap();
+    policy.configure_db(&mut status_db);
+    let candidates: Vec<_> = [0x41u8, 0x42]
+        .iter()
+        .map(
+            |b| super::super::migration::UnbroadcastMigrationRecoveryCandidate {
+                txid_hex: hex::encode([*b; 32]),
+                status: "scheduled".into(),
+                scheduled_height: 100,
+            },
+        )
+        .collect();
+    let txids = [0x41u8, 0x42].map(|b| TxId::from_bytes([b; 32]));
+    // Every dispatch lands a transition that bumps the generation; the modes
+    // keep public authority, so only the generation revokes.
+    let _transitions = sync_engine::test_lwd::transition_on_every_dispatch(&path, network);
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gated_reader = |gate: &sync_engine::TransparentLookupGate| {
+        sync_engine::enhancement::status::RoutedStatusReader::new(
+            sync_engine::enhancement::status::gated(
+                RecordingStatusSource {
+                    observed: observed.clone(),
+                },
+                gate.clone(),
+            ),
+            RecordingStatusSource {
+                observed: Default::default(),
+            },
+        )
+    };
+    let gate = |status_db: &super::super::WalletDatabase| {
+        sync_engine::TransparentLookupGate::for_wallet(
+            policy.public_transparent_lookups(status_db).unwrap(),
+            &path,
+            network,
+        )
+        .unwrap()
+    };
+
+    let first = gate(&status_db);
+    let result = verify_unbroadcast_migration_txids_absent(
+        &mut gated_reader(&first),
+        &status_db,
+        &first,
+        &candidates,
+        &txids,
+        200,
+    )
+    .await;
+    assert!(result.unwrap_err().contains("private transparent policy"));
+    assert_eq!(*observed.lock().unwrap(), vec![txids[0]]);
+
+    // A single candidate answered absent after a transition cannot retire the
+    // run either: there is no later candidate to notice the revocation.
+    let second = gate(&status_db);
+    let result = verify_unbroadcast_migration_txids_absent(
+        &mut gated_reader(&second),
+        &status_db,
+        &second,
+        &candidates[..1],
+        &txids[..1],
+        200,
+    )
+    .await;
+    assert!(result.unwrap_err().contains("private transparent policy"));
+    assert_eq!(observed.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn gift_card_batch_ledger_rejects_fifth_recipient_before_signing() {
+    use crate::wallet::keys::HardwareSignerKind;
+    let proposal = fabricated_batch_step(5, batch_orchard_inputs(1), 1);
+    assert_eq!(
+        validate_batch(&proposal, Some(HardwareSignerKind::Ledger)).unwrap_err(),
+        "This group has more shielded recipients than your Ledger can display (maximum 4). \
+         Try fewer cards or a smaller amount per card."
+    );
+    // The device review budget does not constrain software or Keystone accounts.
+    validate_batch(&proposal, None).unwrap();
+    validate_batch(&proposal, Some(HardwareSignerKind::Keystone)).unwrap();
 }

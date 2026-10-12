@@ -58,13 +58,14 @@ use zcash_client_backend::data_api::wallet::input_selection::{
 use zcash_client_backend::{
     data_api::{
         error::Error as WalletError,
+        transparent_ledger::{TransparentAuthority, TransparentLedgerMode, TransparentLedgerRead},
         wallet::{
             self, create_proposed_transactions, propose_send_max_transfer, propose_shielding,
             ConfirmationsPolicy, TargetHeight,
         },
         Account as _, AccountMeta, Balance, CoinbaseFilter, ConsolidationNotes, InputSource,
         MaxSpendMode, NoteFilter, NoteRetention, OutputLockStore, ReceivedNotes, TargetValue,
-        TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
+        TransparentBalances, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
     },
     fees::{
         zip317::{MultiOutputChangeStrategy, Zip317FeeRule},
@@ -74,7 +75,9 @@ use zcash_client_backend::{
     wallet::{LockOwner, Note, OutputRef, OvkPolicy, ReceivedNote, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
 };
-use zcash_client_sqlite::{wallet::commitment_tree, AccountUuid, ReceivedNoteId};
+use zcash_client_sqlite::{
+    error::SqliteClientError, wallet::commitment_tree, AccountUuid, ReceivedNoteId,
+};
 use zcash_keys::{address::Address, keys::UnifiedSpendingKey};
 use zcash_primitives::block::BlockHash;
 use zcash_primitives::transaction::TxVersion;
@@ -99,11 +102,14 @@ use crate::wallet::db::{
     open_wallet_db_readonly_with_timeout, open_wallet_raw_conn_with_timeout,
     with_wallet_db_write_lock, READ_DB_BUSY_TIMEOUT,
 };
+use crate::wallet::failure::{FailureCode, WalletFailure};
 use crate::wallet::keys::parse_account_uuid;
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine;
+use crate::wallet::sync_engine::enhancement::private_queries_active;
 use crate::wallet::{confirmations_policy, payment_link_claim_confirmations_policy};
 
+mod gift_card_input;
 use super::migration::MIN_IRONWOOD_MIGRATION_OUTPUT_ZATOSHI;
 use super::migration_wallet_ops::{
     migration_locked_input_policy, select_spendable_orchard_v2_notes,
@@ -1059,6 +1065,12 @@ fn propose_request(
     purpose: SendPurpose,
     context: &str,
 ) -> Result<(Proposal<WalletFeeRule, ReceivedNoteId>, Option<TxVersion>), String> {
+    if purpose == SendPurpose::PaymentLinkClaim {
+        if let Some(source) = gift_card_input::CardInput::load(db, db_path, account_id)? {
+            let proposal = source.propose(network, request.build()?)?;
+            return Ok((proposal, Some(TxVersion::V6)));
+        }
+    }
     let proposed_tx_version = proposed_tx_version_for_wallet_db(db, network, context)?;
     let transaction_request = request.build()?;
     let migration_locks = super::migration::locked_migration_note_refs(db_path, account_uuid)?;
@@ -1127,6 +1139,11 @@ pub(crate) fn estimate_send_max_for_purpose(
 ) -> Result<SendMaxEstimateResult, String> {
     let mut db = open_wallet_db_for_read(db_path, network)?;
     let account_id = parse_account_uuid(account_uuid)?;
+    if purpose == SendPurpose::PaymentLinkClaim {
+        if let Some(source) = gift_card_input::CardInput::load(&db, db_path, account_id)? {
+            return source.estimate_max(network, to_address, memo_str);
+        }
+    }
     // librustzcash's max-spend proposal path no longer takes a proposed tx
     // version: the version (and its fee shape) is decided when the PCZT is
     // created, so the quote stays aligned with what `propose_send` can build.
@@ -1157,7 +1174,7 @@ pub(crate) fn get_shield_transparent_status(
     let mut db = open_wallet_db_for_read(db_path, network)?;
     let account_id = parse_account_uuid(account_uuid)?;
 
-    if !sync_engine::ledger_discovery::is_ready(db_path, account_id)? {
+    if !sync_engine::ledger_discovery::is_ready(db_path, network, account_id)? {
         return Ok(ShieldTransparentStatus {
             can_shield: false,
             fee_zatoshi: 0,
@@ -1166,7 +1183,7 @@ pub(crate) fn get_shield_transparent_status(
         });
     }
 
-    match build_shielding_proposal(&mut db, network, account_id, shielding_threshold) {
+    match build_shielding_proposal(&mut db, db_path, network, account_id, shielding_threshold) {
         Ok((proposal, _)) => Ok(ShieldTransparentStatus {
             can_shield: true,
             fee_zatoshi: proposal_fee_zatoshi(&proposal),
@@ -1177,7 +1194,7 @@ pub(crate) fn get_shield_transparent_status(
             can_shield: false,
             fee_zatoshi: 0,
             shielded_zatoshi: 0,
-            reason,
+            reason: reason.message,
         }),
     }
 }
@@ -1198,14 +1215,15 @@ pub(crate) fn get_ledger_shielding_progress(
 ) -> Result<LedgerShieldingProgress, String> {
     let mut db = open_wallet_db_for_read(db_path, network)?;
     let id = parse_account_uuid(account_uuid)?;
-    if !sync_engine::ledger_discovery::is_ready(db_path, id)? {
+    if !sync_engine::ledger_discovery::is_ready(db_path, network, id)? {
         return Err("Ledger transparent recovery is incomplete".into());
     }
-    ledger_shielding_progress(&mut db, network, id)
+    ledger_shielding_progress(&mut db, db_path, network, id)
 }
 
 fn ledger_shielding_progress(
     db: &mut WalletDatabase,
+    db_path: &str,
     network: WalletNetwork,
     id: AccountUuid,
 ) -> Result<LedgerShieldingProgress, String> {
@@ -1222,12 +1240,10 @@ fn ledger_shielding_progress(
         .chain_height()
         .map_err(|e| e.to_string())?
         .ok_or("Wallet must sync before shielding")?;
-    let balances = db
-        .get_transparent_balances(id, (tip + 1).into(), ConfirmationsPolicy::MIN)
-        .map_err(|e| e.to_string())?;
+    let balances = transparent_shielding_balances(db, db_path, network, id, (tip + 1).into())?;
     let mut progress = LedgerShieldingProgress {
         input_count: 0,
-        input_limit: crate::wallet::ledger::MAX_TRANSPARENT_INPUTS as u32,
+        input_limit: crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS as u32,
         below_threshold: false,
     };
     if !balances
@@ -1245,13 +1261,13 @@ fn ledger_shielding_progress(
     }
     let round_value = outputs
         .iter()
-        .take(crate::wallet::ledger::MAX_TRANSPARENT_INPUTS)
+        .take(crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS)
         .try_fold(Zatoshis::ZERO, |sum, output| sum + output.txout().value())
         .ok_or("Ledger shielding value overflow")?;
     progress.below_threshold = round_value < shielding_threshold()?;
     if !progress.below_threshold {
         // Use the real planner to detect fee, anchor and policy failures.
-        build_shielding_proposal(db, network, id, shielding_threshold()?)?;
+        build_shielding_proposal(db, db_path, network, id, shielding_threshold()?)?;
     }
     Ok(progress)
 }
@@ -1262,7 +1278,7 @@ pub(crate) async fn create_shield_transparent_pczt(
     lightwalletd_url: &str,
     network: WalletNetwork,
     account_uuid: &str,
-) -> Result<ShieldTransparentPcztResult, String> {
+) -> Result<ShieldTransparentPcztResult, WalletFailure> {
     let live_expiry_height = {
         let tip = sync_engine::latest_block_for_transaction(lightwalletd_url, network)
             .await
@@ -1285,18 +1301,18 @@ fn create_shield_transparent_pczt_with_expiry(
     network: WalletNetwork,
     account_uuid: &str,
     expiry_height: Option<BlockHeight>,
-) -> Result<ShieldTransparentPcztResult, String> {
+) -> Result<ShieldTransparentPcztResult, WalletFailure> {
     use zcash_client_backend::data_api::wallet::create_pczt_from_proposal as zcb_create_pczt;
 
     let shielding_threshold = shielding_threshold()?;
     with_wallet_db_write_lock("send.create_shield_transparent_pczt", || {
         let mut db = open_wallet_db(db_path, network)?;
         let account_id = parse_account_uuid(account_uuid)?;
-        if !sync_engine::ledger_discovery::is_ready(db_path, account_id)? {
+        if !sync_engine::ledger_discovery::is_ready(db_path, network, account_id)? {
             return Err("Ledger transparent recovery is incomplete".into());
         }
         let (proposal, _) =
-            build_shielding_proposal(&mut db, network, account_id, shielding_threshold)?;
+            build_shielding_proposal(&mut db, db_path, network, account_id, shielding_threshold)?;
         let fee_zatoshi = proposal_fee_zatoshi(&proposal);
         let shielded_zatoshi = proposal_shielded_zatoshi(&proposal);
 
@@ -1356,7 +1372,7 @@ pub(crate) async fn shield_transparent_balance(
     network: WalletNetwork,
     account_uuid: &str,
     seed: SecretVec<u8>,
-) -> Result<ShieldTransparentResult, String> {
+) -> Result<ShieldTransparentResult, WalletFailure> {
     let shielding_threshold = shielding_threshold()?;
     let live_expiry_height = {
         let tip = sync_engine::latest_block_for_transaction(lightwalletd_url, network)
@@ -1378,8 +1394,13 @@ pub(crate) async fn shield_transparent_balance(
                 .map_err(|e| format!("{e}"))?
                 .ok_or("Account not found")?;
 
-            let (proposal, _) =
-                build_shielding_proposal(&mut db, network, account_id, shielding_threshold)?;
+            let (proposal, _) = build_shielding_proposal(
+                &mut db,
+                db_path,
+                network,
+                account_id,
+                shielding_threshold,
+            )?;
             let fee_zatoshi = proposal_fee_zatoshi(&proposal);
             let shielded_zatoshi = proposal_shielded_zatoshi(&proposal);
 
@@ -2263,7 +2284,6 @@ pub(crate) async fn retire_unbroadcast_orchard_migration(
     account_uuid: &str,
     expected_run_id: &str,
 ) -> Result<(), String> {
-    use zakura_transaction_status::{lightwalletd::LightwalletdSource, StatusObservation};
     let _migration_guard = ActiveIronwoodMigration::acquire(db_path, account_uuid)?;
     super::migration::backfill_unbroadcast_migration_creation_evidence(
         db_path,
@@ -2277,9 +2297,10 @@ pub(crate) async fn retire_unbroadcast_orchard_migration(
         network,
         expected_run_id,
     )?;
-    let mut client = sync_engine::open_lwd_channel(lightwalletd_url)
+    let transport = sync_engine::open_lwd_transport(lightwalletd_url)
         .await
         .map_err(|e| format!("Open migration recovery endpoint: {e}"))?;
+    let mut client = zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::new(transport.clone());
     let chain_tip = sync_engine::get_latest_block_recorded(&mut client, lightwalletd_url, network)
         .await
         .map_err(|e| format!("Read migration recovery chain tip: {e}"))?;
@@ -2287,25 +2308,78 @@ pub(crate) async fn retire_unbroadcast_orchard_migration(
         u32::try_from(chain_tip.height).map_err(|_| "Migration recovery chain tip exceeds u32")?;
     validate_unbroadcast_migration_recovery_candidates(&candidates, chain_tip_height)?;
 
-    let never_exit = || false;
-    let public_source = LightwalletdSource::new(move || async move { Ok(client) }, &never_exit);
     let policy = sync_engine::enhancement::EnhancementPolicy::current(network);
+    let mut status_db = super::open_wallet_db_for_read(db_path, network)?;
+    policy.configure_db(&mut status_db);
+    let gate = sync_engine::TransparentLookupGate::for_wallet(
+        policy
+            .public_transparent_lookups(&status_db)
+            .map_err(|e| e.to_string())?,
+        db_path,
+        network,
+    )
+    .map_err(|e| e.to_string())?
+    .with_transport(transport);
+    let never_exit = || false;
+    let public_source =
+        sync_engine::enhancement::status::lightwalletd_source(client, gate.clone(), &never_exit);
     let mut reader =
         sync_engine::enhancement::status::reader(db_path, network, &never_exit, public_source);
 
-    use zcash_client_backend::data_api::status::TransactionStatusRead;
-    let mut status_db = super::open_wallet_db_for_read(db_path, network)?;
-    status_db.set_status_mode(policy.status_mode());
-    for candidate in &candidates {
-        let txid = parse_txid_hex(&candidate.txid_hex)?;
-        let observation = reader
-            .observe(
-                status_db
-                    .transaction_status_work_for(txid)
-                    .map_err(|e| e.to_string())?,
-                Some(chain_tip_height),
-            )
-            .await;
+    let txids = candidates
+        .iter()
+        .map(|candidate| parse_txid_hex(&candidate.txid_hex))
+        .collect::<Result<Vec<_>, _>>()?;
+    verify_unbroadcast_migration_txids_absent(
+        &mut reader,
+        &status_db,
+        &gate,
+        &candidates,
+        &txids,
+        chain_tip_height,
+    )
+    .await?;
+
+    super::migration::retire_run_for_rebuild(
+        db_path,
+        network,
+        expected_run_id,
+        "The previous signed migration transactions were absent after their broadcast windows. Rebuilding with a new credential.",
+    )
+}
+
+/// Confirms every unbroadcast migration transaction is absent before its run
+/// is retired. A public observation discloses the txid, so the reader's public
+/// source must be gated by `gate` (`status::lightwalletd_source`): a transition
+/// withholds the rest, reported as `Cancelled`. `gate` is re-checked after each
+/// public observation too, so an absence answered after a transition cannot
+/// retire the run; either way the run is left unchanged.
+/// Private observations are unaffected.
+async fn verify_unbroadcast_migration_txids_absent<P, R>(
+    reader: &mut sync_engine::enhancement::status::RoutedStatusReader<P, R>,
+    status_db: &super::WalletDatabase,
+    gate: &sync_engine::TransparentLookupGate,
+    candidates: &[super::migration::UnbroadcastMigrationRecoveryCandidate],
+    txids: &[TxId],
+    chain_tip_height: u32,
+) -> Result<(), String>
+where
+    P: zakura_transaction_status::StatusSource,
+    R: zakura_transaction_status::StatusSource,
+{
+    use zakura_transaction_status::StatusObservation;
+    use zcash_client_backend::data_api::status::{TransactionStatusRead, TransactionStatusWork};
+    const WITHHELD: &str = "Migration recovery is unavailable under the private transparent policy; the run is unchanged";
+    for (candidate, txid) in candidates.iter().zip(txids) {
+        let work = status_db
+            .transaction_status_work_for(*txid)
+            .map_err(|e| e.to_string())?;
+        let public = matches!(work, TransactionStatusWork::Public(_));
+        let observation = reader.observe(work, Some(chain_tip_height)).await;
+        // An absence answered after a transition must not retire the run.
+        if public && !gate.permits().map_err(|e| e.to_string())? {
+            return Err(WITHHELD.into());
+        }
         match observation {
             Ok(StatusObservation::NotFound) => {}
             Ok(_) => {
@@ -2313,6 +2387,10 @@ pub(crate) async fn retire_unbroadcast_orchard_migration(
                     "Migration transaction {} is present in the mempool or chain",
                     candidate.txid_hex
                 ));
+            }
+            // Recovery never exits early, so only the gate cancels.
+            Err(zakura_transaction_status::StatusError::Cancelled) => {
+                return Err(WITHHELD.into());
             }
             Err(zakura_transaction_status::StatusError::CoverageIncomplete) => {
                 return Err("Migration recovery is pending sufficient private status coverage; the run is unchanged".into());
@@ -2325,13 +2403,7 @@ pub(crate) async fn retire_unbroadcast_orchard_migration(
             }
         }
     }
-
-    super::migration::retire_run_for_rebuild(
-        db_path,
-        network,
-        expected_run_id,
-        "The previous signed migration transactions were absent after their broadcast windows. Rebuilding with a new credential.",
-    )
+    Ok(())
 }
 
 async fn reconcile_scheduled_migration_txs_before_abandon(
@@ -3696,6 +3768,100 @@ fn active_ironwood_migrations() -> &'static Mutex<HashSet<String>> {
     ACTIVE_IRONWOOD_MIGRATIONS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// Why shielding is unavailable while an account's private transparent
+/// ledger holds no current authority. Shielded-funded operations stay
+/// available.
+pub(crate) const TRANSPARENT_RECOVERY_INCOMPLETE: &str =
+    "Transparent recovery is incomplete; transparent funds are unavailable until it completes";
+
+/// Why shielding is unavailable for a wallet that durably requires private
+/// transparent recovery while private queries are off: turning them off did
+/// not finish, so no recovery will complete, and only turning them off again
+/// restores public lookups. Shares no phrase with
+/// [`TRANSPARENT_RECOVERY_INCOMPLETE`], so the app tells the two apart.
+pub(crate) const PRIVATE_QUERIES_OPT_OUT_UNFINISHED: &str =
+    "Turning off private queries did not finish; turn private queries off again to use transparent funds";
+
+/// Spendable transparent balances by receiver for shielding at `target`, in
+/// the wallet at `db_path`.
+///
+/// Under public authority these are the wallet's transparent balances. Under
+/// a private ledger mode the library withholds that per-address read, so the
+/// balances are summed from the library's gated selector, which admits only
+/// outputs its private authority covers. With no current authority, shielding
+/// reports recovery as incomplete rather than a zero balance, or as not
+/// unfinished when private queries are off and no recovery will run.
+fn transparent_shielding_balances(
+    db: &WalletDatabase,
+    db_path: &str,
+    network: WalletNetwork,
+    account: AccountUuid,
+    target: TargetHeight,
+) -> Result<TransparentBalances, WalletFailure> {
+    let confirmations = ConfirmationsPolicy::MIN;
+    match db.get_transparent_balances(account, target, confirmations) {
+        Ok(balances) => return Ok(balances),
+        // Only a handle configured for the private ledger reads it; any other
+        // handle keeps the library's refusal.
+        Err(SqliteClientError::TransparentAuthorityUnavailable(_))
+            if matches!(
+                db.transparent_ledger_mode(),
+                Ok(TransparentLedgerMode::PrivateRequired)
+            ) => {}
+        Err(e) => return Err(format!("Failed to get transparent balances: {e}").into()),
+    }
+    let snapshot = db
+        .transparent_ledger_snapshot(account, confirmations)
+        .map_err(|e| format!("Failed to read transparent ledger: {e}"))?;
+    if snapshot.authority != TransparentAuthority::Private {
+        // A private handle here comes from private queries being on, or from
+        // the wallet's durable `PrivateRequired`, which reads honor.
+        return Err(if private_queries_active(db_path, network) {
+            WalletFailure::coded(
+                FailureCode::RecoveryIncomplete,
+                TRANSPARENT_RECOVERY_INCOMPLETE,
+            )
+        } else {
+            WalletFailure::coded(
+                FailureCode::OptOutUnfinished,
+                PRIVATE_QUERIES_OPT_OUT_UNFINISHED,
+            )
+        });
+    }
+    let receivers = db
+        .get_transparent_receivers(account, true, true)
+        .map_err(|e| e.to_string())?;
+    let addresses: Vec<TransparentAddress> = receivers.keys().copied().collect();
+    let outputs = db
+        .get_spendable_transparent_outputs_for_addresses(
+            &addresses,
+            target,
+            confirmations,
+            CoinbaseFilter::AllTransparentOutputs,
+            LockFilter::Policy(&LockedInputPolicy::default()),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut balances = TransparentBalances::new();
+    for output in outputs {
+        let address = *output.recipient_address();
+        let Some(metadata) = receivers.get(&address) else {
+            continue;
+        };
+        let origin = metadata
+            .scope()
+            .map_or(TransparentKeyOrigin::Imported, |scope| {
+                TransparentKeyOrigin::Derived { scope }
+            });
+        balances
+            .entry(address)
+            .or_insert((origin, Balance::ZERO))
+            .1
+            .add_spendable_value(output.value())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(balances)
+}
+
 fn shielding_threshold() -> Result<Zatoshis, String> {
     Zatoshis::from_u64(SHIELDING_THRESHOLD_ZATOSHI)
         .map_err(|_| "Bad shielding threshold".to_string())
@@ -3703,21 +3869,22 @@ fn shielding_threshold() -> Result<Zatoshis, String> {
 
 fn build_shielding_proposal(
     db: &mut WalletDatabase,
+    db_path: &str,
     network: WalletNetwork,
     account_id: AccountUuid,
     shielding_threshold: Zatoshis,
-) -> Result<(Proposal<WalletFeeRule, Infallible>, Zatoshis), String> {
+) -> Result<(Proposal<WalletFeeRule, Infallible>, Zatoshis), WalletFailure> {
     let chain_height = db
         .chain_height()
         .map_err(|e| format!("Failed to read chain height: {e}"))?
         .ok_or("Wallet must sync before shielding transparent funds")?;
-    let balances = db
-        .get_transparent_balances(
-            account_id,
-            (chain_height + 1).into(),
-            ConfirmationsPolicy::MIN,
-        )
-        .map_err(|e| format!("Failed to get transparent balances: {e}"))?;
+    let balances = transparent_shielding_balances(
+        db,
+        db_path,
+        network,
+        account_id,
+        (chain_height + 1).into(),
+    )?;
     let (from_addrs, selected_value) = select_shielding_sources(balances, shielding_threshold)?;
 
     let account = db
@@ -3727,13 +3894,13 @@ fn build_shielding_proposal(
     if crate::wallet::keys::hardware_signer_kind(account.source())
         == Some(crate::wallet::keys::HardwareSignerKind::Ledger)
     {
-        return build_ledger_shielding_round(
+        return Ok(build_ledger_shielding_round(
             db,
             network,
             account_id,
             shielding_threshold,
             &from_addrs,
-        );
+        )?);
     }
 
     let (change_strategy, input_selector) = zip317_helper::<WalletDatabase>(None, false);
@@ -3803,7 +3970,7 @@ fn build_ledger_shielding_round(
         .map_err(|e| e.to_string())?
         .ok_or("Wallet must sync before shielding")?;
     let mut outputs = ledger_shielding_outputs(db, addresses)?;
-    outputs.truncate(crate::wallet::ledger::MAX_TRANSPARENT_INPUTS);
+    outputs.truncate(crate::wallet::ledger::limits::MAX_TRANSPARENT_INPUTS);
     let selected = outputs
         .iter()
         .try_fold(Zatoshis::ZERO, |sum, o| sum + o.txout().value())
@@ -3830,7 +3997,6 @@ fn build_ledger_shielding_round(
             account,
             target,
             anchor,
-            &db.pool_migration_params(),
             confirmations,
             CoinbaseFilter::AllTransparentOutputs,
         )
@@ -3941,6 +4107,19 @@ fn validate_payment_link_batch_proposal<NoteRef>(
             }
         }
         HardwareSignerKind::Ledger => {
+            // Review slots are shared across shielded pools, independent of
+            // the per-pool action budget. Internal change does not use a slot.
+            if crate::wallet::ledger::limits::validate_external_shielded_outputs(
+                step.output_count_in_pool(PoolType::ORCHARD),
+                step.output_count_in_pool(PoolType::IRONWOOD),
+            )
+            .is_err()
+            {
+                let max = crate::wallet::ledger::limits::MAX_EXTERNAL_SHIELDED_OUTPUTS;
+                return Err(payment_link_batch_rejection(format_args!(
+                    "has more shielded recipients than your Ledger can display (maximum {max}). {PAYMENT_LINK_BATCH_ADVICE}"
+                )));
+            }
             if step.input_count_in_pool(PoolType::SAPLING) > 0 {
                 return Err(payment_link_batch_rejection(format_args!(
                     "would spend older Sapling funds, which your Ledger can’t sign. {PAYMENT_LINK_BATCH_ADVICE}"
@@ -3961,7 +4140,7 @@ fn validate_payment_link_batch_proposal<NoteRef>(
                 }
                 let actions =
                     payment_link_ledger_action_count(branch, value_pool, spends, outputs)?;
-                let max = crate::wallet::ledger::MAX_SHIELDED_ACTIONS;
+                let max = crate::wallet::ledger::limits::MAX_SHIELDED_ACTIONS_PER_POOL;
                 if actions > max {
                     return Err(payment_link_batch_rejection(format_args!(
                         "is too large for your Ledger to sign. {PAYMENT_LINK_BATCH_ADVICE}"
@@ -4009,7 +4188,6 @@ fn propose_send_with_reserved_notes(
         migration_locks,
         transparent_allowlist: None,
     };
-    let zip318 = db.pool_migration_params();
     let account = db
         .get_account(account_id)
         .map_err(|e| e.to_string())?
@@ -4025,7 +4203,6 @@ fn propose_send_with_reserved_notes(
             &reserved_db,
             target_height,
             anchor_height,
-            &zip318,
             confirmations_policy,
             account_id,
             request,
@@ -4239,12 +4416,10 @@ impl<I: InputSource> InputSource for ReservedInputSource<'_, I> {
     type AccountId = I::AccountId;
     type NoteRef = I::NoteRef;
 
-    fn anchor_computable(
+    fn anchor_retention_interval(
         &self,
-        protocol: ShieldedPool,
-        height: BlockHeight,
-    ) -> Result<bool, Self::Error> {
-        self.inner.anchor_computable(protocol, height)
+    ) -> zcash_client_backend::data_api::anchor_retention::AnchorRetentionInterval {
+        self.inner.anchor_retention_interval()
     }
 
     fn get_spendable_note(
@@ -6692,6 +6867,28 @@ where
             return ResubmitStats::default();
         }
     };
+    resubmit_transactions(
+        lightwalletd_url,
+        client,
+        current_height,
+        candidates,
+        should_exit,
+    )
+    .await
+}
+
+/// Relay an already validated candidate set. Gift Card inspection supplies its
+/// own chain-authoritative candidates; ordinary sync keeps its existing query.
+pub(crate) async fn resubmit_transactions<ShouldExit>(
+    lightwalletd_url: &str,
+    client: &mut zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient<tonic::transport::Channel>,
+    current_height: u32,
+    candidates: Vec<super::transactions::ResubmittableTx>,
+    should_exit: ShouldExit,
+) -> ResubmitStats
+where
+    ShouldExit: Fn() -> bool,
+{
     let candidates = order_resubmittable_transactions(candidates);
 
     if candidates.is_empty() {

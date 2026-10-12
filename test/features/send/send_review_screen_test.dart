@@ -23,7 +23,7 @@ import 'package:zcash_wallet/app.dart'
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/formatting/address_display.dart';
-import 'package:zcash_wallet/src/core/navigation/payment_uri_busy_surface_provider.dart';
+import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/core/layout/app_desktop_shell.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_pane_modal_overlay.dart';
@@ -57,7 +57,12 @@ import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 import 'package:zcash_wallet/src/rust/api/keystone.dart'
     show KeystoneActionSig, KeystoneMsgSig, KeystoneSigResult;
 import 'package:zcash_wallet/src/rust/api/sync.dart'
-    show KeystoneBatchPczt, TexPcztPairResult, ProposalResult;
+    show
+        ApiWalletError,
+        ApiWalletErrorCode,
+        KeystoneBatchPczt,
+        TexPcztPairResult,
+        ProposalResult;
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
 import 'package:zcash_wallet/src/rust/wallet/keystone.dart'
     show ZcashBatchMessageInput;
@@ -946,13 +951,13 @@ void main() {
     final container = ProviderScope.containerOf(
       tester.element(find.byType(MaterialApp)),
     );
-    expect(container.read(paymentUriBusySurfaceProvider), 1);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 1);
 
     await tester.tap(find.text('Confirm with Keystone'));
     await _flushRealAsync(tester);
 
     expect(find.byType(KeystoneSigningModal), findsOneWidget);
-    expect(container.read(paymentUriBusySurfaceProvider), 2);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 2);
 
     await tester.tap(
       find.descendant(
@@ -965,11 +970,11 @@ void main() {
 
     expect(find.byType(KeystoneSigningModal), findsNothing);
     expect(find.text('Review send'), findsOneWidget);
-    expect(container.read(paymentUriBusySurfaceProvider), 1);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 1);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.text('send-route'), findsOneWidget);
-    expect(container.read(paymentUriBusySurfaceProvider), 0);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 0);
   });
 
   testWidgets('review keeps the latch held until proposal discard completes', (
@@ -984,18 +989,18 @@ void main() {
     final container = ProviderScope.containerOf(
       tester.element(find.byType(MaterialApp)),
     );
-    expect(container.read(paymentUriBusySurfaceProvider), 1);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 1);
 
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.text('send-route'), findsNothing);
     expect(find.text('Review send'), findsOneWidget);
-    expect(container.read(paymentUriBusySurfaceProvider), 1);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 1);
 
     discardCompleter.complete();
     await tester.pumpAndSettle();
     expect(find.text('send-route'), findsOneWidget);
-    expect(container.read(paymentUriBusySurfaceProvider), 0);
+    expect(container.read(externalActionGuardProvider).activeHoldCount, 0);
   });
 
   testWidgets('Keystone signature limit fails before showing a QR', (
@@ -1931,8 +1936,10 @@ void main() {
   ) async {
     final operationService = _FakeLedgerSignedOperationService()
       ..failuresRemaining = 1
-      ..checkpointError = StateError(
-        'Ledger signed operation cannot be retried with different data',
+      ..checkpointError = const ApiWalletError(
+        code: ApiWalletErrorCode.ledgerOperationTerminal,
+        message:
+            'Ledger operation op-1 is already checkpointed with different data',
       );
     var signerCalls = 0;
 

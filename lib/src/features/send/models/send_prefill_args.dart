@@ -5,6 +5,9 @@ import '../../../core/zcash/zip321_payment_request.dart';
 /// reads it to keep the payment-request framing on the review screen.
 const kPaymentUriPrefillSource = 'zcash-uri';
 
+/// Input provenance, not authentication of the requester.
+enum PaymentRequestSource { link, qrCode }
+
 class SendPrefillArgs {
   const SendPrefillArgs({
     required this.id,
@@ -15,6 +18,7 @@ class SendPrefillArgs {
     this.preserveMemoText = false,
     this.label,
     this.message,
+    this.requestSource = PaymentRequestSource.link,
   });
 
   final String id;
@@ -25,6 +29,22 @@ class SendPrefillArgs {
   final bool preserveMemoText;
   final String? label;
   final String? message;
+  final PaymentRequestSource requestSource;
+
+  SendPrefillArgs withRequestSource(PaymentRequestSource value) =>
+      value == requestSource
+      ? this
+      : SendPrefillArgs(
+          id: id,
+          source: source,
+          address: address,
+          amountText: amountText,
+          memoText: memoText,
+          preserveMemoText: preserveMemoText,
+          label: label,
+          message: message,
+          requestSource: value,
+        );
 
   String get fingerprint =>
       '$id|$address|${amountText ?? ''}|${memoText ?? ''}|$preserveMemoText';

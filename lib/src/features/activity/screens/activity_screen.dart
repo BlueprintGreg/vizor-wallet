@@ -14,12 +14,15 @@ import '../../../core/layout/app_pane_scroll_scaffold.dart';
 import '../../../core/storage/wallet_paths.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../providers/account_provider.dart';
+import '../../../providers/enhance_pir_provider.dart';
 import '../../../providers/privacy_mode_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/sync_provider.dart';
+import '../../../providers/pending_activity_evidence_provider.dart';
 import '../../../rust/api/sync.dart' as rust_sync;
 import '../../swap/models/swap_activity_navigation.dart';
 import '../../swap/providers/swap_activity_tracker.dart';
+import '../activity_eta_provider.dart';
 import '../activity_row_mapper.dart';
 import '../gift_card_activity_index.dart';
 import '../models/activity_row_data.dart';
@@ -45,6 +48,8 @@ class ActivityScreen extends ConsumerStatefulWidget {
 class _ActivityScreenState extends ConsumerState<ActivityScreen> {
   List<rust_sync.TransactionInfo>? _transactions;
   String? _transactionsAccountUuid;
+  (int?, int?, DateTime?)? _transactionsSnapshot;
+  bool _hasFreshTransactionHistory = false;
   bool _isLoading = true;
   String? _error;
   String? _activeAccountUuid;
@@ -90,12 +95,20 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
     bool clearExisting = false,
   }) async {
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
+    final historySnapshot = activityHistorySnapshot(
+      ref.read(syncProvider).value,
+    );
     final generation = ++_transactionLoadGeneration;
     _pendingTransactionRefresh = false;
     _activeAccountUuid = accountUuid;
 
-    if ((showLoading || clearExisting) && mounted) {
+    if (mounted) {
       setState(() {
+        _hasFreshTransactionHistory =
+            _hasFreshTransactionHistory &&
+            _transactionsAccountUuid == accountUuid &&
+            _transactionsSnapshot == historySnapshot &&
+            !showLoading;
         if (showLoading) {
           _isLoading = true;
           _error = null;
@@ -125,6 +138,8 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
       }
       setState(() {
         _transactions = txs;
+        _transactionsSnapshot = historySnapshot;
+        _hasFreshTransactionHistory = true;
         _transactionsAccountUuid = accountUuid;
         _isLoading = false;
         _error = null;
@@ -137,9 +152,14 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
       }
       final hasExistingTransactions =
           _transactionsAccountUuid == accountUuid && _transactions != null;
-      if (hasExistingTransactions && !clearExisting) return;
+      if (hasExistingTransactions && !clearExisting) {
+        setState(() => _hasFreshTransactionHistory = false);
+        _runPendingTransactionRefreshIfNeeded(generation, accountUuid);
+        return;
+      }
       setState(() {
         _transactionsAccountUuid = accountUuid;
+        _hasFreshTransactionHistory = false;
         _error = 'Activity could not be loaded.';
         _isLoading = false;
       });
@@ -183,7 +203,7 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
     rust_sync.TransactionInfo transaction, {
     GiftCardActivityMetadata? giftCard,
   }) {
-    unawaited(_pushTransactionStatus(transaction, giftCard: giftCard));
+    _pushTransactionStatus(transaction, giftCard: giftCard);
   }
 
   String? _absorbedReceiveAmountText(rust_sync.TransactionInfo? transaction) {
@@ -233,18 +253,12 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
         .refreshOpenActivities(accountUuid: accountUuid, force: force);
   }
 
-  Future<void> _pushTransactionStatus(
+  void _pushTransactionStatus(
     rust_sync.TransactionInfo transaction, {
     GiftCardActivityMetadata? giftCard,
-  }) async {
+  }) {
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
-    final detail = await _loadTransactionDetail(transaction);
-    if (!mounted) return;
-    // The receipt takes this transaction and its Gift Card metadata as the
-    // active account's, so a switch during the load has to cancel the handoff.
-    if (accountUuid != ref.read(accountProvider).value?.activeAccountUuid) {
-      return;
-    }
+    if (accountUuid == null) return;
     context.push(
       Uri(
         path: '/activity/tx/${transaction.txidHex}',
@@ -254,46 +268,17 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
         txidHex: transaction.txidHex,
         txKind: transaction.txKind,
         initialTransaction: transaction,
-        initialDetail: detail,
+        sourceAccountUuid: accountUuid,
         giftCard: giftCard,
       ),
     );
   }
 
-  Future<rust_sync.TransactionDetail?> _loadTransactionDetail(
-    rust_sync.TransactionInfo transaction,
-  ) async {
-    final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
-    if (accountUuid == null) return null;
-
-    try {
-      final dbPath = await getWalletDbPath();
-      final endpoint = ref.read(rpcEndpointProvider);
-      if (!mounted ||
-          accountUuid != ref.read(accountProvider).value?.activeAccountUuid) {
-        return null;
-      }
-      return await rust_sync.getTransactionDetail(
-        dbPath: dbPath,
-        network: endpoint.networkName,
-        accountUuid: accountUuid,
-        txidHex: transaction.txidHex,
-        txKind: transaction.txKind,
-      );
-    } catch (e, st) {
-      log('Activity: transaction detail load failed: $e\n$st');
-      return null;
-    }
-  }
-
   String _recentSignature(SyncState? sync) {
-    return sync?.recentTransactions
-            .map(
-              (tx) =>
-                  '${tx.txidHex}:${tx.minedHeight}:${tx.expiredUnmined}:${tx.txKind}:${tx.displayAmount}',
-            )
-            .join('|') ??
-        '';
+    final recent = activityHistoryStatusSignature(
+      sync?.recentTransactions ?? const [],
+    );
+    return '${activityHistorySnapshot(sync)}|$recent';
   }
 
   @override
@@ -308,9 +293,18 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
     ref.listen<AsyncValue<SyncState>>(syncProvider, (previous, next) {
       final prevSig = _recentSignature(previous?.value);
       final nextSig = _recentSignature(next.value);
-      if (prevSig != nextSig) {
+      // Enhancement can change older rows outside the ten recent transactions.
+      final syncCompleted =
+          next.value?.isSyncComplete == true &&
+          previous?.value?.isSyncComplete != true;
+      if (prevSig != nextSig || syncCompleted) {
         _refreshTransactionsAfterSyncChange();
       }
+    });
+
+    // Recovery and detail updates can change rows outside recent history.
+    ref.listen<int>(syncFollowupProvider, (_, _) {
+      _refreshTransactionsAfterSyncChange();
     });
 
     final accountUuid = ref.watch(accountProvider).value?.activeAccountUuid;
@@ -347,7 +341,10 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
     if (accountUuid != null) {
       for (final tx in giftCardActivityIndex.withPendingClaims(transactions)) {
         if (absorption.absorbs(tx)) continue;
-        final giftCard = giftCardActivityIndex.metadataFor(tx);
+        final giftCard = giftCardActivityIndex.metadataFor(
+          tx,
+          transactions: transactions,
+        );
         entries.add(
           _ActivityEntry(
             sortKey: activitySortKeyForTransaction(
@@ -358,6 +355,23 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
             row: buildTransactionActivityRow(
               context: context,
               transaction: tx,
+              privateQueriesEnabled: ref.watch(enhancePirProvider),
+              showPendingEstimate: !ref
+                  .watch(activityEtaExcludedTxidsProvider)
+                  .contains(activityTxidKey(tx.txidHex)),
+              pendingLabel:
+                  (_hasFreshTransactionHistory &&
+                          _transactionsSnapshot ==
+                              activityHistorySnapshot(
+                                ref.watch(syncProvider).value,
+                              )
+                      ? activityEtaLabelFor(
+                          transaction: tx,
+                          labels: ref.watch(activityEtaLabelsProvider),
+                          giftCard: giftCard,
+                        )
+                      : null) ??
+                  ref.watch(activityPendingFallbackLabelProvider),
               giftCardKind: giftCard?.kind,
               giftCardAmountZatoshi: giftCard?.amountZatoshi,
               giftCardBatchCount: giftCard?.batchCount,

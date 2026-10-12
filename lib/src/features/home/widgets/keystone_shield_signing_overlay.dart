@@ -7,7 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../main.dart' show log;
 import '../../../core/config/rpc_endpoint_config.dart';
 import '../../../core/layout/app_layout.dart';
-import '../../../core/navigation/payment_uri_busy_surface_hold.dart';
+import '../../../core/navigation/external_action_guard_hold.dart';
 import '../../../core/storage/wallet_paths.dart';
 import '../../../core/widgets/app_pane_modal_overlay.dart';
 import '../../../providers/rpc_endpoint_failover_provider.dart';
@@ -18,6 +18,8 @@ import '../../../rust/api/sync.dart' as rust_sync;
 import '../../keystone/widgets/keystone_signing_modal.dart';
 import '../../send/services/sapling_params.dart';
 import '../../send/widgets/sapling_params_prompt.dart';
+import '../services/transparent_shielding_service.dart'
+    show isHardwareBroadcastRetryable, kShieldWaitingForPrivateRecoveryMessage;
 
 enum _KeystoneShieldPhase {
   preparing,
@@ -49,7 +51,7 @@ class KeystoneShieldSigningOverlay extends ConsumerStatefulWidget {
 // dispose.
 class _KeystoneShieldSigningOverlayState
     extends ConsumerState<KeystoneShieldSigningOverlay>
-    with PaymentUriBusySurfaceHoldMixin {
+    with ExternalActionGuardHoldMixin {
   _KeystoneShieldPhase _phase = _KeystoneShieldPhase.preparing;
   bool _showSaplingParamsPrompt = false;
   Completer<bool>? _saplingParamsPromptCompleter;
@@ -59,6 +61,10 @@ class _KeystoneShieldSigningOverlayState
   List<int>? _pcztWithProofs;
   SaplingParamsStatus? _saplingParams;
   bool _needsSaplingParams = false;
+
+  /// The signature of a broadcast that waits for private recovery, kept so
+  /// the user can send it again without signing again.
+  List<int>? _retrySignatures;
 
   @override
   void initState() {
@@ -201,6 +207,7 @@ class _KeystoneShieldSigningOverlayState
       _phase = _KeystoneShieldPhase.broadcasting;
       _error = null;
       _statusMessage = null;
+      _retrySignatures = null;
     });
 
     RpcEndpointConfig? attemptedEndpoint;
@@ -252,11 +259,30 @@ class _KeystoneShieldSigningOverlayState
         });
         return;
       }
+      if (isHardwareBroadcastRetryable(e)) {
+        setState(() {
+          _phase = _KeystoneShieldPhase.failed;
+          _error = kShieldWaitingForPrivateRecoveryMessage;
+          _retrySignatures = signatures;
+        });
+        return;
+      }
       setState(() {
         _phase = _KeystoneShieldPhase.failed;
         _error = _friendlyError(e);
       });
     }
+  }
+
+  /// Sends the kept signature again.
+  void _retryBroadcast() {
+    final pcztWithProofs = _pcztWithProofs;
+    final signatures = _retrySignatures;
+    final saplingParams = _saplingParams;
+    if (pcztWithProofs == null || signatures == null || saplingParams == null) {
+      return;
+    }
+    unawaited(_broadcast(pcztWithProofs, signatures, saplingParams));
   }
 
   Future<void> _maybeSwitchBroadcastEndpoint(
@@ -328,6 +354,7 @@ class _KeystoneShieldSigningOverlayState
     final isBroadcasting = _phase == _KeystoneShieldPhase.broadcasting;
     final isBroadcastWarning = _phase == _KeystoneShieldPhase.broadcastWarning;
     final isFailed = _phase == _KeystoneShieldPhase.failed;
+    final canRetry = isFailed && _retrySignatures != null;
     final modalPhase = switch (_phase) {
       _KeystoneShieldPhase.ready => KeystoneSigningModalPhase.ready,
       _KeystoneShieldPhase.failed ||
@@ -360,10 +387,14 @@ class _KeystoneShieldSigningOverlayState
                 : isFailed || isBroadcastWarning
                 ? null
                 : 'After you scanned, click Get Signature.',
-            primaryLabel: isFailed || isBroadcastWarning || isBroadcasting
+            primaryLabel: canRetry
+                ? 'Try again'
+                : isFailed || isBroadcastWarning || isBroadcasting
                 ? null
                 : 'Get Signature',
-            onPrimary: _phase == _KeystoneShieldPhase.ready
+            onPrimary: canRetry
+                ? _retryBroadcast
+                : _phase == _KeystoneShieldPhase.ready
                 ? () => unawaited(_getSignature())
                 : null,
             secondaryLabel: isBroadcasting

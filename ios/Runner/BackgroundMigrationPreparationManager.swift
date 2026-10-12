@@ -1940,7 +1940,6 @@ final class BackgroundMigrationPreparationManager {
           dbPath: manifest.dbPath,
           network: manifest.network,
           transactionIdHex: transactionId,
-          requiredThrough: tip,
           cancellation: cancellation
         ) {
         case .success(let observation):
@@ -1948,7 +1947,8 @@ final class BackgroundMigrationPreparationManager {
         case .failure(.cancelled):
           return .cancelled
         case .failure(.coverageIncomplete):
-          // No observation was made. Retry this wave without failing background work.
+          // No observation was made, for example because the wallet's policy
+          // withholds public lookups. Retry this wave without failing background work.
           queryFailed = true
         case .failure(let error):
           print("[BGPreparation] transaction status query failed error=\(error)")
@@ -2034,31 +2034,23 @@ final class BackgroundMigrationPreparationManager {
     dbPath: String,
     network: String,
     transactionIdHex: String,
-    requiredThrough: UInt64,
     cancellation: BackgroundMigrationCancellation
   ) -> Result<
     NativeLightwalletdTransactionObservation,
     NativeLightwalletdError
   > {
-    guard let requiredThrough = UInt32(exactly: requiredThrough),
-      let storedOrder = Self.transactionIdData(transactionIdHex) else {
+    guard let storedOrder = Self.transactionIdData(transactionIdHex) else {
       return .failure(.malformedResponse)
     }
     let protocolOrder = Data(storedOrder.reversed())
-    // Tracking is skipped in private mode; a pass that races a toggle to private
-    // makes no lookup at all rather than a private query that cannot conclude.
-    let privateStatus = network.withCString {
-      zcash_status_pir_is_enabled($0, BackgroundMigrationPrivateRecovery.isEnabled())
-    }
-    if privateStatus {
-      return .failure(.coverageIncomplete)
-    }
+    // Tracking is skipped in private mode: Rust refuses the lookup and sends
+    // nothing, so a pass that races a toggle to private makes no lookup at all.
+    let privatePreference = BackgroundMigrationPrivateRecovery.isEnabled()
     let first = NativeLightwalletdClient.transaction(
       endpoint: endpoint,
       dbPath: dbPath,
-      privateStatus: false,
       network: network,
-      requiredThrough: requiredThrough,
+      privatePreference: privatePreference,
       transactionId: protocolOrder,
       cancellation: cancellation
     )
@@ -2070,9 +2062,8 @@ final class BackgroundMigrationPreparationManager {
     let second = NativeLightwalletdClient.transaction(
       endpoint: endpoint,
       dbPath: dbPath,
-      privateStatus: false,
       network: network,
-      requiredThrough: requiredThrough,
+      privatePreference: privatePreference,
       transactionId: storedOrder,
       cancellation: cancellation
     )

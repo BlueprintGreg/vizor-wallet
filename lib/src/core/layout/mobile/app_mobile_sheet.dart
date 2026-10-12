@@ -335,6 +335,7 @@ class MobileModalScaffold extends StatelessWidget {
     this.showClose = true,
     this.bodyGap = AppSpacing.sm,
     this.bottomPadding = AppSpacing.md,
+    this.horizontalPadding = AppSpacing.sm,
     this.constrainBody = false,
     super.key,
   });
@@ -361,6 +362,9 @@ class MobileModalScaffold extends StatelessWidget {
   /// its list fills to the card edge.
   final double bottomPadding;
 
+  /// Full-width scrolling bodies may own their content insets separately.
+  final double horizontalPadding;
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
@@ -370,8 +374,8 @@ class MobileModalScaffold extends StatelessWidget {
           padding: EdgeInsets.only(
             top: AppSpacing.base,
             bottom: bottomPadding,
-            left: AppSpacing.sm,
-            right: AppSpacing.sm,
+            left: horizontalPadding,
+            right: horizontalPadding,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

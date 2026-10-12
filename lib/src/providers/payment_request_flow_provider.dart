@@ -334,15 +334,16 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
     _restartPrecheck(current);
   }
 
-  /// Shows [prefill] as a payment request and starts the pre-check.
+  /// Shows [prefill] immediately and completes after its initial pre-check.
   ///
   /// A card already on screen is replaced — latest link wins, matching the
   /// single-slot park in `paymentUriPrefillProvider` — and the replacement says
   /// so rather than silently swapping under the user.
-  void present(
+  Future<void> present(
     SendPrefillArgs prefill, {
     required PaymentRequestSource source,
   }) {
+    prefill = prefill.withRequestSource(source);
     final replaced = state;
     if (replaced?.proposal != null) {
       _track(
@@ -368,7 +369,7 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
         ),
       ),
     );
-    unawaited(_runPrecheck(generation, after: after));
+    return _runPrecheck(generation, after: after);
   }
 
   /// Hands the proposal *back* rather than on, for the mobile review step,

@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/review_info_row.dart';
+import '../../../core/widgets/receipt_loading_skeleton.dart';
 import '../../../core/widgets/review_list_row.dart';
 import '../../../core/widgets/review_wrap_card.dart';
 import '../../send/widgets/send_review_layout.dart';
@@ -23,8 +24,11 @@ class ShieldedReceiptView extends StatelessWidget {
     required this.txIdText,
     this.status = ShieldedReceiptStatus.completed,
     this.feeText,
+    this.feeLabel = 'Tx fee',
+    this.feeHelpText = kTxFeeHelpTooltip,
     this.memoText,
     this.memoExpanded = false,
+    this.memoLoading = false,
     this.onExpandMemo,
     this.onTxIdPressed,
     this.onFeeHelpPressed,
@@ -36,8 +40,13 @@ class ShieldedReceiptView extends StatelessWidget {
   final String txIdText;
   final ShieldedReceiptStatus status;
   final String? feeText;
+  final String feeLabel;
+  final String feeHelpText;
   final String? memoText;
   final bool memoExpanded;
+
+  /// Reserves the collapsed message row until the detail read completes.
+  final bool memoLoading;
   final VoidCallback? onExpandMemo;
   final VoidCallback? onTxIdPressed;
   final VoidCallback? onFeeHelpPressed;
@@ -93,7 +102,7 @@ class ShieldedReceiptView extends StatelessWidget {
                 value: amountText,
                 leading: ClipOval(
                   child: Image.asset(
-                    'assets/icons/network_zec.png',
+                    'assets/icons/desktop/network_zec.png',
                     width: AppAssetSize.size,
                     height: AppAssetSize.size,
                     fit: BoxFit.cover,
@@ -129,7 +138,9 @@ class ShieldedReceiptView extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (memo != null && memo.isNotEmpty)
+                if (memoLoading)
+                  const ReceiptMemoSkeleton()
+                else if (memo != null && memo.isNotEmpty)
                   ReviewMemoRows(
                     memoText: memo,
                     expanded: memoExpanded,
@@ -147,11 +158,11 @@ class ShieldedReceiptView extends StatelessWidget {
             if (feeText != null) ...[
               const ReviewWrapDivider(),
               ReviewListRow(
-                label: 'Tx fee',
+                label: feeLabel,
                 value: feeText!,
                 trailingIconName: AppIcons.help,
                 trailingIconColor: colors.text.secondary,
-                trailingIconTooltip: kTxFeeHelpTooltip,
+                trailingIconTooltip: feeHelpText,
                 onPressed: onFeeHelpPressed,
               ),
             ],

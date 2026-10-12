@@ -23,8 +23,9 @@ use crate::wallet::{
 };
 
 mod broadcast;
-mod payment_link;
+pub(crate) mod payment_link;
 pub(crate) use payment_link::{payment_link_resubmit_exclusions, payment_link_spend_evidence};
+pub(crate) mod hardware_authority;
 mod migration;
 mod migration_wallet_ops;
 mod pczt;
@@ -34,6 +35,7 @@ mod send;
 mod transactions;
 pub(crate) use transactions::has_recovered_status_work;
 pub(crate) use transactions::resolve_recovered_nonmined_status;
+pub(crate) use transactions::ResubmittableTx;
 
 // Keep the existing address API path while its implementation lives with address policy.
 pub use crate::wallet::addresses::{
@@ -104,7 +106,8 @@ pub(crate) use send::{get_orchard_migration_immediate_plan, get_orchard_migratio
 // Internal-only re-export for `sync_engine::run_sync_impl`'s
 // auto-resubmit pass. Not part of the `wallet::sync` public surface.
 pub(crate) use send::migration_anchor_retention_required;
-pub(crate) use send::resubmit_pending_transactions;
+#[cfg(test)]
+pub(super) use send::ConservativeZip317FeeRule;
 #[allow(unused_imports)] // names reachable via `crate::wallet::sync::*`; pre-refactor surface
 pub(crate) use send::ProposalResult;
 #[allow(unused_imports)] // names reachable via `crate::wallet::sync::*`; pre-refactor surface
@@ -115,19 +118,23 @@ pub(crate) use send::ShieldTransparentPcztResult;
 pub(crate) use send::ShieldTransparentResult;
 #[allow(unused_imports)] // names reachable via `crate::wallet::sync::*`; pre-refactor surface
 pub(crate) use send::ShieldTransparentStatus;
+pub(crate) use send::{resubmit_pending_transactions, resubmit_transactions};
 #[allow(unused_imports)] // names reachable via `crate::wallet::sync::*`; pre-refactor surface
 pub(crate) use send::{KeystoneMigrationMessage, KeystoneMigrationSigningRequest};
+#[cfg(test)]
+pub(crate) use transactions::read_wallet_balances;
 pub use transactions::{
     decrypt_and_store_transaction, get_previous_transaction_count_for_address,
     set_transaction_status,
 };
 #[allow(unused_imports)] // ditto
 pub(crate) use transactions::{
-    get_export_birthday_anchor, get_local_block_time,
-    get_oldest_mined_transaction_anchor, get_transaction_data_requests, get_transaction_detail,
-    get_transaction_history, get_unmined_txids_with_mined_output_evidence, get_wallet_balance,
-    get_wallet_balances, ExportBirthdayAnchor, TransactionDetail, TransactionDetailOutput,
-    TransactionInfo, TxDataRequest, WalletBalance, WalletBalanceAvailability,
+    get_export_birthday_anchor, get_local_block_time, get_oldest_mined_transaction_anchor,
+    get_transaction_data_requests, get_transaction_detail, get_transaction_history,
+    get_unmined_txids_with_mined_output_evidence, get_wallet_balance, get_wallet_balances,
+    ExportBirthdayAnchor, TransactionDetail, TransactionDetailOutput, TransactionFeeState,
+    TransactionInfo, TransparentBalanceAuthority, TransparentDetailsView, TransparentRecipientRow,
+    TransparentStopReason, TxDataRequest, WalletBalance, WalletBalanceAvailability,
 };
 
 pub(super) fn open_wallet_db(

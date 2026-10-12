@@ -29,14 +29,14 @@ import 'mobile_passcode_screen.dart' show kMobilePasscodeLength;
 import 'passcode_widgets.dart';
 
 const mobileBiometricSignInBackgroundAsset =
-    'assets/illustrations/mobile_onboarding_auth_background.png';
+    'assets/illustrations/mobile_onboarding_auth_background.webp';
 
 /// Backdrop assets shared by [MobileBiometricSignInView] and the unlock
 /// screen's precache, so the warmed [ImageCache] entries match the providers
 /// painted behind the Face ID sheet (same key -> cache hit, no blank frame).
 const _authBackgroundImage = AssetImage(mobileBiometricSignInBackgroundAsset);
 const _welcomeBadgeImage = AssetImage(
-  'assets/illustrations/welcome_badge_mobile.png',
+  'assets/illustrations/welcome_badge_mobile.webp',
 );
 const _biometricBackdropMaxWait = Duration(milliseconds: 350);
 
@@ -257,7 +257,7 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
           // not a jump into the composer.
           ref
               .read(paymentRequestFlowProvider.notifier)
-              .present(pendingPrefill, source: PaymentRequestSource.link);
+              .present(pendingPrefill, source: pendingPrefill.requestSource);
         } else if (notice != null) {
           // The link outlived its park window while the user was finding their
           // passcode, or the wallet it landed on cannot open it. Landing with

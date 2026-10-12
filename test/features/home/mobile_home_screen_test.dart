@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:zcash_wallet/src/providers/voting/voting_home_cache_provider.dart';
 import 'package:zcash_wallet/src/services/voting/voting_models.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_provider.dart';
@@ -28,6 +29,7 @@ import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/features/home/screens/mobile/mobile_home_screen.dart';
 import 'package:zcash_wallet/src/features/activity/gift_card_activity_index.dart';
 import 'package:zcash_wallet/src/features/activity/widgets/activity_feed.dart';
+import 'package:zcash_wallet/src/features/activity/screens/mobile/mobile_transaction_status_screen.dart';
 import 'package:zcash_wallet/src/features/migration/models/mobile_ironwood_migration_attention_state.dart';
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_announcement_provider.dart';
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_coordinator_provider.dart';
@@ -41,10 +43,13 @@ import 'package:zcash_wallet/src/providers/privacy_mode_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_failure.dart';
 import 'package:zcash_wallet/src/providers/sync_keep_awake_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/features/activity/activity_eta_provider.dart';
 import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
+import 'package:zcash_wallet/src/core/widgets/app_tooltip.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 
 import '../../fakes/fake_sync_notifier.dart';
+import '../../support/wallet_path_read_blocker.dart';
 import '../../fakes/fake_zec_market_data_cache.dart';
 
 /// Skips the secure-storage write so toggling works without a platform
@@ -209,6 +214,7 @@ class _HomeParticipationRecorder extends VotingParticipationCoordinator {
 
 Widget _app(
   SyncState syncState, {
+  Map<String, String>? etaLabels,
   ZecMarketData? marketData = const ZecMarketData(
     usdPrice: 70,
     change24hPct: 13.12,
@@ -236,6 +242,7 @@ Widget _app(
   GiftCardActivityIndex? giftCardActivityIndex,
   AppThemeData theme = AppThemeData.dark,
   AccountState accountState = _accountState,
+  Widget Function(GoRouterState)? receiptBuilder,
 }) {
   final effectiveSyncNotifier = syncNotifier ?? FakeSyncNotifier(syncState);
   final router = GoRouter(
@@ -296,6 +303,7 @@ Widget _app(
       GoRoute(
         path: '/activity/tx/:txid',
         builder: (_, state) =>
+            receiptBuilder?.call(state) ??
             Text('activity tx route ${state.pathParameters['txid']}'),
       ),
       GoRoute(
@@ -326,6 +334,8 @@ Widget _app(
 
   return ProviderScope(
     overrides: [
+      if (etaLabels != null)
+        activityEtaLabelsProvider.overrideWithValue(etaLabels),
       if (participationGuards != null)
         votingParticipationProvider.overrideWith(
           (ref) => _HomeParticipationRecorder(ref, participationGuards),
@@ -551,6 +561,10 @@ rust_sync.TransactionInfo _tx(int index) {
     expiredUnmined: false,
     accountBalanceDelta: 0,
     fee: BigInt.zero,
+    feeState: rust_sync.TransactionFeeState.notApplicable,
+    detailsComplete: true,
+    provisional: false,
+    amountIncludesFee: false,
     blockTime: seconds,
     isTransparent: false,
     txKind: 'received',
@@ -567,6 +581,10 @@ rust_sync.TransactionInfo _sentZecTx({required String txidHex}) {
     expiredUnmined: false,
     accountBalanceDelta: -19540000,
     fee: BigInt.from(15000),
+    feeState: rust_sync.TransactionFeeState.known,
+    detailsComplete: true,
+    provisional: false,
+    amountIncludesFee: false,
     blockTime: BigInt.from(1800000000),
     isTransparent: false,
     txKind: 'sent',
@@ -611,6 +629,10 @@ rust_sync.TransactionInfo _receivedZecTx({
     expiredUnmined: false,
     accountBalanceDelta: zatoshi.toInt(),
     fee: BigInt.zero,
+    feeState: rust_sync.TransactionFeeState.notApplicable,
+    detailsComplete: true,
+    provisional: false,
+    amountIncludesFee: false,
     blockTime: BigInt.from(1800000000),
     isTransparent: false,
     txKind: 'received',
@@ -658,6 +680,46 @@ class _DeferredVotingStore implements VotingHomeCacheStore {
 }
 
 void main() {
+  testWidgets('Home displays ETA in place of the pool subtitle', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(393, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final pending = rust_sync.TransactionInfo(
+      amountIncludesFee: false,
+      detailsComplete: true,
+      feeState: rust_sync.TransactionFeeState.known,
+      provisional: false,
+      txidHex: 'pending-receive',
+      minedHeight: BigInt.zero,
+      expiredUnmined: false,
+      accountBalanceDelta: 100000000,
+      fee: BigInt.zero,
+      blockTime: BigInt.zero,
+      isTransparent: false,
+      txKind: 'receiving',
+      displayAmount: BigInt.from(100000000),
+      displayPool: 'shielded',
+      createdTime: BigInt.zero,
+    );
+    await tester.pumpWidget(
+      _app(
+        _syncedState(
+          orchardBalance: BigInt.from(100000000),
+        ).copyWith(recentTransactions: [pending]),
+        showVoting: false,
+        etaLabels: const {'pending-receive': 'Est. 1–3 min'},
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Receiving...'), findsOneWidget);
+    expect(find.text('Est. 1–3 min'), findsOneWidget);
+    expect(find.text('Shielded'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Home offers only pending backup and opens its account route', (
     tester,
   ) async {
@@ -725,7 +787,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('mobile_settings_route')), findsOneWidget);
+    final settings = find.byKey(const ValueKey('mobile_settings_route'));
+    expect(settings, findsOneWidget);
+    expect(GoRouter.of(tester.element(settings)).canPop(), isFalse);
   });
 
   testWidgets(
@@ -961,6 +1025,50 @@ void main() {
     await tester.tap(entry);
     await tester.pumpAndSettle();
     expect(find.text('voting route'), findsOneWidget);
+  });
+
+  testWidgets('Checking never prompts to keep the screen awake', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final initial = SyncState(
+      accountUuid: 'account-1',
+      hasAccountScopedData: true,
+      isSyncing: true,
+      percentage: 1,
+      scannedHeight: 200,
+      chainTipHeight: 200,
+      remainingScanBlocks: 1000,
+      lastSyncStartedAt: DateTime.now().subtract(const Duration(minutes: 10)),
+      checking: const SyncCheckingProgress(
+        cycle: 1,
+        percentage: 0.25,
+        displayTargetPercentage: 0.5,
+      ),
+    );
+    final notifier = FakeSyncNotifier(initial);
+    await tester.pumpWidget(
+      _app(
+        initial,
+        syncNotifier: notifier,
+        syncKeepAwakeNotifier: _FakeSyncKeepAwakeNotifier(),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Stay awake to sync?'), findsNothing);
+    notifier.emit(
+      initial.copyWith(
+        checking: const SyncCheckingProgress(
+          cycle: 2,
+          percentage: 0.05,
+          displayTargetPercentage: 0.1,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Stay awake to sync?'), findsNothing);
   });
 
   testWidgets('shows the Figma sync keep-awake prompt copy', (tester) async {
@@ -2447,6 +2555,64 @@ void main() {
     expect(find.text('Shield'), findsOneWidget);
   });
 
+  testWidgets('keeps transparent funds a pending spend holds in the tray', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        _syncedState(
+          orchardBalance: BigInt.from(14312000000),
+        ).copyWith(transparentLockedBalance: BigInt.from(242000000)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('mobile_home_transparent_balance_strip')),
+      findsOneWidget,
+    );
+    expect(find.text('Transparent: 2.42 ZEC'), findsOneWidget);
+  });
+
+  testWidgets('shows a stopped recovery with its reason on tap', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        SyncState(
+          accountUuid: 'account-1',
+          hasAccountScopedData: true,
+          percentage: 1.0,
+          orchardBalance: BigInt.from(14312000000),
+          transparentAuthority: rust_sync.TransparentBalanceAuthority.stopped,
+          transparentLastKnownBalance: BigInt.from(242000000),
+          transparentStop: rust_sync.TransparentStopReason.legacyDiscrepancy,
+          transparentPrivate: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.text('Transparent: 2.42 (last known, recovery stopped) ZEC'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('mobile_home_shield_balance_button')),
+      findsNothing,
+    );
+    final hint = tester.widget<AppTooltip>(
+      find.byKey(const ValueKey('mobile_home_transparent_balance_hint')),
+    );
+    expect(
+      hint.message,
+      contains("Earlier public records don't match private recovery"),
+    );
+    expect(hint.tapToShow, isTrue);
+  });
+
   testWidgets('Ledger shielding opens the dedicated mobile Ledger route', (
     tester,
   ) async {
@@ -2819,6 +2985,10 @@ void main() {
           expiredUnmined: false,
           accountBalanceDelta: 445000000,
           fee: BigInt.zero,
+          feeState: rust_sync.TransactionFeeState.notApplicable,
+          detailsComplete: true,
+          provisional: false,
+          amountIncludesFee: false,
           blockTime: height == BigInt.zero
               ? BigInt.zero
               : BigInt.from(1800000100),
@@ -2883,7 +3053,7 @@ void main() {
       for (final row in [placeholder, actualUnmined, actualMined]) {
         expect(row.row.stableId, 'gift-card:home-continuity-card');
         expect(row.row.timestampText, isNot('--'));
-        expect(row.row.subtitle, 'Ironwood');
+        expect(row.row.subtitle, 'Checking status');
         expect(row.row.amountText, '+4.45 ZEC');
       }
       expect(actualUnmined.row.timestampText, placeholder.row.timestampText);
@@ -2983,6 +3153,53 @@ void main() {
     expect(find.text('Sending...'), findsNothing);
     expect(find.text('Sent'), findsNothing);
     expect(find.text('Transparent'), findsNothing);
+  });
+
+  testWidgets('home activity opens before receipt loading completes', (
+    tester,
+  ) async {
+    final history = Completer<List<rust_sync.TransactionInfo>>();
+    final tx = _tx(1);
+    MobileTransactionStatusArgs? suppliedArgs;
+    await tester.binding.setSurfaceSize(const Size(393, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        SyncState(
+          accountUuid: 'account-1',
+          hasAccountScopedData: true,
+          percentage: 1,
+          recentTransactions: [tx],
+        ),
+        showVoting: false,
+        swapEnabled: false,
+        receiptBuilder: (state) {
+          suppliedArgs = state.extra as MobileTransactionStatusArgs;
+          return MobileTransactionStatusScreen(
+            args: suppliedArgs!,
+            historyLoader: (_) => history.future,
+            detailLoader: (_, _) async => null,
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    WalletPathReadBlocker();
+    await tester.tap(find.text('Received'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(MobileTransactionStatusScreen), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(MobileTransactionStatusScreen),
+        matching: find.text('Received'),
+      ),
+      findsOneWidget,
+    );
+    expect(history.isCompleted, isFalse);
+    expect(suppliedArgs!.sourceAccountUuid, _accountState.activeAccountUuid);
+    expect(suppliedArgs!.initialTransaction, same(tx));
+    expect(suppliedArgs!.initialDetail, isNull);
   });
 
   testWidgets('recent activity keeps absorbed receive amount and tap-through', (

@@ -22,8 +22,21 @@ use zcash_client_backend::data_api::enhance_pir::{
     EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_protocol::consensus::BlockHeight;
+/// Debug builds only: overrides the Enhance PIR endpoint. Release builds
+/// always use [`DEFAULT_MAINNET_ENDPOINT`] and never read it.
+#[cfg(debug_assertions)]
 const ENDPOINT_ENV: &str = "VIZOR_ENHANCE_PIR_URL";
-const LEGACY_ENDPOINT_ENV: &str = "VIZOR_MEMO_PIR_URL";
+
+/// The Enhance PIR endpoint: the production service, or in a debug build a
+/// configured override.
+fn enhance_endpoint() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(endpoint) = std::env::var(ENDPOINT_ENV) {
+        return endpoint;
+    }
+    DEFAULT_MAINNET_ENDPOINT.into()
+}
+
 const REDISCOVERY_COVER_BLOCKS: u32 = 100;
 fn routing_is_current_or_newer(current: &Manifest, candidate: &Manifest) -> bool {
     current_or_newer_routing_revision(
@@ -117,11 +130,7 @@ impl RoutedPayloadEnhancement {
         Self {
             network,
             db_path: db_path.into(),
-            endpoint: (enabled && network == WalletNetwork::Main).then(|| {
-                std::env::var(ENDPOINT_ENV)
-                    .or_else(|_| std::env::var(LEGACY_ENDPOINT_ENV))
-                    .unwrap_or_else(|_| DEFAULT_MAINNET_ENDPOINT.into())
-            }),
+            endpoint: (enabled && network == WalletNetwork::Main).then(enhance_endpoint),
             pending_routing: None,
             accepted_routing: None,
             private_failed_for_sync: false,
@@ -327,12 +336,23 @@ impl RoutedPayloadEnhancement {
                                 result => result?,
                             };
                             for (request, record) in work.map_record(result.position, record) {
-                                let result = db.apply(request, &record)?;
-                                if result == EnhancePirStoreResult::Rejected {
-                                    return Err(SyncError::parse(
-                                        "PIR record failed wallet authentication",
-                                    )
-                                    .into());
+                                match db.apply(request, &record)? {
+                                    EnhancePirStoreResult::Rejected => {
+                                        return Err(SyncError::parse(
+                                            "PIR record failed wallet authentication",
+                                        )
+                                        .into());
+                                    }
+                                    // Mixed transaction under a private transparent
+                                    // policy: financial facts are kept and the
+                                    // transparent details stay pending. Never a
+                                    // retry or a public fallback.
+                                    EnhancePirStoreResult::PrivateDetailsUnsupported => {
+                                        log::info!(
+                                            "sync: transparent details of a mixed transaction are unavailable under the private transparent policy"
+                                        );
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

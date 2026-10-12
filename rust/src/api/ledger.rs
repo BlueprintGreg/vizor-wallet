@@ -27,6 +27,9 @@ pub struct LedgerUfvkApduPlan {
 
 /// Complete ordered APDU exchange for one PCZT signing operation.
 pub struct LedgerPcztApduPlan {
+    /// Exchange and verify this probe before sending any command below.
+    pub device_account_key_request: LedgerApduCommand,
+    pub expected_device_public_key: Vec<u8>,
     pub commands: Vec<LedgerApduCommand>,
 }
 
@@ -158,6 +161,8 @@ pub fn ledger_build_pczt_signing_apdu_plan(
     let expected = expected_ledger_account(&db_path, &network, &account_uuid)?;
     ledger::validate_pczt_account(&pczt_bytes, expected)?;
     Ok(LedgerPcztApduPlan {
+        device_account_key_request: to_apdu_command(expected.device_key().request()?),
+        expected_device_public_key: expected.device_public_key.to_vec(),
         commands: ledger::build_pczt_signing_plan(&pczt_bytes, memo_hash_supported)?
             .into_iter()
             .map(to_apdu_command)
@@ -176,11 +181,27 @@ pub fn ledger_build_pczt_full_signing_apdu_plan(
     let expected = expected_ledger_account(&db_path, &network, &account_uuid)?;
     ledger::validate_pczt_account(&pczt_bytes, expected)?;
     Ok(LedgerPcztApduPlan {
+        device_account_key_request: to_apdu_command(expected.device_key().request()?),
+        expected_device_public_key: expected.device_public_key.to_vec(),
         commands: ledger::build_pczt_full_signing_plan(&pczt_bytes, memo_hash_supported)?
             .into_iter()
             .map(to_apdu_command)
             .collect(),
     })
+}
+
+/// Refuse a different seed/account before the mobile transport sends PCZT bytes.
+/// `expected_public_key` comes from the signing plan's stored-account UFVK.
+/// This is an account-key check, not hardware attestation.
+pub fn ledger_validate_device_account_response(
+    expected_public_key: Vec<u8>,
+    response: Vec<u8>,
+) -> Result<(), String> {
+    let expected: [u8; 33] = expected_public_key
+        .try_into()
+        .map_err(|_| "Ledger expected public key must be 33 bytes")?;
+    let data = ledger::apdu::decode_raw_response(&response)?;
+    ledger::device_account::verify_public_key(&expected, &data)
 }
 
 /// Validate raw compact-signing responses and return shielded signatures.
@@ -239,10 +260,12 @@ pub fn ledger_sign_pczt(
 ) -> Result<Vec<LedgerActionSig>, String> {
     let expected = expected_ledger_account(&db_path, &network, &account_uuid)?;
     ledger::validate_pczt_account(&pczt_bytes, expected)?;
-    to_action_sigs(ledger::sign_pczt(
+    to_action_sigs(ledger::sign_pczt_for_account_with_progress(
         &pczt_bytes,
+        &|_, _| {},
         memo_hash_supported,
         app_version.as_deref(),
+        &expected.device_key(),
     )?)
 }
 
@@ -279,15 +302,20 @@ pub fn ledger_sign_pczt_full(
 ) -> Result<Vec<u8>, String> {
     let expected = expected_ledger_account(&db_path, &network, &account_uuid)?;
     ledger::validate_pczt_account(&pczt_bytes, expected)?;
-    ledger::sign_pczt_full(&pczt_bytes, memo_hash_supported, app_version.as_deref()).map_err(
-        |error| {
-            log::error!(
-                "ledger: PCZT signing failed ({} bytes): {error}",
-                pczt_bytes.len()
-            );
-            error
-        },
+    ledger::sign_pczt_full_for_account_with_progress(
+        &pczt_bytes,
+        &|_, _| {},
+        memo_hash_supported,
+        app_version.as_deref(),
+        &expected.device_key(),
     )
+    .map_err(|error| {
+        log::error!(
+            "ledger: PCZT signing failed ({} bytes): {error}",
+            pczt_bytes.len()
+        );
+        error
+    })
 }
 
 /// Durably checkpoint a Ledger-signed PCZT pair before any broadcast attempt.
@@ -300,7 +328,7 @@ pub fn ledger_checkpoint_signed_operation(
     external_ref: Option<String>,
     pczt_with_proofs_bytes: Vec<u8>,
     pczt_with_signatures_bytes: Vec<u8>,
-) -> Result<LedgerSignedOperation, String> {
+) -> Result<LedgerSignedOperation, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::checkpoint_signed_operation(
         &db_path,
@@ -313,6 +341,7 @@ pub fn ledger_checkpoint_signed_operation(
         &pczt_with_signatures_bytes,
     )
     .map(to_signed_operation)
+    .map_err(Into::into)
 }
 
 /// Durably checkpoint every proof/signature PCZT pair for one Ledger operation.
@@ -326,7 +355,7 @@ pub fn ledger_checkpoint_signed_operation_batch(
     external_ref: Option<String>,
     pczt_with_proofs: Vec<Vec<u8>>,
     pczt_with_signatures: Vec<Vec<u8>>,
-) -> Result<LedgerSignedOperation, String> {
+) -> Result<LedgerSignedOperation, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::checkpoint_signed_operation_batch(
         &db_path,
@@ -339,6 +368,7 @@ pub fn ledger_checkpoint_signed_operation_batch(
         &pczt_with_signatures,
     )
     .map(to_signed_operation)
+    .map_err(Into::into)
 }
 
 /// List checkpointed Ledger operations without exposing either PCZT blob.
@@ -360,7 +390,7 @@ pub async fn ledger_broadcast_signed_operation(
     operation_id: String,
     spend_params_path: Option<String>,
     output_params_path: Option<String>,
-) -> Result<LedgerSignedOperationBroadcastResult, String> {
+) -> Result<LedgerSignedOperationBroadcastResult, crate::api::sync::ApiWalletError> {
     let network = parse_ledger_db_network(&db_path, &network)?;
     ledger::broadcast_signed_operation(
         &db_path,
@@ -378,6 +408,7 @@ pub async fn ledger_broadcast_signed_operation(
         message: result.message,
         requires_ack: result.requires_ack,
     })
+    .map_err(Into::into)
 }
 
 /// Acknowledge and delete an operation whose broadcast result is pending.
@@ -435,6 +466,7 @@ fn expected_ledger_account(
         account_index: metadata.account_index,
         coin_type: 133,
         seed_fingerprint: metadata.seed_fingerprint,
+        device_public_key: metadata.device_public_key,
     })
 }
 
@@ -502,20 +534,22 @@ pub fn ledger_sign_with_progress(
         let (signed_pczt, signatures) = if compact {
             (
                 None,
-                to_action_sigs(ledger::sign_pczt_with_progress(
+                to_action_sigs(ledger::sign_pczt_for_account_with_progress(
                     &pczt_bytes,
                     &progress,
                     memo_hash_supported,
                     app_version.as_deref(),
+                    &expected.device_key(),
                 )?)?,
             )
         } else {
             (
-                Some(ledger::sign_pczt_full_with_progress(
+                Some(ledger::sign_pczt_full_for_account_with_progress(
                     &pczt_bytes,
                     &progress,
                     memo_hash_supported,
                     app_version.as_deref(),
+                    &expected.device_key(),
                 )?),
                 vec![],
             )

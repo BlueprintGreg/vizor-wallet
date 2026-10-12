@@ -9,6 +9,7 @@ import '../../rust/api/sync.dart' as rust_sync;
 import 'activity_amount_text.dart';
 import 'gift_card_activity_index.dart';
 import 'models/activity_row_data.dart';
+import 'transaction_completeness.dart';
 
 const _activityAmountPrivacyMaskLength = 3;
 
@@ -31,7 +32,10 @@ ActivityRowData buildTransactionActivityRow({
   String? giftCardStableId,
   DateTime? giftCardActivityTimestamp,
   String? giftCardDisplayPool,
+  String? pendingLabel,
+  bool showPendingEstimate = true,
   bool privacyModeEnabled = false,
+  bool privateQueriesEnabled = false,
   bool dateOnlyTimestamp = false,
   VoidCallback? onTap,
 }) {
@@ -49,12 +53,28 @@ ActivityRowData buildTransactionActivityRow({
   final isShielded = kind == 'shielded';
   final isMigration = kind == 'migration';
   final isInbound = isReceived || isReceiving;
-  final displayPool = giftCardDisplayPool ?? transaction.displayPool;
+  final isPayment = isInbound || isSent;
+  final displayPool = giftCardKind == null
+      ? transactionActivityPool(transaction)
+      : giftCardDisplayPool ?? transactionActivityPool(transaction);
   final signedAmount = isSent ? -amount : amount;
-  final subtitle = isMigration
+  // A balance movement is shown neutrally, without claiming a payment or
+  // a destination pool, even when its exact fee is known.
+  final isNetChange =
+      giftCardKind == null &&
+      giftCardAmountZatoshi == null &&
+      transactionFeePresentation(transaction) !=
+          TransactionFeePresentation.separate;
+  final replacesPool =
+      showPendingEstimate && isPending && (isInbound || isSent);
+  final subtitle = replacesPool
+      ? pendingLabel ?? 'Checking status'
+      : isMigration
       ? 'Orchard → Ironwood'
+      : isNetChange
+      ? null
       : isInbound || isSent
-      ? _poolLabel(displayPool)
+      ? _poolLabel(normalizeActivityPool(displayPool), ordinary: isPayment)
       : null;
 
   // Unconfirmed sends/receives render as in-flight rows: a pulsing loader
@@ -85,6 +105,8 @@ ActivityRowData buildTransactionActivityRow({
                 ? 'Sending'
                 : 'Receiving',
           )
+        : isNetChange
+        ? kNetChangeText
         : _txTitle(kind),
     leadingIconName: giftCardKind != null && !isInFlight
         ? AppIcons.giftCard
@@ -92,7 +114,15 @@ ActivityRowData buildTransactionActivityRow({
     leadingBackgroundColor: colors.background.neutralSubtleOpacity,
     leadingIconColor: colors.icon.regular,
     subtitle: subtitle,
-    subtitleIconName: _poolIcon(displayPool),
+    subtitleIconName: replacesPool
+        ? (subtitle == 'Est. 1–3 min' ||
+                  subtitle == 'Est. 2–6 min' ||
+                  subtitle == 'Taking longer'
+              ? AppIcons.time
+              : null)
+        : isNetChange
+        ? null
+        : _poolIcon(normalizeActivityPool(displayPool), ordinary: isPayment),
     amountText: activityAmountTextForFormFactor(
       _transactionAmountText(
         amount: amount,
@@ -112,7 +142,12 @@ ActivityRowData buildTransactionActivityRow({
         : isInbound
         ? colors.text.positiveStrong
         : outgoingAmountColor(colors),
-    amountSubtitle: isFailed && amount != BigInt.zero ? 'Refunded' : null,
+    amountSubtitle: isFailed && amount != BigInt.zero
+        ? 'Refunded'
+        : privateQueriesEnabled &&
+              transactionActivitySummaryIncomplete(transaction)
+        ? kIncompleteDetailsText
+        : null,
     statusText: isFailed
         ? 'Failed'
         : isPending
@@ -170,6 +205,16 @@ String giftCardActivityTitle(
 /// kinds keep `--` because their zero means the amount is unknown.
 bool transactionShowsZeroAmount(String kind) =>
     kind == 'sent' || kind == 'received' || kind == 'receiving';
+
+/// Pool labels for sends/receipts, including Gift Cards. Migration and
+/// sender-source labels retain their own semantics.
+String transactionActivityPool(rust_sync.TransactionInfo transaction) {
+  final pool = transaction.activityPool ?? transaction.displayPool;
+  return normalizeActivityPool(pool);
+}
+
+String normalizeActivityPool(String pool) =>
+    pool == 'ironwood' ? 'shielded' : pool;
 
 String _stableTransactionRole(String kind) {
   return switch (kind) {
@@ -255,20 +300,23 @@ String _txIcon(String kind, {required bool isPending}) {
   };
 }
 
-String? _poolLabel(String pool) {
+String? _poolLabel(String pool, {bool ordinary = false}) {
   return switch (pool) {
     'transparent' => 'Transparent',
     'shielded' => 'Shielded',
+    'orchard' when ordinary => 'Orchard',
+    'sapling' when ordinary => 'Sapling',
     'ironwood' => 'Ironwood',
     'mixed' => 'Mixed',
     _ => null,
   };
 }
 
-String? _poolIcon(String pool) {
+String? _poolIcon(String pool, {bool ordinary = false}) {
   return switch (pool) {
     'transparent' => AppIcons.transparentBalance,
     'shielded' => AppIcons.shieldKeyholeOutline,
+    'orchard' || 'sapling' when ordinary => AppIcons.shieldKeyholeOutline,
     'ironwood' => AppIcons.shieldKeyholeOutline,
     _ => null,
   };

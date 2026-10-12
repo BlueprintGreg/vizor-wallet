@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/navigation/payment_uri_drain_policy.dart';
+import 'package:zcash_wallet/src/core/navigation/incoming_link_entry_policy.dart';
 import 'package:zcash_wallet/src/core/zcash/zip321_payment_request.dart';
 
 /// Calls [decidePaymentUriDrain] with the "healthy, unlocked, on /home, link
@@ -118,6 +119,13 @@ void main() {
         '/add-account',
         '/onboarding/create',
         '/import/seed',
+        '/gift',
+        '/gift/set-password',
+        '/gift/customise',
+        '/setup/backup',
+        '/setup/education/intro',
+        '/setup/education/address-types',
+        '/setup/education/things-to-know',
       ]) {
         final decision = decide(matchedLocation: location);
         expect(
@@ -151,7 +159,7 @@ void main() {
     test('waits rather than dropping while a signing session is up', () {
       final decision = decide(hasBusySurface: true);
       expect(decision.action, PaymentUriDrainAction.wait);
-      expect(decision.message, isNull);
+      expect(decision.message, kIncomingPaymentBusyMessage);
     });
 
     test('presents once the hold is given back', () {
@@ -210,7 +218,7 @@ void main() {
         sendIsInFlight: true,
       );
       expect(decision.action, PaymentUriDrainAction.wait);
-      expect(decision.message, isNull);
+      expect(decision.message, kIncomingPaymentBusyMessage);
     });
 
     test('presents once the receipt is on screen', () {

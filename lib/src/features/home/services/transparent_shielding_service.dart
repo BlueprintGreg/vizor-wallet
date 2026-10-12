@@ -9,6 +9,8 @@ import '../../../core/storage/app_secure_store.dart';
 import '../../../core/storage/linux_keyring_coordinator.dart';
 import '../../../core/storage/linux_secret_operation_guard.dart';
 import '../../../core/storage/wallet_paths.dart';
+import '../../../core/zcash/transparent_ledger_errors.dart';
+import '../../../core/zcash/wallet_error_code.dart';
 import '../../../providers/account_provider.dart';
 import '../../../providers/app_security_provider.dart';
 import '../../../providers/rpc_endpoint_failover_provider.dart';
@@ -27,7 +29,21 @@ String? shieldBalanceBroadcastStatusMessage(
 }
 
 String friendlyShieldBalanceError(Object error) {
+  switch (walletErrorCode(error)) {
+    case rust_sync.ApiWalletErrorCode.optOutUnfinished:
+      return privateQueriesOptOutUnfinishedMessage;
+    case rust_sync.ApiWalletErrorCode.recoveryIncomplete:
+      return transparentRecoveryIncompleteMessage;
+    default:
+      break;
+  }
   final message = error.toString();
+  if (isTransparentLedgerNeedsNewerBuildError(message)) {
+    return transparentLedgerNeedsNewerBuildMessage;
+  }
+  if (isTransparentRecoveryIncompleteError(message)) {
+    return transparentRecoveryIncompleteMessage;
+  }
   final lower = message.toLowerCase();
   if (lower.contains('mnemonic')) {
     return "Secret Passphrase isn't available for this account.";
@@ -186,6 +202,18 @@ String shieldPcztBroadcastStatusMessage(
   return result.message ??
       'The shield transaction status is uncertain. Check activity before trying again.';
 }
+
+/// Whether a hardware broadcast failed only because private recovery has not
+/// yet covered the wallet's latest block, so the same signature can be sent
+/// again once it has. Only Rust can say so, with its retry code.
+bool isHardwareBroadcastRetryable(Object error) =>
+    walletErrorCode(error) == rust_sync.ApiWalletErrorCode.retryAfterRecovery;
+
+/// Shown when a Keystone shield waits for private recovery, with the signature
+/// kept for another try.
+const kShieldWaitingForPrivateRecoveryMessage =
+    'Private recovery is catching up with the latest block. Try again in a '
+    'moment; your Keystone signature is kept.';
 
 String? postBroadcastShieldErrorMessage(Object error) {
   final raw = error.toString();

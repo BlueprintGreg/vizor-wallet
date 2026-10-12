@@ -79,7 +79,11 @@ class AppBootstrapState {
   final bool swapEnabledOverrideCachedForRelease;
   final bool syncKeepAwakeEnabled;
   final bool syncKeepAwakePromptSeen;
-  final bool enhancePirEnabled;
+
+  /// The saved private queries setting, or `null` when it could not be read.
+  /// An unreadable setting is private for this launch, but unconfirmed: see
+  /// [readEnhancePirEnabledPreference].
+  final bool? enhancePirEnabled;
 
   /// Whether biometric unlock was enabled at startup, read synchronously from
   /// secure storage. The unlock screen uses this to paint the biometric
@@ -141,6 +145,11 @@ class AppSyncSnapshot {
     required this.ironwoodBalance,
     required this.orchardLockedBalance,
     required this.transparentPendingBalance,
+    this.transparentLockedBalance,
+    this.transparentAuthority = rust_sync.TransparentBalanceAuthority.current,
+    this.transparentLastKnownBalance,
+    this.transparentStop,
+    this.transparentPrivate = false,
     required this.saplingPendingBalance,
     required this.orchardPendingBalance,
     required this.ironwoodPendingBalance,
@@ -164,6 +173,19 @@ class AppSyncSnapshot {
   final BigInt ironwoodBalance;
   final BigInt orchardLockedBalance;
   final BigInt transparentPendingBalance;
+
+  /// See `SyncState.transparentLockedBalance`; `null` is none.
+  final BigInt? transparentLockedBalance;
+
+  /// See `SyncState.transparentAuthority`.
+  final rust_sync.TransparentBalanceAuthority transparentAuthority;
+  final BigInt? transparentLastKnownBalance;
+
+  /// See `SyncState.transparentStop`.
+  final rust_sync.TransparentStopReason? transparentStop;
+
+  /// See `SyncState.transparentPrivate`.
+  final bool transparentPrivate;
   final BigInt saplingPendingBalance;
   final BigInt orchardPendingBalance;
   final BigInt ironwoodPendingBalance;
@@ -665,12 +687,14 @@ Future<bool> _readPlainBool(
 /// so an upgrading install keeps the choice it already made.
 ///
 /// A preference read must never block bootstrap, but an unreadable value is
-/// unknown, not off. It resolves to private for this launch only: nothing is
-/// written back, so the next launch that can read the saved choice uses it.
-/// Resolving to off would release native background work from its private
-/// default and send public lookups for a user who opted in.
+/// unknown, not off. It returns `null`, which applies as private for this
+/// launch only: nothing is written back, so the next launch that can read the
+/// saved choice uses it. Resolving to off would release native background
+/// work from its private default and send public lookups for a user who opted
+/// in. An unknown value is never a confirmed choice, so it never durably
+/// raises a wallet's transparent policy either.
 @visibleForTesting
-Future<bool> readEnhancePirEnabledPreference(
+Future<bool?> readEnhancePirEnabledPreference(
   AppSecureStore storage, {
   EnhancePirPreferenceStore preferences =
       const SharedPreferencesEnhancePirStore(),
@@ -683,7 +707,7 @@ Future<bool> readEnhancePirEnabledPreference(
       'bootstrap: failed to read private queries preference; '
       'using private for this launch: $e',
     );
-    return true;
+    return null;
   }
   var legacyEnabled = false;
   try {
@@ -695,7 +719,7 @@ Future<bool> readEnhancePirEnabledPreference(
       'bootstrap: failed to read legacy private queries flag; '
       'using private for this launch: $e',
     );
-    return true;
+    return null;
   }
   try {
     await preferences.writeEnabled(legacyEnabled);
@@ -813,6 +837,11 @@ Future<AppSyncSnapshot> _loadInitialSyncSnapshot({
       ironwoodBalance: balance.ironwood,
       orchardLockedBalance: balance.orchardLocked,
       transparentPendingBalance: balance.transparentPending,
+      transparentLockedBalance: balance.transparentLocked,
+      transparentAuthority: balance.transparentAuthority,
+      transparentLastKnownBalance: balance.transparentLastKnown,
+      transparentStop: balance.transparentStop,
+      transparentPrivate: balance.transparentPrivate,
       saplingPendingBalance: balance.saplingPending,
       orchardPendingBalance: balance.orchardPending,
       ironwoodPendingBalance: balance.ironwoodPending,

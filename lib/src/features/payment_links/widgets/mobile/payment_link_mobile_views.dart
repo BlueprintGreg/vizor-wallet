@@ -13,6 +13,7 @@ import '../payment_link_action.dart';
 import '../payment_link_card_motion.dart';
 import '../payment_link_cards_layout.dart';
 import '../payment_link_copy.dart';
+import '../payment_link_claim_checking_content.dart';
 import '../payment_link_dashed_border_painter.dart';
 import '../payment_link_skeleton.dart';
 import '../payment_link_wizard_chrome.dart';
@@ -53,7 +54,7 @@ const _supportingTextAllowance = 44.0;
 
 enum PaymentLinkRedeemMobileState { paste, loading, invalid }
 
-enum PaymentLinkReadyMobileState { waiting, soon, ready }
+enum PaymentLinkReadyMobileState { checking, waiting, soon, ready }
 
 class PaymentLinkHowItWorksMobileSheet extends StatelessWidget {
   const PaymentLinkHowItWorksMobileSheet({
@@ -209,83 +210,89 @@ class PaymentLinksHomeMobileView extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: AppSpacing.base),
                 child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 340,
-                        height: 220,
-                        child: Center(
-                          child: SizedBox(
-                            key: const ValueKey(
-                              'payment_links_mobile_empty_illustration',
-                            ),
-                            width: 300,
-                            height: 200,
-                            child: illustration,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: AppSpacing.base),
-                      Text(
-                        title,
-                        key: const ValueKey('payment_links_mobile_empty_title'),
-                        textAlign: TextAlign.center,
-                        style: AppTypography.headlineLarge.copyWith(
-                          color: context.colors.text.accent,
-                        ),
-                      ),
-                      const SizedBox(height: AppSpacing.s),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              helpLabel,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 340,
+                          height: 220,
+                          child: Center(
+                            child: SizedBox(
                               key: const ValueKey(
-                                'payment_links_mobile_help_label',
+                                'payment_links_mobile_empty_illustration',
                               ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: AppTypography.bodyMedium.copyWith(
-                                color: context.colors.text.secondary,
-                              ),
+                              width: 300,
+                              height: 200,
+                              child: illustration,
                             ),
                           ),
-                          const SizedBox(width: AppSpacing.xxs),
-                          SizedBox(
-                            width: 20,
-                            height: 36,
-                            child: PaymentLinkAction(
-                              key: const ValueKey(
-                                'payment_links_mobile_help_action',
+                        ),
+                        const SizedBox(height: AppSpacing.base),
+                        Text(
+                          title,
+                          key: const ValueKey(
+                            'payment_links_mobile_empty_title',
+                          ),
+                          textAlign: TextAlign.center,
+                          style: AppTypography.headlineLarge.copyWith(
+                            color: context.colors.text.accent,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.s),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                helpLabel,
+                                key: const ValueKey(
+                                  'payment_links_mobile_help_label',
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppTypography.bodyMedium.copyWith(
+                                  color: context.colors.text.secondary,
+                                ),
                               ),
-                              onPressed: onShowHelp,
-                              semanticLabel: 'Show how gift cards work',
-                              builder: (context, _, focused) => Center(
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: focused
-                                        ? Border.all(
-                                            color:
-                                                context.colors.state.focusRing,
-                                            width: 2,
-                                          )
-                                        : null,
-                                  ),
-                                  child: AppIcon(
-                                    AppIcons.help,
-                                    size: 16,
-                                    color: context.colors.icon.regular,
+                            ),
+                            const SizedBox(width: AppSpacing.xxs),
+                            SizedBox(
+                              width: 20,
+                              height: 36,
+                              child: PaymentLinkAction(
+                                key: const ValueKey(
+                                  'payment_links_mobile_help_action',
+                                ),
+                                onPressed: onShowHelp,
+                                semanticLabel: 'Show how gift cards work',
+                                builder: (context, _, focused) => Center(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: focused
+                                          ? Border.all(
+                                              color: context
+                                                  .colors
+                                                  .state
+                                                  .focusRing,
+                                              width: 2,
+                                            )
+                                          : null,
+                                    ),
+                                    child: AppIcon(
+                                      AppIcons.help,
+                                      size: 16,
+                                      color: context.colors.icon.regular,
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1258,6 +1265,7 @@ class PaymentLinkReadyMobileView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ready = state == PaymentLinkReadyMobileState.ready;
+    final checking = state == PaymentLinkReadyMobileState.checking;
     final canFlip = ready && onCardTap != null;
     final motionCard = ready
         ? PaymentLinkCardMotion(
@@ -1283,6 +1291,30 @@ class PaymentLinkReadyMobileView extends StatelessWidget {
             ),
           )
         : motionCard;
+
+    if (checking) {
+      return LayoutBuilder(
+        builder: (context, constraints) => SizedBox(
+          width: constraints.maxWidth,
+          child: SingleChildScrollView(
+            key: const ValueKey('payment_link_mobile_checking_view'),
+            padding: const EdgeInsets.fromLTRB(
+              _sideInset,
+              108,
+              _sideInset,
+              AppSpacing.md,
+            ),
+            child: PaymentLinkClaimCheckingContent(
+              card: cardContent,
+              status: _MobileDashedStatusPill(
+                label: waitingStatusLabel,
+                icon: AppIcons.time,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) => _MobileStageViewport(
@@ -1715,15 +1747,23 @@ class PaymentLinkReceivedMobileView extends StatelessWidget {
 }
 
 class PaymentLinkLoadingMobileCard extends StatelessWidget {
-  const PaymentLinkLoadingMobileCard({super.key});
+  const PaymentLinkLoadingMobileCard({
+    this.cardWidth = _redeemCheckingCardWidth,
+    this.cardHeight = _redeemCheckingCardHeight,
+    super.key,
+  }) : assert(cardWidth > 0),
+       assert(cardHeight > 0);
+
+  final double cardWidth;
+  final double cardHeight;
 
   @override
   Widget build(BuildContext context) {
     final skeletonColor = context.colors.text.secondary;
     return Container(
       key: const ValueKey('payment_link_mobile_loading_card'),
-      width: _redeemCheckingCardWidth,
-      height: _redeemCheckingCardHeight,
+      width: cardWidth,
+      height: cardHeight,
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: context.colors.background.ground,
@@ -1767,6 +1807,18 @@ class PaymentLinkLoadingMobileCard extends StatelessWidget {
   }
 }
 
+/// Progress details used by both checking and the stable gift-claim stage.
+class PaymentLinkMobileCheckingDetails extends StatelessWidget {
+  const PaymentLinkMobileCheckingDetails({required this.label, super.key});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => PaymentLinkClaimCheckingDetails(
+    status: _MobileDashedStatusPill(label: label, icon: AppIcons.time),
+  );
+}
+
 class _MobileRedeemDropZone extends StatelessWidget {
   const _MobileRedeemDropZone({required this.child});
 
@@ -1804,19 +1856,25 @@ class _MobileDashedStatusPill extends StatelessWidget {
         radius: AppRadii.full,
         strokeWidth: 2,
       ),
-      child: SizedBox(
-        height: 36,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 36),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.s,
+            vertical: AppSpacing.xs,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               AppIcon(icon, size: 20, color: context.colors.text.primary),
               const SizedBox(width: AppSpacing.xxs),
-              Text(
-                label,
-                style: AppTypography.labelLarge.copyWith(
-                  color: context.colors.text.primary,
+              Flexible(
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: AppTypography.labelLarge.copyWith(
+                    color: context.colors.text.primary,
+                  ),
                 ),
               ),
             ],

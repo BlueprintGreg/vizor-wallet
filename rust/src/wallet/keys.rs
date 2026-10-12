@@ -395,6 +395,20 @@ pub fn software_account_first_external_transparent_address(
     seed: &SecretVec<u8>,
     account_index: u32,
 ) -> Result<String, String> {
+    let taddr = software_account_first_external_transparent_receiver(network, seed, account_index)?;
+    Ok(encode_transparent_address(
+        &network.b58_pubkey_address_prefix(),
+        &network.b58_script_address_prefix(),
+        &taddr,
+    ))
+}
+
+/// The transparent receiver at `m/44'/coin_type'/account'/0/0`, unencoded.
+pub(crate) fn software_account_first_external_transparent_receiver(
+    network: WalletNetwork,
+    seed: &SecretVec<u8>,
+    account_index: u32,
+) -> Result<transparent::address::TransparentAddress, String> {
     let ufvk = software_account_ufvk(network, seed, account_index)?;
     let transparent_key = ufvk
         .transparent()
@@ -402,15 +416,9 @@ pub fn software_account_first_external_transparent_address(
     let external_ivk = transparent_key
         .derive_external_ivk()
         .map_err(|e| format!("Failed to derive transparent external IVK: {e}"))?;
-    let taddr = external_ivk
+    external_ivk
         .derive_address(NonHardenedChildIndex::ZERO)
-        .map_err(|e| format!("Failed to derive transparent address index 0: {e}"))?;
-
-    Ok(encode_transparent_address(
-        &network.b58_pubkey_address_prefix(),
-        &network.b58_script_address_prefix(),
-        &taddr,
-    ))
+        .map_err(|e| format!("Failed to derive transparent address index 0: {e}"))
 }
 
 /// Return the standard transparent receivers for `account'` across the first
@@ -726,6 +734,8 @@ pub struct AccountExportMetadata {
 pub(crate) struct LedgerAccountSigningMetadata {
     pub account_index: u32,
     pub seed_fingerprint: [u8; 32],
+    /// First external BIP-44 public key, used to check the device before signing.
+    pub device_public_key: [u8; 33],
 }
 
 pub struct SoftwareSeedAccountState {
@@ -972,9 +982,20 @@ pub(crate) fn get_ledger_account_signing_metadata(
         .key_derivation()
         .ok_or("Ledger account derivation metadata is unavailable")?;
 
+    let device_public_key = account
+        .ufvk()
+        .and_then(|ufvk| ufvk.transparent())
+        .ok_or("Ledger account has no transparent viewing key")?
+        .derive_address_pubkey(
+            transparent::keys::TransparentKeyScope::EXTERNAL,
+            NonHardenedChildIndex::ZERO,
+        )
+        .map_err(|e| format!("Derive Ledger account public key: {e}"))?
+        .serialize();
     Ok(LedgerAccountSigningMetadata {
         account_index: u32::from(derivation.account_index()),
         seed_fingerprint: derivation.seed_fingerprint().to_bytes(),
+        device_public_key,
     })
 }
 
@@ -997,7 +1018,18 @@ pub fn list_account_uuids_from_db(db_path: &str) -> Result<Vec<String>, String> 
     Ok(uuids)
 }
 
-/// Delete an account from the wallet database.
+/// Delete an existing account and its lifecycle state atomically.
+///
+/// The library checks durable policy compatibility before deleting wallet-owned
+/// rows. Vizor cleanup shares the caller-owned transaction; any refusal or cleanup
+/// failure rolls back both. Cache eviction and process-local cleanup follow commit.
+/// The UI handles deleting the last account as a full wallet reset.
+///
+/// The account's transparent PIR companions are deleted after the wallet write
+/// lock is released: a recovery source holding one may be waiting for that lock
+/// to apply its commits. A companion left behind is deleted at the next sync
+/// start (`remove_orphan_companions`) or when another account's companion is
+/// next opened.
 pub fn delete_account(
     db_path: &str,
     network: WalletNetwork,
@@ -1010,10 +1042,6 @@ pub fn delete_account(
             .map_err(|e| format!("Failed to load account: {e}"))?
             .ok_or_else(|| format!("Account not found: {}", account_id.expose_uuid()))?;
 
-        // zcash_client_sqlite 0.19.5 has a named-parameter bug in
-        // wallet::delete_account: the sent_notes rewrite binds `:address`
-        // while the SQL expects `:to_address`. Keep this local copy aligned
-        // with upstream except for that binding until the dependency is fixed.
         drop(db);
         delete_account_rows(db_path, network, account_id)?;
         crate::wallet::wallet_summary_cache::evict_db(db_path);
@@ -1025,8 +1053,15 @@ pub fn delete_account(
                 "Failed to discard Keystone migration requests after deleting account: {error}"
             );
         }
-        Ok(())
-    })
+        Ok::<_, String>(())
+    })?;
+    if let Err(error) = crate::wallet::sync_engine::transparent_ledger::pir::remove_companions(
+        db_path,
+        account_uuid,
+    ) {
+        log::warn!("Failed to delete transparent PIR companions after deleting account: {error}");
+    }
+    Ok(())
 }
 
 fn delete_account_rows(
@@ -1050,88 +1085,21 @@ fn delete_account_rows(
     let account_uuid_text = account_uuid.to_string();
     let account_uuid_bytes = account_uuid.as_bytes().as_slice();
 
+    // The library owns wallet deletion and its compatibility/lifecycle checks. Borrow
+    // our transaction so all Vizor cleanup either commits with it or rolls back with it.
     {
-        let mut to_account_tx = tx
-            .prepare(
-                r#"
-                SELECT
-                    sn.id AS sent_note_id,
-                    COALESCE(addresses.address, addresses.cached_transparent_receiver_address) AS to_address
-                FROM sent_notes sn
-                JOIN v_received_outputs ro ON ro.sent_note_id = sn.id
-                JOIN addresses ON addresses.id = ro.address_id
-                JOIN accounts ta ON ta.id = sn.to_account_id
-                WHERE ta.uuid = :account_uuid
-                "#,
-            )
-            .map_err(|e| format!("Failed to prepare sent note rewrite query: {e}"))?;
-
-        let mut update_sent_note = tx
-            .prepare(
-                r#"
-                UPDATE sent_notes
-                SET to_address = :to_address, to_account_id = NULL
-                WHERE id = :sent_note_id
-                "#,
-            )
-            .map_err(|e| format!("Failed to prepare sent note rewrite update: {e}"))?;
-
-        let mut rows = to_account_tx
-            .query(named_params![":account_uuid": account_uuid_bytes])
-            .map_err(|e| format!("Failed to query sent notes for account deletion: {e}"))?;
-        while let Some(row) = rows
-            .next()
-            .map_err(|e| format!("Failed to read sent notes for account deletion: {e}"))?
-        {
-            if let Some(address) = row
-                .get::<_, Option<String>>("to_address")
-                .map_err(|e| format!("Failed to read sent note destination address: {e}"))?
-            {
-                update_sent_note
-                    .execute(named_params![
-                        ":sent_note_id": row
-                            .get::<_, i64>("sent_note_id")
-                            .map_err(|e| format!("Failed to read sent note id: {e}"))?,
-                        ":to_address": address,
-                    ])
-                    .map_err(|e| format!("Failed to rewrite sent note destination: {e}"))?;
-            }
-        }
+        use crate::wallet::sync_engine::enhancement::transparent_ledger_mode_for;
+        let mut db = zcash_client_sqlite::WalletDb::from_connection(
+            zcash_client_sqlite::SqlTransaction::new(&tx),
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            voting_crypto_deps::rand::rngs::OsRng,
+        )
+        .with_transparent_ledger_mode(transparent_ledger_mode_for(db_path, network));
+        use zcash_client_backend::data_api::WalletWrite;
+        db.delete_account(account_id)
+            .map_err(|e| format!("Failed to delete account: {e}"))?;
     }
-
-    tx.execute(
-        r#"
-        WITH account_transactions AS (
-            SELECT ro.transaction_id
-            FROM v_received_outputs ro
-            JOIN accounts a ON a.id = ro.account_id
-            WHERE a.uuid = :account_uuid
-            UNION
-            SELECT ros.transaction_id
-            FROM v_received_output_spends ros
-            JOIN accounts sa ON sa.id = ros.account_id
-            WHERE sa.uuid = :account_uuid
-        ),
-        non_account_transactions AS (
-            SELECT ro.transaction_id
-            FROM v_received_outputs ro
-            JOIN accounts a ON a.id = ro.account_id
-            WHERE a.uuid != :account_uuid
-            UNION
-            SELECT ros.transaction_id
-            FROM v_received_output_spends ros
-            JOIN accounts sa ON sa.id = ros.account_id
-            WHERE sa.uuid != :account_uuid
-        )
-        DELETE FROM transactions WHERE id_tx IN (
-            SELECT transaction_id FROM account_transactions
-            EXCEPT
-            SELECT transaction_id FROM non_account_transactions
-        )
-        "#,
-        named_params![":account_uuid": account_uuid_bytes],
-    )
-    .map_err(|e| format!("Failed to delete account-only transactions: {e}"))?;
 
     addresses::delete_account(&tx, account_uuid_bytes)?;
     crate::wallet::sync_engine::ledger_discovery::delete_account(&tx, account_uuid_bytes)?;
@@ -1141,12 +1109,6 @@ fn delete_account_rows(
         network,
         &account_uuid_text,
     )?;
-
-    tx.execute(
-        "DELETE FROM accounts WHERE uuid = :account_uuid",
-        named_params![":account_uuid": account_uuid_bytes],
-    )
-    .map_err(|e| format!("Failed to delete account: {e}"))?;
 
     // Restore the "below the wallet birthday = Ignored" invariant for any
     // historical scan range that only the just-deleted account required. See
@@ -2284,6 +2246,18 @@ mod tests {
             get_ledger_account_signing_metadata(db_path_str, WalletNetwork::Main, &uuid).unwrap();
         assert_eq!(signing.account_index, 7);
         assert_eq!(signing.seed_fingerprint, seed_fingerprint);
+        assert_eq!(
+            signing.device_public_key,
+            usk.to_unified_full_viewing_key()
+                .transparent()
+                .unwrap()
+                .derive_address_pubkey(
+                    transparent::keys::TransparentKeyScope::EXTERNAL,
+                    transparent::keys::NonHardenedChildIndex::ZERO,
+                )
+                .unwrap()
+                .serialize()
+        );
     }
 
     #[test]

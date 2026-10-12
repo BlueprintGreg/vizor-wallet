@@ -7,6 +7,8 @@ import 'package:zcash_wallet/src/features/payment_links/services/payment_link_ha
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_ledger_funding_service.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_recovery_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_service.dart';
+import 'package:zcash_wallet/src/rust/api/sync.dart'
+    show ApiWalletError, ApiWalletErrorCode;
 
 final ledgerGiftLink = VizorPaymentLink(
   label: 'Gift card',
@@ -40,6 +42,8 @@ class LedgerGiftHarness {
       },
       refresh: () async {},
       currentChainHeight: () => ledgerGiftChainHeight,
+      onAcceptedBroadcast: (account, txids) =>
+          acceptedBroadcasts.add((account, txids)),
     );
   }
   final storage = LedgerGiftStorage();
@@ -51,6 +55,7 @@ class LedgerGiftHarness {
   bool accountExists = true;
   int releases = 0;
   final settlements = <String?>[];
+  final acceptedBroadcasts = <(String, String)>[];
   Future<PaymentLinkHardwarePcztDraft> prepare() async {
     final draft = await service.prepare(
       accountUuid: 'account-1',
@@ -215,8 +220,10 @@ class LedgerGiftOperations implements LedgerSignedOperationService {
     await broadcastGate?.future;
     if (terminalRejection) {
       entry = null;
-      throw StateError(
-        'Ledger signed operation cannot be retried: broadcast rejected',
+      throw const ApiWalletError(
+        code: ApiWalletErrorCode.ledgerOperationTerminal,
+        message:
+            'Ledger signed operation cannot be retried: broadcast rejected',
       );
     }
     final old = entry!;

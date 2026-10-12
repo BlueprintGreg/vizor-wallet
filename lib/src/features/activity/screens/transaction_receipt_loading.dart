@@ -1,0 +1,558 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../../main.dart' show log;
+import '../../../core/storage/wallet_paths.dart';
+import '../../../providers/account_provider.dart';
+import '../../../providers/enhance_pir_provider.dart';
+import '../../../providers/rpc_endpoint_provider.dart';
+import '../../../providers/sync_provider.dart';
+import '../../../rust/api/sync.dart' as rust_sync;
+import '../../payment_links/services/payment_link_transaction_matching.dart';
+import '../gift_card_activity_index.dart';
+import '../public_details_load.dart';
+import '../transaction_completeness.dart';
+import '../widgets/public_details_lookup_dialog.dart';
+
+/// Loads the transaction history; injectable so previews and widget tests can
+/// avoid the Rust FFI.
+typedef ActivityTxHistoryLoader =
+    Future<List<rust_sync.TransactionInfo>> Function(String accountUuid);
+
+/// Loads one transaction's detail; injectable for previews and widget tests.
+typedef ActivityTxDetailLoader =
+    Future<rust_sync.TransactionDetail?> Function(
+      String accountUuid,
+      rust_sync.TransactionInfo transaction,
+    );
+
+/// Asks the next sync to look a transaction's transparent details up first;
+/// injectable for widget tests.
+typedef TransparentDetailsPrioritizer = Future<void> Function(String txidHex);
+
+/// Development builds only: one private lookup, described in a line;
+/// injectable for widget tests.
+typedef TransparentDetailsDebugLookup =
+    Future<String> Function(rust_sync.TransactionInfo transaction);
+
+/// Loads one transaction's full details from the server after the user
+/// confirmed; injectable for widget tests.
+typedef TransparentDetailsPublicLookup =
+    Future<void> Function(rust_sync.TransactionInfo transaction);
+
+/// Asks the user before a public lookup; injectable for widget tests.
+typedef PublicLookupConfirmation = Future<bool> Function(BuildContext context);
+
+/// What a receipt screen opens on. The tapped row passes its
+/// [initialTransaction] so the screen renders at once; the screen then
+/// refreshes itself from the wallet database.
+abstract interface class TransactionReceiptArgs {
+  String get txidHex;
+  String? get txKind;
+  rust_sync.TransactionInfo? get initialTransaction;
+  rust_sync.TransactionDetail? get initialDetail;
+
+  /// Account that supplied the row and its metadata. Absent for direct links.
+  String? get sourceAccountUuid;
+
+  /// Set when the tapped row already resolved this transaction as a Gift
+  /// Card.
+  GiftCardActivityMetadata? get giftCard;
+}
+
+/// A desktop or mobile receipt of one transaction, with the test seams its
+/// [TransactionReceiptLoading] state reads.
+abstract class TransactionReceiptScreen extends ConsumerStatefulWidget {
+  const TransactionReceiptScreen({
+    super.key,
+    this.historyLoader,
+    this.detailLoader,
+    this.transparentDetailsPrioritizer,
+    this.transparentDetailsDebugLookup,
+    this.transparentDetailsPublicLookup,
+    this.publicLookupConfirmation = confirmPublicDetailsLookup,
+    this.showPrivateLookupDiagnostics = kDebugMode,
+  });
+
+  TransactionReceiptArgs get receiptArgs;
+
+  /// Test seam — production reads the wallet DB through Rust.
+  @visibleForTesting
+  final ActivityTxHistoryLoader? historyLoader;
+
+  /// Test seam — production reads the wallet DB through Rust.
+  @visibleForTesting
+  final ActivityTxDetailLoader? detailLoader;
+
+  /// Test seam — production asks Rust.
+  @visibleForTesting
+  final TransparentDetailsPrioritizer? transparentDetailsPrioritizer;
+
+  /// Test seam — production asks Rust.
+  @visibleForTesting
+  final TransparentDetailsDebugLookup? transparentDetailsDebugLookup;
+
+  /// Test seam — production asks Rust.
+  @visibleForTesting
+  final TransparentDetailsPublicLookup? transparentDetailsPublicLookup;
+
+  /// Test seam — production shows [PublicDetailsLookupDialog].
+  final PublicLookupConfirmation publicLookupConfirmation;
+
+  /// Whether this is a development build that offers the private lookup
+  /// button.
+  final bool showPrivateLookupDiagnostics;
+}
+
+/// Loads and refreshes what a receipt screen shows, for desktop and mobile
+/// alike: the transaction's Activity row, then its detail; the follow-up
+/// that re-reads the detail while its transparent details are on the way;
+/// and the development and public lookups the receipt offers.
+///
+/// Every load bumps a generation, and a result is shown only while its
+/// generation and account are still current, so a superseded or another
+/// account's read is never shown. Screens render from the getters here and
+/// call [listenForReceiptRefresh] at the top of `build`.
+mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
+    on ConsumerState<W> {
+  rust_sync.TransactionInfo? _transaction;
+  rust_sync.TransactionDetail? _detail;
+  bool _isLoading = false;
+  // A null detail can mean pending, unavailable, or failed. Keep the read
+  // state separate, and show placeholders only without a matching cached detail.
+  bool _detailsPending = true;
+  String? _error;
+  String? _activeAccountUuid;
+  String? _argsAccountUuid;
+  int _loadGeneration = 0;
+  Timer? _transparentDetailsPoll;
+  bool _transparentDetailsPollInFlight = false;
+  bool _transparentDetailsPrioritized = false;
+  String? _debugLookupText;
+  int _debugLookupGeneration = 0;
+  String? _publicLookupText;
+  bool _publicLookupRunning = false;
+
+  /// The Activity row shown, or `null` until one loads.
+  rust_sync.TransactionInfo? get receiptTransaction => _transaction;
+
+  /// The last detail read, which may belong to a row no longer shown; see
+  /// [matchingReceiptDetailFor].
+  rust_sync.TransactionDetail? get receiptDetail => _detail;
+
+  /// Whether no row is shown yet because one is loading.
+  bool get receiptLoading => _isLoading;
+
+  /// Why the last load failed, if it did.
+  String? get receiptError => _error;
+
+  /// The account the shown receipt was loaded for.
+  String? get receiptAccountUuid => _activeAccountUuid;
+
+  /// The account the route's row and metadata came from.
+  String? get receiptArgsAccountUuid => _argsAccountUuid;
+
+  String? get debugLookupText => _debugLookupText;
+  String? get publicLookupText => _publicLookupText;
+
+  /// Whether the shown row's detail is still loading with no cached detail to
+  /// show meanwhile.
+  bool get receiptDetailsLoading =>
+      _detailsPending && matchingReceiptDetailFor(_transaction) == null;
+
+  /// Called once after the first frame, before the first load.
+  @protected
+  void onReceiptFirstFrame() {}
+
+  /// Clears what the screen keeps of the previous account's receipt; called
+  /// inside the `setState` of a load whose account changed.
+  @protected
+  void onReceiptAccountChanged() {}
+
+  @override
+  void initState() {
+    super.initState();
+    final args = widget.receiptArgs;
+    _transaction = args.initialTransaction;
+    _detail = args.initialDetail;
+    _activeAccountUuid = ref.read(accountProvider).value?.activeAccountUuid;
+    _argsAccountUuid = args.sourceAccountUuid ?? _activeAccountUuid;
+    if (_argsAccountUuid != _activeAccountUuid) {
+      _transaction = null;
+      _detail = null;
+    }
+    _isLoading = _transaction == null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      onReceiptFirstFrame();
+      unawaited(loadReceipt());
+    });
+  }
+
+  @override
+  void dispose() {
+    _transparentDetailsPoll?.cancel();
+    super.dispose();
+  }
+
+  /// Reloads the receipt when the account changes, when the shown row changes
+  /// among the recent transactions, when sync completes again, and when a
+  /// follow-up finishes after completion. Call at the top of `build`.
+  void listenForReceiptRefresh() {
+    ref.listen<AsyncValue<AccountState>>(accountProvider, (previous, next) {
+      final nextUuid = next.value?.activeAccountUuid;
+      if (nextUuid != _activeAccountUuid) unawaited(loadReceipt());
+    });
+    ref.listen<AsyncValue<SyncState>>(syncProvider, (previous, next) {
+      // Enhancement can change older rows outside the ten recent transactions,
+      // and the deferred account refresh and ephemeral address checks report
+      // completion again after scanning already completed.
+      final syncCompleted =
+          next.value?.isSyncComplete == true &&
+          (previous?.value?.isSyncComplete != true ||
+              previous?.value?.lastSyncCompletedAt !=
+                  next.value?.lastSyncCompletedAt);
+      if (_recentTxSignature(previous?.value) !=
+              _recentTxSignature(next.value) ||
+          syncCompleted) {
+        unawaited(loadReceipt());
+      }
+    });
+    // So can recovery and detail follow-ups that finish after completion.
+    ref.listen<int>(syncFollowupProvider, (_, _) {
+      unawaited(loadReceipt());
+    });
+  }
+
+  bool _loadIsCurrent(int generation, String? accountUuid) =>
+      mounted &&
+      generation == _loadGeneration &&
+      accountUuid == ref.read(accountProvider).value?.activeAccountUuid;
+
+  /// Loads the shown row from the active account's history, publishes it,
+  /// then loads and publishes its detail.
+  Future<void> loadReceipt() async {
+    final generation = ++_loadGeneration;
+    ++_debugLookupGeneration;
+    final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
+    final accountChanged = accountUuid != _activeAccountUuid;
+    _activeAccountUuid = accountUuid;
+    setState(() {
+      _debugLookupText = null;
+      // A refresh while a public load runs keeps its state; the load
+      // refreshes again when it finishes.
+      if (!_publicLookupRunning || accountChanged) _publicLookupText = null;
+      if (accountChanged) {
+        _transaction = null;
+        _detail = null;
+        onReceiptAccountChanged();
+      }
+      _isLoading = _transaction == null;
+      _detailsPending = true;
+      _error = null;
+    });
+    if (accountUuid == null) {
+      setState(() {
+        _isLoading = false;
+        _detailsPending = false;
+        _error = 'No active account.';
+      });
+      return;
+    }
+
+    try {
+      final txs = await _loadHistory(accountUuid);
+      if (!_loadIsCurrent(generation, accountUuid)) return;
+      final tx = _findTransaction(txs);
+      if (tx == null) {
+        setState(() {
+          _error = _transaction == null
+              ? 'Transaction could not be loaded.'
+              : 'Latest transaction status could not be refreshed.';
+          _isLoading = false;
+          _detailsPending = false;
+        });
+        return;
+      }
+      // Publish the status without waiting for addresses, outputs, or memo.
+      setState(() {
+        _transaction = tx;
+        _detail = matchingReceiptDetailFor(tx);
+        _isLoading = false;
+        _error = null;
+      });
+      final detail = await _loadDetail(accountUuid, tx);
+      if (!_loadIsCurrent(generation, accountUuid)) return;
+      setState(() {
+        _detail = detail ?? _detail;
+        _detailsPending = false;
+      });
+      _followTransparentDetails();
+    } catch (e, st) {
+      if (!_loadIsCurrent(generation, accountUuid)) return;
+      log('TransactionReceipt: transaction load failed: $e\n$st');
+      setState(() {
+        _error = _transaction == null
+            ? 'Transaction could not be loaded.'
+            : 'Latest transaction status could not be refreshed.';
+        _isLoading = false;
+        _detailsPending = false;
+      });
+    }
+  }
+
+  Future<List<rust_sync.TransactionInfo>> _loadHistory(
+    String accountUuid,
+  ) async {
+    final loader = widget.historyLoader;
+    if (loader != null) return loader(accountUuid);
+    final dbPath = await getWalletDbPath();
+    final endpoint = ref.read(rpcEndpointProvider);
+    return rust_sync.getTransactionHistory(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      accountUuid: accountUuid,
+    );
+  }
+
+  Future<rust_sync.TransactionDetail?> _loadDetail(
+    String accountUuid,
+    rust_sync.TransactionInfo transaction,
+  ) async {
+    final loader = widget.detailLoader;
+    if (loader != null) return loader(accountUuid, transaction);
+    final dbPath = await getWalletDbPath();
+    final endpoint = ref.read(rpcEndpointProvider);
+    return rust_sync.getTransactionDetail(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      accountUuid: accountUuid,
+      txidHex: transaction.txidHex,
+      txKind: transaction.txKind,
+    );
+  }
+
+  /// The last detail read when it belongs to [tx], the same transaction and
+  /// Activity role; `null` otherwise.
+  rust_sync.TransactionDetail? matchingReceiptDetailFor(
+    rust_sync.TransactionInfo? tx,
+  ) {
+    final detail = _detail;
+    if (tx == null ||
+        detail == null ||
+        !receiptTxidsMatch(detail.txidHex, tx.txidHex) ||
+        !_txKindMatches(detail.txKind, tx.txKind)) {
+      return null;
+    }
+    return detail;
+  }
+
+  /// While the shown transaction's transparent details may still arrive,
+  /// asks the next sync to look them up first (once) and re-reads the detail
+  /// until they do.
+  void _followTransparentDetails() {
+    final detail = matchingReceiptDetailFor(_transaction);
+    if (!transparentDetailsAwaited(
+      detail,
+      privateQueriesEnabled: ref.read(enhancePirProvider),
+    )) {
+      _transparentDetailsPoll?.cancel();
+      _transparentDetailsPoll = null;
+      return;
+    }
+    if (!_transparentDetailsPrioritized) {
+      _transparentDetailsPrioritized = true;
+      unawaited(_prioritizeTransparentDetails(detail!.txidHex));
+    }
+    _transparentDetailsPoll ??= Timer.periodic(
+      kTransparentDetailsPollInterval,
+      (_) => unawaited(_pollTransparentDetails()),
+    );
+  }
+
+  Future<void> _prioritizeTransparentDetails(String txidHex) async {
+    try {
+      final prioritizer = widget.transparentDetailsPrioritizer;
+      if (prioritizer != null) return await prioritizer(txidHex);
+      rust_sync.prioritizeTransparentDetails(
+        dbPath: await getWalletDbPath(),
+        txidHex: txidHex,
+      );
+    } catch (e) {
+      log('TransactionReceipt: prioritize failed: $e');
+    }
+  }
+
+  Future<void> _pollTransparentDetails() async {
+    // Full receipt loads supersede polls through the same generation guard.
+    // Do not start a second read while either refresh is still running.
+    if (_detailsPending || _transparentDetailsPollInFlight) return;
+    final generation = _loadGeneration;
+    final tx = _transaction;
+    final accountUuid = _activeAccountUuid;
+    if (tx == null || accountUuid == null) return;
+    _transparentDetailsPollInFlight = true;
+    try {
+      final detail = await _loadDetail(accountUuid, tx);
+      if (!_loadIsCurrent(generation, accountUuid) || detail == null) {
+        return;
+      }
+      setState(() => _detail = detail);
+      _followTransparentDetails();
+    } catch (e) {
+      log('TransactionReceipt: transparent details refresh failed: $e');
+    } finally {
+      _transparentDetailsPollInFlight = false;
+    }
+  }
+
+  /// Whether a development build offers one private lookup of [tx]'s
+  /// transparent details.
+  bool offersDebugLookup(
+    rust_sync.TransactionInfo tx,
+    rust_sync.TransactionDetail? detail,
+  ) {
+    final state = detail?.transparentDetailsState;
+    return widget.showPrivateLookupDiagnostics &&
+        state != null &&
+        state != rust_sync.TransparentDetailsState.available &&
+        tx.minedHeight > BigInt.zero;
+  }
+
+  Future<void> runDebugLookup(rust_sync.TransactionInfo tx) async {
+    final generation = _loadGeneration;
+    final accountUuid = _activeAccountUuid;
+    final lookupGeneration = ++_debugLookupGeneration;
+    bool isCurrent() =>
+        _loadIsCurrent(generation, accountUuid) &&
+        lookupGeneration == _debugLookupGeneration;
+    setState(() => _debugLookupText = 'Looking up…');
+    try {
+      final lookup = widget.transparentDetailsDebugLookup;
+      final text = lookup != null
+          ? await lookup(tx)
+          : describeTransparentDetailsLookup(
+              await rust_sync.debugLookupTransparentDetails(
+                network: ref.read(rpcEndpointProvider).networkName,
+                txidHex: tx.txidHex,
+                minedHeight: tx.minedHeight,
+              ),
+            );
+      if (isCurrent()) setState(() => _debugLookupText = text);
+    } catch (e) {
+      if (isCurrent()) setState(() => _debugLookupText = 'Failed: $e');
+    }
+  }
+
+  /// Loads [tx]'s full details from the server once the user confirms, then
+  /// refreshes the receipt. Nothing here runs without that confirmation, and a
+  /// refresh while it runs neither drops its result nor offers it again.
+  Future<void> runPublicLookup(rust_sync.TransactionInfo tx) async {
+    // One load at a time: a tap while one runs asks nothing.
+    if (_publicLookupRunning) return;
+    _publicLookupRunning = true;
+    final accountUuid = _activeAccountUuid;
+    var loaded = false;
+    try {
+      if (!await widget.publicLookupConfirmation(context) || !mounted) return;
+      setState(() => _publicLookupText = kLoadDetailsPubliclyLoadingText);
+      final lookup = widget.transparentDetailsPublicLookup;
+      if (lookup != null) {
+        await lookup(tx);
+      } else {
+        await loadTransactionDetailsPublicly(
+          ref.read,
+          accountUuid: accountUuid,
+          txidHex: tx.txidHex,
+        );
+      }
+      loaded = true;
+    } catch (e) {
+      log('TransactionReceipt: public details lookup failed');
+      if (mounted && _activeAccountUuid == accountUuid) {
+        setState(() => _publicLookupText = kLoadDetailsPubliclyFailedText);
+      }
+    } finally {
+      _publicLookupRunning = false;
+    }
+    // A full refresh supersedes any read that started before the store.
+    if (loaded && mounted && _activeAccountUuid == accountUuid) {
+      await loadReceipt();
+    }
+  }
+
+  /// The Activity role the receipt shows: the loaded row's, else the route's.
+  String? get _shownTxKind =>
+      _transaction?.txKind ??
+      widget.receiptArgs.initialTransaction?.txKind ??
+      widget.receiptArgs.txKind;
+
+  /// The row of the receipt's transaction in its shown role. A provisional
+  /// row whose role changed follows its successor, when the transaction has a
+  /// single row.
+  rust_sync.TransactionInfo? _findTransaction(
+    Iterable<rust_sync.TransactionInfo> transactions,
+  ) {
+    final txidHex = widget.receiptArgs.txidHex;
+    final txKind = _shownTxKind;
+    if (txKind == null) {
+      for (final tx in transactions) {
+        if (receiptTxidsMatch(txidHex, tx.txidHex)) return tx;
+      }
+      return null;
+    }
+    for (final tx in transactions) {
+      if (receiptTxidsMatch(txidHex, tx.txidHex) &&
+          _txKindMatches(txKind, tx.txKind)) {
+        return tx;
+      }
+    }
+    final shown = _transaction ?? widget.receiptArgs.initialTransaction;
+    if (shown?.provisional ?? false) {
+      return provisionalRoleSuccessor(
+        transactions,
+        (other) => receiptTxidsMatch(txidHex, other),
+      );
+    }
+    return null;
+  }
+
+  /// What a refresh compares of the shown row among the recent transactions.
+  String _recentTxSignature(SyncState? sync) {
+    final txKind = _shownTxKind;
+    for (final tx in sync?.recentTransactions ?? const []) {
+      if (receiptTxidsMatch(widget.receiptArgs.txidHex, tx.txidHex) &&
+          (txKind == null || _txKindMatches(txKind, tx.txKind))) {
+        return [
+          tx.txidHex,
+          tx.minedHeight,
+          tx.expiredUnmined,
+          tx.txKind,
+          tx.displayAmount,
+          tx.fee,
+          tx.activityPool,
+          transactionCompletenessSignature(tx),
+        ].join(':');
+      }
+    }
+    return '';
+  }
+
+  /// Whether two txids name the receipt's transaction. A Gift Card's may be
+  /// in either byte order.
+  bool receiptTxidsMatch(String first, String second) {
+    if (widget.receiptArgs.giftCard != null) {
+      return paymentLinkTxidsMatch(first, second);
+    }
+    return first.toLowerCase() == second.toLowerCase();
+  }
+
+  bool _txKindMatches(String expected, String actual) {
+    if (expected == actual) return true;
+    return (expected == 'receiving' && actual == 'received') ||
+        (expected == 'received' && actual == 'receiving');
+  }
+}

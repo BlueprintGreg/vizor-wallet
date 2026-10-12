@@ -72,7 +72,7 @@ class _FakeUnlockSyncNotifier extends FakeSyncNotifier {
   Future<void> refreshAfterUnlock() async {}
 
   @override
-  Future<void> startSyncAnyway() async {}
+  Future<void> startSyncAnyway({int? latestTipHeight}) async {}
 }
 
 /// No biometric affordance: the passcode path is the one under test, and the
@@ -213,6 +213,21 @@ void main() {
     expect(flow.view.source, PaymentRequestSource.link);
     expect(container.read(paymentUriPrefillProvider), isNull);
     expect(find.text(kPaymentUriExpiredMessage), findsNothing);
+  });
+
+  testWidgets('a scanned request retains its provenance after unlock', (
+    tester,
+  ) async {
+    final container = await _pumpUnlock(tester);
+    container
+        .read(paymentUriPrefillProvider.notifier)
+        .set(_parkedRequest.withRequestSource(PaymentRequestSource.qrCode));
+    await _enterPasscode(tester, _passcode);
+    expect(
+      container.read(paymentRequestFlowProvider)?.view.source,
+      PaymentRequestSource.qrCode,
+    );
+    expect(container.read(paymentUriPrefillProvider), isNull);
   });
 
   testWidgets('a link parked past the TTL is dropped and said out loud', (

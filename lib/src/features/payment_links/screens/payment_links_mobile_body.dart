@@ -21,6 +21,7 @@ import '../models/vizor_payment_link.dart';
 import '../services/payment_link_service.dart';
 import '../widgets/mobile/payment_link_mobile_views.dart';
 import '../widgets/payment_link_card_flip.dart';
+import '../widgets/payment_link_amount_card.dart';
 import '../widgets/payment_link_card_selector_rail.dart';
 import '../widgets/payment_link_confetti.dart';
 import '../widgets/payment_link_copy.dart';
@@ -36,6 +37,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
     required this.redeemState,
     this.claimOutcome,
     required this.operationInProgress,
+    this.claimPreparationLabel,
     required this.redeemActionLabel,
     required this.redeemFromQrCode,
     required this.keystoneOverlay,
@@ -47,7 +49,12 @@ class PaymentLinksMobileBody extends StatelessWidget {
     required this.selectedArtwork,
     required this.amountController,
     required this.amountFocusNode,
-    required this.amountInputFormatters,
+    required this.amountCurrency,
+    required this.onAmountCurrencyChanged,
+    required this.usdEnabled,
+    required this.usdDisabledReason,
+    required this.amountZecText,
+    required this.amountConversionText,
     required this.amountFiatText,
     required this.amountFiatLoading,
     required this.maxAmountText,
@@ -101,6 +108,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
   final PaymentLinkRedeemVisualState redeemState;
   final Widget? claimOutcome;
   final bool operationInProgress;
+  final String? claimPreparationLabel;
   final String redeemActionLabel;
   final bool redeemFromQrCode;
 
@@ -124,7 +132,12 @@ class PaymentLinksMobileBody extends StatelessWidget {
   final PaymentLinkCardArtwork selectedArtwork;
   final TextEditingController amountController;
   final FocusNode amountFocusNode;
-  final List<TextInputFormatter> amountInputFormatters;
+  final PaymentLinkAmountCurrency amountCurrency;
+  final ValueChanged<PaymentLinkAmountCurrency> onAmountCurrencyChanged;
+  final bool usdEnabled;
+  final String? usdDisabledReason;
+  final String amountZecText;
+  final String? amountConversionText;
   final String? amountFiatText;
   final bool amountFiatLoading;
   final String? maxAmountText;
@@ -222,7 +235,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
     }
     return PaymentLinksHomeMobileView(
       illustration: Image.asset(
-        'assets/illustrations/payment_links/payment_link_empty_card.png',
+        'assets/illustrations/payment_links/payment_link_empty_card.webp',
         fit: BoxFit.contain,
         semanticLabel: 'Gift box',
       ),
@@ -260,21 +273,23 @@ class PaymentLinksMobileBody extends StatelessWidget {
   Widget _buildAmount() {
     final maxAmount = maxAmountText;
     return PaymentLinkAmountMobileView(
-      card: PaymentLinkGiftCard(
+      card: PaymentLinkAmountCard(
         artwork: selectedArtwork,
         cardWidth: kPaymentLinkMobileCardWidth,
         cardHeight: kPaymentLinkMobileCardHeight,
         amountController: amountController,
         amountFocusNode: amountFocusNode,
-        amountEditorKey: const ValueKey('payment_link_amount_editor'),
-        amountInputFormatters: amountInputFormatters,
+        currency: amountCurrency,
+        onCurrencyChanged: onAmountCurrencyChanged,
+        usdEnabled: usdEnabled,
+        usdDisabledReason: usdDisabledReason,
         onAmountChanged: onAmountChanged,
-        supportingText: amountFiatText,
-        supportingLoading: amountFiatLoading,
+        supportingText: amountConversionText,
+        supportingLoading:
+            amountCurrency == PaymentLinkAmountCurrency.zec &&
+            amountFiatLoading,
         maxAmountText: maxAmount,
         onUseMax: maxAmount == null ? null : onUseMax,
-        showMaxButton: true,
-        semanticLabel: 'Gift card amount input',
       ),
       cardSelector: PaymentLinkCardSelectorRail(
         loop: true,
@@ -336,7 +351,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
       artwork: selectedArtwork,
       cardWidth: kPaymentLinkMobileCardWidth,
       cardHeight: kPaymentLinkMobileCardHeight,
-      amountText: amountController.text,
+      amountText: amountZecText,
       supportingText: amountFiatText,
       supportingLoading: amountFiatLoading,
       showCaret: false,
@@ -478,6 +493,14 @@ class PaymentLinksMobileBody extends StatelessWidget {
           )
         : front;
     final session = receivedClaimSession;
+    if (claimPreparationLabel != null) {
+      return PaymentLinkReadyMobileView(
+        state: PaymentLinkReadyMobileState.checking,
+        card: card,
+        onHome: onAbandonReceivedPreview,
+        waitingStatusLabel: claimPreparationLabel!,
+      );
+    }
     if (session?.waitingForFundingConfirmations ?? false) {
       final remaining =
           kPaymentLinkClaimConfirmationTarget -
@@ -506,11 +529,11 @@ class PaymentLinksMobileBody extends StatelessWidget {
       decoration: const PaymentLinkConfetti(),
       onRevealMessage: hasCardMessage ? onToggleReceivedBack : null,
       onClaim: operationInProgress ? null : onClaimReceivedLink,
-      claimLabel: operationInProgress
+      claimLabel: (operationInProgress
           ? 'Claiming…'
           : receivedClaimSession == null
           ? 'Try again'
-          : 'Claim the gift',
+          : 'Claim the gift'),
     );
   }
 }
