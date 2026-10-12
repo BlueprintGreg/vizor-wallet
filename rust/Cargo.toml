@@ -289,13 +289,20 @@ assertions_on_constants = "allow"
 # this exact revision.
 [patch.crates-io]
 zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
-zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
+# The SQLite crate is the exception: `vendor/zakura-client-sqlite` is this revision with
+# the account-import rewind fix applied (see its PATCHES.json). The git-source patch below
+# routes the path dependencies of git crates such as `zakura-pir-transparent` to the same
+# copy. Drop both entries once wallet-libraries contains the fix.
+zakura-client-sqlite = { path = "vendor/zakura-client-sqlite" }
 zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
 zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
 zakura-transaction-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
 zakura-pir-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
 zakura-pir-native = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
 zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", rev = "ad963341be56f5e72ad98d3d042067ab03c08153" }
+
+[patch."https://github.com/zakura-core/wallet-libraries"]
+zakura-client-sqlite = { path = "vendor/zakura-client-sqlite" }
 
 # Flutter debug builds use Cargokit + Cargo's dev profile (`cargo build`
 # without `--release`). Rust crypto and voting flows are slow under the default
