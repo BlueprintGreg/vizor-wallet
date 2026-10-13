@@ -238,19 +238,19 @@ version = "=0.1.0-rc.6"
 # zakura-pir-transparent already depends on.
 [dev-dependencies.transparent-shard]
 git = "https://github.com/valargroup/wallet-pir"
-rev = "9d2cbda0b4336258cfce76ca8ee77b095daa7fd7"
+rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 
 [dev-dependencies.transparent-shard-server]
 git = "https://github.com/valargroup/wallet-pir"
-rev = "9d2cbda0b4336258cfce76ca8ee77b095daa7fd7"
+rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 
 [dev-dependencies.transparent-filter]
 git = "https://github.com/valargroup/wallet-pir"
-rev = "9d2cbda0b4336258cfce76ca8ee77b095daa7fd7"
+rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 
 [dev-dependencies.transparent-events]
 git = "https://github.com/valargroup/wallet-pir"
-rev = "9d2cbda0b4336258cfce76ca8ee77b095daa7fd7"
+rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 
 [dev-dependencies.axum]
 version = "0.7"

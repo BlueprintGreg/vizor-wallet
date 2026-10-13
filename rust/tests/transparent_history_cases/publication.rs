@@ -4,7 +4,10 @@
 //!
 //! Adapted from the adapter's end-to-end fixture
 //! (`zakura/pir-transparent/tests/fixture/mod.rs` in wallet-libraries at
-//! bdebaffcb), through wallet-pir's public APIs at 9d2cbda0 only. Events are
+//! bdebaffcb) and, for schema v12, its shard service
+//! (`zakura/pir-transparent/src/testing/service.rs` at 77e8d072), through
+//! wallet-pir's public APIs at 3e705bb3 only, the revision that wallet-libraries
+//! revision pins. Events are
 //! extracted from zcashd's verbose blocks with the rules of wallet-pir's
 //! `transparent-filter-server/src/extract.rs` (that crate reads the node's
 //! RocksDB, so it cannot be reused here): every output script that is a filter
@@ -13,7 +16,10 @@
 //!
 //! The publication is one unsealed tail shard, id 0, covering `[1, tip - lag]`
 //! and republished with a new revision whenever that range or its terminal
-//! block changes, so the H12 reorg republishes cleanly. The adapter accepts
+//! block changes, so the H12 reorg republishes cleanly. Schema v12 publishes a
+//! shard as a directory shard with page shards; the tail has one page shard
+//! over its whole range, under production's range profile (v2, the 8-bit
+//! profile). The adapter accepts
 //! only Zcash mainnet maps, so the map, manifest and filter keys carry
 //! mainnet's network label and genesis hash, as the adapter's fixture does;
 //! every block hash from height 1 is the real regtest one, and shard 0's parent
@@ -66,26 +72,29 @@ use transparent_events::{
 use transparent_filter::{
     filter_hash, BlockHash, ScriptBytes, SealParameters, ShardMap, ShardMapEntry,
 };
-use transparent_shard::build::build_shard;
-use transparent_shard::display::{DisplaySealParams, TXID_2K};
-use transparent_shard::layout::{Geometry, RECENT_4K};
+use transparent_shard::build::{build_directory_shard, Block};
+use transparent_shard::display::{DisplaySealParams, TXID_2K8};
+use transparent_shard::layout::{Geometry, DECOUPLED_2K_8K, MAX_PAGE_CHILDREN};
 use transparent_shard::manifest::{
-    ManifestLayout, ManifestOccupancy, ManifestSeal, ShardManifest, TableGeometry, SCHEMA,
+    pages_table, ManifestLayout, ManifestOccupancy, ManifestSeal, ShardManifest, TableGeometry,
+    SCHEMA,
 };
 use transparent_shard::txid::{DisplayEntry, DisplayFacts, DisplayOutput};
-use transparent_shard_server::assignment::WorkerRole;
 use transparent_shard_server::display::{
     live::{DisplayCommand, DisplayLive, DisplayPublication},
     service::DisplayRuntime,
-    synth,
+    synth, DisplayRole,
 };
 use transparent_shard_server::service::{router, ReadinessMode, ServiceConfig, ServiceState};
 use transparent_shard_server::shardset::{ShardSet, DEFAULT_RETAIN_REVISIONS};
 
 use crate::chain::rpc_at;
 
-/// The tail shard's geometry: the smallest one a build publishes.
-const GEOMETRY: &Geometry = &RECENT_4K;
+/// The tail shard's geometry: the recent one, the smallest a build publishes.
+const GEOMETRY: &Geometry = &DECOUPLED_2K_8K;
+
+/// The range-filter profile the publication is built under: production's.
+const PROFILE: &str = transparent_filter::RANGE_PROFILE_V2.name;
 
 /// The adapter fixture's seal thresholds. The tail is never sealed.
 const SEAL: SealParameters = SealParameters {
@@ -94,14 +103,15 @@ const SEAL: SealParameters = SealParameters {
     max_txids: 0,
 };
 
-/// Every route the two services serve a wallet, with its method: transparent
-/// PIR (the adapter end-to-end test's expression) and txid display PIR (the
-/// wallet's `TXID_ROUTES`).
+/// Every route the two services serve a wallet, with its method, under the
+/// /v2 API: transparent PIR (the adapter's private recovery test's expression
+/// at 77e8d072, whose page tables are `pages-<child>`) and txid display PIR
+/// (the wallet's `TXID_ROUTES`).
 const ROUTES: &str = concat!(
-    r"^(GET /v1/(filters/shards(/[0-9]+/filter)?|shards/init|shards/[0-9]+/revisions/[0-9a-f]{64}/(manifest|setup/(directory|pages)/[0-9]+))",
-    r"|POST /v1/shards/[0-9]+/revisions/[0-9a-f]{64}/query/(directory|pages)",
-    r"|GET /v1/txid/(init|map|map/[0-9]+/[0-9a-f]{64}|shards/[0-9]+/revisions/[0-9a-f]{64}/manifest|(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/setup/directory-[0-9]+/[0-9]+)",
-    r"|POST /v1/txid/(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/query/directory-[0-9]+)$",
+    r"^(GET /v2/(filters/shards(/[0-9]+/filter)?|shards/init|shards/[0-9]+/revisions/[0-9a-f]{64}/(manifest|setup/(directory|pages-(0|[1-9][0-9]?))/[0-9]+))",
+    r"|POST /v2/shards/[0-9]+/revisions/[0-9a-f]{64}/query/(directory|pages-(0|[1-9][0-9]?))",
+    r"|GET /v2/txid/(init|map|map/[0-9]+/[0-9a-f]{64}|shards/[0-9]+/revisions/[0-9a-f]{64}/manifest|(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/setup/directory-[0-9]+/[0-9]+)",
+    r"|POST /v2/txid/(archive|recent)/shards/[0-9]+/revisions/[0-9a-f]{64}/query/directory-[0-9]+)$",
 );
 
 /// The display publication's seal parameters: one recent shard, never
@@ -110,7 +120,7 @@ const DISPLAY_SEAL: DisplaySealParams = DisplaySealParams {
     n_archive: 1,
     n_recent: 1,
     archive_target: 1,
-    recent_floor: 1,
+    recent_window: 1,
     reorg_margin: 1,
 };
 
@@ -198,7 +208,7 @@ impl Publisher {
                 },
                 None,
             ),
-            WorkerRole::RecentReplica,
+            DisplayRole::RecentReplica,
             3,
             dir.join("display").join("recent.active.json"),
             Vec::new(),
@@ -367,7 +377,7 @@ impl Publisher {
                         parent_manifest_digest: String::new(),
                         n_buckets,
                         archive_target: 1,
-                        geometry: &TXID_2K,
+                        geometry: &TXID_2K8,
                     },
                     records,
                 )
@@ -601,7 +611,7 @@ async fn dispatch(State(shared): State<Arc<Shared>>, request: Request) -> Respon
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    if path.starts_with("/v1/txid/") {
+    if path.starts_with("/v2/txid/") {
         return match shared
             .display
             .clone()
@@ -803,8 +813,9 @@ fn block_events(
 
 /// Writes a publishable set of one unsealed tail shard, id 0, over `[1, end]`
 /// at `revision` to `dir`: one directory per manifest digest and the map in
-/// `shards.json`, labelled for mainnet (see the module docs). `hash` gives the
-/// block hash at a height.
+/// `shards.json`, labelled for mainnet (see the module docs). The shard is a
+/// schema v12 directory shard with one page shard over its whole range. `hash`
+/// gives the block hash at a height.
 fn publish(
     dir: &Path,
     end: u64,
@@ -815,30 +826,36 @@ fn publish(
     let genesis = BlockHash::from_display_hex(transparent_filter::MAINNET_GENESIS_DISPLAY)
         .expect("mainnet's genesis hash");
     let (shard_id, start) = (0u64, 1u64);
-    let built = build_shard(
+    let mut by_height: BTreeMap<u64, Vec<(ScriptBytes, TransparentEvent)>> = BTreeMap::new();
+    for (script, event) in events {
+        by_height
+            .entry(u64::from(event.height()))
+            .or_default()
+            .push((script.clone(), event.clone()));
+    }
+    let blocks: Vec<Block> = (start..=end)
+        .map(|height| (height, by_height.remove(&height).unwrap_or_default()))
+        .collect();
+    assert!(by_height.is_empty(), "an event outside [{start}, {end}]");
+    let (built, children) = build_directory_shard(
         shard_id,
-        start,
-        end,
-        genesis,
-        hash(end),
-        transparent_filter::RANGE_PROFILE,
         GEOMETRY,
-        events,
+        genesis,
+        PROFILE,
+        blocks,
+        &[end],
+        &hash,
+        false,
     )
     .expect("a buildable shard");
-    let segments = |tables: &[Vec<u8>], rows: u64, row_bytes: usize| -> Vec<TableGeometry> {
-        tables
-            .iter()
-            .map(|segment| TableGeometry {
-                rows,
-                row_bytes: row_bytes as u32,
-                sha256: hex::encode(Sha256::digest(segment)),
-            })
-            .collect()
-    };
+    let page_children: Vec<_> = children
+        .iter()
+        .map(|child| child.describe(GEOMETRY))
+        .collect();
+    let directory_bytes = GEOMETRY.directory_bytes_per_segment();
     let manifest = ShardManifest {
         schema: SCHEMA.to_string(),
-        profile: transparent_filter::RANGE_PROFILE.to_string(),
+        profile: PROFILE.to_string(),
         geometry: GEOMETRY.name.to_string(),
         network: transparent_filter::NETWORK.to_string(),
         genesis_hash: transparent_filter::MAINNET_GENESIS_DISPLAY.to_string(),
@@ -855,35 +872,44 @@ fn publish(
         seal: ManifestSeal {
             scripts_target: SEAL.max_scripts,
             scripts_capacity: SEAL.max_scripts * 2,
+            directory_bytes_target: directory_bytes - directory_bytes / 7,
+            directory_bytes_capacity: directory_bytes,
             page_rows_target: SEAL.max_page_rows,
             page_rows_capacity: SEAL.max_page_rows * 2,
+            max_page_children: MAX_PAGE_CHILDREN,
         },
-        layout: ManifestLayout {
-            max_script_bytes: transparent_shard::MAX_SCRIPT_BYTES as u32,
-            inline_events: transparent_shard::INLINE_EVENTS,
-            events_per_page: transparent_shard::EVENTS_PER_PAGE,
-            page_row_header_bytes: transparent_shard::PAGE_ROW_HEADER_BYTES as u32,
-            page_entry_header_bytes: transparent_shard::PAGE_ENTRY_HEADER_BYTES as u32,
-            directory_choices: transparent_shard::build::DIRECTORY_CHOICES as u32,
-        },
+        layout: ManifestLayout::current(),
         filter_hash: filter_hash(built.filter.as_slice()).to_display_hex(),
-        directory_segments: segments(
-            &built.directory,
-            GEOMETRY.directory_rows,
-            GEOMETRY.directory_row_bytes,
-        ),
-        page_segments: segments(&built.pages, GEOMETRY.page_rows, GEOMETRY.page_row_bytes),
+        directory_segments: built
+            .directory
+            .iter()
+            .map(|segment| TableGeometry {
+                rows: GEOMETRY.directory_rows,
+                row_bytes: GEOMETRY.directory_row_bytes as u32,
+                sha256: hex::encode(Sha256::digest(segment)),
+            })
+            .collect(),
         occupancy: ManifestOccupancy {
             scripts: built.scripts,
-            page_rows: built.page_rows,
-            fragments: built.fragments,
+            page_rows: page_children
+                .iter()
+                .map(|child| child.occupancy.page_rows)
+                .sum(),
+            fragments: page_children
+                .iter()
+                .map(|child| child.occupancy.fragments)
+                .sum(),
             events: built.events,
             blocks: end - start + 1,
             txids: 0,
             excluded_scripts: built.excluded_scripts,
         },
+        page_children,
         directory_choice: None,
     };
+    manifest
+        .check_children(GEOMETRY.page_rows, GEOMETRY.page_row_bytes as u32)
+        .expect("well-formed page shards");
     let digest = manifest.digest();
     let shard_dir = dir.join(&digest);
     std::fs::create_dir_all(&shard_dir).unwrap();
@@ -892,13 +918,19 @@ fn publish(
     for (index, segment) in built.directory.iter().enumerate() {
         std::fs::write(shard_dir.join(format!("directory.{index}.bin")), segment).unwrap();
     }
-    for (index, segment) in built.pages.iter().enumerate() {
-        std::fs::write(shard_dir.join(format!("pages.{index}.bin")), segment).unwrap();
+    for child in &children {
+        for segment in 0..child.segments {
+            std::fs::write(
+                shard_dir.join(format!("{}.{segment}.bin", pages_table(child.index))),
+                child.segment(GEOMETRY, segment),
+            )
+            .unwrap();
+        }
     }
     let map = ShardMap {
         genesis_hash: transparent_filter::MAINNET_GENESIS_DISPLAY.to_string(),
         network: transparent_filter::NETWORK.to_string(),
-        profile: transparent_filter::RANGE_PROFILE.to_string(),
+        profile: PROFILE.to_string(),
         range_envelope_version: transparent_filter::RANGE_ENVELOPE_VERSION,
         start_height: start,
         seal: [(GEOMETRY.name.to_string(), SEAL)].into_iter().collect(),
@@ -911,10 +943,11 @@ fn publish(
             terminal_block_hash: manifest.terminal_block_hash.clone(),
             filter_hash: manifest.filter_hash.clone(),
             scripts: built.scripts,
-            page_rows: built.page_rows,
+            page_rows: manifest.occupancy.page_rows,
             txids: 0,
             directory_segments: built.directory_segments(),
-            page_segments: built.page_segments(),
+            // Counts page shards in schema v12.
+            page_segments: manifest.page_children.len() as u32,
             manifest_digest: digest,
             revision,
             sealed: false,
