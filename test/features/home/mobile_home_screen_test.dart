@@ -1027,6 +1027,50 @@ void main() {
     expect(find.text('voting route'), findsOneWidget);
   });
 
+  testWidgets('Checking never prompts to keep the screen awake', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final initial = SyncState(
+      accountUuid: 'account-1',
+      hasAccountScopedData: true,
+      isSyncing: true,
+      percentage: 1,
+      scannedHeight: 200,
+      chainTipHeight: 200,
+      remainingScanBlocks: 1000,
+      lastSyncStartedAt: DateTime.now().subtract(const Duration(minutes: 10)),
+      checking: const SyncCheckingProgress(
+        cycle: 1,
+        percentage: 0.25,
+        displayTargetPercentage: 0.5,
+      ),
+    );
+    final notifier = FakeSyncNotifier(initial);
+    await tester.pumpWidget(
+      _app(
+        initial,
+        syncNotifier: notifier,
+        syncKeepAwakeNotifier: _FakeSyncKeepAwakeNotifier(),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Stay awake to sync?'), findsNothing);
+    notifier.emit(
+      initial.copyWith(
+        checking: const SyncCheckingProgress(
+          cycle: 2,
+          percentage: 0.05,
+          displayTargetPercentage: 0.1,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Stay awake to sync?'), findsNothing);
+  });
+
   testWidgets('shows the Figma sync keep-awake prompt copy', (tester) async {
     await tester.binding.setSurfaceSize(const Size(393, 852));
     addTearDown(() async {

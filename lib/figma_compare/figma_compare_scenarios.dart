@@ -90,6 +90,28 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'ironwood-label-audit-desktop-activity',
+    description:
+        'Ordinary Ironwood sends and receives in desktop Home activity',
+    builder: buildDesktopIronwoodLabelAuditActivityUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ironwood-label-audit-mobile-activity',
+    description: 'Ordinary Ironwood sends and receives in mobile Activity',
+    builder: buildMobileIronwoodLabelAuditActivityUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'ironwood-label-audit-mobile-sent',
+    description:
+        'Mobile sent receipt with raw Ironwood transaction pool values',
+    builder: buildMobileIronwoodLabelAuditSentUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'swap-asset-icons',
     description: 'Bundled swap token logos and chain badges',
     builder: buildSwapAssetIconsCapture,
@@ -2137,6 +2159,13 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-home-checking',
+    description: 'Mobile home with additional sync work at 75% checking',
+    builder: buildMobileHomeCheckingUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-home-tor-connecting',
     description: 'Mobile home while the Tor route is still connecting',
     builder: buildMobileHomeTorConnectingUseCase,
@@ -2448,6 +2477,12 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'desktop-home-sidebar-sync-network-error',
     description: 'Desktop home sidebar with a network sync failure',
     builder: buildDesktopHomeSidebarSyncNetworkErrorUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-checking',
+    description: 'Desktop home with additional sync work at 75% checking',
+    builder: buildDesktopHomeCheckingUseCase,
+    platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
     id: 'desktop-home-tor-connecting',
@@ -2838,8 +2873,48 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'payment-request-scanned',
+    description: 'Desktop payment request replaced by the original QR',
+    builder: buildPaymentRequestScannedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-payment-request-scanned',
+    description: 'Mobile payment request replaced by the original QR',
+    builder: buildMobilePaymentRequestScannedUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'payment-request-link-details',
+    description:
+        'Parsed external payment request before the final payment review',
+    builder: buildPaymentRequestLinkDetailsUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-payment-request-link-details',
+    description:
+        'Parsed external payment request before the final payment review',
+    builder: buildMobilePaymentRequestLinkDetailsUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'payment-request-review',
+    description:
+        'Final desktop payment review after the parsed details or a QR scan',
+    builder: buildPaymentRequestReviewUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-payment-request-review',
+    description:
+        'Final mobile payment review after the parsed details or a QR scan',
+    builder: buildMobilePaymentRequestReviewUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'payment-request-full',
-    description: 'Desktop payment request card with label, message and note',
+    description: 'Desktop external-request introduction with a compact summary',
     builder: buildPaymentRequestFullUseCase,
   ),
   FigmaCompareScenario(
@@ -2938,7 +3013,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
   ),
   FigmaCompareScenario(
     id: 'mobile-payment-request-full',
-    description: 'Mobile payment request sheet with label, message and note',
+    description: 'Mobile external-request introduction with a compact summary',
     builder: buildMobilePaymentRequestFullUseCase,
     desktop: false,
     mobile: true,

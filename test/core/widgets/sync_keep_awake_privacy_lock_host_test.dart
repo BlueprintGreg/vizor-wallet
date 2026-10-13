@@ -88,6 +88,98 @@ const _fingerprintBiometricState = BiometricUnlockState(
 );
 
 void main() {
+  setUpAll(() async {
+    final loader = FontLoader('Geist')
+      ..addFont(rootBundle.load('assets/fonts/Geist-Regular.ttf'))
+      ..addFont(rootBundle.load('assets/fonts/Geist-Medium.ttf'))
+      ..addFont(rootBundle.load('assets/fonts/Geist-SemiBold.ttf'));
+    await loader.load();
+  });
+
+  testWidgets(
+    'main scan completion stays done through Checking and unlock confirmation',
+    (tester) async {
+      _setMobileViewport(tester, size: const Size(320, 852));
+      final initial = _sync(
+        percentage: 0.99,
+        lastSyncStartedAt: DateTime.utc(2026, 10, 12),
+      );
+      final notifier = FakeSyncNotifier(initial);
+      await tester.pumpWidget(_app(syncNotifier: notifier));
+      await _settleInitialSync(tester);
+      await tester.pump(const Duration(milliseconds: 60));
+      await tester.pump();
+      expect(find.text('Vizor is syncing'), findsOneWidget);
+
+      final mainDrained = initial.copyWith(
+        percentage: 1,
+        scannedHeight: 200,
+        chainTipHeight: 200,
+        remainingScanBlocks: 0,
+      );
+      notifier.emit(mainDrained);
+      await tester.pump();
+      expect(find.text('Sync Complete'), findsOneWidget);
+      expect(find.text('Vizor is syncing'), findsNothing);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(SyncKeepAwakePrivacyLockHost)),
+      );
+      expect(container.read(syncKeepAwakeActiveProvider), isFalse);
+      expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
+
+      final checking = mainDrained.copyWith(
+        remainingScanBlocks: 100,
+        checking: const SyncCheckingProgress(
+          cycle: 1,
+          percentage: 0.25,
+          displayTargetPercentage: 0.5,
+        ),
+      );
+      notifier.emit(checking);
+      await tester.pump();
+      expect(find.text('Sync Complete'), findsOneWidget);
+      expect(find.text('Vizor is checking'), findsNothing);
+      expect(find.textContaining('%'), findsNothing);
+      await tester.tap(find.text('Unlock Vizor'));
+      await tester.pumpAndSettle();
+      expect(find.text('Synced'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      notifier.emit(
+        checking.copyWith(
+          checking: const SyncCheckingProgress(
+            cycle: 2,
+            percentage: 0.05,
+            displayTargetPercentage: 0.1,
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Synced'), findsOneWidget);
+      expect(find.textContaining('%'), findsNothing);
+      notifier.emit(checking.withSyncActivityStopped());
+      await tester.pump();
+      expect(find.text('Synced'), findsOneWidget);
+      notifier.emit(
+        mainDrained.copyWith(isSyncing: false, isSyncComplete: true),
+      );
+      await tester.pump();
+      expect(find.text('Synced'), findsOneWidget);
+
+      notifier.emit(
+        initial.copyWith(
+          percentage: 0.25,
+          lastSyncStartedAt: DateTime.utc(2026, 10, 12, 0, 1),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('25% Syncing...'), findsOneWidget);
+      expect(find.text('Synced'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'idle privacy lock dismisses the numeric keyboard and native control',
     (tester) async {

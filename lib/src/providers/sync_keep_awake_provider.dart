@@ -182,11 +182,11 @@ final syncKeepAwakePrivacyLockModeProvider =
         return SyncKeepAwakePrivacyLockMode.hidden;
       }
       final sync = ref.watch(syncProvider).asData?.value;
-      if (sync?.isSyncing == true && sync?.isBackgroundMode != true) {
-        return SyncKeepAwakePrivacyLockMode.syncing;
-      }
       if (sync != null && isSyncKeepAwakeCompletedSync(sync)) {
         return SyncKeepAwakePrivacyLockMode.done;
+      }
+      if (sync?.isSyncing == true && sync?.isBackgroundMode != true) {
+        return SyncKeepAwakePrivacyLockMode.syncing;
       }
       return SyncKeepAwakePrivacyLockMode.interrupted;
     });
@@ -259,8 +259,12 @@ bool isSyncKeepAwakeActiveSync(SyncState sync) {
 }
 
 bool isSyncKeepAwakeCompletedSync(SyncState sync) {
-  if (sync.isSyncing || sync.isBackgroundMode) return false;
-  if (sync.isSyncComplete || sync.percentage >= 1) return true;
+  if (sync.isBackgroundMode) return false;
+  // Keep-awake covers the main scan only. Final Checking work does not delay
+  // its completion screen or reactivate the native screen-awake setting.
+  if (sync.percentage >= 1) return true;
+  if (sync.isSyncing) return false;
+  if (sync.isSyncComplete) return true;
   return sync.chainTipHeight > 0 && sync.scannedHeight >= sync.chainTipHeight;
 }
 

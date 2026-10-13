@@ -87,7 +87,7 @@ void main() {
 }
 
 PaymentRequestView _view({String? memo}) => PaymentRequestView(
-  source: PaymentRequestSource.link,
+  source: PaymentRequestSource.qrCode,
   address: _address,
   amountZecText: '0.5 ZEC',
   memo: memo,
@@ -96,7 +96,7 @@ PaymentRequestView _view({String? memo}) => PaymentRequestView(
 Future<void> _pump(
   WidgetTester tester,
   PaymentRequestView request, {
-  bool initialMessageExpanded = false,
+  bool initialMessageExpanded = true,
 }) async {
   tester.view.physicalSize = const Size(1080, 1200);
   tester.view.devicePixelRatio = 1.0;

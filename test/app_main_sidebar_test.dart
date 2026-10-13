@@ -38,6 +38,26 @@ void main() {
     await loader.load();
   });
 
+  testWidgets('sidebar shows additional Checking progress', (tester) async {
+    await tester.pumpWidget(
+      _sidebarHarness(
+        SyncState(
+          isSyncing: true,
+          percentage: 1,
+          checking: const SyncCheckingProgress(
+            cycle: 1,
+            percentage: 0.75,
+            displayTargetPercentage: 0.75,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('75% checking'), findsOneWidget);
+    expect(find.text('99% Syncing...'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   const failureLabels = {
     SyncFailureKind.privateStatusCoverage: 'Syncing failed. Private lookup...',
     SyncFailureKind.endpoint: 'Syncing failed. Endpoint error...',

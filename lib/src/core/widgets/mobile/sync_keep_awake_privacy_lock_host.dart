@@ -618,7 +618,10 @@ class _SyncKeepAwakePasscodeConfirmScreen extends StatelessWidget {
               Consumer(
                 builder: (context, ref, _) => MobileTopNav.back(
                   title: _titleForMode(
-                    ref.watch(syncDisplayWholePercentageProvider),
+                    mode == SyncKeepAwakePrivacyLockMode.syncing ||
+                            mode == SyncKeepAwakePrivacyLockMode.hidden
+                        ? ref.watch(syncDisplayWholePercentageProvider)
+                        : 0,
                   ),
                   titleStyle: AppTypography.bodyMediumStrong.copyWith(
                     color: colors.text.accent,

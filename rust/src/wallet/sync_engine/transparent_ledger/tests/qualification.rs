@@ -877,7 +877,7 @@ async fn an_activated_wallet_discloses_nothing_through_any_lane_including_the_pi
             .iter()
             .map(|request| request.path.as_str())
             .collect::<Vec<_>>(),
-        [MAP, INIT, "/v1/filters/shards/0/filter"],
+        [MAP, INIT, "/v2/filters/shards/0/filter"],
         "only the service's routes, and no candidate in any of them"
     );
     assert_private(&requests, &candidates);

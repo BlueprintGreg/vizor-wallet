@@ -10690,6 +10690,20 @@ impl SseDecode for crate::api::voting::ApiSnapshotBundlePrecomputeResult {
     }
 }
 
+impl SseDecode for crate::api::sync::ApiSyncCheckingProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_cycle = <u32>::sse_decode(deserializer);
+        let mut var_percentage = <f64>::sse_decode(deserializer);
+        let mut var_displayTargetPercentage = <f64>::sse_decode(deserializer);
+        return crate::api::sync::ApiSyncCheckingProgress {
+            cycle: var_cycle,
+            percentage: var_percentage,
+            display_target_percentage: var_displayTargetPercentage,
+        };
+    }
+}
+
 impl SseDecode for crate::api::sync::ApiSyncEventKind {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10707,6 +10721,8 @@ impl SseDecode for crate::api::sync::ApiSyncProgressEvent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_kind = <crate::api::sync::ApiSyncEventKind>::sse_decode(deserializer);
+        let mut var_checking =
+            <Option<crate::api::sync::ApiSyncCheckingProgress>>::sse_decode(deserializer);
         let mut var_scannedHeight = <u64>::sse_decode(deserializer);
         let mut var_chainTipHeight = <u64>::sse_decode(deserializer);
         let mut var_percentage = <f64>::sse_decode(deserializer);
@@ -10721,6 +10737,7 @@ impl SseDecode for crate::api::sync::ApiSyncProgressEvent {
         let mut var_phase = <String>::sse_decode(deserializer);
         return crate::api::sync::ApiSyncProgressEvent {
             kind: var_kind,
+            checking: var_checking,
             scanned_height: var_scannedHeight,
             chain_tip_height: var_chainTipHeight,
             percentage: var_percentage,
@@ -13007,6 +13024,19 @@ impl SseDecode for Option<crate::api::voting_session::ApiShareTrackingDrivePolic
             return Some(
                 <crate::api::voting_session::ApiShareTrackingDrivePolicy>::sse_decode(deserializer),
             );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::sync::ApiSyncCheckingProgress> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::sync::ApiSyncCheckingProgress>::sse_decode(
+                deserializer,
+            ));
         } else {
             return None;
         }
@@ -16143,6 +16173,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::voting::ApiSnapshotBundlePrec
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::sync::ApiSyncCheckingProgress {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.cycle.into_into_dart().into_dart(),
+            self.percentage.into_into_dart().into_dart(),
+            self.display_target_percentage.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::sync::ApiSyncCheckingProgress
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::sync::ApiSyncCheckingProgress>
+    for crate::api::sync::ApiSyncCheckingProgress
+{
+    fn into_into_dart(self) -> crate::api::sync::ApiSyncCheckingProgress {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::sync::ApiSyncEventKind {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -16169,6 +16221,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::ApiSyncProgressEvent {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.kind.into_into_dart().into_dart(),
+            self.checking.into_into_dart().into_dart(),
             self.scanned_height.into_into_dart().into_dart(),
             self.chain_tip_height.into_into_dart().into_dart(),
             self.percentage.into_into_dart().into_dart(),
@@ -20554,6 +20607,15 @@ impl SseEncode for crate::api::voting::ApiSnapshotBundlePrecomputeResult {
     }
 }
 
+impl SseEncode for crate::api::sync::ApiSyncCheckingProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.cycle, serializer);
+        <f64>::sse_encode(self.percentage, serializer);
+        <f64>::sse_encode(self.display_target_percentage, serializer);
+    }
+}
+
 impl SseEncode for crate::api::sync::ApiSyncEventKind {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -20575,6 +20637,7 @@ impl SseEncode for crate::api::sync::ApiSyncProgressEvent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::sync::ApiSyncEventKind>::sse_encode(self.kind, serializer);
+        <Option<crate::api::sync::ApiSyncCheckingProgress>>::sse_encode(self.checking, serializer);
         <u64>::sse_encode(self.scanned_height, serializer);
         <u64>::sse_encode(self.chain_tip_height, serializer);
         <f64>::sse_encode(self.percentage, serializer);
@@ -22294,6 +22357,16 @@ impl SseEncode for Option<crate::api::voting_session::ApiShareTrackingDrivePolic
             <crate::api::voting_session::ApiShareTrackingDrivePolicy>::sse_encode(
                 value, serializer,
             );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::sync::ApiSyncCheckingProgress> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::sync::ApiSyncCheckingProgress>::sse_encode(value, serializer);
         }
     }
 }

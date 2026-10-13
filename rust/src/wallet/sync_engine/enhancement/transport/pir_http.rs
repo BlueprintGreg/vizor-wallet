@@ -386,8 +386,8 @@ mod tests {
     fn request(method: HttpMethod, error_limit: usize) -> HttpRequest {
         HttpRequest {
             method,
-            path: format!("/v1/shards/{SHARD}/revisions/{REVISION}/query/directory"),
-            template: "/v1/shards/{id}/revisions/{rev}/query/directory".to_owned(),
+            path: format!("/v2/shards/{SHARD}/revisions/{REVISION}/query/directory"),
+            template: "/v2/shards/{id}/revisions/{rev}/query/directory".to_owned(),
             body: QUERY.to_vec(),
             limit: LIMIT,
             error_limit,
@@ -634,7 +634,7 @@ mod tests {
             stopped.send(&request(HttpMethod::Get, 0)).unwrap_err();
         });
 
-        let template = "/v1/shards/{id}/revisions/{rev}/query/directory";
+        let template = "/v2/shards/{id}/revisions/{rev}/query/directory";
         let expected = [
             format!(
                 "DEBUG transparent PIR POST {template}: HTTP 200, {} bytes",

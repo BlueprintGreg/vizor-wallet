@@ -236,6 +236,7 @@ impl From<sync_engine::SyncEventKind> for ApiSyncEventKind {
 /// Progress event streamed to Dart during sync.
 pub struct ApiSyncProgressEvent {
     pub kind: ApiSyncEventKind,
+    pub checking: Option<ApiSyncCheckingProgress>,
     pub scanned_height: u64,
     pub chain_tip_height: u64,
     pub percentage: f64,
@@ -294,6 +295,13 @@ where
     })
 }
 
+/// Progress of one additional scan cycle; absent during ordinary syncing.
+pub struct ApiSyncCheckingProgress {
+    pub cycle: u32,
+    pub percentage: f64,
+    pub display_target_percentage: f64,
+}
+
 /// Start a full sync. Streams progress events to Dart via StreamSink.
 /// mode: 1=foreground, 2=background. Sync exits if desired mode changes.
 pub fn start_full_sync(
@@ -314,6 +322,11 @@ pub fn start_full_sync(
             if sink
                 .add(ApiSyncProgressEvent {
                     kind: progress.kind.into(),
+                    checking: progress.checking.map(|checking| ApiSyncCheckingProgress {
+                        cycle: checking.cycle,
+                        percentage: checking.percentage,
+                        display_target_percentage: checking.display_target_percentage,
+                    }),
                     scanned_height: progress.scanned_height,
                     chain_tip_height: progress.chain_tip_height,
                     percentage: progress.percentage,

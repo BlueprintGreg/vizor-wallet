@@ -215,6 +215,21 @@ void main() {
     expect(find.text(kPaymentUriExpiredMessage), findsNothing);
   });
 
+  testWidgets('a scanned request retains its provenance after unlock', (
+    tester,
+  ) async {
+    final container = await _pumpUnlock(tester);
+    container
+        .read(paymentUriPrefillProvider.notifier)
+        .set(_parkedRequest.withRequestSource(PaymentRequestSource.qrCode));
+    await _enterPasscode(tester, _passcode);
+    expect(
+      container.read(paymentRequestFlowProvider)?.view.source,
+      PaymentRequestSource.qrCode,
+    );
+    expect(container.read(paymentUriPrefillProvider), isNull);
+  });
+
   testWidgets('a link parked past the TTL is dropped and said out loud', (
     tester,
   ) async {

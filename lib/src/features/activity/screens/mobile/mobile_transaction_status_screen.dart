@@ -86,10 +86,8 @@ class MobileTransactionStatusScreen extends TransactionReceiptScreen {
     super.historyLoader,
     super.detailLoader,
     super.transparentDetailsPrioritizer,
-    super.transparentDetailsDebugLookup,
     super.transparentDetailsPublicLookup,
     super.publicLookupConfirmation,
-    super.showPrivateLookupDiagnostics,
     super.key,
   });
 
@@ -716,10 +714,6 @@ class _MobileTransactionStatusScreenState
                         TransparentDetailsSection(
                           detail: detail,
                           privacyModeEnabled: privacyModeEnabled,
-                          debugLookupText: debugLookupText,
-                          onDebugLookup: offersDebugLookup(tx, detail)
-                              ? () => unawaited(runDebugLookup(tx))
-                              : null,
                           publicLookupText: publicLookupText,
                           onLoadPublicly: offersPublicDetailsLookup(detail)
                               ? () => unawaited(runPublicLookup(tx))

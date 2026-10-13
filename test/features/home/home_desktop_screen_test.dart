@@ -593,8 +593,8 @@ void main() {
 
       expect(find.text('100 ZEC still migrating'), findsOneWidget);
       expect(find.text('40.11'), findsOneWidget);
-      expect(find.text('Shielded balance (Ironwood)'), findsOneWidget);
-      expect(find.text('Shielded balance'), findsNothing);
+      expect(find.text('Shielded balance'), findsOneWidget);
+      expect(find.text('Shielded balance (Ironwood)'), findsNothing);
       expect(find.text('Migration Required'), findsNothing);
       expect(
         find.byKey(
@@ -738,7 +738,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('143.12'), findsOneWidget);
-    expect(find.text('Shielded balance (Ironwood)'), findsOneWidget);
+    expect(find.text('Shielded balance'), findsOneWidget);
+    expect(find.text('Shielded balance (Ironwood)'), findsNothing);
     expect(find.text('0'), findsNothing);
   });
 
@@ -814,8 +815,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Shielded balance (Ironwood)'), findsOneWidget);
-      expect(find.text('Shielded balance'), findsNothing);
+      expect(find.text('Shielded balance'), findsOneWidget);
+      expect(find.text('Shielded balance (Ironwood)'), findsNothing);
       expect(find.text('40.11'), findsOneWidget);
       expect(find.text('40.12'), findsNothing);
     },

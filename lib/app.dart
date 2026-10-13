@@ -23,6 +23,7 @@ import 'src/core/navigation/mobile_exit_back_guard.dart';
 import 'src/core/navigation/mobile_onboarding_routes.dart';
 import 'src/core/navigation/mobile_routes.dart';
 import 'src/core/navigation/incoming_link_dispatch.dart';
+import 'src/core/navigation/incoming_link_entry_policy.dart';
 import 'src/core/navigation/external_action_guard_provider.dart';
 import 'src/core/navigation/payment_uri_drain_policy.dart';
 import 'src/core/navigation/windows_update_prompt_policy.dart';
@@ -96,6 +97,7 @@ import 'src/features/payment_links/providers/payment_link_intake_provider.dart';
 import 'src/features/payment_links/providers/gift_claim_flow_provider.dart';
 import 'src/features/payment_links/screens/gift_claim_screen.dart';
 import 'src/features/payment_links/screens/desktop_payment_link_scan_screen.dart';
+import 'src/features/send/screens/payment_request_scan_screen.dart';
 import 'src/features/payment_links/screens/desktop_gift_password_screen.dart';
 import 'src/features/payment_links/screens/desktop_gift_customise_screen.dart';
 import 'src/features/payment_links/screens/gift_customise_account_screen.dart'
@@ -1474,6 +1476,12 @@ List<RouteBase> _desktopRoutes(Ref ref) => [
     ),
   ),
   GoRoute(
+    path: '/send/request-scan',
+    builder: (_, state) => PaymentRequestScanScreen(
+      networkName: state.uri.queryParameters['network'] ?? 'main',
+    ),
+  ),
+  GoRoute(
     path: '/payment-links/scan',
     builder: (_, state) => DesktopPaymentLinkScanScreen(
       networkName: state.uri.queryParameters['network'] ?? 'main',
@@ -1975,9 +1983,9 @@ Widget buildIncomingLinkHostForTest({
 ///   screen. Route-agnostic: it never navigates on delivery.
 /// * **gift card** (`https://` on the Vizor origin) — queues in
 ///   `paymentLinkIntakeProvider` and navigates to `/payment-links`.
-/// * **vizor home** — brings an unlocked wallet to `/home`, unless the user is
-///   part-way through onboarding, import, or add-account, where the link is
-///   dropped rather than allowed to discard widget-only state.
+/// * **vizor home** — brings an idle, unlocked wallet to `/home`. An active
+///   task keeps its screen and receives a notice; the weak home intent is
+///   ignored rather than queued for a later jump.
 ///
 /// The two intakes defer to each other: a Gift Card waits while a request card
 /// is up (`paymentLinkEntryDeferredMessageAtLocation`), and a request waits
@@ -1999,6 +2007,9 @@ class _IncomingLinkHost extends ConsumerStatefulWidget {
 const _kIncomingLinkNoticeDuration = Duration(seconds: 4);
 
 class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
+  // Notices originate above the router. Resolve our own toast scope so a
+  // covered page's more recently mounted host cannot receive them offstage.
+  final _toastScopeKey = GlobalKey();
   StreamSubscription<String>? _subscription;
   ProviderSubscription<List<VizorPaymentLink>>? _intakeSubscription;
 
@@ -2008,6 +2019,8 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
 
   // --- payment request lane ---
   var _paymentSequence = 0;
+  String? _lastDeferredPrefillId;
+  String? _lastHomeNoticeLocation;
 
   /// Last wallet-existence value seen from [walletProvider]. Used to spot the
   /// true -> false transition of a wallet reset, which must drop a parked link
@@ -2093,13 +2106,19 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
       previous,
       next,
     ) {
-      if (previous?.blocks(ExternalAction.paymentRequest) == true &&
-          !next.blocks(ExternalAction.paymentRequest)) {
+      final paymentRequestReleased =
+          previous?.blocks(ExternalAction.paymentRequest) == true &&
+          !next.blocks(ExternalAction.paymentRequest);
+      final navigationReleased =
+          previous?.blocks(ExternalAction.navigation) == true &&
+          !next.blocks(ExternalAction.navigation);
+      if (paymentRequestReleased || navigationReleased) {
         _schedulePendingDrain();
-      }
-      if (previous?.blocks(ExternalAction.navigation) == true &&
-          !next.blocks(ExternalAction.navigation)) {
         _openPendingPaymentLink();
+      }
+      if (!next.blocks(ExternalAction.paymentRequest) &&
+          !next.blocks(ExternalAction.navigation)) {
+        _lastHomeNoticeLocation = null;
       }
     });
     // Same shape for a send mid-broadcast: the link stays parked until the
@@ -2120,9 +2139,12 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
     // here on unlock too would race and clobber that navigation. The wallet
     // listener still covers the loading -> loaded transition.
     return AppToastHost(
-      child: GiftClaimFailureToastListener(
-        router: widget.router,
-        child: widget.child,
+      child: KeyedSubtree(
+        key: _toastScopeKey,
+        child: GiftClaimFailureToastListener(
+          router: widget.router,
+          child: widget.child,
+        ),
       ),
     );
   }
@@ -2137,25 +2159,48 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
       case IncomingGiftCardLink():
         _handleGiftCardLink(rawUri);
       case IncomingVizorHomeLink():
-        if (ref
-            .read(externalActionGuardProvider)
-            .blocks(ExternalAction.navigation)) {
-          return;
-        }
-        if (ref.read(appSecurityProvider).requiresUnlock) return;
-        // Onboarding, import, and add-account keep their state only in the
-        // widget tree -- a half-typed seed phrase, a freshly generated
-        // mnemonic that has never been written down -- so `go('/home')` would
-        // destroy work the user cannot get back. A bare-origin link is the
-        // weakest intent there is ("open Vizor"), and Vizor is already open,
-        // so it loses to anything in progress: drop it as silently as an
-        // unknown link.
-        if (isAccountSetupLocation(_currentLocation)) return;
-        widget.router.go('/home');
+        _handleHomeLink();
       case IncomingLinkUnknown():
         // Silent by contract — see `classifyIncomingLink`.
         return;
     }
+  }
+
+  IncomingLinkEntryDecision _incomingEntry(IncomingLinkKind kind) {
+    final guard = ref.read(externalActionGuardProvider);
+    return decideIncomingLinkEntry(
+      kind: kind,
+      location: _currentLocation,
+      locked: ref.read(appSecurityProvider).requiresUnlock,
+      navigationBlocked: guard.blocks(ExternalAction.navigation),
+      paymentRequestBlocked: guard.blocks(ExternalAction.paymentRequest),
+      paymentRequestPresented: _paymentRequestCardPresented,
+      activeSendProposal:
+          _currentLocation == '/send/review' &&
+          widget.router.state.extra is SendReviewArgs,
+      sendInFlight: !ref.read(sendStatusTerminalProvider),
+    );
+  }
+
+  void _handleHomeLink() {
+    final origin = _currentLocation;
+    // Signing surfaces acquire their holds after mounting. Wait for that
+    // boundary, just as payment-request delivery does, then decide once.
+    unawaited(
+      WidgetsBinding.instance.endOfFrame.then((_) {
+        if (!mounted || _currentLocation != origin) return;
+        final decision = _incomingEntry(IncomingLinkKind.home);
+        if (decision.action == IncomingLinkEntryAction.open) {
+          _lastHomeNoticeLocation = null;
+          widget.router.go('/home');
+        } else if (decision.message != null &&
+            _lastHomeNoticeLocation != origin) {
+          _lastHomeNoticeLocation = origin;
+          _showPaymentUriMessage(decision.message!);
+        }
+      }),
+    );
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   // ---------------------------------------------------------------------
@@ -2170,6 +2215,7 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
   }
 
   void _handleRouteChanged() {
+    _lastHomeNoticeLocation = null;
     _openPendingPaymentLink();
   }
 
@@ -2177,9 +2223,10 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
     final message = ref.read(paymentLinkIntakeProvider).errorMessage;
     if (message == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      final toastContext = _toastScopeKey.currentContext;
+      if (!mounted || toastContext == null) return;
       showAppToast(
-        context,
+        toastContext,
         message,
         iconName: AppIcons.warning,
         tone: AppToastTone.destructive,
@@ -2191,9 +2238,6 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
   void _openPendingPaymentLink() {
     final pendingLink = ref.read(paymentLinkIntakeProvider).pendingLink;
     if (_navigationScheduled ||
-        ref
-            .read(externalActionGuardProvider)
-            .blocks(ExternalAction.navigation) ||
         ref.read(appSecurityProvider).requiresUnlock ||
         pendingLink == null) {
       return;
@@ -2205,6 +2249,15 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
         location == '/unlock' ||
         _isRouteOrChild(location, '/payment-links') ||
         _isRouteOrChild(location, '/gift')) {
+      return;
+    }
+    final guard = ref.read(externalActionGuardProvider);
+    if (guard.blocks(ExternalAction.navigation) ||
+        guard.blocks(ExternalAction.paymentRequest)) {
+      final decision = _incomingEntry(IncomingLinkKind.giftCard);
+      if (decision.message != null) {
+        _showDeferredPaymentLinkMessage(pendingLink, decision.message!);
+      }
       return;
     }
     if (location == '/welcome' &&
@@ -2221,6 +2274,9 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
             ref
                 .read(externalActionGuardProvider)
                 .blocks(ExternalAction.navigation) ||
+            ref
+                .read(externalActionGuardProvider)
+                .blocks(ExternalAction.paymentRequest) ||
             widget.router.state.matchedLocation != '/welcome' ||
             ref.read(paymentLinkIntakeProvider).pendingLink == null ||
             ref.read(appSecurityProvider).requiresUnlock ||
@@ -2232,10 +2288,7 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
       });
       return;
     }
-    final deferredMessage = paymentLinkEntryDeferredMessageAtLocation(
-      location,
-      paymentRequestCardPresented: _paymentRequestCardPresented,
-    );
+    final deferredMessage = _incomingEntry(IncomingLinkKind.giftCard).message;
     if (deferredMessage != null) {
       final setupLink = ref.read(giftClaimSetupReturnProvider)?.link;
       for (final queued in ref.read(paymentLinkIntakeProvider).pendingLinks) {
@@ -2253,6 +2306,9 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
           ref
               .read(externalActionGuardProvider)
               .blocks(ExternalAction.navigation) ||
+          ref
+              .read(externalActionGuardProvider)
+              .blocks(ExternalAction.paymentRequest) ||
           ref.read(appSecurityProvider).requiresUnlock ||
           ref.read(paymentLinkIntakeProvider).pendingLink == null) {
         return;
@@ -2279,8 +2335,9 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
     if (identical(_lastDeferredLink, link)) return;
     _lastDeferredLink = link;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      showAppToast(context, message, iconName: AppIcons.warning);
+      final toastContext = _toastScopeKey.currentContext;
+      if (!mounted || toastContext == null) return;
+      showAppToast(toastContext, message, iconName: AppIcons.warning);
     });
   }
 
@@ -2366,6 +2423,9 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
     final security = ref.read(appSecurityProvider);
 
     final decision = decidePaymentUriDrain(
+      navigationBlocked: ref
+          .read(externalActionGuardProvider)
+          .blocks(ExternalAction.navigation),
       hasParkedPrefill: prefill != null,
       parkedFor: prefillNotifier.parkedFor,
       hasBlockingFailure: bootstrap.hasBlockingFailure,
@@ -2396,6 +2456,12 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
 
     switch (decision.action) {
       case PaymentUriDrainAction.wait:
+        if (prefill != null &&
+            decision.message != null &&
+            _lastDeferredPrefillId != prefill.id) {
+          _lastDeferredPrefillId = prefill.id;
+          _showPaymentUriMessage(decision.message!);
+        }
         return;
       case PaymentUriDrainAction.dropWithMessage:
         prefillNotifier.clear();
@@ -2414,7 +2480,7 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
         // The request is presented over the current screen, not navigated to.
         ref
             .read(paymentRequestFlowProvider.notifier)
-            .present(prefill!, source: PaymentRequestSource.link);
+            .present(prefill!, source: prefill.requestSource);
     }
   }
 
@@ -2425,9 +2491,10 @@ class _IncomingLinkHostState extends ConsumerState<_IncomingLinkHost> {
   /// notice tied to its own `BuildContext` would never arrive.
   void _showPaymentUriMessage(String message) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      final toastContext = _toastScopeKey.currentContext;
+      if (!mounted || toastContext == null) return;
       showAppToast(
-        context,
+        toastContext,
         message,
         duration: _kIncomingLinkNoticeDuration,
         iconName: AppIcons.warning,

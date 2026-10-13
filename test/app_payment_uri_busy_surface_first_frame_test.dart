@@ -123,6 +123,14 @@ void main() {
         reason: 'the link waits for the surface, it is not dropped',
       );
 
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Finish or cancel your current task to open this payment request.',
+        ),
+        findsOneWidget,
+      );
+
       // Leaving the surface gives the hold back and the parked link lands.
       router.go('/home');
       await tester.pumpAndSettle();

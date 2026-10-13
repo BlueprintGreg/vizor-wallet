@@ -1594,8 +1594,6 @@ class _HomeDesktopBalanceCardState extends State<_HomeDesktopBalanceCard> {
         : colors.text.homeCard;
     final balanceTitle = migrationRequired
         ? 'Migration Required'
-        : widget.showsIronwoodOnlyBalance
-        ? 'Shielded balance (Ironwood)'
         : 'Shielded balance';
 
     return SizedBox(

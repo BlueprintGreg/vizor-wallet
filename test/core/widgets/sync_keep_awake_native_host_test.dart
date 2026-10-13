@@ -157,6 +157,49 @@ void main() {
     expect(_enabledArgs(calls), [true, false]);
   });
 
+  testWidgets(
+    'main scan completion disables native wake through Checking retries',
+    (tester) async {
+      final calls = _recordScreenAwakeCalls();
+      final initial = _sync(lastSyncStartedAt: DateTime.utc(2026, 10, 12));
+      final notifier = FakeSyncNotifier(initial);
+      await tester.pumpWidget(_app(syncNotifier: notifier));
+      await _drainNativeQueue(tester);
+      expect(_enabledArgs(calls), [true]);
+      final drained = initial.copyWith(percentage: 1, remainingScanBlocks: 0);
+      notifier.emit(drained);
+      await _drainNativeQueue(tester);
+      expect(_enabledArgs(calls), [true, false]);
+      for (var cycle = 1; cycle <= 3; cycle++) {
+        notifier.emit(
+          drained.copyWith(
+            remainingScanBlocks: 100,
+            checking: SyncCheckingProgress(
+              cycle: cycle,
+              percentage: 0.1,
+              displayTargetPercentage: 0.5,
+            ),
+          ),
+        );
+        await _drainNativeQueue(tester);
+        expect(_enabledArgs(calls), [true, false]);
+      }
+      notifier.emit(
+        drained.copyWith(
+          clearPendingScanWork: true,
+          phase: kSyncPhaseChainPrepare,
+        ),
+      );
+      await _drainNativeQueue(tester);
+      expect(_enabledArgs(calls), [true, false]);
+      notifier.emit(
+        initial.copyWith(lastSyncStartedAt: DateTime.utc(2026, 10, 12, 0, 1)),
+      );
+      await _drainNativeQueue(tester);
+      expect(_enabledArgs(calls), [true, false, true]);
+    },
+  );
+
   testWidgets('enables native keep-awake during zero-percent first batch', (
     tester,
   ) async {

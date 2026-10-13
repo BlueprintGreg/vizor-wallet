@@ -16,11 +16,15 @@ import 'api/sync.dart';
 import 'api/voting.dart';
 import 'api/voting_session.dart';
 import 'api/wallet.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'network_privacy.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
+
 import 'third_party/zcash_voting/config.dart';
 import 'third_party/zcash_voting/delegate.dart';
 import 'third_party/zcash_voting/share_policy.dart';
@@ -192,6 +196,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_api_snapshot_bundle_precompute_result(dynamic raw);
 
   @protected
+  ApiSyncCheckingProgress dco_decode_api_sync_checking_progress(dynamic raw);
+
+  @protected
   ApiSyncEventKind dco_decode_api_sync_event_kind(dynamic raw);
 
   @protected
@@ -249,6 +256,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy
   dco_decode_box_autoadd_api_share_tracking_drive_policy(dynamic raw);
+
+  @protected
+  ApiSyncCheckingProgress dco_decode_box_autoadd_api_sync_checking_progress(
+    dynamic raw,
+  );
 
   @protected
   ApiVotingRoundContext dco_decode_box_autoadd_api_voting_round_context(
@@ -925,6 +937,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_api_share_tracking_drive_policy(dynamic raw);
 
   @protected
+  ApiSyncCheckingProgress?
+  dco_decode_opt_box_autoadd_api_sync_checking_progress(dynamic raw);
+
+  @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
@@ -1571,6 +1587,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiSyncCheckingProgress sse_decode_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ApiSyncEventKind sse_decode_api_sync_event_kind(SseDeserializer deserializer);
 
   @protected
@@ -1646,6 +1667,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ApiShareTrackingDrivePolicy
   sse_decode_box_autoadd_api_share_tracking_drive_policy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiSyncCheckingProgress sse_decode_box_autoadd_api_sync_checking_progress(
     SseDeserializer deserializer,
   );
 
@@ -2508,6 +2534,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiSyncCheckingProgress?
+  sse_decode_opt_box_autoadd_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
@@ -3332,6 +3364,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_api_sync_event_kind(
     ApiSyncEventKind self,
     SseSerializer serializer,
@@ -3424,6 +3462,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_api_share_tracking_drive_policy(
     ApiShareTrackingDrivePolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
     SseSerializer serializer,
   );
 
@@ -4462,6 +4506,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_api_share_tracking_drive_policy(
     ApiShareTrackingDrivePolicy? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress? self,
     SseSerializer serializer,
   );
 

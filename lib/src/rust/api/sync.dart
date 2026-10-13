@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'keystone.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `api_proposal_result`, `catch`, `enhance_pir_enabled`, `fetch_block_time`, `migration_status_from_balance`, `parse_network_and_migrate`, `payment_link_batch_pairs`, `run_full_sync_internal`, `to_wallet_action_sigs`, `to_wallet_migration_schedule`, `to_wallet_signed_messages`
@@ -1498,6 +1499,32 @@ class ApiMempoolTxEvent {
           matched == other.matched;
 }
 
+/// Progress of one additional scan cycle; absent during ordinary syncing.
+class ApiSyncCheckingProgress {
+  final int cycle;
+  final double percentage;
+  final double displayTargetPercentage;
+
+  const ApiSyncCheckingProgress({
+    required this.cycle,
+    required this.percentage,
+    required this.displayTargetPercentage,
+  });
+
+  @override
+  int get hashCode =>
+      cycle.hashCode ^ percentage.hashCode ^ displayTargetPercentage.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ApiSyncCheckingProgress &&
+          runtimeType == other.runtimeType &&
+          cycle == other.cycle &&
+          percentage == other.percentage &&
+          displayTargetPercentage == other.displayTargetPercentage;
+}
+
 /// What an [`ApiSyncProgressEvent`] reports.
 enum ApiSyncEventKind {
   /// The sync is still running.
@@ -1517,6 +1544,7 @@ enum ApiSyncEventKind {
 /// Progress event streamed to Dart during sync.
 class ApiSyncProgressEvent {
   final ApiSyncEventKind kind;
+  final ApiSyncCheckingProgress? checking;
   final BigInt scannedHeight;
   final BigInt chainTipHeight;
   final double percentage;
@@ -1544,6 +1572,7 @@ class ApiSyncProgressEvent {
 
   const ApiSyncProgressEvent({
     required this.kind,
+    this.checking,
     required this.scannedHeight,
     required this.chainTipHeight,
     required this.percentage,
@@ -1561,6 +1590,7 @@ class ApiSyncProgressEvent {
   @override
   int get hashCode =>
       kind.hashCode ^
+      checking.hashCode ^
       scannedHeight.hashCode ^
       chainTipHeight.hashCode ^
       percentage.hashCode ^
@@ -1580,6 +1610,7 @@ class ApiSyncProgressEvent {
       other is ApiSyncProgressEvent &&
           runtimeType == other.runtimeType &&
           kind == other.kind &&
+          checking == other.checking &&
           scannedHeight == other.scannedHeight &&
           chainTipHeight == other.chainTipHeight &&
           percentage == other.percentage &&

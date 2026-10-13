@@ -20,6 +20,21 @@ import 'package:zcash_wallet/src/features/swap/providers/swap_activity_store.dar
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 
 void main() {
+  test('checking belongs to global sync state across account carries', () {
+    const checking = SyncCheckingProgress(
+      cycle: 2,
+      percentage: 0.25,
+      displayTargetPercentage: 0.5,
+    );
+    final cached = SyncState(checking: checking);
+    final normal = SyncState(isSyncing: true, percentage: 0.8);
+    expect(cached.withGlobalSyncFieldsFrom(normal).checking, isNull);
+    final current = normal.copyWith(checking: checking);
+    expect(normal.withGlobalSyncFieldsFrom(current).checking, same(checking));
+    expect(current.withoutAccountScopedData().checking, same(checking));
+    expect(current.copyWith(clearChecking: true).isChecking, isFalse);
+  });
+
   for (final fails in [false, true]) {
     testWidgets('resume coalesces an in-flight tip check (failure: $fails)', (
       tester,
@@ -705,6 +720,64 @@ void main() {
     expect(current.remainingScanBlocks, 102);
     expect(current.pendingScanStartHeight, 1700);
   });
+
+  test(
+    'Checking retry preparation uses its own batch target and keeps stage during balance refresh',
+    () async {
+      final notifier = _BalanceRefreshTestSyncNotifier(
+        () async => 'wallet.db',
+        initialState: SyncState(
+          accountUuid: _accountUuid,
+          isSyncing: true,
+          percentage: 1,
+          scannedHeight: 150,
+          chainTipHeight: 200,
+          displayTargetBlocks: 100,
+          checking: const SyncCheckingProgress(
+            cycle: 1,
+            percentage: 0.25,
+            displayTargetPercentage: 0.5,
+          ),
+        ),
+      )..balance = _availableBalance(BigInt.zero);
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+          accountProvider.overrideWith(_ExistingAccountNotifier.new),
+          syncProvider.overrideWith(() => notifier),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(accountProvider.future);
+      await container.read(syncProvider.future);
+      await notifier.handleSyncProgressForTesting(
+        const SyncProgressEvent(
+          scannedHeight: 0,
+          chainTipHeight: 200,
+          percentage: 1,
+          displayTargetPercentage: 1,
+          displayTargetBlocks: 0,
+          checking: SyncCheckingProgress(
+            cycle: 1,
+            percentage: 0.25,
+            displayTargetPercentage: 0.25,
+          ),
+          isSyncing: true,
+          isComplete: false,
+          hasNewTx: false,
+          phase: kSyncPhaseChainPrepare,
+        ),
+      );
+      var current = container.read(syncProvider).requireValue;
+      expect(current.checking!.cycle, 1);
+      expect(current.scannedHeight, 150);
+      expect(current.percentage, 1);
+      expect(current.displayTargetBlocks, 0);
+      await notifier.refreshAfterSend();
+      current = container.read(syncProvider).requireValue;
+      expect(current.checking!.percentage, 0.25);
+    },
+  );
 
   test('batch progress publishes one authoritative state', () async {
     late _LifecycleTestSyncNotifier notifier;

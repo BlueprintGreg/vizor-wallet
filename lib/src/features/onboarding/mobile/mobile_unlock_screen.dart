@@ -257,7 +257,7 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
           // not a jump into the composer.
           ref
               .read(paymentRequestFlowProvider.notifier)
-              .present(pendingPrefill, source: PaymentRequestSource.link);
+              .present(pendingPrefill, source: pendingPrefill.requestSource);
         } else if (notice != null) {
           // The link outlived its park window while the user was finding their
           // passcode, or the wallet it landed on cannot open it. Landing with

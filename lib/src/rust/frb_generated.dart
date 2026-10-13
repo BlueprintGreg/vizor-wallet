@@ -13,13 +13,17 @@ import 'api/sync.dart';
 import 'api/voting.dart';
 import 'api/voting_session.dart';
 import 'api/wallet.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'network_privacy.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'third_party/zcash_voting/config.dart';
 import 'third_party/zcash_voting/delegate.dart';
 import 'third_party/zcash_voting/share_policy.dart';
@@ -11933,6 +11937,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApiSyncCheckingProgress dco_decode_api_sync_checking_progress(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return ApiSyncCheckingProgress(
+      cycle: dco_decode_u_32(arr[0]),
+      percentage: dco_decode_f_64(arr[1]),
+      displayTargetPercentage: dco_decode_f_64(arr[2]),
+    );
+  }
+
+  @protected
   ApiSyncEventKind dco_decode_api_sync_event_kind(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ApiSyncEventKind.values[raw as int];
@@ -11942,22 +11959,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ApiSyncProgressEvent dco_decode_api_sync_progress_event(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return ApiSyncProgressEvent(
       kind: dco_decode_api_sync_event_kind(arr[0]),
-      scannedHeight: dco_decode_u_64(arr[1]),
-      chainTipHeight: dco_decode_u_64(arr[2]),
-      percentage: dco_decode_f_64(arr[3]),
-      displayTargetPercentage: dco_decode_f_64(arr[4]),
-      displayTargetBlocks: dco_decode_u_64(arr[5]),
-      remainingScanBlocks: dco_decode_opt_box_autoadd_u_64(arr[6]),
-      pendingScanStartHeight: dco_decode_opt_box_autoadd_u_64(arr[7]),
-      isSyncing: dco_decode_bool(arr[8]),
-      hasNewTx: dco_decode_bool(arr[9]),
-      phaseCompletedUnits: dco_decode_u_64(arr[10]),
-      phaseTotalUnits: dco_decode_u_64(arr[11]),
-      phase: dco_decode_String(arr[12]),
+      checking: dco_decode_opt_box_autoadd_api_sync_checking_progress(arr[1]),
+      scannedHeight: dco_decode_u_64(arr[2]),
+      chainTipHeight: dco_decode_u_64(arr[3]),
+      percentage: dco_decode_f_64(arr[4]),
+      displayTargetPercentage: dco_decode_f_64(arr[5]),
+      displayTargetBlocks: dco_decode_u_64(arr[6]),
+      remainingScanBlocks: dco_decode_opt_box_autoadd_u_64(arr[7]),
+      pendingScanStartHeight: dco_decode_opt_box_autoadd_u_64(arr[8]),
+      isSyncing: dco_decode_bool(arr[9]),
+      hasNewTx: dco_decode_bool(arr[10]),
+      phaseCompletedUnits: dco_decode_u_64(arr[11]),
+      phaseTotalUnits: dco_decode_u_64(arr[12]),
+      phase: dco_decode_String(arr[13]),
     );
   }
 
@@ -12111,6 +12129,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_box_autoadd_api_share_tracking_drive_policy(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_api_share_tracking_drive_policy(raw);
+  }
+
+  @protected
+  ApiSyncCheckingProgress dco_decode_box_autoadd_api_sync_checking_progress(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_api_sync_checking_progress(raw);
   }
 
   @protected
@@ -13905,6 +13931,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_api_share_tracking_drive_policy(raw);
+  }
+
+  @protected
+  ApiSyncCheckingProgress?
+  dco_decode_opt_box_autoadd_api_sync_checking_progress(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_api_sync_checking_progress(raw);
   }
 
   @protected
@@ -16038,6 +16073,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApiSyncCheckingProgress sse_decode_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_cycle = sse_decode_u_32(deserializer);
+    var var_percentage = sse_decode_f_64(deserializer);
+    var var_displayTargetPercentage = sse_decode_f_64(deserializer);
+    return ApiSyncCheckingProgress(
+      cycle: var_cycle,
+      percentage: var_percentage,
+      displayTargetPercentage: var_displayTargetPercentage,
+    );
+  }
+
+  @protected
   ApiSyncEventKind sse_decode_api_sync_event_kind(
     SseDeserializer deserializer,
   ) {
@@ -16052,6 +16102,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_kind = sse_decode_api_sync_event_kind(deserializer);
+    var var_checking = sse_decode_opt_box_autoadd_api_sync_checking_progress(
+      deserializer,
+    );
     var var_scannedHeight = sse_decode_u_64(deserializer);
     var var_chainTipHeight = sse_decode_u_64(deserializer);
     var var_percentage = sse_decode_f_64(deserializer);
@@ -16068,6 +16121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_phase = sse_decode_String(deserializer);
     return ApiSyncProgressEvent(
       kind: var_kind,
+      checking: var_checking,
       scannedHeight: var_scannedHeight,
       chainTipHeight: var_chainTipHeight,
       percentage: var_percentage,
@@ -16261,6 +16315,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_api_share_tracking_drive_policy(deserializer));
+  }
+
+  @protected
+  ApiSyncCheckingProgress sse_decode_box_autoadd_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_api_sync_checking_progress(deserializer));
   }
 
   @protected
@@ -18676,6 +18738,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       return (sse_decode_box_autoadd_api_share_tracking_drive_policy(
         deserializer,
       ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  ApiSyncCheckingProgress?
+  sse_decode_opt_box_autoadd_api_sync_checking_progress(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_api_sync_checking_progress(deserializer));
     } else {
       return null;
     }
@@ -21250,6 +21326,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.cycle, serializer);
+    sse_encode_f_64(self.percentage, serializer);
+    sse_encode_f_64(self.displayTargetPercentage, serializer);
+  }
+
+  @protected
   void sse_encode_api_sync_event_kind(
     ApiSyncEventKind self,
     SseSerializer serializer,
@@ -21265,6 +21352,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_api_sync_event_kind(self.kind, serializer);
+    sse_encode_opt_box_autoadd_api_sync_checking_progress(
+      self.checking,
+      serializer,
+    );
     sse_encode_u_64(self.scannedHeight, serializer);
     sse_encode_u_64(self.chainTipHeight, serializer);
     sse_encode_f_64(self.percentage, serializer);
@@ -21433,6 +21524,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_api_share_tracking_drive_policy(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_api_sync_checking_progress(self, serializer);
   }
 
   @protected
@@ -23462,6 +23562,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_api_share_tracking_drive_policy(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_api_sync_checking_progress(
+    ApiSyncCheckingProgress? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_api_sync_checking_progress(self, serializer);
     }
   }
 

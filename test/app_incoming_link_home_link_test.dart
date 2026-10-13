@@ -8,6 +8,7 @@ import 'package:zcash_wallet/app.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/services/incoming_uri_service.dart';
@@ -148,6 +149,34 @@ void main() {
       expect(locationOf(router), '/home');
     });
   }
+
+  testWidgets('a blocked home link gives feedback and never jumps later', (
+    tester,
+  ) async {
+    final (router, incomingUris) = await pumpHost(
+      tester,
+      initialLocation: '/activity',
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(Scaffold)),
+    );
+    final lease = container
+        .read(externalActionGuardProvider.notifier)
+        .acquire();
+    incomingUris.emit(homeLink);
+    await tester.pumpAndSettle();
+    expect(locationOf(router), '/activity');
+    expect(
+      find.text('Finish or cancel your task, then reopen the link.'),
+      findsOneWidget,
+    );
+    lease.release();
+    await tester.pumpAndSettle();
+    expect(locationOf(router), '/activity');
+    incomingUris.emit(homeLink);
+    await tester.pumpAndSettle();
+    expect(locationOf(router), '/home');
+  });
 
   testWidgets('a home link goes home once onboarding is left behind', (
     tester,

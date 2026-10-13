@@ -69,6 +69,15 @@ class KeystoneQrScannerCard extends StatefulWidget {
     required ValueChanged<String> this.onPlainComplete,
     required this.error,
     required this.unavailableMessage,
+    this.permissionDescription =
+        'A camera is required to scan the gift card QR code.\n'
+        'You can revert this in settings anytime later.',
+    this.troubleScanningTips = const [
+      'Open the gift card QR code full screen on another device.',
+      'Move the QR code a few inches further from the camera so it can focus.',
+      "Make sure the room is well-lit and the QR code isn't reflecting glare.",
+      'On a Mac, you can use Continuity Camera to scan with your iPhone instead.',
+    ],
     this.scanSessionResetToken,
     this.controller,
     this.cameraViewBuilder,
@@ -84,16 +93,7 @@ class KeystoneQrScannerCard extends StatefulWidget {
        fullBleedMobile = false,
        showScanOverlay = true,
        showScanProgress = false,
-       onControlsReady = null,
-       permissionDescription =
-           'A camera is required to scan the gift card QR code.\n'
-           'You can revert this in settings anytime later.',
-       troubleScanningTips = const [
-         'Open the gift card QR code full screen on another device.',
-         'Move the QR code a few inches further from the camera so it can focus.',
-         "Make sure the room is well-lit and the QR code isn't reflecting glare.",
-         'On a Mac, you can use Continuity Camera to scan with your iPhone instead.',
-       ];
+       onControlsReady = null;
 
   final String? expectedUrType;
   final bool decoding;

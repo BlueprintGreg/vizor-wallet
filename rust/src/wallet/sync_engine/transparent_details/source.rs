@@ -1,7 +1,7 @@
 //! The two sources loop 4 chooses between, once per run.
 //!
 //! - [`PirSource`] (`PrivateRequired`): txid display PIR at
-//!   [`DEFAULT_MAINNET_ORIGIN`](crate::wallet::sync_engine::transparent_ledger::pir::DEFAULT_MAINNET_ORIGIN)`/v1/txid/`, mainnet only, through the
+//!   [`DEFAULT_MAINNET_ORIGIN`](crate::wallet::sync_engine::transparent_ledger::pir::DEFAULT_MAINNET_ORIGIN)`/v2/txid/`, mainnet only, through the
 //!   process's [`TxidDisplayService`] for the origin over a [`RoutedExchange`].
 //!   It holds no lightwalletd client, so it cannot make a public request.
 //! - [`GateSource`] (every other policy): lightwalletd `GetTransaction`

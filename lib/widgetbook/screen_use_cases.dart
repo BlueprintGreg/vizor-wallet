@@ -1969,6 +1969,92 @@ Widget buildMobileZeroValueReceiptUseCase(BuildContext context) =>
 Widget buildMobileZeroValueSendUseCase(BuildContext context) =>
     _buildMobileZeroValueUseCase(_mobileZeroValueReceipt('sent'));
 
+// Ironwood label audit: raw pool values go through the production mapper and
+// receipt, with no migration transaction or production wallet dependency.
+rust_sync.TransactionInfo _ironwoodLabelAuditTx(String kind) {
+  final sent = kind == 'sent';
+  final seconds = BigInt.from(sent ? 1800000020 : 1800000021);
+  return rust_sync.TransactionInfo(
+    txidHex: 'preview-ironwood-label-audit-$kind',
+    minedHeight: BigInt.from(3000),
+    expiredUnmined: false,
+    accountBalanceDelta: sent ? -10010000 : 10000000,
+    fee: BigInt.from(sent ? 10000 : 0),
+    feeState: sent
+        ? rust_sync.TransactionFeeState.known
+        : rust_sync.TransactionFeeState.notApplicable,
+    detailsComplete: true,
+    provisional: false,
+    amountIncludesFee: false,
+    blockTime: seconds,
+    isTransparent: false,
+    txKind: kind,
+    displayAmount: BigInt.from(10000000),
+    displayPool: 'ironwood',
+    activityPool: 'ironwood',
+    createdTime: seconds,
+  );
+}
+
+List<rust_sync.TransactionInfo> _ironwoodLabelAuditTransactions() => [
+  _ironwoodLabelAuditTx('received'),
+  _ironwoodLabelAuditTx('sent'),
+];
+
+Widget buildDesktopIronwoodLabelAuditActivityUseCase(BuildContext context) =>
+    _buildDesktopHomeUseCase(
+      accountState: _accountsDesignState,
+      syncState: _homeSyncedState(
+        ironwoodBalance: BigInt.from(14_323_000_000),
+        recentTransactions: _ironwoodLabelAuditTransactions(),
+      ),
+      migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+    );
+
+Widget buildMobileIronwoodLabelAuditActivityUseCase(BuildContext context) =>
+    _buildMobileZeroValueUseCase(
+      ColoredBox(
+        color: context.colors.background.window,
+        child: MobileActivityScreen(
+          historyLoader: (_) async => _ironwoodLabelAuditTransactions(),
+        ),
+      ),
+    );
+
+Widget buildMobileIronwoodLabelAuditSentUseCase(BuildContext context) {
+  final tx = _ironwoodLabelAuditTx('sent');
+  final detail = rust_sync.TransactionDetail(
+    transparentOmissions: const [],
+    txidHex: tx.txidHex,
+    txKind: tx.txKind,
+    primaryAddress: _zeroValueRecipient,
+    outputs: [
+      rust_sync.TransactionDetailOutput(
+        address: _zeroValueRecipient,
+        amountZatoshi: tx.displayAmount,
+        pool: 'ironwood',
+        activityPool: 'ironwood',
+        usesOrchardReceiver: false,
+      ),
+    ],
+    detailsComplete: true,
+    provisional: false,
+    transparentRecipients: const [],
+  );
+  return _buildMobileZeroValueUseCase(
+    MobileTransactionStatusScreen(
+      args: MobileTransactionStatusArgs(
+        txidHex: tx.txidHex,
+        txKind: tx.txKind,
+        initialTransaction: tx,
+        initialDetail: detail,
+      ),
+      historyLoader: (_) async => _ironwoodLabelAuditTransactions(),
+      detailLoader: (_, _) async => detail,
+    ),
+  );
+}
+
 Widget _mobileZeroValueReceipt(String kind) {
   final tx = _zeroValueTx(kind);
   final detail = _zeroValueDetail(tx);
@@ -2424,6 +2510,43 @@ Widget buildDesktopHomeSidebarSyncNetworkErrorUseCase(BuildContext context) {
     migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
   );
 }
+
+Widget buildDesktopHomeCheckingUseCase(BuildContext context) {
+  return _buildDesktopHomeUseCase(
+    accountState: _accountsDesignState,
+    syncState: _homeCheckingSyncState(),
+    migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+    networkPrivacyState: const NetworkPrivacyState.off(),
+    zecUsdPrice: 70,
+  );
+}
+
+Widget buildMobileHomeCheckingUseCase(BuildContext context) {
+  return _buildMobileHomeUseCase(
+    accountState: _accountsDesignState,
+    syncState: _homeCheckingSyncState(),
+    networkPrivacyState: const NetworkPrivacyState.off(),
+    constrainToPreviewFrame: false,
+  );
+}
+
+SyncState _homeCheckingSyncState() =>
+    _homeSyncedState(
+      orchardBalance: BigInt.from(14_312_000_000),
+      recentTransactions: [_homeTx(1), _homeTx(2)],
+    ).copyWith(
+      isSyncing: true,
+      isSyncComplete: false,
+      phase: 'scan',
+      remainingScanBlocks: 250,
+      pendingScanStartHeight: 3_427_894,
+      lastSyncStartedAt: DateTime.utc(2026, 10, 12),
+      checking: const SyncCheckingProgress(
+        cycle: 1,
+        percentage: 0.75,
+        displayTargetPercentage: 0.75,
+      ),
+    );
 
 const _previewTorConnecting = NetworkPrivacyState(
   torEnabled: true,

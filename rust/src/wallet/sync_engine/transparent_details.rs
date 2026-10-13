@@ -1032,6 +1032,7 @@ pub(crate) fn debug_answer(
         }
         TxidLookup::Absent => answer.outcome = "absent",
         TxidLookup::PlacementUnknown(_) => answer.outcome = "placementUnknown",
+        TxidLookup::RecentBelowFloor => answer.outcome = "recentBelowFloor",
         TxidLookup::Unsupported => answer.outcome = "unsupported",
     }
     Ok(answer)

@@ -18,21 +18,24 @@ import '../../../core/feedback/app_review.dart';
 import '../../../core/formatting/zec_amount.dart';
 import '../../../core/layout/app_form_factor.dart';
 import '../../../core/navigation/external_action_guard_provider.dart';
+import '../../../core/widgets/app_icon.dart';
+import '../../../core/widgets/app_toast.dart';
 import '../../../providers/account_models.dart';
 import '../../../providers/payment_request_flow_provider.dart';
+import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/zec_price_change_provider.dart';
 import '../../address_book/models/address_book_contact.dart';
 import '../../address_book/providers/address_book_provider.dart';
 import '../screens/mobile/mobile_send_screen.dart'
     show MobileSendReviewDraftArgs;
+import '../services/payment_request_scanner.dart';
 import '../services/send_flow.dart';
 import 'payment_request_surface.dart';
 import 'send_recipient_resolver.dart';
 
-String _location(GoRouter router) =>
-    router.routerDelegate.currentConfiguration.uri.path;
+String _location(GoRouter router) => router.state.uri.path;
 
-class PaymentRequestHost extends ConsumerWidget {
+class PaymentRequestHost extends ConsumerStatefulWidget {
   const PaymentRequestHost({
     required this.router,
     required this.child,
@@ -46,10 +49,19 @@ class PaymentRequestHost extends ConsumerWidget {
 
   final Widget child;
 
+  @override
+  ConsumerState<PaymentRequestHost> createState() => _PaymentRequestHostState();
+}
+
+class _PaymentRequestHostState extends ConsumerState<PaymentRequestHost> {
+  bool _scanning = false;
+  bool _scanInFlight = false;
+  GoRouter get router => widget.router;
+
   bool get _isMobile => kAppFormFactor == AppFormFactor.mobile;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final flow = ref.watch(paymentRequestFlowProvider);
     // [child] is the router's content, and it holds route-local state — a
     // half-typed Send form, a scroll offset, an expanded row. So it keeps one
@@ -59,8 +71,8 @@ class PaymentRequestHost extends ConsumerWidget {
     // and every dismiss, and Flutter answers a subtree that moved by disposing
     // and remounting it — which emptied the form the card was supposed to be
     // sitting harmlessly on top of.
-    if (flow == null) {
-      return Stack(fit: StackFit.passthrough, children: [child]);
+    if (flow == null || _scanning) {
+      return Stack(fit: StackFit.passthrough, children: [widget.child]);
     }
 
     final notifier = ref.read(paymentRequestFlowProvider.notifier);
@@ -100,92 +112,6 @@ class PaymentRequestHost extends ConsumerWidget {
           ),
         );
 
-    void navigateAfterRelease(Future<void> Function() action) {
-      unawaited(
-        ref
-            .read(externalActionGuardProvider.notifier)
-            .runNavigation(() => duringAppReviewBusy(ref, action)),
-      );
-    }
-
-    void edit() {
-      // The card comes down at once, but the composer opens only when Rust
-      // has released the card's proposal: the composer re-quotes the fee as
-      // it mounts, and Rust cannot select inputs a proposal still holds, so a
-      // wallet whose funds sit in those inputs would answer that quote with
-      // "not enough ZEC" for the very payment the card just found affordable.
-      // A slow release leaves the app usable underneath; a navigation made
-      // meanwhile wins over the hand-back.
-      final origin = _location(router);
-      // The card clears before release completes. Keep reviews blocked through
-      // that wait (including release retries) and the resulting navigation.
-      navigateAfterRelease(() async {
-        switch (await notifier.editHandingBack()) {
-          case PaymentRequestEditReady(:final prefill):
-            if (_location(router) != origin) return;
-            _releaseRetainedSendStatus(ref);
-            // Both `/send` pages are keyed on the prefill's id, so this
-            // remounts the composer and discards anything already typed
-            // there. That is intended: Edit is the user asking for this
-            // request to be loaded, and a composer that kept half of a
-            // different payment's fields would be the more dangerous outcome
-            // of the two.
-            router.go('/send', extra: prefill);
-          case PaymentRequestEditOvertaken():
-            // A newer link owns the card now, and it carries the replaced
-            // notice that accounts for this tap.
-            break;
-          case PaymentRequestEditUnavailable():
-            break;
-        }
-      });
-    }
-
-    void review() {
-      // An amount-less request has nothing to review: its primary action is
-      // "Enter amount", which is Edit under a different label.
-      if (!flow.canReview) {
-        edit();
-        return;
-      }
-      if (_isMobile) {
-        // Mobile's review step owns proposal creation, so the proposal the
-        // pre-check made would be a second one. Hand it back and give the
-        // wizard the fee it already computed — but only navigate once it is
-        // back: the review step re-quotes the fee as it mounts, and Rust
-        // cannot select inputs a proposal still holds, so a wallet whose
-        // funds sit in those inputs would answer that quote with "not enough
-        // ZEC" for the very payment the card just found affordable.
-        final origin = _location(router);
-        navigateAfterRelease(() async {
-          switch (await notifier.reviewHandingBack()) {
-            case PaymentRequestReviewReady(:final args):
-              if (_location(router) != origin) return;
-              _releaseRetainedSendStatus(ref);
-              router.go('/send/review', extra: _mobileDraftFor(args));
-            case PaymentRequestReviewOvertaken():
-              // A newer link owns the card now, and it carries the replaced
-              // notice that accounts for this tap. Opening the first
-              // request's review under it would be a send the user did not
-              // choose, behind a card they are about to dismiss.
-              break;
-            case PaymentRequestReviewUnavailable():
-              break;
-          }
-        });
-        return;
-      }
-      if (ref
-          .read(externalActionGuardProvider)
-          .blocks(ExternalAction.navigation)) {
-        return;
-      }
-      final args = notifier.review();
-      if (args == null) return;
-      _releaseRetainedSendStatus(ref);
-      router.go('/send/review', extra: args);
-    }
-
     // The Android system back press is answered by
     // `MobileExitBackDispatcher.handleBackAboveRouter`, not by a `PopScope`
     // here: this host is mounted from `MaterialApp.router`'s builder, above
@@ -196,14 +122,14 @@ class PaymentRequestHost extends ConsumerWidget {
     return Stack(
       fit: StackFit.passthrough,
       children: [
-        child,
+        widget.child,
         _UnfocusWhenMounted(
           child: PaymentRequestSurface.overlay(
             key: const ValueKey('payment_request_host_surface'),
             cardKey: ValueKey(flow.prefill.id),
             request: request,
-            onContinue: review,
-            onEdit: edit,
+            onContinue: _review,
+            onEdit: _edit,
             onCancel: () {
               // A drag-dismiss animation can finish before the host rebuilds
               // for a newer link. Only the request that began closing may end.
@@ -213,10 +139,162 @@ class PaymentRequestHost extends ConsumerWidget {
               }
             },
             onRecheck: notifier.recheck,
+            onScan: _scanOriginal,
           ),
         ),
       ],
     );
+  }
+
+  Future<void> _navigateAfterRelease(Future<void> Function() action) async {
+    await ref
+        .read(externalActionGuardProvider.notifier)
+        .runNavigation(() => duringAppReviewBusy(ref, action));
+  }
+
+  Future<void> _edit() async {
+    final notifier = ref.read(paymentRequestFlowProvider.notifier);
+    // The card comes down at once, but the composer opens only when Rust
+    // has released the card's proposal: the composer re-quotes the fee as
+    // it mounts, and Rust cannot select inputs a proposal still holds, so a
+    // wallet whose funds sit in those inputs would answer that quote with
+    // "not enough ZEC" for the very payment the card just found affordable.
+    // A slow release leaves the app usable underneath; a navigation made
+    // meanwhile wins over the hand-back.
+    final origin = _location(router);
+    // The card clears before release completes. Keep reviews blocked through
+    // that wait (including release retries) and the resulting navigation.
+    await _navigateAfterRelease(() async {
+      switch (await notifier.editHandingBack()) {
+        case PaymentRequestEditReady(:final prefill):
+          if (!mounted || _location(router) != origin) return;
+          _releaseRetainedSendStatus(ref);
+          // Both `/send` pages are keyed on the prefill's id, so this
+          // remounts the composer and discards anything already typed
+          // there. That is intended: Edit is the user asking for this
+          // request to be loaded, and a composer that kept half of a
+          // different payment's fields would be the more dangerous outcome
+          // of the two.
+          router.go('/send', extra: prefill);
+        case PaymentRequestEditOvertaken():
+          // A newer link owns the card now, and it carries the replaced
+          // notice that accounts for this tap.
+          break;
+        case PaymentRequestEditUnavailable():
+          break;
+      }
+    });
+  }
+
+  Future<void> _review() async {
+    final flow = ref.read(paymentRequestFlowProvider);
+    if (flow == null) return;
+    final notifier = ref.read(paymentRequestFlowProvider.notifier);
+    // An amount-less request has nothing to review: its primary action is
+    // "Enter amount", which is Edit under a different label.
+    if (!flow.canReview) {
+      await _edit();
+      return;
+    }
+    if (_isMobile) {
+      // Mobile's review step owns proposal creation, so the proposal the
+      // pre-check made would be a second one. Hand it back and give the
+      // wizard the fee it already computed — but only navigate once it is
+      // back: the review step re-quotes the fee as it mounts, and Rust
+      // cannot select inputs a proposal still holds, so a wallet whose
+      // funds sit in those inputs would answer that quote with "not enough
+      // ZEC" for the very payment the card just found affordable.
+      final origin = _location(router);
+      await _navigateAfterRelease(() async {
+        switch (await notifier.reviewHandingBack()) {
+          case PaymentRequestReviewReady(:final args):
+            if (!mounted || _location(router) != origin) return;
+            _releaseRetainedSendStatus(ref);
+            router.go('/send/review', extra: _mobileDraftFor(args));
+          case PaymentRequestReviewOvertaken():
+            // A newer link owns the card now, and it carries the replaced
+            // notice that accounts for this tap. Opening the first
+            // request's review under it would be a send the user did not
+            // choose, behind a card they are about to dismiss.
+            break;
+          case PaymentRequestReviewUnavailable():
+            break;
+        }
+      });
+      return;
+    }
+    if (ref
+        .read(externalActionGuardProvider)
+        .blocks(ExternalAction.navigation)) {
+      return;
+    }
+    final args = notifier.review();
+    if (args == null) return;
+    _releaseRetainedSendStatus(ref);
+    router.go('/send/review', extra: args);
+  }
+
+  Future<void> _scanOriginal() async {
+    if (!mounted) return;
+    final original = ref.read(paymentRequestFlowProvider);
+    final scanContext = router.routerDelegate.navigatorKey.currentContext;
+    if (_scanInFlight ||
+        original == null ||
+        scanContext == null ||
+        ref
+            .read(externalActionGuardProvider)
+            .blocks(ExternalAction.navigation)) {
+      return;
+    }
+    final origin = _location(router);
+    final network = ref.read(rpcEndpointProvider).networkName;
+    final lease = ref.read(externalActionGuardProvider.notifier).acquire();
+    _scanInFlight = true;
+    setState(() => _scanning = true);
+    try {
+      // Keep the existing request/proposal owned by the flow. Cancellation
+      // restores it; `present` serializes a successful replacement behind the
+      // old proposal's release. OS requests wait behind this synchronous hold.
+      final scanned = await ref.read(paymentRequestScannerProvider)(
+        scanContext,
+        router: router,
+        networkName: network,
+      );
+      if (!mounted || scanned == null) return;
+      final current = ref.read(paymentRequestFlowProvider);
+      // Lock, reset, account changes or a newer request invalidate this scan.
+      if (!identical(current?.prefill, original.prefill) ||
+          ref.read(rpcEndpointProvider).networkName != network) {
+        return;
+      }
+      if (_location(router) != origin) return;
+      final check = ref
+          .read(paymentRequestFlowProvider.notifier)
+          .present(scanned, source: PaymentRequestSource.qrCode);
+      // The camera is closed. Show the compact checking state while the old
+      // proposal is released and the scanned request is checked.
+      setState(() => _scanning = false);
+      await check;
+      // Keep the scanned terms in the payment-request surface. Review or
+      // editing requires a separate choice after the user inspects them.
+    } catch (_) {
+      if (mounted &&
+          scanContext.mounted &&
+          identical(
+            ref.read(paymentRequestFlowProvider)?.prefill,
+            original.prefill,
+          )) {
+        showAppToast(
+          scanContext,
+          "Couldn't open the QR scanner. Try again.",
+          iconName: AppIcons.warning,
+        );
+      }
+    } finally {
+      lease.release();
+      _scanInFlight = false;
+      if (mounted) setState(() => _scanning = false);
+    }
   }
 
   /// Desktop `/send/review` takes a [SendReviewArgs] — a proposal that already

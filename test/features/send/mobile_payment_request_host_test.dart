@@ -7,11 +7,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:zcash_wallet/src/features/address_scan/widgets/mobile_address_scan_card.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_routes.dart';
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
+import 'package:zcash_wallet/src/core/widgets/app_toast.dart';
 import 'package:zcash_wallet/src/features/send/services/send_proving_key_warmup.dart';
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
@@ -21,6 +24,7 @@ import 'package:zcash_wallet/src/features/send/models/send_prefill_args.dart';
 import 'package:zcash_wallet/src/features/send/screens/mobile/mobile_send_screen.dart'
     show MobileSendReviewDraftArgs, MobileSendScreen;
 import 'package:zcash_wallet/src/features/send/services/payment_request_precheck.dart';
+import 'package:zcash_wallet/src/features/send/services/payment_request_scanner.dart';
 import 'package:zcash_wallet/src/features/send/services/send_flow.dart';
 import 'package:zcash_wallet/src/features/send/widgets/payment_request_host.dart';
 import 'package:zcash_wallet/src/features/send/widgets/send_recipient_resolver.dart';
@@ -30,8 +34,10 @@ import 'package:zcash_wallet/src/providers/payment_request_flow_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
+import 'package:zcash_wallet/src/services/qr_scanner.dart';
 
 import '../../fakes/fake_sync_notifier.dart';
+import '../../support/payment_request_scan_expectations.dart';
 
 // The mobile half of `payment_request_host_test.dart`: the card's Review
 // hands the proposal *back* (the wizard's review step creates its own) and
@@ -51,16 +57,21 @@ const _request = SendPrefillArgs(
 
 class _RustApiFake implements RustLibApi {
   bool validAddress = true;
+  Completer<rust_sync.AddressValidationResult>? validationGate;
 
   @override
   Future<rust_sync.AddressValidationResult> crateApiSyncValidateAddress({
     required String address,
     required String network,
-  }) async => rust_sync.AddressValidationResult(
-    isValid: validAddress,
-    addressType: validAddress ? 'unified' : 'invalid',
-    wrongNetwork: false,
-  );
+  }) async {
+    final pending = validationGate;
+    if (pending != null) return pending.future;
+    return rust_sync.AddressValidationResult(
+      isValid: validAddress,
+      addressType: validAddress ? 'unified' : 'invalid',
+      wrongNetwork: false,
+    );
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -119,6 +130,7 @@ PaymentRequestPrecheck _readyPrecheck() => PaymentRequestPrecheck(
         amountZatoshi: amountZatoshi,
         feeZatoshi: BigInt.from(10000),
         needsSaplingParams: false,
+        memo: memo,
         isPaymentRequest: isPaymentRequest,
         requestedBy: requestedBy,
         requestedAmountZatoshi: requestedAmountZatoshi,
@@ -155,6 +167,7 @@ Future<_Harness> _pumpHost(
   Widget? home,
   FutureOr<List<AddressBookContact>> contacts = const [],
   FutureOr<Map<String, AccountInfo>> ownAccounts = const {},
+  PaymentRequestScanner? scanner,
 }) async {
   tester.view.physicalSize = const Size(393, 852);
   tester.view.devicePixelRatio = 1.0;
@@ -165,7 +178,12 @@ Future<_Harness> _pumpHost(
   final router = GoRouter(
     initialLocation: '/home',
     routes: [
-      for (final path in ['/home', if (!realComposer) '/send'])
+      for (final path in [
+        '/home',
+        '/unlock',
+        '/send/request-scan',
+        if (!realComposer) '/send',
+      ])
         GoRoute(
           path: path,
           builder: (_, _) => path == '/home' && home != null
@@ -190,6 +208,8 @@ Future<_Harness> _pumpHost(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        if (scanner != null)
+          paymentRequestScannerProvider.overrideWithValue(scanner),
         appBootstrapProvider.overrideWithValue(
           AppBootstrapState(
             initialLocation: '/home',
@@ -216,6 +236,9 @@ Future<_Harness> _pumpHost(
             SyncState(
               accountUuid: 'account-1',
               hasAccountScopedData: true,
+              isSyncComplete: true,
+              chainTipHeight: 3000000,
+              scannedHeight: 3000000,
               spendableBalance: BigInt.from(100000000),
             ),
           ),
@@ -239,7 +262,9 @@ Future<_Harness> _pumpHost(
             routerConfig: router,
             builder: (context, child) => AppTheme(
               data: AppThemeData.light,
-              child: PaymentRequestHost(router: router, child: child!),
+              child: AppToastHost(
+                child: PaymentRequestHost(router: router, child: child!),
+              ),
             ),
           );
         },
@@ -255,14 +280,195 @@ Future<_Harness> _pumpHost(
 }
 
 void main() {
+  registerPaymentRequestScannerTests((tester, scanner) async {
+    final harness = await _pumpHost(tester, scanner: scanner);
+    return (harness.container, harness.router);
+  }, holdRelease: (gate) => _discardGate = gate);
   final rustApi = _RustApiFake();
   setUpAll(() => RustLib.initMock(api: rustApi));
   tearDownAll(RustLib.dispose);
   setUp(() {
     rustApi.validAddress = true;
+    rustApi.validationGate = null;
     _discarded.clear();
     _discardGate = null;
   });
+
+  for (final dismiss in ['close', 'back', 'barrier']) {
+    testWidgets(
+      'late QR validation after $dismiss preserves the underlying send screen',
+      (tester) async {
+        final controller = MobileScannerController(autoStart: false);
+        addTearDown(controller.dispose);
+        final harness = await _pumpHost(
+          tester,
+          scanner: (context, {required router, required networkName}) =>
+              showPaymentRequestScanSheet(
+                context,
+                networkName: networkName,
+                controller: controller,
+              ),
+        );
+        unawaited(harness.router.push('/send'));
+        await tester.pumpAndSettle();
+        final notifier = harness.container.read(
+          paymentRequestFlowProvider.notifier,
+        );
+        await notifier.present(_request, source: PaymentRequestSource.link);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('payment_request_scan')));
+        await tester.pumpAndSettle();
+
+        final validation = Completer<rust_sync.AddressValidationResult>();
+        rustApi.validationGate = validation;
+        tester
+            .widget<PlainQrScannerView>(
+              find.byType(PlainQrScannerView, skipOffstage: false),
+            )
+            .onComplete('zcash:u1valid?amount=0.75');
+        await tester.pump();
+        switch (dismiss) {
+          case 'close':
+            tester
+                .widget<MobileAddressScanCard>(
+                  find.byType(MobileAddressScanCard),
+                )
+                .onClose();
+          case 'back':
+            await tester.binding.handlePopRoute();
+          case 'barrier':
+            await tester.tapAt(const Offset(8, 40));
+        }
+        // Complete validation while the dismissed sheet is still mounted
+        // for its reverse transition, not after pumpAndSettle disposes it.
+        await tester.pump();
+        expect(
+          harness.container.read(externalActionGuardProvider).activeHoldCount,
+          0,
+        );
+        validation.complete(
+          const rust_sync.AddressValidationResult(
+            isValid: true,
+            addressType: 'unified',
+            wrongNetwork: false,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('screen /send'), findsOneWidget);
+        expect(find.byType(MobileAddressScanCard), findsNothing);
+        expect(harness.router.canPop(), isTrue);
+        expect(
+          harness.container.read(paymentRequestFlowProvider)?.prefill.address,
+          _request.address,
+        );
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant({
+        TargetPlatform.iOS,
+        TargetPlatform.android,
+      }),
+    );
+  }
+
+  testWidgets(
+    'the real QR sheet replaces the request without closing the send screen',
+    (tester) async {
+      final controller = MobileScannerController(autoStart: false);
+      addTearDown(controller.dispose);
+      final harness = await _pumpHost(
+        tester,
+        scanner: (context, {required router, required networkName}) =>
+            showPaymentRequestScanSheet(
+              context,
+              networkName: networkName,
+              controller: controller,
+            ),
+      );
+      unawaited(harness.router.push('/send'));
+      await tester.pumpAndSettle();
+      await harness.container
+          .read(paymentRequestFlowProvider.notifier)
+          .present(_request, source: PaymentRequestSource.link);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('payment_request_scan')));
+      await tester.pumpAndSettle();
+      tester
+          .widget<PlainQrScannerView>(
+            find.byType(PlainQrScannerView, skipOffstage: false),
+          )
+          .onComplete('zcash:u1valid?amount=0.75');
+      await tester.pumpAndSettle();
+
+      final request = harness.container.read(paymentRequestFlowProvider)!;
+      expect(find.text('screen /send'), findsOneWidget);
+      expect(find.byType(MobileAddressScanCard), findsNothing);
+      expect(request.prefill.address, 'u1valid');
+      expect(request.prefill.amountText, '0.75');
+      expect(request.view.source, PaymentRequestSource.qrCode);
+      expect(find.text('Review payment'), findsOneWidget);
+      expect(
+        harness.container.read(externalActionGuardProvider).activeHoldCount,
+        0,
+      );
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
+  );
+
+  for (final leave in ['cancel', 'lock']) {
+    testWidgets(
+      'the real re-scan sheet closes on $leave and releases its hold',
+      (tester) async {
+        final controller = MobileScannerController(autoStart: false);
+        addTearDown(controller.dispose);
+        final harness = await _pumpHost(
+          tester,
+          scanner: (context, {required router, required networkName}) =>
+              showPaymentRequestScanSheet(
+                context,
+                networkName: networkName,
+                controller: controller,
+              ),
+        );
+        final notifier = harness.container.read(
+          paymentRequestFlowProvider.notifier,
+        );
+        notifier.present(_request, source: PaymentRequestSource.link);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('payment_request_scan')));
+        await tester.pumpAndSettle();
+        expect(find.byType(MobileAddressScanCard), findsOneWidget);
+        expect(
+          harness.container.read(externalActionGuardProvider).activeHoldCount,
+          1,
+        );
+        if (leave == 'cancel') {
+          tester
+              .widget<MobileAddressScanCard>(find.byType(MobileAddressScanCard))
+              .onClose();
+        } else {
+          notifier.clear(logContext: 'PaymentRequest(locked)');
+          harness.router.go('/unlock');
+        }
+        await tester.pumpAndSettle();
+        expect(find.byType(MobileAddressScanCard), findsNothing);
+        expect(
+          harness.container.read(externalActionGuardProvider).activeHoldCount,
+          0,
+        );
+        expect(
+          harness.container.read(paymentRequestFlowProvider) != null,
+          leave == 'cancel',
+        );
+        expect(harness.location, leave == 'cancel' ? '/home' : '/unlock');
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('dragging the sheet down dismisses and releases its proposal', (
     tester,
@@ -270,7 +476,7 @@ void main() {
     final harness = await _pumpHost(tester);
     harness.container
         .read(paymentRequestFlowProvider.notifier)
-        .present(_request, source: PaymentRequestSource.link);
+        .present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     final title = find.text('Payment request');
@@ -310,7 +516,7 @@ void main() {
 
     harness.container
         .read(paymentRequestFlowProvider.notifier)
-        .present(_request, source: PaymentRequestSource.link);
+        .present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     expect(find.text('Payment request'), findsOneWidget);
@@ -323,7 +529,7 @@ void main() {
     final harness = await _pumpHost(tester);
     harness.container
         .read(paymentRequestFlowProvider.notifier)
-        .present(_request, source: PaymentRequestSource.link);
+        .present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     final title = find.text('Payment request');
@@ -348,7 +554,7 @@ void main() {
     final notifier = harness.container.read(
       paymentRequestFlowProvider.notifier,
     );
-    notifier.present(_request, source: PaymentRequestSource.link);
+    notifier.present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     final originalTop = tester.getTopLeft(find.text('Payment request')).dy;
@@ -369,7 +575,7 @@ void main() {
         address: _address,
         amountText: '0.75',
       ),
-      source: PaymentRequestSource.link,
+      source: PaymentRequestSource.qrCode,
     );
     // Let the old animation finish in the frame that rebuilds the host for
     // the new request: its completion callback runs before that rebuild.
@@ -448,7 +654,7 @@ void main() {
         );
         expect(
           find.byKey(const ValueKey('payment_request_recipient_avatar')),
-          findsOneWidget,
+          findsNothing,
         );
         expect(tester.takeException(), isNull);
       },
@@ -467,11 +673,11 @@ void main() {
               source: kPaymentUriPrefillSource,
               address: _address,
             ),
-            source: PaymentRequestSource.link,
+            source: PaymentRequestSource.qrCode,
           );
       await tester.pumpAndSettle();
       expect(find.text('Transaction content'), findsNothing);
-      expect(find.text('To'), findsOneWidget);
+      expect(find.text('Recipient'), findsOneWidget);
       await tester.tap(find.text('Enter amount'));
       await tester.pumpAndSettle();
       expect(harness.location, '/send');
@@ -510,7 +716,7 @@ void main() {
               source: kPaymentUriPrefillSource,
               address: _address,
             ),
-            source: PaymentRequestSource.link,
+            source: PaymentRequestSource.qrCode,
           );
       await tester.pumpAndSettle();
       rustApi.validAddress = false;
@@ -538,7 +744,7 @@ void main() {
         final harness = await _pumpHost(tester);
         harness.container
             .read(paymentRequestFlowProvider.notifier)
-            .present(_request, source: PaymentRequestSource.link);
+            .present(_request, source: PaymentRequestSource.qrCode);
         await tester.pumpAndSettle();
         final button = find.byKey(
           ValueKey(
@@ -568,7 +774,7 @@ void main() {
       final harness = await _pumpHost(tester);
       harness.container
           .read(paymentRequestFlowProvider.notifier)
-          .present(_request, source: PaymentRequestSource.link);
+          .present(_request, source: PaymentRequestSource.qrCode);
       await tester.pumpAndSettle();
 
       _discardGate = Completer<void>();
@@ -605,7 +811,7 @@ void main() {
     final harness = await _pumpHost(tester);
     harness.container
         .read(paymentRequestFlowProvider.notifier)
-        .present(_request, source: PaymentRequestSource.link);
+        .present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     _discardGate = Completer<void>();
@@ -631,7 +837,7 @@ void main() {
     final notifier = harness.container.read(
       paymentRequestFlowProvider.notifier,
     );
-    notifier.present(_request, source: PaymentRequestSource.link);
+    notifier.present(_request, source: PaymentRequestSource.qrCode);
     await tester.pumpAndSettle();
 
     _discardGate = Completer<void>();
@@ -646,7 +852,7 @@ void main() {
         amountText: '0.75',
         label: 'Bakery',
       ),
-      source: PaymentRequestSource.link,
+      source: PaymentRequestSource.qrCode,
     );
     _discardGate!.complete();
     await tester.pumpAndSettle();
@@ -668,6 +874,6 @@ void main() {
       find.byKey(const ValueKey('payment_request_replaced_notice')),
       findsOneWidget,
     );
-    expect(find.text('Replaced an earlier link'), findsOneWidget);
+    expect(find.text('Updated from the scanned QR'), findsOneWidget);
   });
 }

@@ -26,8 +26,6 @@ Future<List<String>> _pump(
   ScriptedDetails details, {
   FakeSyncNotifier? sync,
   bool privacy = false,
-  bool showPrivateLookupDiagnostics = false,
-  Future<String> Function(rust_sync.TransactionInfo)? debugLookup,
   Future<void> Function(rust_sync.TransactionInfo)? publicLookup,
   Future<bool> Function(BuildContext)? confirmPublicLookup,
   rust_sync.TransactionInfo? transaction,
@@ -52,11 +50,9 @@ Future<List<String>> _pump(
           historyLoader: (_) async => [tx],
           detailLoader: details.load,
           transparentDetailsPrioritizer: (txid) async => prioritized.add(txid),
-          transparentDetailsDebugLookup: debugLookup,
           transparentDetailsPublicLookup: publicLookup,
           publicLookupConfirmation:
               confirmPublicLookup ?? confirmPublicDetailsLookup,
-          showPrivateLookupDiagnostics: showPrivateLookupDiagnostics,
         ),
       ),
       GoRoute(path: '/activity', builder: (_, _) => const Text('activity')),
@@ -103,18 +99,6 @@ Future<void> _close(WidgetTester tester) async {
 }
 
 void main() {
-  transparentDetailsDebugTests(
-    pump: (tester, details, sync, privacy, lookup) async {
-      await _pump(
-        tester,
-        details,
-        sync: sync,
-        privacy: privacy,
-        showPrivateLookupDiagnostics: true,
-        debugLookup: lookup,
-      );
-    },
-  );
   transparentDetailsPublicLookupTests(
     pump: (tester, details, {required lookup, confirm, sync}) async {
       await _pump(
@@ -250,30 +234,7 @@ void main() {
     await _close(tester);
   });
 
-  testWidgets('desktop dev builds offer a private lookup that stores nothing', (
-    tester,
-  ) async {
-    final details = ScriptedDetails([
-      transparentDetail(rust_sync.TransparentDetailsState.unavailable),
-    ]);
-    await _pump(
-      tester,
-      details,
-      showPrivateLookupDiagnostics: true,
-      debugLookup: (_) async => '1 outputs · 2 private queries',
-    );
-    final button = find.byKey(
-      const ValueKey('transparent_details_debug_lookup'),
-    );
-    expect(button, findsOneWidget);
-    await tester.tap(find.text('Look up'));
-    await tester.pump();
-    await tester.pump();
-    expect(find.text('1 outputs · 2 private queries'), findsOneWidget);
-    await _close(tester);
-  });
-
-  testWidgets('desktop hides private lookup diagnostics when disabled', (
+  testWidgets('desktop receipt has no private lookup diagnostic button', (
     tester,
   ) async {
     final details = ScriptedDetails([

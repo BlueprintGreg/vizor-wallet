@@ -24,9 +24,11 @@ class PaymentRequestSurface extends StatelessWidget {
     required this.onEdit,
     required this.onCancel,
     this.onRecheck,
+    this.onScan,
     this.layout = PaymentRequestLayout.auto,
     this.initialAddressExpanded = false,
     this.initialMessageExpanded = false,
+    this.initialLinkDetails = false,
     this.cardKey,
     this.background,
     super.key,
@@ -45,9 +47,11 @@ class PaymentRequestSurface extends StatelessWidget {
     required this.onEdit,
     required this.onCancel,
     this.onRecheck,
+    this.onScan,
     this.layout = PaymentRequestLayout.auto,
     this.initialAddressExpanded = false,
     this.initialMessageExpanded = false,
+    this.initialLinkDetails = false,
     this.cardKey,
     super.key,
   }) : background = null,
@@ -60,6 +64,7 @@ class PaymentRequestSurface extends StatelessWidget {
 
   /// Ask the wallet again; see [PaymentRequestCard.onRecheck].
   final VoidCallback? onRecheck;
+  final VoidCallback? onScan;
 
   /// Tooling-only layout override; see [PaymentRequestLayout].
   final PaymentRequestLayout layout;
@@ -69,6 +74,9 @@ class PaymentRequestSurface extends StatelessWidget {
 
   /// Tooling-only: renders the Message row already expanded to its full text.
   final bool initialMessageExpanded;
+
+  /// Tooling-only: renders the parsed request after choosing link details.
+  final bool initialLinkDetails;
 
   /// Identity of the request whose disclosure state the card owns.
   final Key? cardKey;
@@ -103,9 +111,11 @@ class PaymentRequestSurface extends StatelessWidget {
         onEdit: onEdit,
         onCancel: onCancel,
         onRecheck: onRecheck,
+        onScan: onScan,
         layout: layout,
         initialAddressExpanded: initialAddressExpanded,
         initialMessageExpanded: initialMessageExpanded,
+        initialLinkDetails: initialLinkDetails,
         // The surrounding modal frame owns the bottom edge in both form
         // factors.
         bottomSafeArea: false,
@@ -155,10 +165,7 @@ class PaymentRequestSurface extends StatelessWidget {
               key: cardKey,
               onDismiss: onCancel,
               child: MobileModalCard(
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: paymentRequestSheetBody(card, onClose: onCancel),
-                ),
+                child: Material(type: MaterialType.transparency, child: card),
               ),
             ),
           ),
@@ -176,7 +183,11 @@ class PaymentRequestSurface extends StatelessWidget {
       // the card off the sidebar's half of the window; with no shell
       // mounted they are zero and this centers on the window as before.
       child: ContentPaneCenteringPadding(
-        child: AppModalCard(width: kPaymentRequestCardWidth, child: card),
+        child: AppModalCard(
+          width: kPaymentRequestCardWidth,
+          padding: EdgeInsets.zero,
+          child: card,
+        ),
       ),
     );
   }
@@ -278,33 +289,6 @@ class _ModalOverlayScopeState extends State<_ModalOverlayScope> {
   Widget build(BuildContext context) => Overlay(initialEntries: [_entry]);
 }
 
-/// The mobile sheet body: the app's shared modal chrome around the card.
-///
-/// [MobileModalScaffold] owns the standard top 32 / sides 16 padding and the
-/// pinned 32x32 top-right close every mobile sheet has, which is why the
-/// card carries no Cancel button of its own. The card renders its own serif
-/// title (and the requester line under it), so the scaffold's title row is
-/// off — the shared reservation for the pinned close lives in the card's
-/// header instead ([kPaymentRequestMobileCloseClearance]).
-///
-/// [bottomPadding] is the Figma modal base's 32 under the action stack; the
-/// bottom safe area itself stays with `MobileModalCard`, so it is never
-/// applied twice.
-Widget paymentRequestSheetBody(Widget card, {required VoidCallback onClose}) {
-  return MobileModalScaffold(
-    title: '',
-    showTitle: false,
-    onClose: onClose,
-    // Figma `_Modal Type` (4638:74505): 32 between the button stack and
-    // the sheet's bottom edge.
-    bottomPadding: AppSpacing.base,
-    // The scaffold lays its body out in a min-size Column, which hands a
-    // plain child unbounded height. The card needs a bounded one — that is
-    // what makes its details region scroll instead of overflowing the sheet.
-    child: Flexible(child: card),
-  );
-}
-
 /// Presents the payment request as a mobile bottom sheet.
 ///
 /// Resolves to `'continue'`, `'edit'`, or null when dismissed, so the
@@ -313,18 +297,17 @@ Widget paymentRequestSheetBody(Widget card, {required VoidCallback onClose}) {
 Future<String?> showPaymentRequestSheet({
   required BuildContext context,
   required PaymentRequestView request,
+  VoidCallback? onScan,
 }) {
   return showAppMobileSheet<String>(
     context: context,
-    builder: (sheetContext) => paymentRequestSheetBody(
-      PaymentRequestCard(
-        request: request,
-        bottomSafeArea: false,
-        onContinue: () => Navigator.of(sheetContext).pop('continue'),
-        onEdit: () => Navigator.of(sheetContext).pop('edit'),
-        onCancel: () => Navigator.of(sheetContext).pop(),
-      ),
-      onClose: () => Navigator.of(sheetContext).pop(),
+    builder: (sheetContext) => PaymentRequestCard(
+      request: request,
+      bottomSafeArea: false,
+      onScan: onScan,
+      onContinue: () => Navigator.of(sheetContext).pop('continue'),
+      onEdit: () => Navigator.of(sheetContext).pop('edit'),
+      onCancel: () => Navigator.of(sheetContext).pop(),
     ),
   );
 }
