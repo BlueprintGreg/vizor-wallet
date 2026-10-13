@@ -31,7 +31,11 @@
 //! transaction of `[1, tip - lag]` is published with its display facts (its
 //! transparent outputs, the outputs its inputs spend, its whole fee and
 //! whether it has shielded components) in one unsealed recent display shard,
-//! republished with the history publication. Display publications carry
+//! republished with the history publication. The v12 client queries a recent
+//! shard only once each bucket holds `MIN_RECENT_FLOOR` (10,000) txids, more
+//! than regtest makes, so the shard is one bucket padded with synthetic
+//! transactions to that floor, as production's recent shard always holds it;
+//! no synthetic txid is a chain txid or names a script of the chain. Display publications carry
 //! wallet-pir's synthetic network label and block hashes: the display client
 //! binds a publication to its map, not to the wallet's chain.
 //!
@@ -87,6 +91,7 @@ use transparent_shard_server::display::{
 };
 use transparent_shard_server::service::{router, ReadinessMode, ServiceConfig, ServiceState};
 use transparent_shard_server::shardset::{ShardSet, DEFAULT_RETAIN_REVISIONS};
+use transparent_txid_client::MIN_RECENT_FLOOR;
 
 use crate::chain::rpc_at;
 
@@ -358,32 +363,38 @@ impl Publisher {
     }
 
     /// Publishes `records` as the txid display service's one unsealed recent
-    /// shard over `[1, end]` at `revision`, and activates it.
+    /// shard over `[1, end]` at `revision`, padded to the client's floor (see
+    /// the module docs), and activates it.
     fn publish_display(&self, end: u64, revision: u32, records: &[DisplayEntry]) {
         let root = self.dir.join("display");
-        // The smallest bucket count whose tables hold every record.
-        let shard = (0..12)
-            .map(|exponent| 1u32 << exponent)
-            .find_map(|n_buckets| {
-                synth::write_shard(
-                    &root,
-                    &synth::ShardSpec {
-                        shard_id: 0,
-                        start_height: 1,
-                        end_height: end,
-                        sealed: false,
-                        revision: 0,
-                        supersedes: String::new(),
-                        parent_manifest_digest: String::new(),
-                        n_buckets,
-                        archive_target: 1,
-                        geometry: &TXID_2K8,
-                    },
-                    records,
-                )
-                .ok()
-            })
-            .expect("a display shard holding every record");
+        let padding = (MIN_RECENT_FLOOR as usize).saturating_sub(records.len());
+        let records: Vec<DisplayEntry> = records
+            .iter()
+            .chain(display_noise().iter().take(padding))
+            .copied()
+            .collect();
+        // One bucket, so the bucket holds every record and meets the floor.
+        let shard = synth::write_shard(
+            &root,
+            &synth::ShardSpec {
+                shard_id: 0,
+                start_height: 1,
+                end_height: end,
+                sealed: false,
+                revision: 0,
+                supersedes: String::new(),
+                parent_manifest_digest: String::new(),
+                n_buckets: 1,
+                archive_target: 1,
+                geometry: &TXID_2K8,
+            },
+            &records,
+        )
+        .expect("a display shard holding every record");
+        assert!(
+            shard.manifest.min_bucket_records() >= MIN_RECENT_FLOOR,
+            "the recent display shard holds fewer than the client's floor"
+        );
         let (directory, map_sha256) =
             synth::write_candidate(&root, &DISPLAY_SEAL, &[shard], &format!("p{revision}"))
                 .expect("a display candidate");
@@ -637,6 +648,44 @@ async fn dispatch(State(shared): State<Arc<Shared>>, request: Request) -> Respon
         },
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// `MIN_RECENT_FLOOR` synthetic display entries, the recent display shard's
+/// padding: each a transaction from one P2PKH script to another, with txids
+/// and key hashes derived from a label, so none is a chain txid or script.
+fn display_noise() -> &'static [DisplayEntry] {
+    static NOISE: OnceLock<Vec<DisplayEntry>> = OnceLock::new();
+    NOISE.get_or_init(|| {
+        let derive = |kind: &str, n: u64| -> [u8; 32] {
+            Sha256::new()
+                .chain_update(b"vizor-th display noise ")
+                .chain_update(kind.as_bytes())
+                .chain_update(n.to_le_bytes())
+                .finalize()
+                .into()
+        };
+        let p2pkh = |hash: [u8; 32]| [&[0x76, 0xa9, 20][..], &hash[..20], &[0x88, 0xac]].concat();
+        (0..MIN_RECENT_FLOOR)
+            .map(|n| {
+                DisplayFacts {
+                    txid: Txid(derive("txid", n)),
+                    coinbase: false,
+                    fee: 1_000,
+                    has_shielded_components: n % 2 == 0,
+                    spent: vec![DisplayOutput {
+                        value: 2_000 + n,
+                        script: p2pkh(derive("spent", n)),
+                    }],
+                    outputs: vec![DisplayOutput {
+                        value: 1_000 + n,
+                        script: p2pkh(derive("output", n)),
+                    }],
+                }
+                .entry()
+                .expect("a display entry")
+            })
+            .collect()
+    })
 }
 
 fn zat(value: &Value) -> i64 {

@@ -252,6 +252,12 @@ rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 git = "https://github.com/valargroup/wallet-pir"
 rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
 
+# The txid display client's floor, which the harness's recent display shard
+# is padded to.
+[dev-dependencies.transparent-txid-client]
+git = "https://github.com/valargroup/wallet-pir"
+rev = "3e705bb3a24bfc1e35e12ca6c689d440fb8bf3a8"
+
 [dev-dependencies.axum]
 version = "0.7"
 

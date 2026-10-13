@@ -5099,6 +5099,7 @@ dependencies = [
  "transparent-filter",
  "transparent-shard",
  "transparent-shard-server",
+ "transparent-txid-client",
  "ur",
  "ur-registry",
  "url",
