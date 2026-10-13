@@ -14,5 +14,6 @@
   "reason": "Adding or importing accounts one after another with no scan in between failed with CorruptedData (\"the Ironwood note commitment tree retains checkpoints both above and below height H, but none at that height to truncate to\") once the pools' oldest checkpoints differed",
   "license_texts": "LICENSE-APACHE and LICENSE-MIT copied from the earlier vendored backport of this package, which took them from the zakura-client-backend 0.1.0-rc7 archive; the manifest declares MIT OR Apache-2.0",
   "upstream_pull_request": "https://github.com/zakura-core/wallet-libraries/pull/157",
-  "removal_condition": "Replace this override with a wallet-libraries revision or release that contains the change, then delete this directory and both zakura-client-sqlite patch entries in rust/Cargo.toml"
+  "upstream_merge_commit": "3562eac293548877ffe769295bac250912cd3b1e",
+  "removal_condition": "Move the wallet-libraries pin to a revision or release that contains upstream_merge_commit, then delete this directory and both zakura-client-sqlite patch entries in rust/Cargo.toml"
 }
