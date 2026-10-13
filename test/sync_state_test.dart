@@ -172,6 +172,10 @@ void main() {
       changePendingConfirmation: BigInt.from(7),
       valuePendingSpendability: BigInt.from(8),
       uneconomicValue: BigInt.from(9),
+      saplingHistoryHold: BigInt.zero,
+      orchardHistoryHold: BigInt.zero,
+      ironwoodHistoryHold: BigInt.zero,
+      historyHold: BigInt.zero,
       spendable: BigInt.from(5),
       locked: BigInt.from(10),
       total: BigInt.from(31),
@@ -276,6 +280,36 @@ void main() {
     );
   });
 
+  test('held funds count in the shielded total but not as spendable', () {
+    final held = SyncState().withFetchedAccountData(
+      balance: _balance(
+        orchard: BigInt.from(3),
+        orchardHistoryHold: BigInt.from(50),
+        ironwood: BigInt.zero,
+        spendable: BigInt.from(3),
+        total: BigInt.from(53),
+      ),
+      syncComplete: false,
+    );
+
+    expect(held.historyHoldBalance, BigInt.from(50));
+    expect(held.spendableBalance, BigInt.from(3));
+    expect(held.displayShieldedBalance, BigInt.from(53));
+    expect(held.totalBalance, BigInt.from(53));
+
+    final released = held.withFetchedAccountData(
+      balance: _balance(
+        orchard: BigInt.from(53),
+        ironwood: BigInt.zero,
+        spendable: BigInt.from(53),
+        total: BigInt.from(53),
+      ),
+      syncComplete: true,
+    );
+    expect(released.historyHoldBalance, BigInt.zero);
+    expect(released.displayShieldedBalance, BigInt.from(53));
+  });
+
   test('fetched Ironwood-only balance feeds the spendable display', () {
     final balance = rust_sync.WalletBalance(
       availability: rust_sync.WalletBalanceAvailability.available,
@@ -296,6 +330,10 @@ void main() {
       changePendingConfirmation: BigInt.zero,
       valuePendingSpendability: BigInt.zero,
       uneconomicValue: BigInt.zero,
+      saplingHistoryHold: BigInt.zero,
+      orchardHistoryHold: BigInt.zero,
+      ironwoodHistoryHold: BigInt.zero,
+      historyHold: BigInt.zero,
       spendable: BigInt.from(100),
       locked: BigInt.zero,
       total: BigInt.from(100),
@@ -670,6 +708,7 @@ void main() {
 rust_sync.WalletBalance _balance({
   required BigInt orchard,
   BigInt? orchardLocked,
+  BigInt? orchardHistoryHold,
   required BigInt ironwood,
   required BigInt spendable,
   required BigInt total,
@@ -693,6 +732,10 @@ rust_sync.WalletBalance _balance({
     changePendingConfirmation: BigInt.zero,
     valuePendingSpendability: BigInt.zero,
     uneconomicValue: BigInt.zero,
+    saplingHistoryHold: BigInt.zero,
+    orchardHistoryHold: orchardHistoryHold ?? BigInt.zero,
+    ironwoodHistoryHold: BigInt.zero,
+    historyHold: orchardHistoryHold ?? BigInt.zero,
     spendable: spendable,
     locked: BigInt.zero,
     total: total,

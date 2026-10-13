@@ -15002,6 +15002,10 @@ impl SseDecode for crate::api::sync::WalletBalance {
         let mut var_changePendingConfirmation = <u64>::sse_decode(deserializer);
         let mut var_valuePendingSpendability = <u64>::sse_decode(deserializer);
         let mut var_uneconomicValue = <u64>::sse_decode(deserializer);
+        let mut var_saplingHistoryHold = <u64>::sse_decode(deserializer);
+        let mut var_orchardHistoryHold = <u64>::sse_decode(deserializer);
+        let mut var_ironwoodHistoryHold = <u64>::sse_decode(deserializer);
+        let mut var_historyHold = <u64>::sse_decode(deserializer);
         let mut var_spendable = <u64>::sse_decode(deserializer);
         let mut var_locked = <u64>::sse_decode(deserializer);
         let mut var_total = <u64>::sse_decode(deserializer);
@@ -15026,6 +15030,10 @@ impl SseDecode for crate::api::sync::WalletBalance {
             change_pending_confirmation: var_changePendingConfirmation,
             value_pending_spendability: var_valuePendingSpendability,
             uneconomic_value: var_uneconomicValue,
+            sapling_history_hold: var_saplingHistoryHold,
+            orchard_history_hold: var_orchardHistoryHold,
+            ironwood_history_hold: var_ironwoodHistoryHold,
+            history_hold: var_historyHold,
             spendable: var_spendable,
             locked: var_locked,
             total: var_total,
@@ -19992,6 +20000,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::WalletBalance {
                 .into_dart(),
             self.value_pending_spendability.into_into_dart().into_dart(),
             self.uneconomic_value.into_into_dart().into_dart(),
+            self.sapling_history_hold.into_into_dart().into_dart(),
+            self.orchard_history_hold.into_into_dart().into_dart(),
+            self.ironwood_history_hold.into_into_dart().into_dart(),
+            self.history_hold.into_into_dart().into_dart(),
             self.spendable.into_into_dart().into_dart(),
             self.locked.into_into_dart().into_dart(),
             self.total.into_into_dart().into_dart(),
@@ -23910,6 +23922,10 @@ impl SseEncode for crate::api::sync::WalletBalance {
         <u64>::sse_encode(self.change_pending_confirmation, serializer);
         <u64>::sse_encode(self.value_pending_spendability, serializer);
         <u64>::sse_encode(self.uneconomic_value, serializer);
+        <u64>::sse_encode(self.sapling_history_hold, serializer);
+        <u64>::sse_encode(self.orchard_history_hold, serializer);
+        <u64>::sse_encode(self.ironwood_history_hold, serializer);
+        <u64>::sse_encode(self.history_hold, serializer);
         <u64>::sse_encode(self.spendable, serializer);
         <u64>::sse_encode(self.locked, serializer);
         <u64>::sse_encode(self.total, serializer);

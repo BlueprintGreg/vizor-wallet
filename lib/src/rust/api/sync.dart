@@ -5,7 +5,6 @@
 
 import '../frb_generated.dart';
 import 'keystone.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `api_proposal_result`, `catch`, `enhance_pir_enabled`, `fetch_block_time`, `migration_status_from_balance`, `parse_network_and_migrate`, `payment_link_batch_pairs`, `run_full_sync_internal`, `to_wallet_action_sigs`, `to_wallet_migration_schedule`, `to_wallet_signed_messages`
@@ -3519,13 +3518,23 @@ class WalletBalance {
   /// Notes at or below the ZIP-317 marginal fee, excluded from normal spendability.
   final BigInt uneconomicValue;
 
+  /// Shielded value held until older history is checked: received before a
+  /// part of the history that is still being scanned, where it may already
+  /// have been spent. Not in `spendable` or `locked`; included in `total`.
+  final BigInt saplingHistoryHold;
+  final BigInt orchardHistoryHold;
+  final BigInt ironwoodHistoryHold;
+
+  /// Sum of the `*_history_hold` fields.
+  final BigInt historyHold;
+
   /// Sum of spendable shielded balances. Use this for "available to send".
   final BigInt spendable;
 
   /// Sum of owner-locked balances across all pools.
   final BigInt locked;
 
-  /// Sum of spendable + locked + pending balances across all pools.
+  /// Sum of spendable + locked + pending + held balances across all pools.
   final BigInt total;
 
   const WalletBalance({
@@ -3549,6 +3558,10 @@ class WalletBalance {
     required this.changePendingConfirmation,
     required this.valuePendingSpendability,
     required this.uneconomicValue,
+    required this.saplingHistoryHold,
+    required this.orchardHistoryHold,
+    required this.ironwoodHistoryHold,
+    required this.historyHold,
     required this.spendable,
     required this.locked,
     required this.total,
@@ -3576,6 +3589,10 @@ class WalletBalance {
       changePendingConfirmation.hashCode ^
       valuePendingSpendability.hashCode ^
       uneconomicValue.hashCode ^
+      saplingHistoryHold.hashCode ^
+      orchardHistoryHold.hashCode ^
+      ironwoodHistoryHold.hashCode ^
+      historyHold.hashCode ^
       spendable.hashCode ^
       locked.hashCode ^
       total.hashCode;
@@ -3605,6 +3622,10 @@ class WalletBalance {
           changePendingConfirmation == other.changePendingConfirmation &&
           valuePendingSpendability == other.valuePendingSpendability &&
           uneconomicValue == other.uneconomicValue &&
+          saplingHistoryHold == other.saplingHistoryHold &&
+          orchardHistoryHold == other.orchardHistoryHold &&
+          ironwoodHistoryHold == other.ironwoodHistoryHold &&
+          historyHold == other.historyHold &&
           spendable == other.spendable &&
           locked == other.locked &&
           total == other.total;

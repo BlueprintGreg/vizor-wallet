@@ -159,6 +159,7 @@ class AppSyncSnapshot {
     required this.spendableBalance,
     required this.totalBalance,
     required this.recentTransactions,
+    this.historyHoldBalance,
   });
 
   final String? accountUuid;
@@ -195,6 +196,9 @@ class AppSyncSnapshot {
   final BigInt spendableBalance;
   final BigInt totalBalance;
   final List<rust_sync.TransactionInfo> recentTransactions;
+
+  /// Shielded value held until older history is checked; null when unknown.
+  final BigInt? historyHoldBalance;
 
   static final empty = AppSyncSnapshot(
     scannedHeight: 0,
@@ -851,6 +855,7 @@ Future<AppSyncSnapshot> _loadInitialSyncSnapshot({
       spendableBalance: balance.spendable,
       totalBalance: balance.total,
       recentTransactions: recentTransactions,
+      historyHoldBalance: balance.historyHold,
     );
   } catch (e) {
     log('bootstrap: failed to load initial sync snapshot: $e');
