@@ -23,8 +23,6 @@ class TransparentDetailsSection extends StatelessWidget {
   const TransparentDetailsSection({
     required this.detail,
     required this.privacyModeEnabled,
-    this.debugLookupText,
-    this.onDebugLookup,
     this.publicLookupText,
     this.onLoadPublicly,
     this.spaced = true,
@@ -33,13 +31,6 @@ class TransparentDetailsSection extends StatelessWidget {
 
   final rust_sync.TransactionDetail? detail;
   final bool privacyModeEnabled;
-
-  /// Development builds only: the result of the last private lookup.
-  final String? debugLookupText;
-
-  /// Development builds only: looks the transaction up privately without
-  /// storing anything.
-  final VoidCallback? onDebugLookup;
 
   /// The state of the last public load, while it runs or after it failed.
   final String? publicLookupText;
@@ -60,7 +51,6 @@ class TransparentDetailsSection extends StatelessWidget {
     if (notice == null &&
         outputs.isEmpty &&
         omissions.isEmpty &&
-        onDebugLookup == null &&
         onLoadPublicly == null) {
       return const SizedBox.shrink();
     }
@@ -121,20 +111,6 @@ class TransparentDetailsSection extends StatelessWidget {
           value: publicLookupText ?? kLoadDetailsPubliclyText,
           trailingIconName: AppIcons.arrowTopRight,
           onPressed: onLoadPublicly,
-          scaleValueToFit: true,
-        ),
-      if (onDebugLookup != null)
-        ReviewListRow(
-          key: const ValueKey('transparent_details_debug_lookup'),
-          label: 'Private lookup (dev)',
-          value: debugLookupText == null
-              ? 'Look up'
-              : hideIfPrivacyMode(
-                  debugLookupText!,
-                  privacyModeEnabled: privacyModeEnabled,
-                ),
-          trailingIconName: AppIcons.arrowTopRight,
-          onPressed: onDebugLookup,
           scaleValueToFit: true,
         ),
     ];

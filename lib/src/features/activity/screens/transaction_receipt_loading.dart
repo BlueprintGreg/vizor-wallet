@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,11 +31,6 @@ typedef ActivityTxDetailLoader =
 /// Asks the next sync to look a transaction's transparent details up first;
 /// injectable for widget tests.
 typedef TransparentDetailsPrioritizer = Future<void> Function(String txidHex);
-
-/// Development builds only: one private lookup, described in a line;
-/// injectable for widget tests.
-typedef TransparentDetailsDebugLookup =
-    Future<String> Function(rust_sync.TransactionInfo transaction);
 
 /// Loads one transaction's full details from the server after the user
 /// confirmed; injectable for widget tests.
@@ -71,10 +65,8 @@ abstract class TransactionReceiptScreen extends ConsumerStatefulWidget {
     this.historyLoader,
     this.detailLoader,
     this.transparentDetailsPrioritizer,
-    this.transparentDetailsDebugLookup,
     this.transparentDetailsPublicLookup,
     this.publicLookupConfirmation = confirmPublicDetailsLookup,
-    this.showPrivateLookupDiagnostics = kDebugMode,
   });
 
   TransactionReceiptArgs get receiptArgs;
@@ -93,24 +85,16 @@ abstract class TransactionReceiptScreen extends ConsumerStatefulWidget {
 
   /// Test seam — production asks Rust.
   @visibleForTesting
-  final TransparentDetailsDebugLookup? transparentDetailsDebugLookup;
-
-  /// Test seam — production asks Rust.
-  @visibleForTesting
   final TransparentDetailsPublicLookup? transparentDetailsPublicLookup;
 
   /// Test seam — production shows [PublicDetailsLookupDialog].
   final PublicLookupConfirmation publicLookupConfirmation;
-
-  /// Whether this is a development build that offers the private lookup
-  /// button.
-  final bool showPrivateLookupDiagnostics;
 }
 
 /// Loads and refreshes what a receipt screen shows, for desktop and mobile
 /// alike: the transaction's Activity row, then its detail; the follow-up
 /// that re-reads the detail while its transparent details are on the way;
-/// and the development and public lookups the receipt offers.
+/// and the public lookup the receipt offers.
 ///
 /// Every load bumps a generation, and a result is shown only while its
 /// generation and account are still current, so a superseded or another
@@ -131,8 +115,6 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
   Timer? _transparentDetailsPoll;
   bool _transparentDetailsPollInFlight = false;
   bool _transparentDetailsPrioritized = false;
-  String? _debugLookupText;
-  int _debugLookupGeneration = 0;
   String? _publicLookupText;
   bool _publicLookupRunning = false;
 
@@ -155,7 +137,6 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
   /// The account the route's row and metadata came from.
   String? get receiptArgsAccountUuid => _argsAccountUuid;
 
-  String? get debugLookupText => _debugLookupText;
   String? get publicLookupText => _publicLookupText;
 
   /// Whether the shown row's detail is still loading with no cached detail to
@@ -236,12 +217,10 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
   /// then loads and publishes its detail.
   Future<void> loadReceipt() async {
     final generation = ++_loadGeneration;
-    ++_debugLookupGeneration;
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
     final accountChanged = accountUuid != _activeAccountUuid;
     _activeAccountUuid = accountUuid;
     setState(() {
-      _debugLookupText = null;
       // A refresh while a public load runs keeps its state; the load
       // refreshes again when it finishes.
       if (!_publicLookupRunning || accountChanged) _publicLookupText = null;
@@ -406,44 +385,6 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
       log('TransactionReceipt: transparent details refresh failed: $e');
     } finally {
       _transparentDetailsPollInFlight = false;
-    }
-  }
-
-  /// Whether a development build offers one private lookup of [tx]'s
-  /// transparent details.
-  bool offersDebugLookup(
-    rust_sync.TransactionInfo tx,
-    rust_sync.TransactionDetail? detail,
-  ) {
-    final state = detail?.transparentDetailsState;
-    return widget.showPrivateLookupDiagnostics &&
-        state != null &&
-        state != rust_sync.TransparentDetailsState.available &&
-        tx.minedHeight > BigInt.zero;
-  }
-
-  Future<void> runDebugLookup(rust_sync.TransactionInfo tx) async {
-    final generation = _loadGeneration;
-    final accountUuid = _activeAccountUuid;
-    final lookupGeneration = ++_debugLookupGeneration;
-    bool isCurrent() =>
-        _loadIsCurrent(generation, accountUuid) &&
-        lookupGeneration == _debugLookupGeneration;
-    setState(() => _debugLookupText = 'Looking up…');
-    try {
-      final lookup = widget.transparentDetailsDebugLookup;
-      final text = lookup != null
-          ? await lookup(tx)
-          : describeTransparentDetailsLookup(
-              await rust_sync.debugLookupTransparentDetails(
-                network: ref.read(rpcEndpointProvider).networkName,
-                txidHex: tx.txidHex,
-                minedHeight: tx.minedHeight,
-              ),
-            );
-      if (isCurrent()) setState(() => _debugLookupText = text);
-    } catch (e) {
-      if (isCurrent()) setState(() => _debugLookupText = 'Failed: $e');
     }
   }
 

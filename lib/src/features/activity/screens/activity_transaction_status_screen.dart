@@ -48,7 +48,6 @@ export 'transaction_receipt_loading.dart'
         ActivityTxDetailLoader,
         ActivityTxHistoryLoader,
         PublicLookupConfirmation,
-        TransparentDetailsDebugLookup,
         TransparentDetailsPrioritizer,
         TransparentDetailsPublicLookup;
 
@@ -83,10 +82,8 @@ class ActivityTransactionStatusScreen extends TransactionReceiptScreen {
     super.historyLoader,
     super.detailLoader,
     super.transparentDetailsPrioritizer,
-    super.transparentDetailsDebugLookup,
     super.transparentDetailsPublicLookup,
     super.publicLookupConfirmation,
-    super.showPrivateLookupDiagnostics,
   });
 
   final ActivityTransactionStatusArgs args;
@@ -776,11 +773,9 @@ class _ActivityTransactionStatusScreenState
     Widget receiptContent =
         redesignedContent ??
         _fallbackContent(tx, privacyModeEnabled: privacyModeEnabled);
-    final debugLookupOffered = tx != null && offersDebugLookup(tx, detail);
     if (tx != null &&
         giftCard == null &&
-        (debugLookupOffered ||
-            offersPublicDetailsLookup(detail) ||
+        (offersPublicDetailsLookup(detail) ||
             transparentDetailsNotice(detail) != null ||
             listedTransactionOutputs(detail).isNotEmpty)) {
       receiptContent = Column(
@@ -792,10 +787,6 @@ class _ActivityTransactionStatusScreenState
             child: TransparentDetailsSection(
               detail: detail,
               privacyModeEnabled: privacyModeEnabled,
-              debugLookupText: debugLookupText,
-              onDebugLookup: debugLookupOffered
-                  ? () => unawaited(runDebugLookup(tx))
-                  : null,
               publicLookupText: publicLookupText,
               onLoadPublicly: offersPublicDetailsLookup(detail)
                   ? () => unawaited(runPublicLookup(tx))

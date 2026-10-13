@@ -1,4 +1,3 @@
-import '../../core/formatting/zec_amount.dart';
 import '../../providers/account_models.dart';
 import '../../rust/api/sync.dart' as rust_sync;
 
@@ -298,17 +297,4 @@ rust_sync.TransparentDetailsState? transparentDetailsNotice(
     'received' || 'receiving' || 'shielded' || 'migration' => null,
     _ => receiptRecipientAddress(detail) == null ? state : null,
   };
-}
-
-/// One line describing a development lookup's result.
-String describeTransparentDetailsLookup(
-  rust_sync.TransparentDetailsLookup lookup,
-) {
-  if (lookup.outcome != 'found') return lookup.outcome;
-  final fee = lookup.feeZatoshi;
-  return [
-    '${lookup.recipients.length} outputs',
-    if (fee != null) 'fee ${ZecAmount.fromZatoshi(fee).fee}',
-    '${lookup.transparentInputCount} inputs',
-  ].join(' · ');
 }

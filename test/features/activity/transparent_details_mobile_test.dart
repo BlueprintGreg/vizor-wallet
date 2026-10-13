@@ -28,8 +28,6 @@ Future<List<String>> _pump(
   ScriptedDetails details, {
   FakeSyncNotifier? sync,
   bool privacy = false,
-  bool showPrivateLookupDiagnostics = false,
-  Future<String> Function(rust_sync.TransactionInfo)? debugLookup,
   Future<void> Function(rust_sync.TransactionInfo)? publicLookup,
   Future<bool> Function(BuildContext)? confirmPublicLookup,
   rust_sync.TransactionInfo? transaction,
@@ -75,8 +73,6 @@ Future<List<String>> _pump(
           historyLoader: (_) async => [tx],
           detailLoader: details.load,
           transparentDetailsPrioritizer: (txid) async => prioritized.add(txid),
-          showPrivateLookupDiagnostics: showPrivateLookupDiagnostics,
-          transparentDetailsDebugLookup: debugLookup,
           transparentDetailsPublicLookup: publicLookup,
           publicLookupConfirmation:
               confirmPublicLookup ?? confirmPublicDetailsLookup,
@@ -94,18 +90,6 @@ Future<void> _close(WidgetTester tester) async {
 }
 
 void main() {
-  transparentDetailsDebugTests(
-    pump: (tester, details, sync, privacy, lookup) async {
-      await _pump(
-        tester,
-        details,
-        sync: sync,
-        privacy: privacy,
-        showPrivateLookupDiagnostics: true,
-        debugLookup: lookup,
-      );
-    },
-  );
   transparentDetailsPublicLookupTests(
     pump: (tester, details, {required lookup, confirm, sync}) async {
       await _pump(
