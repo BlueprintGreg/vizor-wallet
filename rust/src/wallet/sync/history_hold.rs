@@ -12,10 +12,13 @@
 //!
 //! A note is held while it could be spent above its mined height in a range
 //! that is still pending:
-//! - for an account whose history is not fully scanned yet, any first-pass
-//!   history range above the note counts. Ranges at the chain tip do not:
-//!   they are scanned first, and new blocks leave every wallet briefly
-//!   behind the tip anyway;
+//! - for an account whose history is not fully scanned yet, any pending
+//!   range above the note counts, chain tip ranges included. A restore's
+//!   tip range starts at the last completed shard of the pool that lags
+//!   most (Sapling on mainnet), which can be weeks below the tip, and is
+//!   scanned upward in batches: an Orchard note there stabilizes while its
+//!   spend higher in the same range is unscanned. New blocks arriving
+//!   during a restore hold the account's notes until they are scanned;
 //! - for any account, a note whose recorded spend was un-mined by a rewind
 //!   and has expired counts too, because Zakura then treats it as unspent.
 //!   Here any pending range counts that could hold the spend, one starting
@@ -285,7 +288,7 @@ fn candidate_sql(pool: Pool) -> String {
                (a.uuid NOT IN (SELECT account_uuid FROM {VERIFIED_TABLE})
                 AND EXISTS (
                     SELECT 1 FROM scan_queue sq
-                    WHERE {history}
+                    WHERE sq.priority > {SCANNED_PRIORITY}
                       AND sq.block_range_end > t.mined_height + 1
                 ))
                OR EXISTS (
@@ -305,7 +308,6 @@ fn candidate_sql(pool: Pool) -> String {
                      )
                )
            )",
-        history = history_pending("sq"),
         expired = tx_expired_unmined_condition("stx"),
     )
 }
@@ -934,13 +936,19 @@ mod tests {
     }
 
     #[test]
-    fn tip_ranges_do_not_hold_an_unverified_account() {
+    fn tip_ranges_hold_an_unverified_account() {
         let fixture = Fixture::new();
         let txid = fixture.add_note(1, 2_000_002);
         for priority in [50, 60] {
             fixture.set_queue(2_000_005, 2_000_011, priority);
-            assert_eq!(fixture.sweep().held, 0, "priority {priority}");
+            assert_eq!(fixture.sweep().held, 1, "priority {priority}");
+            assert_eq!(
+                fixture.lock_owner_of(txid),
+                Some(hold_owner().as_bytes().to_vec())
+            );
         }
+        fixture.set_queue(2_000_005, 2_000_011, SCANNED_PRIORITY);
+        assert_eq!(fixture.sweep().held, 0);
         assert!(fixture.lock_owner_of(txid).is_none());
     }
 
