@@ -8683,6 +8683,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-sqlite"
 version = "0.1.0-rc7"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=ad963341be56f5e72ad98d3d042067ab03c08153#ad963341be56f5e72ad98d3d042067ab03c08153"
 dependencies = [
  "ambassador",
  "bip32",
