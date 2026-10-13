@@ -759,6 +759,31 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('held funds show a notice until sync finishes', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        _syncedState().copyWith(
+          isSyncing: true,
+          historyHoldBalance: BigInt.from(35_000_000),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final notice = find.byKey(const ValueKey('mobile_history_hold_notice'));
+    expect(
+      find.descendant(
+        of: notice,
+        matching: find.text(
+          '0.35 ZEC is on hold until sync finishes, because it may have been '
+          'spent in history not checked yet.',
+        ),
+      ),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('private status coverage notice opens settings', (tester) async {
     await tester.pumpWidget(
       _app(
