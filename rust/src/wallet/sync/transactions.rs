@@ -141,6 +141,11 @@ pub(crate) struct WalletBalance {
     pub change_pending_confirmation: u64,
     pub value_pending_spendability: u64,
     pub uneconomic_value: u64,
+    /// Value held while older history is checked (`history_hold`), taken out
+    /// of the matching `*_locked` field so that keeps meaning other locks.
+    pub sapling_history_hold: u64,
+    pub orchard_history_hold: u64,
+    pub ironwood_history_hold: u64,
 }
 
 impl WalletBalance {
@@ -189,6 +194,9 @@ impl WalletBalance {
             change_pending_confirmation: pools.iter().map(|p| p.change).sum(),
             value_pending_spendability: pools.iter().map(|p| p.pending).sum(),
             uneconomic_value: pools.iter().map(|p| p.uneconomic).sum(),
+            sapling_history_hold: sapling.history_hold,
+            orchard_history_hold: orchard.history_hold,
+            ironwood_history_hold: ironwood.history_hold,
         }
     }
 }
@@ -210,6 +218,8 @@ struct PoolBalance {
     change: u64,
     pending: u64,
     uneconomic: u64,
+    /// Part of the locked value held while older history is checked.
+    history_hold: u64,
 }
 
 impl PoolBalance {
@@ -220,7 +230,15 @@ impl PoolBalance {
             change: u64::from(balance.change_pending_confirmation()),
             pending: u64::from(balance.value_pending_spendability()),
             uneconomic: u64::from(balance.uneconomic_value()),
+            history_hold: 0,
         }
+    }
+
+    /// Moves `held`, at most the locked value, from locked to history hold.
+    fn holding(mut self, held: u64) -> Self {
+        self.history_hold = held.min(self.locked);
+        self.locked -= self.history_hold;
+        self
     }
 
     fn of_transparent(balance: &TransparentLedgerBalance) -> Self {
@@ -231,6 +249,7 @@ impl PoolBalance {
             change: regular.change + coinbase.change,
             pending: regular.pending + coinbase.pending,
             uneconomic: regular.uneconomic + coinbase.uneconomic,
+            history_hold: 0,
         }
     }
 }
@@ -286,6 +305,10 @@ pub(crate) fn read_wallet_balances(
     network: WalletNetwork,
     target_ids: &[AccountUuid],
 ) -> Result<Vec<WalletBalance>, String> {
+    let held = super::history_hold::held_locked_value(db_path).unwrap_or_else(|e| {
+        log::warn!("history hold: held value unavailable: {e}");
+        Default::default()
+    });
     // Read durable policy, summary, and authority from one snapshot. The
     // library resolves this handle under a policy another connection applied
     // since `db` was opened, so a private-policy summary's suppressed zero is
@@ -318,10 +341,14 @@ pub(crate) fn read_wallet_balances(
                         private,
                     ));
                 };
+                let held = held
+                    .get(target_id.expose_uuid().as_bytes())
+                    .copied()
+                    .unwrap_or_default();
                 let shielded = [
-                    PoolBalance::of(b.sapling_balance()),
-                    PoolBalance::of(b.orchard_balance()),
-                    PoolBalance::of(b.ironwood_balance()),
+                    PoolBalance::of(b.sapling_balance()).holding(held.sapling),
+                    PoolBalance::of(b.orchard_balance()).holding(held.orchard),
+                    PoolBalance::of(b.ironwood_balance()).holding(held.ironwood),
                 ];
                 let snapshot = db.transparent_ledger_snapshot(
                     *target_id,

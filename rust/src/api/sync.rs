@@ -2017,9 +2017,10 @@ fn migration_status_from_balance(
             network,
             &account_uuid,
             balance.orchard,
-            balance.orchard_pending,
+            // Held Orchard waits like pending Orchard: it is still to migrate.
+            balance.orchard_pending + balance.orchard_history_hold,
             balance.ironwood,
-            balance.ironwood_pending,
+            balance.ironwood_pending + balance.ironwood_history_hold,
         )?;
         let proof_ready = wallet_sync::orchard_migration_proof_readiness(
             &db_path,
