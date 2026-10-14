@@ -73,7 +73,6 @@ class _MobileKeystoneShieldScreenState
   late final String _network;
   late final BigInt _amount;
   BigInt? _shieldedAmount;
-  BigInt? _fee;
   String? _error;
   String? _statusMessage;
   List<String> _urParts = const [];
@@ -105,7 +104,6 @@ class _MobileKeystoneShieldScreenState
         ? sync.shieldTransparentAmount + sync.shieldTransparentFee
         : sync.transparentBalance;
     _shieldedAmount = sync.shieldTransparentAmount;
-    _fee = sync.shieldTransparentFee;
   }
 
   @override
@@ -166,7 +164,6 @@ class _MobileKeystoneShieldScreenState
         _saplingParams = saplingParams;
         _needsSaplingParams = shieldPczt.needsSaplingParams;
         _shieldedAmount = shieldPczt.shieldedZatoshi;
-        _fee = shieldPczt.feeZatoshi;
         _urParts = urParts;
       });
 
@@ -477,24 +474,15 @@ class _MobileKeystoneShieldScreenState
       title: !_started
           ? 'Transparent balance'
           : _done
-          ? 'Shielding transaction sent'
+          ? 'Shielded successfully'
           : scanning
           ? 'Scan your Keystone signature'
           : _stage == _ShieldSignStage.showQr
           ? 'Approve with Keystone'
           : terminal
           ? 'Shielding needs attention'
-          : 'Preparing your shielding transaction…',
-      body: _done
-          ? 'Waiting for confirmation. Follow the transaction in Activity.'
-          : terminal
-          ? _statusMessage ?? _error
-          : _stage == _ShieldSignStage.showQr
-          ? 'Scan this QR with Keystone, approve on your device, then scan its signed QR.'
-          : null,
-      feeText: !_started && _fee != null
-          ? 'Network fee: ${formatZecAmount(_fee!)} ZEC'
-          : null,
+          : 'Shielding your balance…',
+      body: terminal ? _statusMessage ?? _error : null,
       focusBuilder:
           _started &&
               !_done &&

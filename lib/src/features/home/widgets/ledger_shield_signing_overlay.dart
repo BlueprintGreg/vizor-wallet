@@ -79,7 +79,6 @@ class _LedgerShieldSigningOverlayState
   bool _momentStarted = false;
   bool _momentComplete = false;
   late final BigInt _initialAmount;
-  late final BigInt _initialFee;
   BigInt _shieldedTotal = BigInt.zero;
   int _sentRounds = 0;
   BigInt? _roundShielded;
@@ -107,7 +106,6 @@ class _LedgerShieldSigningOverlayState
     _initialAmount = sync.shieldTransparentAmount > BigInt.zero
         ? sync.shieldTransparentAmount + sync.shieldTransparentFee
         : sync.transparentBalance;
-    _initialFee = sync.shieldTransparentFee;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!widget.mobile) {
@@ -664,7 +662,7 @@ class _LedgerShieldSigningOverlayState
       accountUuid: _accountUuid,
       roundNumber: _round,
       roundCount: _roundCount,
-      roundFeeNotice: _roundCount > 1
+      roundFeeNotice: !widget.mobile && _roundCount > 1
           ? 'Each approval creates a separate transaction with its own network fee.'
           : null,
       phase: _phase,
@@ -714,18 +712,10 @@ class _LedgerShieldSigningOverlayState
               title: !_momentStarted
                   ? 'Transparent balance'
                   : _momentComplete
-                  ? 'Shielding transactions sent'
+                  ? 'Shielded successfully'
                   : _isBroadcasting
-                  ? 'Sending your shielding transaction…'
+                  ? 'Shielding your balance…'
                   : 'Shield with Ledger',
-              body: _momentComplete
-                  ? 'Waiting for confirmation. Follow your transactions in Activity.'
-                  : _isBroadcasting
-                  ? 'Transaction $_round of $_roundCount. Keep Vizor open.'
-                  : null,
-              feeText: !_momentStarted
-                  ? 'First network fee: ${formatZecAmount(_initialFee)} ZEC. Each approval creates a separate transaction.'
-                  : null,
               focusChild: _momentStarted && !_momentComplete && !_isBroadcasting
                   ? LedgerInlinePresentation(child: modal)
                   : null,

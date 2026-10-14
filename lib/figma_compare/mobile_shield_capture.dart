@@ -7,7 +7,6 @@ Widget buildMobileShieldReview(BuildContext context) => const MobileShieldScene(
   amount: '0.9912331',
   resultAmount: '0.9911331',
   title: 'Transparent balance',
-  feeText: 'Network fee: 0.0001 ZEC · You receive 0.9911331 ZEC',
   onCommit: _noop,
   onClose: _noop,
 );
@@ -21,8 +20,7 @@ Widget buildMobileShieldResult(BuildContext context) => const MobileShieldScene(
   phase: MobileShieldPhase.succeeded,
   amount: '0.9912331',
   resultAmount: '0.9911331',
-  title: 'Shielding transaction sent',
-  body: 'Waiting for confirmation. Follow the transaction in Activity.',
+  title: 'Shielded successfully',
   onComplete: _noop,
   onClose: _noop,
 );
@@ -30,8 +28,6 @@ Widget buildMobileShieldKeystone(BuildContext context) => MobileShieldScene(
   phase: MobileShieldPhase.hardware,
   amount: '0.9912331',
   title: 'Approve with Keystone',
-  body:
-      'Scan this QR with Keystone, approve on your device, then scan its signed QR.',
   focusBuilder: (context, constraints) => MobileShieldKeystoneQr(
     constraints: constraints,
     urParts: const ['ur:zcash-pczt/hdcxfixture'],

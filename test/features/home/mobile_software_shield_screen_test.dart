@@ -68,7 +68,8 @@ void main() {
         );
         await tester.pump(const Duration(milliseconds: 600));
         expect(calls, 0);
-        expect(find.textContaining('You receive 0.0099 ZEC'), findsOneWidget);
+        expect(find.textContaining('You receive'), findsNothing);
+        expect(find.textContaining('Network fee'), findsNothing);
         final slide = find.byKey(const ValueKey('mobile_shield_slide'));
         await tester.dragFrom(
           tester.getTopLeft(slide) + const Offset(35, 30),
@@ -99,7 +100,8 @@ void main() {
         await tester.pump(const Duration(seconds: 4));
         expect(calls, 1);
         if (status == 'broadcasted') {
-          expect(find.text('Shielding transaction sent'), findsOneWidget);
+          expect(find.text('Shielded successfully'), findsOneWidget);
+          expect(find.textContaining('Waiting for confirmation'), findsNothing);
           expect(
             find.byKey(const ValueKey('mobile_shield_complete')),
             findsOneWidget,

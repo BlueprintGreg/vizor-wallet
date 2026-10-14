@@ -31,7 +31,6 @@ class MobileShieldScene extends StatefulWidget {
     required this.title,
     this.resultAmount,
     this.body,
-    this.feeText,
     this.focusChild,
     this.focusBuilder,
     this.footer,
@@ -46,7 +45,6 @@ class MobileShieldScene extends StatefulWidget {
   final String? resultAmount;
   final String title;
   final String? body;
-  final String? feeText;
   final Widget? focusChild;
   final Widget Function(BuildContext, BoxConstraints)? focusBuilder;
   final Widget? footer;
@@ -426,17 +424,6 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                                       padding: const EdgeInsets.only(top: 8),
                                       child: Text(
                                         widget.body!,
-                                        textAlign: TextAlign.center,
-                                        style: AppTypography.bodySmall.copyWith(
-                                          color: const Color(0xCCFFFFFF),
-                                        ),
-                                      ),
-                                    ),
-                                  if (widget.feeText != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 8),
-                                      child: Text(
-                                        widget.feeText!,
                                         textAlign: TextAlign.center,
                                         style: AppTypography.bodySmall.copyWith(
                                           color: const Color(0xCCFFFFFF),

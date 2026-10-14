@@ -20,7 +20,6 @@ class _MobileSoftwareShieldScreenState
     with ExternalActionGuardHoldMixin {
   late final String _accountUuid;
   late final BigInt _amount;
-  late final BigInt _fee;
   late final BigInt _expected;
   var _phase = MobileShieldPhase.review;
   String? _message;
@@ -34,7 +33,6 @@ class _MobileSoftwareShieldScreenState
     );
     _amount = sync.shieldTransparentAmount + sync.shieldTransparentFee;
     _expected = sync.shieldTransparentAmount;
-    _fee = sync.shieldTransparentFee;
   }
 
   void _close() {
@@ -80,19 +78,12 @@ class _MobileSoftwareShieldScreenState
     resultAmount: formatZecAmount(_resultAmount ?? _expected),
     title: switch (_phase) {
       MobileShieldPhase.review => 'Transparent balance',
-      MobileShieldPhase.succeeded => 'Shielding transaction sent',
+      MobileShieldPhase.succeeded => 'Shielded successfully',
       MobileShieldPhase.pending => 'Shielding queued',
       MobileShieldPhase.failed => 'Shielding could not be completed',
       _ => 'Shielding your balance…',
     },
-    body:
-        _message ??
-        (_phase == MobileShieldPhase.succeeded
-            ? 'Waiting for confirmation. Follow the transaction in Activity.'
-            : null),
-    feeText: _phase == MobileShieldPhase.review
-        ? 'Network fee: ${formatZecAmount(_fee)} ZEC · You receive ${formatZecAmount(_expected)} ZEC'
-        : null,
+    body: _message,
     canLeave: _phase != MobileShieldPhase.working,
     onCommit: _commit,
     onClose: _close,
