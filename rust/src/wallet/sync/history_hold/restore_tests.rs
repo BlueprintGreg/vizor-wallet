@@ -679,3 +679,64 @@ fn a_restored_note_spent_higher_in_the_tip_range_is_held_until_the_scan_reaches_
     assert_eq!(balance.orchard_locked, 0);
     assert_eq!(balance.orchard + balance.orchard_pending, CHANGE);
 }
+
+/// A proposal nothing has signed yet keeps its note out of selection but in
+/// the account's holdings (`held_value`); once signed, the transaction may
+/// already be on the network, so the note counts as locked again.
+#[test]
+fn an_unsigned_reservation_is_held_until_it_is_signed() {
+    let mut st = wallet_one_leaf_short_of_a_shard();
+    let path = db_path(&st);
+    let account = st.test_account().unwrap().id();
+    let uuid = account.expose_uuid().to_string();
+    let birthday = st.test_account().unwrap().birthday().height();
+    let ours = OrchardPoolTester::test_account_fvk(&st);
+    for _ in 0..GAP_BLOCKS {
+        st.generate_empty_block();
+    }
+    let (a, _, _) = st.generate_next_block(&ours, AddressType::DefaultExternal, zat(NOTE));
+    for _ in 0..TIP_BLOCKS {
+        st.generate_empty_block();
+    }
+    let tip = st.latest_cached_block().unwrap().height();
+    st.wallet_mut().update_chain_tip(tip).unwrap();
+    st.scan_cached_blocks(
+        birthday,
+        (u32::from(tip) - u32::from(birthday) + 1) as usize,
+    );
+    let balance = crate::wallet::sync::get_wallet_balance(&path, NETWORK, &uuid).unwrap();
+    assert_eq!(balance.orchard, NOTE);
+
+    let note = note_at(&path, u32::from(a));
+    let owner = LockOwner::new([9; 32]);
+    let output = OutputRef::new(
+        TxId::from_bytes(note.txid),
+        PoolType::ORCHARD,
+        note.action_index,
+    );
+    let expiry = tip + 40;
+    st.wallet_mut()
+        .lock_outputs(std::slice::from_ref(&output), owner, expiry)
+        .unwrap();
+    crate::wallet::sync::proposal_locks::persist(&path, owner, &[output], expiry).unwrap();
+    let balance = crate::wallet::sync::get_wallet_balance(&path, NETWORK, &uuid).unwrap();
+    assert_eq!(
+        (
+            balance.orchard,
+            balance.orchard_locked,
+            balance.orchard_held,
+            balance.orchard_history_hold
+        ),
+        (0, 0, NOTE, 0)
+    );
+
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE vizor_send_proposal_locks SET phase = 'signed' WHERE owner = ?1",
+            params![owner.as_bytes().as_slice()],
+        )
+        .unwrap();
+    let balance = crate::wallet::sync::get_wallet_balance(&path, NETWORK, &uuid).unwrap();
+    assert_eq!((balance.orchard_locked, balance.orchard_held), (NOTE, 0));
+}

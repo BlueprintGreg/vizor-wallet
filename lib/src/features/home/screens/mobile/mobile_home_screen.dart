@@ -1037,14 +1037,19 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     // the payment-URI drain in `app.dart` cannot drift away from what this
     // button does.
     final sendDisabled = ref.watch(migrationSendGateProvider);
+    // Held value is still the account's: a history hold or a proposal
+    // nothing has signed yet.
     final shieldedBalance = migrationRequired
-        ? sync.orchardBalance + sync.orchardPendingBalance
+        ? sync.orchardBalance +
+              sync.orchardPendingBalance +
+              sync.orchardHeldBalance
         : sync.saplingBalance +
               sync.orchardBalance +
               sync.ironwoodBalance +
               sync.saplingPendingBalance +
               sync.orchardPendingBalance +
-              sync.ironwoodPendingBalance;
+              sync.ironwoodPendingBalance +
+              sync.heldBalance;
     final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
         shieldedBalance > BigInt.zero ||

@@ -160,6 +160,9 @@ class AppSyncSnapshot {
     required this.totalBalance,
     required this.recentTransactions,
     this.historyHoldBalance,
+    this.heldBalance,
+    this.orchardHeldBalance,
+    this.ironwoodHeldBalance,
   });
 
   final String? accountUuid;
@@ -197,8 +200,12 @@ class AppSyncSnapshot {
   final BigInt totalBalance;
   final List<rust_sync.TransactionInfo> recentTransactions;
 
-  /// Shielded value held until older history is checked; null when unknown.
+  /// See `SyncState.historyHoldBalance`, `heldBalance`, `orchardHeldBalance`
+  /// and `ironwoodHeldBalance`; null when unknown.
   final BigInt? historyHoldBalance;
+  final BigInt? heldBalance;
+  final BigInt? orchardHeldBalance;
+  final BigInt? ironwoodHeldBalance;
 
   static final empty = AppSyncSnapshot(
     scannedHeight: 0,
@@ -839,7 +846,7 @@ Future<AppSyncSnapshot> _loadInitialSyncSnapshot({
       saplingBalance: balance.sapling,
       orchardBalance: balance.orchard,
       ironwoodBalance: balance.ironwood,
-      orchardLockedBalance: balance.orchardLocked,
+      orchardLockedBalance: balance.orchardLocked + balance.orchardHeld,
       transparentPendingBalance: balance.transparentPending,
       transparentLockedBalance: balance.transparentLocked,
       transparentAuthority: balance.transparentAuthority,
@@ -856,6 +863,9 @@ Future<AppSyncSnapshot> _loadInitialSyncSnapshot({
       totalBalance: balance.total,
       recentTransactions: recentTransactions,
       historyHoldBalance: balance.historyHold,
+      heldBalance: balance.held,
+      orchardHeldBalance: balance.orchardHeld,
+      ironwoodHeldBalance: balance.ironwoodHeld,
     );
   } catch (e) {
     log('bootstrap: failed to load initial sync snapshot: $e');

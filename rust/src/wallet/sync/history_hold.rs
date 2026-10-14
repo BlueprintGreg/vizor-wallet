@@ -34,7 +34,7 @@
 //! Vizor ledger lists what this owner locked, so release never depends on
 //! reading Zakura's lock columns.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -66,7 +66,7 @@ const SCANNED_PRIORITY: i64 = 10;
 const CHAIN_TIP_PRIORITY: i64 = 50;
 /// Notes at or below ZIP 317's marginal fee are uneconomic and never counted
 /// as spendable or locked by Zakura.
-const MARGINAL_FEE_ZATS: i64 = 5_000;
+pub(super) const MARGINAL_FEE_ZATS: i64 = 5_000;
 
 const POOLS: [Pool; 3] = [
     Pool {
@@ -102,7 +102,7 @@ fn pool_for_code(code: i64) -> Option<Pool> {
 }
 
 /// Owner token of every hold lock.
-fn hold_owner() -> LockOwner {
+pub(super) fn hold_owner() -> LockOwner {
     LockOwner::new(Sha256::digest(b"vizor-history-hold-v1").into())
 }
 
@@ -111,14 +111,6 @@ pub(crate) struct SweepOutcome {
     pub held: usize,
     /// The held set gained or lost a note, so balances should be re-read.
     pub changed: bool,
-}
-
-/// Held value per pool that Zakura reports as locked, for one account.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct HeldValue {
-    pub sapling: u64,
-    pub orchard: u64,
-    pub ironwood: u64,
 }
 
 pub(crate) fn ensure_tables(conn: &Connection) -> Result<(), String> {
@@ -151,7 +143,7 @@ fn is_wallet_sync_db(conn: &Connection) -> Result<bool, String> {
     )
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
+pub(super) fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         params![name],
@@ -240,7 +232,7 @@ pub(crate) fn mark_verified_accounts(tx: &rusqlite::Transaction<'_>) -> Result<(
 }
 
 /// The tx-unexpired condition Zakura uses to decide whether a spend counts.
-fn tx_unexpired_condition(tx: &str) -> String {
+pub(super) fn tx_unexpired_condition(tx: &str) -> String {
     format!(
         "({tx}.mined_height < :target_height
           OR {tx}.expiry_height = 0
@@ -519,80 +511,6 @@ pub(crate) fn held_orchard_outputs(db_path: &str) -> Result<BTreeSet<([u8; 32], 
         .collect())
 }
 
-/// Held value per account that Zakura counts in the locked bucket: stabilized
-/// notes under an active hold lock, unspent and above the marginal fee.
-/// Non-stabilized held notes are left out, so the figure never counts a note
-/// that Zakura reports as pending.
-pub(crate) fn held_locked_value(db_path: &str) -> Result<HashMap<[u8; 16], HeldValue>, String> {
-    let conn = open_wallet_raw_conn_with_timeout(db_path, WALLET_DB_BUSY_TIMEOUT)?;
-    let mut out: HashMap<[u8; 16], HeldValue> = HashMap::new();
-    if !table_exists(&conn, LEDGER_TABLE)? {
-        return Ok(out);
-    }
-    let tip: Option<u32> = conn
-        .query_row(
-            "SELECT MAX(block_range_end) - 1 FROM scan_queue",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read chain tip for held value: {e}"))?
-        .flatten();
-    let Some(tip) = tip else { return Ok(out) };
-    let target_height = tip.saturating_add(1);
-    for pool in POOLS {
-        let p = pool.prefix;
-        if !table_exists(&conn, &format!("{p}_received_notes"))? {
-            continue;
-        }
-        let sql = format!(
-            "SELECT a.uuid, SUM(rn.value)
-             FROM {LEDGER_TABLE} h
-             JOIN transactions t ON t.txid = h.txid
-             JOIN {p}_received_notes rn
-               ON rn.transaction_id = t.id_tx AND rn.{index} = h.output_index
-             JOIN accounts a ON a.id = rn.account_id
-             WHERE h.pool = {code}
-               AND rn.witness_stabilized = 1
-               AND rn.value > {MARGINAL_FEE_ZATS}
-               AND rn.lock_expiry_height >= :target_height
-               AND rn.id NOT IN (
-                   SELECT rns.{p}_received_note_id
-                   FROM {p}_received_note_spends rns
-                   JOIN transactions stx ON stx.id_tx = rns.transaction_id
-                   WHERE {unexpired}
-               )
-             GROUP BY a.uuid",
-            index = pool.index_column,
-            code = pool.code,
-            unexpired = tx_unexpired_condition("stx"),
-        );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| format!("prepare {p} held value: {e}"))?;
-        let rows = stmt
-            .query_map(
-                rusqlite::named_params![":target_height": target_height],
-                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .map_err(|e| format!("read {p} held value: {e}"))?;
-        for row in rows {
-            let (uuid, value) = row.map_err(|e| format!("read {p} held value row: {e}"))?;
-            let Ok(uuid) = <[u8; 16]>::try_from(uuid.as_slice()) else {
-                continue;
-            };
-            let entry = out.entry(uuid).or_default();
-            let value = u64::try_from(value).unwrap_or(0);
-            match pool.code {
-                2 => entry.sapling += value,
-                3 => entry.orchard += value,
-                _ => entry.ironwood += value,
-            }
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod restore_tests;
 
@@ -799,10 +717,10 @@ mod tests {
 
         fn held_sapling(&self) -> u64 {
             let uuid = crate::wallet::keys::parse_account_uuid(&self.account_uuid).unwrap();
-            held_locked_value(&self.path)
+            super::super::held_value::by_account(&self.path)
                 .unwrap()
                 .get(uuid.expose_uuid().as_bytes())
-                .map_or(0, |held| held.sapling)
+                .map_or(0, |held| held.history_hold.sapling)
         }
     }
 

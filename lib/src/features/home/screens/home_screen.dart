@@ -299,8 +299,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final showsIronwoodOnlyBalance =
         balancePresentation == IronwoodHomeBalancePresentationMode.ironwoodOnly;
     final totalShieldedBalance = sync.displayShieldedBalance;
-    final ironwoodBalance =
-        sync.displayIronwoodBalance + sync.displayIronwoodPendingBalance;
+    final ironwoodBalance = sync.displayIronwoodHoldingsBalance;
     final displayedShieldedBalance = showsIronwoodOnlyBalance
         ? ironwoodBalance
         : totalShieldedBalance;
@@ -619,9 +618,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
     final isImporting =
         !widget.sync.hasAccountScopedData && widget.sync.failure == null;
     final hasBalance = widget.showsIronwoodOnlyBalance
-        ? widget.sync.displayIronwoodBalance +
-                  widget.sync.displayIronwoodPendingBalance >
-              BigInt.zero
+        ? widget.sync.displayIronwoodHoldingsBalance > BigInt.zero
         : widget.sync.displayTotalBalance > BigInt.zero;
     final swapFeatureEnabled = ref.watch(swapFeatureEnabledProvider);
     final migrationInProgress =

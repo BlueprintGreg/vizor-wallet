@@ -141,8 +141,14 @@ pub(crate) struct WalletBalance {
     pub change_pending_confirmation: u64,
     pub value_pending_spendability: u64,
     pub uneconomic_value: u64,
-    /// Value held while older history is checked (`history_hold`), taken out
-    /// of the matching `*_locked` field so that keeps meaning other locks.
+    /// Locked value the account still holds (`held_value`): history holds and
+    /// unsigned proposals. Taken out of the matching `*_locked` field, which
+    /// keeps the locks whose transaction may already be on the network and
+    /// migration locks.
+    pub sapling_held: u64,
+    pub orchard_held: u64,
+    pub ironwood_held: u64,
+    /// The part of `*_held` waiting for older history to be checked.
     pub sapling_history_hold: u64,
     pub orchard_history_hold: u64,
     pub ironwood_history_hold: u64,
@@ -194,6 +200,9 @@ impl WalletBalance {
             change_pending_confirmation: pools.iter().map(|p| p.change).sum(),
             value_pending_spendability: pools.iter().map(|p| p.pending).sum(),
             uneconomic_value: pools.iter().map(|p| p.uneconomic).sum(),
+            sapling_held: sapling.held,
+            orchard_held: orchard.held,
+            ironwood_held: ironwood.held,
             sapling_history_hold: sapling.history_hold,
             orchard_history_hold: orchard.history_hold,
             ironwood_history_hold: ironwood.history_hold,
@@ -218,7 +227,9 @@ struct PoolBalance {
     change: u64,
     pending: u64,
     uneconomic: u64,
-    /// Part of the locked value held while older history is checked.
+    /// Part of the locked value the account still holds (`held_value`).
+    held: u64,
+    /// Part of `held` waiting for older history to be checked.
     history_hold: u64,
 }
 
@@ -230,14 +241,21 @@ impl PoolBalance {
             change: u64::from(balance.change_pending_confirmation()),
             pending: u64::from(balance.value_pending_spendability()),
             uneconomic: u64::from(balance.uneconomic_value()),
+            held: 0,
             history_hold: 0,
         }
     }
 
-    /// Moves `held`, at most the locked value, from locked to history hold.
-    fn holding(mut self, held: u64) -> Self {
-        self.history_hold = held.min(self.locked);
-        self.locked -= self.history_hold;
+    /// Moves held value from locked: the history hold first, then unsigned
+    /// reservations, each at most what is still locked. The summary counts a
+    /// reserved note that is not spendable yet as pending, which the
+    /// reservation query cannot tell, so the cap keeps it from counting twice.
+    /// While another lock shares the pool, such a note can still take part of
+    /// that lock's value until a scan makes it spendable again.
+    fn holding(mut self, history_hold: u64, reserved: u64) -> Self {
+        self.history_hold = history_hold.min(self.locked);
+        self.held = self.history_hold + reserved.min(self.locked - self.history_hold);
+        self.locked -= self.held;
         self
     }
 
@@ -249,6 +267,7 @@ impl PoolBalance {
             change: regular.change + coinbase.change,
             pending: regular.pending + coinbase.pending,
             uneconomic: regular.uneconomic + coinbase.uneconomic,
+            held: 0,
             history_hold: 0,
         }
     }
@@ -305,8 +324,8 @@ pub(crate) fn read_wallet_balances(
     network: WalletNetwork,
     target_ids: &[AccountUuid],
 ) -> Result<Vec<WalletBalance>, String> {
-    let held = super::history_hold::held_locked_value(db_path).unwrap_or_else(|e| {
-        log::warn!("history hold: held value unavailable: {e}");
+    let held = super::held_value::by_account(db_path).unwrap_or_else(|e| {
+        log::warn!("balance: held value unavailable: {e}");
         Default::default()
     });
     // Read durable policy, summary, and authority from one snapshot. The
@@ -345,10 +364,11 @@ pub(crate) fn read_wallet_balances(
                     .get(target_id.expose_uuid().as_bytes())
                     .copied()
                     .unwrap_or_default();
+                let (hold, reserved) = (held.history_hold, held.reserved);
                 let shielded = [
-                    PoolBalance::of(b.sapling_balance()).holding(held.sapling),
-                    PoolBalance::of(b.orchard_balance()).holding(held.orchard),
-                    PoolBalance::of(b.ironwood_balance()).holding(held.ironwood),
+                    PoolBalance::of(b.sapling_balance()).holding(hold.sapling, reserved.sapling),
+                    PoolBalance::of(b.orchard_balance()).holding(hold.orchard, reserved.orchard),
+                    PoolBalance::of(b.ironwood_balance()).holding(hold.ironwood, reserved.ironwood),
                 ];
                 let snapshot = db.transparent_ledger_snapshot(
                     *target_id,
@@ -2905,6 +2925,20 @@ mod tests {
     //! first.
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn held_value_is_capped_at_locked_history_hold_first() {
+        let locked = |locked| PoolBalance {
+            locked,
+            ..Default::default()
+        };
+        let pool = locked(10).holding(4, 9);
+        assert_eq!((pool.history_hold, pool.held, pool.locked), (4, 10, 0));
+        let pool = locked(3).holding(5, 2);
+        assert_eq!((pool.history_hold, pool.held, pool.locked), (3, 3, 0));
+        let pool = locked(10).holding(2, 3);
+        assert_eq!((pool.history_hold, pool.held, pool.locked), (2, 5, 5));
+    }
 
     #[test]
     fn unavailable_wallet_balance_is_zero_but_not_available() {
