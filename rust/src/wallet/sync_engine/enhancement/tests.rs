@@ -1274,6 +1274,49 @@ mod tests {
         assert!(ready.is_empty(), "nothing is resubmitted");
     }
 
+    /// Every handle the app opens on one wallet shares its private status
+    /// polls, which the library keeps in memory: a poll recorded through one
+    /// handle is not due again through another at the same tip. A fresh
+    /// handle for the next sync, or the recovery status read, therefore never
+    /// asks or counts it again.
+    #[test]
+    fn every_handle_on_a_wallet_shares_its_status_polls() {
+        use zcash_client_backend::data_api::status::{
+            TransactionStatusWork, TransactionStatusWrite,
+        };
+        let (file, mut first, txid) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        let due = |db: &WalletDatabase| {
+            db.transaction_status_work().unwrap().iter().any(|work| {
+                matches!(work, TransactionStatusWork::Private(_)) && work.txid() == txid
+            })
+        };
+        assert!(due(&first));
+        first
+            .record_private_status_poll(txid, BlockHeight::from_u32(110))
+            .unwrap();
+        assert!(!due(&first), "polled at this tip");
+
+        let mut second = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            WalletNetwork::Regtest,
+            SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        second.set_status_mode(TransactionStatusMode::Private);
+        second.set_enhancement_mode(
+            zcash_client_backend::data_api::enhance_pir::EnhancementMode::PrivateIronwood,
+        );
+        assert!(!due(&second), "another handle on the wallet sees the poll");
+        assert_eq!(
+            super::super::super::recovery_status_for(&second, &path, String::new())
+                .unwrap()
+                .status,
+            0,
+            "and does not count it towards a restart"
+        );
+    }
+
     /// Private status work for one unmined transaction.
     fn unmined_private_status_db() -> (tempfile::NamedTempFile, WalletDatabase, TxId) {
         let (file, mut db, tx) =
