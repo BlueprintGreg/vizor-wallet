@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
@@ -138,6 +139,56 @@ void main() {
     );
     await tester.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets(
+    'large headings remain readable and cancellation stays reachable',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(320, 568);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      var closes = 0;
+      await tester.pumpWidget(
+        host(
+          MobileShieldScene(
+            phase: MobileShieldPhase.review,
+            amount: '14.12',
+            title: 'Transparent Balance',
+            onClose: () => closes++,
+          ),
+          textScale: 2,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      final heading = find.byKey(const ValueKey('mobile_shield_heading'));
+      final rich = find.descendant(
+        of: heading,
+        matching: find.byType(RichText),
+      );
+      final paragraph = tester.renderObject<RenderParagraph>(rich);
+      expect(
+        paragraph.size.height,
+        greaterThanOrEqualTo(
+          paragraph.getMaxIntrinsicHeight(paragraph.size.width),
+        ),
+      );
+      final amount = tester.getRect(
+        find.byKey(const ValueKey('mobile_shield_amount')),
+      );
+      expect(tester.getRect(heading).bottom, lessThan(amount.top));
+      expect(
+        amount.bottom,
+        lessThan(
+          tester.getRect(find.byKey(const ValueKey('mobile_shield_slide'))).top,
+        ),
+      );
+      await tester.ensureVisible(find.text('Cancel'));
+      await tester.pump();
+      await tester.tap(find.text('Cancel'));
+      expect(closes, 1);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
   testWidgets('hardware QR fits the remaining height with large text', (
     tester,
   ) async {

@@ -225,7 +225,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       ],
       textDimFrom: before.unitFrom * scale,
       balanceDimFrom: resultRect.top + after.unitFrom * scale,
-      screen: layout.size,
+      screen: layout.contentSize,
       emitter: center,
     );
   }
@@ -286,6 +286,24 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     super.dispose();
   }
 
+  double _headingHeight(double width) {
+    double measure(String text) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: AppTypography.bodyMedium),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+      )..layout(maxWidth: math.max(1, width - 48));
+      final height = painter.height;
+      painter.dispose();
+      return height;
+    }
+
+    return math.max(
+      measure('Transparent Balance'),
+      measure('Shielded successfully'),
+    );
+  }
+
   bool get _ready =>
       widget.phase == MobileShieldPhase.succeeded &&
       (_a ?? 0) >= ShieldTimeline.completeIn.end;
@@ -334,8 +352,17 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                 child: SafeArea(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      final layout = _ShieldLayout(constraints.biggest);
-                      if (_layout?.size != layout.size) {
+                      final layout = _ShieldLayout(
+                        constraints.biggest,
+                        headingHeight: _headingHeight(constraints.maxWidth),
+                        amountHeight: math.max(
+                          _balance(widget.amount, false).size.height,
+                          _balance(_result, true).size.height,
+                        ),
+                      );
+                      if (_layout?.size != layout.size ||
+                          _layout?.headingHeight != layout.headingHeight ||
+                          _layout?.amountHeight != layout.amountHeight) {
                         _layout = layout;
                         _field?.dispose();
                         _field = null;
@@ -348,7 +375,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                               widget.focusBuilder != null ||
                               widget.phase == MobileShieldPhase.failed ||
                               widget.phase == MobileShieldPhase.pending;
-                          return Stack(
+                          final content = Stack(
                             fit: StackFit.expand,
                             children: [
                               _visual(layout, auxiliary && _focusRevealed),
@@ -358,6 +385,17 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                                 _normalControls(layout),
                             ],
                           );
+                          if (!auxiliary &&
+                              layout.contentHeight > constraints.maxHeight) {
+                            return SingleChildScrollView(
+                              child: SizedBox(
+                                width: constraints.maxWidth,
+                                height: layout.contentHeight,
+                                child: content,
+                              ),
+                            );
+                          }
+                          return content;
                         },
                       );
                     },
@@ -572,9 +610,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     Widget title(String text, double opacity) => Positioned(
       left: 24,
       right: 24,
-      top: layout.titleCenter - 24,
+      top: layout.titleTop,
       child: SizedBox(
-        height: 48,
+        height: layout.headingHeight,
         child: Center(
           child: Opacity(
             opacity: opacity,
@@ -682,16 +720,30 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
 /// One vertical composition, using the original video's relative anchors.
 /// Only artwork shrinks on narrow screens; controls retain usable hit targets.
 class _ShieldLayout {
-  _ShieldLayout(this.size);
+  _ShieldLayout(
+    this.size, {
+    required this.headingHeight,
+    required this.amountHeight,
+  });
   final Size size;
+  final double headingHeight;
+  final double amountHeight;
   double get centerX => size.width / 2;
   double get artScale => math.min(1.0, math.max(0.1, (size.width - 48) / 345));
   Offset get iconCenter => Offset(centerX, size.height * 0.215);
-  double get titleCenter => size.height * 0.35;
-  double get amountTop => size.height * 0.418;
+  double get titleTop => math.max(
+    size.height * 0.35 - headingHeight / 2,
+    iconCenter.dy + 20 * artScale + 24,
+  );
+  double get amountTop =>
+      math.max(size.height * 0.418, titleTop + headingHeight + 12);
   Offset get cloudCenter => Offset(centerX, size.height * 0.47);
-  double get actionTop => size.height * 0.67;
-  double get cancelCenter => size.height * 0.91;
+  double get actionTop =>
+      math.max(size.height * 0.67, amountTop + amountHeight * artScale + 32);
+  double get cancelCenter =>
+      math.max(size.height * 0.91, actionTop + SlideToShield.height + 56);
+  double get contentHeight => math.max(size.height, cancelCenter + 40);
+  Size get contentSize => Size(size.width, contentHeight);
   double get sliderWidth => math.min(284, math.max(61, size.width - 48));
 }
 
