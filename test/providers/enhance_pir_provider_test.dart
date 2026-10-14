@@ -61,6 +61,7 @@ class _Api extends RustLibApi {
             rediscovery: 0,
             suspended: 0,
             status: 0,
+            transparentRetryDue: false,
             serviceState: '',
           ),
         );
@@ -1401,12 +1402,39 @@ void main() {
     });
   });
 
+  test('an expired transparent wait bypasses unrelated recovery backoff', () {
+    final gate = RecoveryRestartGate(now: () => DateTime(2026));
+    expect(gate.shouldRestart(1), isTrue);
+    expect(gate.shouldRestart(1), isFalse);
+    const expiredWait = EnhanceRecoveryStatus(
+      queries: 0,
+      rediscovery: 0,
+      suspended: 4,
+      status: 0,
+      transparentRetryDue: true,
+      serviceState: '',
+    );
+    expect(shouldRestartRecovery(expiredWait, gate), isTrue);
+    // The service retry does not reset or advance the unrelated gate.
+    expect(gate.shouldRestart(1), isFalse);
+    const noWait = EnhanceRecoveryStatus(
+      queries: 0,
+      rediscovery: 0,
+      suspended: 4,
+      status: 0,
+      transparentRetryDue: false,
+      serviceState: '',
+    );
+    expect(shouldRestartRecovery(noWait, gate), isFalse);
+  });
+
   test('deferred private status work counts toward a recovery restart', () {
     const statusOnly = EnhanceRecoveryStatus(
       queries: 0,
       rediscovery: 0,
       suspended: 0,
       status: 1,
+      transparentRetryDue: false,
       serviceState: '',
     );
     expect(recoveryRestartUnits(statusOnly), 1);
@@ -1419,6 +1447,7 @@ void main() {
       rediscovery: 0,
       suspended: 2,
       status: 0,
+      transparentRetryDue: false,
       serviceState: '',
     );
     expect(recoveryRestartUnits(suspendedOnly), 0);
@@ -1430,6 +1459,7 @@ void main() {
       rediscovery: 0,
       suspended: 0,
       status: 1,
+      transparentRetryDue: false,
       serviceState: '',
     );
     expect(recoveryRestartUnits(statusOnly), 1);
@@ -1443,6 +1473,7 @@ void main() {
       rediscovery: 0,
       suspended: 2,
       status: 0,
+      transparentRetryDue: false,
       serviceState: '',
     );
     expect(recoveryRestartUnits(suspendedOnly), 0);
@@ -1644,6 +1675,7 @@ void main() {
           rediscovery: 0,
           suspended: 0,
           status: 0,
+          transparentRetryDue: false,
           serviceState: 'recovering',
         ),
       );

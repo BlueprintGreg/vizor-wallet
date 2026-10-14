@@ -41,6 +41,33 @@ fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
+/// Direct harness runs represent a new block. Same-block service retries
+/// are exercised through the production followup gate below.
+#[allow(clippy::too_many_arguments)]
+async fn run<S: RecoverySource>(
+    db: &mut WalletDatabase,
+    db_path: &str,
+    network: WalletNetwork,
+    policy: EnhancementPolicy,
+    source: &S,
+    first: Option<AccountUuid>,
+    clock: fn() -> Instant,
+    should_exit: &(dyn Fn() -> bool + Sync),
+) -> Result<RunOutcome, SyncError> {
+    super::run(
+        db,
+        db_path,
+        network,
+        policy,
+        source,
+        first,
+        RecoverySchedule::Block,
+        clock,
+        should_exit,
+    )
+    .await
+}
+
 fn chain_hash(height: u32, fork: u8) -> BlockHash {
     let mut hash = [0; 32];
     hash[..4].copy_from_slice(&height.to_le_bytes());
@@ -354,7 +381,8 @@ fn last_watched_external(wallet: &Wallet) -> u32 {
     watched(wallet)
         .iter()
         .filter_map(|watched| match watched.origin {
-            WatchOrigin::Derived { scope, index } | WatchOrigin::CandidateWindow { scope, index }
+            WatchOrigin::Derived { scope, index }
+            | WatchOrigin::CandidateWindow { scope, index }
                 if scope == TransparentKeyScope::EXTERNAL =>
             {
                 Some(index.index())
@@ -1636,6 +1664,155 @@ async fn a_lagging_source_is_asked_again_only_after_its_delay() {
         TransparentBalanceAuthority::Current
     );
     assert_eq!(current.transparent, VALUE);
+}
+
+/// A failed selected entry cannot remove a public service wait, even when
+/// another block or a reorg makes recovery eligible before it expires.
+#[tokio::test]
+async fn content_failure_preserves_service_wait_across_new_blocks_and_reorgs() {
+    for outcome in [Outcome::Behind, Outcome::Overloaded] {
+        for failed in [0, 1] {
+            let mut wallet = wallet();
+            let _mode = activate(&mut wallet).await;
+            let source = funded_source(&wallet);
+            source.next(Some(outcome));
+            source.failed_entries(zakura_pir_transparent::FailedEntries {
+                entries: failed,
+                held: 0,
+            });
+            followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+            assert_eq!(source.calls(), 1);
+            followup(&mut wallet, &source, &|_| {}, (200, 201)).await;
+            assert_eq!(source.calls(), 1, "the next block preserves the wait");
+            clear_recovery_tip(&wallet.path);
+            followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+            assert_eq!(source.calls(), 1, "a rewind preserves the wait");
+        }
+    }
+}
+
+/// Exercise the outer followup gate, rather than calling the account runner
+/// directly: an expired public wait must permit recovery at the same tip.
+#[tokio::test]
+async fn expired_service_wait_runs_followup_at_the_same_tip() {
+    let mut wallet = wallet();
+    let _mode = activate(&mut wallet).await;
+    let source = funded_source(&wallet);
+    source.published_through(Some(TIP - 1));
+    followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+    assert_eq!(source.calls(), 1);
+    source.published_through(None);
+    assert!(!service_retry_due(&wallet.path));
+    // Expire the service deadline without a wall-clock sleep.
+    set_not_before(&wallet.path, wallet.account, Instant::now(), Duration::ZERO);
+    let status =
+        crate::wallet::sync_engine::recovery_status_for(&wallet.db, &wallet.path, String::new())
+            .unwrap();
+    assert!(
+        status.transparent_retry_due,
+        "the app poll sees the expired wait"
+    );
+    followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+    assert_eq!(source.calls(), 2, "catch up before another block arrives");
+    assert!(
+        !service_retry_due(&wallet.path),
+        "the deadline was consumed"
+    );
+    followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+    assert_eq!(source.calls(), 2, "the expired deadline is consumed once");
+}
+
+#[tokio::test]
+async fn a_stale_commit_does_not_bypass_the_service_wait() {
+    let mut wallet = private_wallet();
+    let source = FixtureSource::new(main_hash);
+    source.next(Some(Outcome::Behind));
+    let path = wallet.path.clone();
+    let birthday = wallet.birthday;
+    source.on_call(move || {
+        let mut db = open_wallet_db_with_timeout(&path, NETWORK, SYNC_DB_BUSY_TIMEOUT).unwrap();
+        with_wallet_db_write_lock("test.transparent_ledger.reorg", || {
+            db.truncate_to_height(BlockHeight::from_u32(TIP - 5))
+        })
+        .unwrap();
+        scan(&path, birthday, TIP - 4, TIP, 1);
+    });
+    let outcome = run(
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        &source,
+        Some(wallet.account),
+        now,
+        &|| false,
+    )
+    .await
+    .unwrap();
+    let RunOutcome::Finished(stats) = outcome else {
+        panic!("recovery finishes")
+    };
+    assert_eq!(stats.stale_retries, 1);
+    assert_eq!(
+        source.calls(),
+        1,
+        "the stale commit waits instead of asking again"
+    );
+    assert!(waiting_at(&wallet.path, wallet.account, now()));
+}
+
+/// A public wait for one account cannot unlock another account's pass at
+/// the same block, even if that account still has unfinished recovery.
+#[tokio::test]
+async fn expired_service_wait_retries_only_its_account() {
+    let mut wallet = private_wallet();
+    let (_, other) = add_account(&wallet);
+    let source = FixtureSource::new(main_hash);
+    followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+    assert_eq!(source.calls_for(wallet.account), 1);
+    assert_eq!(source.calls_for(other), 1);
+    set_not_before(&wallet.path, wallet.account, Instant::now(), Duration::ZERO);
+    followup(&mut wallet, &source, &|_| {}, (200, 200)).await;
+    assert_eq!(source.calls_for(wallet.account), 2);
+    assert_eq!(
+        source.calls_for(other),
+        1,
+        "unrelated work waits for a block"
+    );
+}
+
+/// An active account can catch up to each new block after the publication
+/// briefly trails it, recovering spend authority before the next block.
+#[tokio::test]
+async fn service_wait_catch_up_restores_current_authority() {
+    let mut wallet = wallet();
+    let _mode = activate(&mut wallet).await;
+    let source = funded_source(&wallet);
+    run_required(&mut wallet, &source).await;
+    assert_eq!(
+        balance(&wallet, &wallet.uuid).transparent_authority,
+        TransparentBalanceAuthority::Current
+    );
+    for tip in TIP + 1..=TIP + 3 {
+        scan(&wallet.path, wallet.birthday, tip, tip, 0);
+        wallet
+            .db
+            .update_chain_tip(BlockHeight::from_u32(tip))
+            .unwrap();
+        source.published_through(Some(tip - 1));
+        followup(&mut wallet, &source, &|_| {}, (tip.into(), tip.into())).await;
+        assert_ne!(
+            balance(&wallet, &wallet.uuid).transparent_authority,
+            TransparentBalanceAuthority::Current
+        );
+        source.published_through(None);
+        set_not_before(&wallet.path, wallet.account, Instant::now(), Duration::ZERO);
+        followup(&mut wallet, &source, &|_| {}, (tip.into(), tip.into())).await;
+        assert_eq!(
+            balance(&wallet, &wallet.uuid).transparent_authority,
+            TransparentBalanceAuthority::Current
+        );
+    }
 }
 
 /// A capacity refusal ends each account's pass with the service's delay; the
