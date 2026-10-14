@@ -110,6 +110,34 @@ void main() {
     expect(requests, 1);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets('future result digits do not change the review amount size', (
+    tester,
+  ) async {
+    Widget scene(String result) => host(
+      MobileShieldScene(
+        phase: MobileShieldPhase.review,
+        amount: '14.12',
+        resultAmount: result,
+        title: 'Transparent Balance',
+      ),
+    );
+    await tester.pumpWidget(scene('14.12'));
+    await tester.pump();
+    final original = tester
+        .widget<CustomPaint>(find.byKey(const ValueKey('mobile_shield_amount')))
+        .size;
+    await tester.pumpWidget(scene('14.1199'));
+    await tester.pump();
+    expect(
+      tester
+          .widget<CustomPaint>(
+            find.byKey(const ValueKey('mobile_shield_amount')),
+          )
+          .size,
+      original,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   testWidgets('hardware QR fits the remaining height with large text', (
     tester,
   ) async {

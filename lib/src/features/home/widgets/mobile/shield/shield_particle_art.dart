@@ -71,6 +71,7 @@ class ShieldParticleArt {
     required int count,
     required math.Random random,
     required double fontSize,
+    double? resultFontSize,
   }) async {
     final atlas = await SpriteAtlas.build();
     // Solid stand-ins with the same plain-text geometry: the dots crumble from the
@@ -85,7 +86,7 @@ class ShieldParticleArt {
       resultAmount,
       look: BalanceLook.solid,
       unitTop: BalanceArt.unitOffset,
-      fontSize: fontSize,
+      fontSize: resultFontSize ?? fontSize,
     );
     final textPoints = await ShapeSampler.picture(
       before.size,

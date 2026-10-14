@@ -73,7 +73,8 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   bool _reduce = false;
   bool _focusRevealed = false;
   int _preparation = 0;
-  late double _fontSize;
+  late double _beforeFontSize;
+  late double _afterFontSize;
   _ShieldLayout? _layout;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
@@ -145,14 +146,16 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
 
   Future<void> _prepare() async {
     final generation = ++_preparation;
-    _fontSize = math.min(_fitFont(widget.amount), _fitFont(_result));
+    _beforeFontSize = _fitFont(widget.amount);
+    _afterFontSize = _fitFont(_result);
     try {
       final art = await ShieldParticleArt.load(
         widget.amount,
         resultAmount: _result,
         count: shieldCloudDots.length,
         random: math.Random(7),
-        fontSize: _fontSize,
+        fontSize: _beforeFontSize,
+        resultFontSize: _afterFontSize,
       );
       if (!mounted || generation != _preparation) {
         art.dispose();
@@ -231,7 +234,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     amount,
     look: shielded ? BalanceLook.shielded : BalanceLook.transparent,
     unitTop: BalanceArt.unitOffset,
-    fontSize: _fontSize,
+    fontSize: shielded ? _afterFontSize : _beforeFontSize,
   );
 
   void _tick(Duration elapsed) {
