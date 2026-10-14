@@ -300,8 +300,11 @@ fn recovery_tips() -> MutexGuard<'static, HashMap<String, u64>> {
 
 /// Whether a sync that completed at chain tip `tip` runs recovery for the
 /// wallet at `db_path`: only after a new block since its last run, or at the
-/// first sync since the app started. Recovery runs on block cadence, a
-/// schedule the service sees anyway; a sync started for any other reason
+/// first sync since the app started. A successful reorg rewind also clears
+/// the old height through
+/// `reset_private_recovery_after_reorg`, allowing one run on the replacement
+/// chain. A lagging endpoint does not clear it. Recovery runs on a schedule
+/// the service sees anyway; a sync started for any other reason
 /// (a resume, a retry of other private work) adds no run, so whether a run
 /// happens never depends on what an earlier reply said.
 pub(crate) fn recovery_due(db_path: &str, tip: u64) -> bool {

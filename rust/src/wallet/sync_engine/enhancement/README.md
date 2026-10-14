@@ -54,6 +54,15 @@ enhancement/
 The filesystem matches the module graph. Implementations stay private behind
 their package or the parent session facade.
 
+Private query scheduling follows accepted chain changes. A new tip height
+starts another allowance; a successful reorg rewind also resets both the
+per-tip Enhance/status suppression and transparent recovery cadence. This
+lets recovery proceed on a replacement chain without waiting to exceed the
+old height. Failed rewinds and lagging endpoint replies preserve suppression.
+Replies at the replacement tip are suppressed again normally. This reset
+does not restore content-failure allowances, remove account holds, or shorten
+service-requested waits.
+
 ## The two wallet snapshots
 
 Three database snapshots serve different purposes and must not be mixed.

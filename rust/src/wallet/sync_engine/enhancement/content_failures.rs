@@ -8,6 +8,8 @@
 //! left out of the restart count, and out of every further query, until the
 //! chain tip moves: it waits for the next block, which every wallet syncs for
 //! anyway.
+//! An accepted reorg also starts a fresh allowance, after its database rewind
+//! succeeds. A lagging endpoint or a failed rewind leaves this record intact.
 //!
 //! Private status is stricter, because an honest reply can leave work too:
 //! "not found" for an unmined transaction keeps it, "mined" completes it. So
@@ -128,6 +130,19 @@ pub(crate) fn at_tip(db_path: &str, tip: u64) {
             ..AtTip::default()
         };
     }
+}
+
+/// Starts an allowance at the replacement chain's tip after a successful
+/// reorg rewind, even when its height is no greater than the old tip.
+/// This changes scheduling only; the wallet's content-failure limits remain.
+pub(in crate::wallet::sync_engine) fn after_reorg(db_path: &str, tip: u64) {
+    at_tips().insert(
+        db_path.to_owned(),
+        AtTip {
+            tip,
+            ..AtTip::default()
+        },
+    );
 }
 
 /// Records Enhance requests whose reply failed on content.

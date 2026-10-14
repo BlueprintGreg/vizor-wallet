@@ -57,6 +57,8 @@ pub(crate) mod gift_card_claim;
 pub(crate) mod ledger_discovery;
 mod lwd;
 pub(crate) mod mempool;
+#[cfg(test)]
+mod private_recovery_reorg_tests;
 mod retry_progress;
 #[cfg(test)]
 pub(crate) mod test_lwd;
@@ -2327,6 +2329,14 @@ fn invalidate_transparent_checks_before_rewind(db_data_path: &str) -> Result<(),
         .map_err(|error| SyncError::db(format!("invalidate UTXO checks before rewind: {error}")))
 }
 
+/// A successful reorg rewind permits one new private recovery allowance at
+/// the replacement tip. Endpoint lag and failed rewinds must not call this.
+/// Holds, service-requested waits and content-failure counters are unchanged.
+fn reset_private_recovery_after_reorg(db_data_path: &str, tip: u64) {
+    enhancement::content_failures::after_reorg(db_data_path, tip);
+    transparent_ledger::clear_recovery_tip(db_data_path);
+}
+
 fn truncate_wallet_to_height(
     db_data_path: &str,
     db: &mut WalletDatabase,
@@ -2336,18 +2346,19 @@ fn truncate_wallet_to_height(
 ) -> Result<BlockHeight, SyncError> {
     invalidate_transparent_checks_before_rewind(db_data_path)?;
     with_wallet_db_write_lock(operation, || {
-        truncate_wallet_with(requested_height, fresh_tip_height, |height| {
+        truncate_wallet_with(db_data_path, requested_height, fresh_tip_height, |height| {
             ledger_discovery::truncate(db_data_path, db, height)
         })
     })
 }
 
 fn truncate_wallet_with(
+    db_data_path: &str,
     requested_height: BlockHeight,
     fresh_tip_height: BlockHeight,
     mut truncate: impl FnMut(BlockHeight) -> Result<BlockHeight, SqliteClientError>,
 ) -> Result<BlockHeight, SyncError> {
-    match truncate(requested_height) {
+    let actual_height = match truncate(requested_height) {
         Ok(height) => validate_reorg_rewind_height(height, fresh_tip_height),
         Err(SqliteClientError::RequestedRewindInvalid {
             safe_rewind_height: Some(safe_height),
@@ -2385,7 +2396,9 @@ fn truncate_wallet_with(
         Err(e) => Err(SyncError::db(format!(
             "truncate_to_height({requested_height}): {e}"
         ))),
-    }
+    }?;
+    reset_private_recovery_after_reorg(db_data_path, u64::from(u32::from(fresh_tip_height)));
+    Ok(actual_height)
 }
 
 fn validate_reorg_rewind_height(
@@ -2963,7 +2976,7 @@ async fn run_payment_link_claim_sync_once(
                         block_height_from_u64(fresh_tip.height, "payment-link reorg tip")?;
                     let requested = confirmed_reorg_rewind_target(fresh_height)?;
                     invalidate_transparent_checks_before_rewind(db_data_path)?;
-                    truncate_wallet_with(requested, fresh_height, |height| {
+                    truncate_wallet_with(db_data_path, requested, fresh_height, |height| {
                         ledger_discovery::truncate(db_data_path, &mut db, height)
                     })?;
                     db.update_chain_tip(fresh_height).map_err(|error| {
@@ -3068,7 +3081,7 @@ async fn run_payment_link_claim_sync_once(
                 let fresh_tip =
                     block_height_from_u64(current_tip_height, "payment-link scan rewind tip")?;
                 invalidate_transparent_checks_before_rewind(db_data_path)?;
-                truncate_wallet_with(requested, fresh_tip, |height| {
+                truncate_wallet_with(db_data_path, requested, fresh_tip, |height| {
                     ledger_discovery::truncate(db_data_path, &mut db, height)
                 })?;
             }
@@ -4300,6 +4313,7 @@ async fn run_sync_impl(
                         current_tip_height,
                         "current lightwalletd chain tip",
                     )?;
+                    reset_private_recovery_after_reorg(db_data_path, current_tip_height);
                     let post_rewind_ranges = with_wallet_db_write_lock(
                         "sync_engine.update_chain_tip.after_rewind",
                         || -> Result<Vec<ScanRange>, SyncError> {
@@ -6563,10 +6577,15 @@ mod tests {
 
         let requested = confirmed_reorg_rewind_target(BlockHeight::from_u32(100)).unwrap();
         let mut rewind_calls = Vec::new();
-        let actual = truncate_wallet_with(requested, BlockHeight::from_u32(100), |height| {
-            rewind_calls.push(height);
-            Ok(height)
-        })
+        let actual = truncate_wallet_with(
+            "same-height-fork-rewind",
+            requested,
+            BlockHeight::from_u32(100),
+            |height| {
+                rewind_calls.push(height);
+                Ok(height)
+            },
+        )
         .unwrap();
         assert_eq!(actual, BlockHeight::from_u32(99));
         assert_eq!(rewind_calls, vec![BlockHeight::from_u32(99)]);
@@ -6666,7 +6685,7 @@ mod tests {
         let unsafe_checkpoint = BlockHeight::from_u32(100);
         let mut calls = Vec::new();
 
-        let result = truncate_wallet_with(requested, fresh_tip, |height| {
+        let result = truncate_wallet_with("unsafe-reorg-rewind", requested, fresh_tip, |height| {
             calls.push(height);
             Err(SqliteClientError::RequestedRewindInvalid {
                 safe_rewind_height: Some(unsafe_checkpoint),
@@ -6701,7 +6720,7 @@ mod tests {
         let safe_checkpoint = BlockHeight::from_u32(99);
         let mut calls = Vec::new();
 
-        let result = truncate_wallet_with(requested, fresh_tip, |height| {
+        let result = truncate_wallet_with("safe-reorg-rewind", requested, fresh_tip, |height| {
             calls.push(height);
             if calls.len() == 1 {
                 Err(SqliteClientError::RequestedRewindInvalid {
