@@ -402,9 +402,9 @@ fn transparent_stop_reason(
         return Some(match cause {
             HoldCause::Withdrawn(_) | HoldCause::Unreconciled => TransparentStopReason::Withdrawn,
             HoldCause::LegacyDiscrepancy => TransparentStopReason::LegacyDiscrepancy,
-            // A directory entry that failed three times shows as the same
-            // stall: recovery cannot finish until something changes.
-            HoldCause::Stalled | HoldCause::FailedEntries => TransparentStopReason::Stalled,
+            // A directory entry that failed three times shows as a stall:
+            // recovery cannot finish until something changes.
+            HoldCause::FailedEntries => TransparentStopReason::Stalled,
         });
     }
     opt_out_unfinished.then_some(TransparentStopReason::OptOutUnfinished)

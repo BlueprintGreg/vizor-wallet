@@ -667,6 +667,13 @@ mod tests {
             zakura_transaction_status::StatusObservation,
             zakura_transaction_status::StatusError,
         >,
+        /// Answers given first, in order, before `response`.
+        script: std::collections::VecDeque<
+            Result<
+                zakura_transaction_status::StatusObservation,
+                zakura_transaction_status::StatusError,
+            >,
+        >,
     }
     impl zakura_transaction_status::StatusSource for FakeStatusSource {
         type Session = Self;
@@ -684,7 +691,7 @@ mod tests {
             zakura_transaction_status::StatusError,
         > {
             self.requests.lock().unwrap().push(request);
-            self.response
+            self.script.pop_front().unwrap_or(self.response)
         }
     }
     fn status_source(
@@ -697,6 +704,7 @@ mod tests {
             opens: Default::default(),
             requests: Default::default(),
             response,
+            script: Default::default(),
         }
     }
 
@@ -948,7 +956,6 @@ mod tests {
             StatusError::Unavailable,
             StatusError::Stale,
             StatusError::Timeout,
-            StatusError::Malformed,
             StatusError::Transport { code: 14 },
         ] {
             let (_file, mut db, txid) = private_status_work_db();
@@ -1006,6 +1013,42 @@ mod tests {
                 Some(BlockHeight::from_u32(100))
             );
         }
+    }
+
+    /// A private status reply that does not decode concerns its own
+    /// transaction's row, which a service could choose: the work stays for a
+    /// later sync, private status stays on, and the rest of the status work
+    /// is still asked.
+    #[tokio::test]
+    async fn a_malformed_private_status_reply_defers_only_its_transaction() {
+        use zakura_transaction_status::{StatusError, StatusObservation};
+        let (_file, mut db, txid) = private_status_work_db();
+        let item = db.transaction_status_work_for(txid).unwrap();
+        // The same obligation twice stands in for the next transaction.
+        let work = vec![item, item];
+        let mut private = status_source(Ok(StatusObservation::NotFound));
+        private.script.push_back(Err(StatusError::Malformed));
+        let requests = private.requests.clone();
+        let public = status_source(Ok(StatusObservation::NotFound));
+        let mut reader = super::super::status::RoutedStatusReader::new(public, private);
+        let mut private_failed = false;
+
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut private_failed,
+            _file.path().to_str().unwrap(),
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!private_failed, "private status stays on");
+        assert_eq!(requests.lock().unwrap().len(), 2, "the next item is asked");
     }
 
     #[tokio::test]

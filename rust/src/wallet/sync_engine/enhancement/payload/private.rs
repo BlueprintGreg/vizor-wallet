@@ -15,12 +15,14 @@ use super::{
 };
 use crate::wallet::network::WalletNetwork;
 use futures::StreamExt;
+use std::collections::BTreeSet;
 use zakura_pir_enhance::transport::{self, PendingClient};
-use zakura_pir_enhance::wallet::Acceptance;
-use zakura_pir_enhance::{ClientError, Manifest};
+use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
+use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
     EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
+use zcash_primitives::transaction::TxId;
 use zcash_protocol::consensus::BlockHeight;
 /// Debug builds only: overrides the Enhance PIR endpoint. Release builds
 /// always use [`DEFAULT_MAINNET_ENDPOINT`] and never read it.
@@ -321,6 +323,7 @@ impl RoutedPayloadEnhancement {
                     Ok(results) => {
                         futures::pin_mut!(results);
                         let mut stale = None;
+                        let mut unreadable = BTreeSet::new();
                         while let Some(result) = results.next().await {
                             if should_exit() {
                                 return Err(EnhancePirRunError::ExitRequested);
@@ -333,15 +336,31 @@ impl RoutedPayloadEnhancement {
                                     stale = Some(status);
                                     break;
                                 }
+                                // The row reply arrived and decoded, but this
+                                // record in it did not: a content failure,
+                                // which a service could aim at chosen rows.
+                                // Count it against the requests of its
+                                // transaction in that row, once per row, and
+                                // keep going so the rest of the batch is asked
+                                // exactly as an honest reply would have it.
+                                // A failed row query (`ClientError::Row`) is a
+                                // request failure and stops below, as before.
+                                Err(ClientError::Response(_)) => {
+                                    report_unreadable(db, &work, result.position, &mut unreadable)?;
+                                    continue;
+                                }
                                 result => result?,
                             };
                             for (request, record) in work.map_record(result.position, record) {
                                 match db.apply(request, &record)? {
+                                    // The wallet rolled the record back and
+                                    // counted it; it stops asking after three.
+                                    // Like an unreadable record, it does not
+                                    // stop the rest of the batch.
                                     EnhancePirStoreResult::Rejected => {
-                                        return Err(SyncError::parse(
-                                            "PIR record failed wallet authentication",
-                                        )
-                                        .into());
+                                        log::warn!(
+                                            "sync: a private Ironwood enhancement record failed wallet authentication"
+                                        );
                                     }
                                     // Mixed transaction under a private transparent
                                     // policy: financial facts are kept and the
@@ -386,6 +405,38 @@ impl RoutedPayloadEnhancement {
         Ok(())
     }
 }
+/// Reports the requests whose record at `position` arrived but did not decode:
+/// for each transaction with a request there, every request of that
+/// transaction in the position's row, as the wallet counts content failures
+/// per row reply. `reported` holds the (transaction, row) pairs already
+/// counted in this batch, so a row with several bad records counts once.
+fn report_unreadable(
+    db: &mut impl RecoveryWallet,
+    work: &PreparedWork,
+    position: u64,
+    reported: &mut BTreeSet<(TxId, u64)>,
+) -> Result<(), EnhancePirRunError> {
+    let row = position / RECORDS_PER_ROW as u64;
+    let txids: BTreeSet<TxId> = work
+        .batches_by_tx_and_row()
+        .into_iter()
+        .filter(|((_, batch_row), requests)| {
+            *batch_row == row
+                && requests
+                    .iter()
+                    .any(|request| u64::from(request.position()) == position)
+        })
+        .map(|((txid, _), _)| txid)
+        .collect();
+    for txid in txids {
+        if reported.insert((txid, row)) {
+            log::warn!("sync: a private Ironwood enhancement record did not decode");
+            db.record_unreadable(&work.requests_in_row(txid, row))?;
+        }
+    }
+    Ok(())
+}
+
 /// A bad candidate cannot invalidate a separately revalidated current session.
 /// Cancellation always wins, even when old coverage remains usable. A local
 /// database failure is never a bad candidate: it is returned so the sync fails

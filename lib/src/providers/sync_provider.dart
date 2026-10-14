@@ -857,10 +857,13 @@ const kRecoveryRestartMaxBackoff = Duration(minutes: 10);
 /// the 100-block rediscovery cover download for work that will fail again.
 ///
 /// The gate treats an attempt as actionable only once its deadline passes,
-/// and grows the wait only when the previous attempt left the outstanding
-/// count exactly where it was. Any movement — work completed, or new work
-/// discovered by fresh scanning — starts over at the base interval, so a
-/// service that recovers is picked up promptly.
+/// and doubles the wait after every attempt, up to a cap. When a restart
+/// happens depends only on what the private services already see: the
+/// schedule starts over at the base interval on a new chain tip, an app
+/// resume, a settings change or a lock ([reset]), never because the
+/// outstanding count moved. A count that drops because a reply was good, or
+/// stays because a reply was bad, must not make the next request sooner or
+/// later, or the service could tell its answers apart by the wallet's timing.
 ///
 /// Syncs driven by a new chain tip or an incomplete previous sync are
 /// unaffected: those run recovery anyway, and they coincide with the newly
@@ -871,44 +874,27 @@ class RecoveryRestartGate {
 
   final DateTime Function() _now;
 
-  int? _lastUnits;
   DateTime? _retryAt;
   Duration _backoff = kRecoveryRestartInitialBackoff;
 
+  /// Starts the schedule over at the base interval. Call only on events the
+  /// services see anyway: a new chain tip, an app resume, a settings change
+  /// or a lock.
   void reset() {
-    _lastUnits = null;
     _retryAt = null;
     _backoff = kRecoveryRestartInitialBackoff;
   }
 
   /// [outstanding] is the durable query + rediscovery obligation count.
   /// Suspended work is excluded by the caller: it is not retryable, so it
-  /// must never schedule network work of its own.
+  /// must never schedule network work of its own. The count only decides
+  /// whether there is anything to restart for; it never moves the schedule.
   bool shouldRestart(int outstanding) {
-    if (outstanding <= 0) {
-      reset();
-      return false;
-    }
+    if (outstanding <= 0) return false;
     final at = _now();
-    final previous = _lastUnits;
     final deadline = _retryAt;
-    if (deadline != null && at.isBefore(deadline)) {
-      // A tip-driven sync moved the count inside the window. That sync already
-      // ran recovery, so don't restart now, but drop the stale backoff: the
-      // next restart comes no later than one base interval from here.
-      if (outstanding != previous) {
-        _lastUnits = outstanding;
-        _backoff = kRecoveryRestartInitialBackoff;
-        final rebased = at.add(kRecoveryRestartInitialBackoff);
-        if (rebased.isBefore(deadline)) _retryAt = rebased;
-      }
-      return false;
-    }
-    final stalled = previous != null && outstanding == previous;
-    _backoff = stalled
-        ? _doubledBackoff(_backoff)
-        : kRecoveryRestartInitialBackoff;
-    _lastUnits = outstanding;
+    if (deadline != null && at.isBefore(deadline)) return false;
+    if (deadline != null) _backoff = _doubledBackoff(_backoff);
     _retryAt = at.add(_backoff);
     return true;
   }
@@ -2565,6 +2551,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (_isShuttingDown) return;
     _isInForeground = true;
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(true);
+    // A resume is public: the recovery restart schedule starts over.
+    _recoveryRestartGate.reset();
     unawaited(_refreshBalanceAfterResume());
     // Coalesce repeated focus/resume events. An old mobile check spanning
     // backgrounding cannot certify foreground freshness; follow it immediately.
@@ -2655,6 +2643,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
               allowBackground: canRunAppProcessWork(isInForeground: false),
             );
       }
+      // A new chain tip is public: the restart schedule starts over.
+      if (tip.toInt() > lastSynced) _recoveryRestartGate.reset();
       // Skip the status read entirely when the tip or an incomplete previous
       // sync already calls for a restart: that sync runs recovery anyway.
       var recoveryRestart = false;

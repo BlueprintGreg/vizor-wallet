@@ -102,8 +102,6 @@ const RUN_BUDGET: Duration = Duration::from_secs(180);
 const PASS_BACKSTOP: Duration = Duration::from_secs(pir::PASS_DEADLINE.as_secs() + 30);
 /// How long an account that cannot progress is skipped.
 const HOLD: Duration = Duration::from_secs(60 * 60);
-/// Stalled runs, since the account's last complete one, that hold it.
-const STALL_RUNS_BEFORE_HOLD: usize = 3;
 
 /// What a source is asked about one account.
 #[derive(Clone, Copy)]
@@ -204,7 +202,10 @@ pub(crate) enum RunOutcome {
 
 /// Why an account is held out of recovery for [`HOLD`].
 ///
-/// Holds live in memory only, so a restart retries a held account once.
+/// Holds live in memory only, so a restart retries a held account once. Only
+/// the library's own decisions and promotion hold an account: a run that
+/// stalls, however often, is asked again at the next block, so a reply that
+/// failed never changes when the account is asked next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HoldCause {
     /// The source withdrew a publication it had answered from.
@@ -215,9 +216,6 @@ pub(crate) enum HoldCause {
     /// Promotion found legacy public evidence the complete ledger cannot
     /// explain, which retrying does not change.
     LegacyDiscrepancy,
-    /// [`STALL_RUNS_BEFORE_HOLD`] runs ended stalled since the account's last
-    /// complete one.
-    Stalled,
     /// A directory entry of the account failed on content three times, so the
     /// library no longer asks for it and the account cannot be covered.
     FailedEntries,
@@ -229,16 +227,14 @@ pub(crate) fn recovery_hold(db_path: &str, account: AccountUuid) -> Option<HoldC
     hold_at(db_path, account, Instant::now())
 }
 
-/// One account's hold, its count of stalled runs since its last complete
-/// one, and the time before which the service asked the wallet not to pass it
-/// again.
+/// One account's hold, and the time before which the service asked the
+/// wallet not to pass it again.
 ///
 /// The wait lives in memory only, so a restart may pass the account sooner:
 /// an app start is something the service sees anyway.
 #[derive(Clone, Copy, Debug, Default)]
 struct Hold {
     held: Option<(HoldCause, Instant)>,
-    stalled_runs: usize,
     not_before: Option<Instant>,
 }
 
@@ -269,22 +265,6 @@ fn set_hold(db_path: &str, account: AccountUuid, cause: HoldCause, now: Instant)
         .held = Some((cause, now + HOLD));
 }
 
-/// Counts a run whose passes ended stalled. Only a complete run clears the
-/// count, so a stall that persists while other runs end waiting for a lagging
-/// publication is still held. The [`STALL_RUNS_BEFORE_HOLD`]th holds the
-/// account and restarts the count. Returns whether it held the account.
-fn record_stall(db_path: &str, account: AccountUuid, now: Instant) -> bool {
-    let mut holds = holds();
-    let hold = holds.entry((db_path.to_owned(), account)).or_default();
-    hold.stalled_runs += 1;
-    if hold.stalled_runs < STALL_RUNS_BEFORE_HOLD {
-        return false;
-    }
-    hold.stalled_runs = 0;
-    hold.held = Some((HoldCause::Stalled, now + HOLD));
-    true
-}
-
 /// Skips `account` until `now + delay`, the delay the service named.
 fn set_not_before(db_path: &str, account: AccountUuid, now: Instant, delay: Duration) {
     holds()
@@ -302,17 +282,41 @@ fn waiting_at(db_path: &str, account: AccountUuid, now: Instant) -> bool {
         .is_some_and(|until| now < until)
 }
 
-fn clear_stalls(db_path: &str, account: AccountUuid) {
-    if let Some(hold) = holds().get_mut(&(db_path.to_owned(), account)) {
-        hold.stalled_runs = 0;
-    }
-}
-
-/// Drops every hold, stall count and wait of the wallet at `db_path`: forgetting its
+/// Drops every hold and wait of the wallet at `db_path`: forgetting its
 /// private ledger removes the evidence and companions they were held over, so
-/// the next private run starts each account afresh.
+/// the next private run starts each account afresh. It also lets the next
+/// sync run recovery at the current block.
 pub(crate) fn clear_holds(db_path: &str) {
     holds().retain(|(path, _), _| path != db_path);
+    clear_recovery_tip(db_path);
+}
+
+/// The chain tip of each wallet's last recovery run in this process.
+static RECOVERY_TIPS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
+
+fn recovery_tips() -> MutexGuard<'static, HashMap<String, u64>> {
+    RECOVERY_TIPS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether a sync that completed at chain tip `tip` runs recovery for the
+/// wallet at `db_path`: only after a new block since its last run, or at the
+/// first sync since the app started. Recovery runs on block cadence, a
+/// schedule the service sees anyway; a sync started for any other reason
+/// (a resume, a retry of other private work) adds no run, so whether a run
+/// happens never depends on what an earlier reply said.
+pub(crate) fn recovery_due(db_path: &str, tip: u64) -> bool {
+    recovery_tips().get(db_path).is_none_or(|&last| tip > last)
+}
+
+/// Records that the wallet at `db_path` ran recovery at chain tip `tip`.
+pub(crate) fn recovery_ran(db_path: &str, tip: u64) {
+    recovery_tips().insert(db_path.to_owned(), tip);
+}
+
+/// Lets the next sync of the wallet at `db_path` run recovery at the current
+/// tip: a settings change is something the service sees anyway.
+pub(crate) fn clear_recovery_tip(db_path: &str) {
+    recovery_tips().remove(db_path);
 }
 
 /// The order a run visits `accounts` in: `first`, when it is one of them,
@@ -415,20 +419,10 @@ pub(crate) async fn run<S: RecoverySource>(
         {
             AccountOutcome::Done(last) => {
                 run.stats.accounts += 1;
-                match last {
-                    // The service's own wait request: no pass before it.
-                    Some(Retry::After(delay)) => {
-                        set_not_before(db_path, account, clock(), delay);
-                    }
-                    Some(Retry::Stalled) => {
-                        if record_stall(db_path, account, clock()) {
-                            log::warn!(
-                                "transparent ledger: recovery keeps stalling; holding the account"
-                            );
-                        }
-                    }
-                    Some(Retry::Complete) => clear_stalls(db_path, account),
-                    _ => {}
+                // The service's own wait request: no pass before it. Every
+                // other retry waits for the next block.
+                if let Some(Retry::After(delay)) = last {
+                    set_not_before(db_path, account, clock(), delay);
                 }
                 if run.promote(account)? {
                     run.stats.promoted += 1;

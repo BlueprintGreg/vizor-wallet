@@ -35,8 +35,6 @@ use super::{
     public::PublicPayloadExecutor,
 };
 
-/// Servicing one route can create work on the other.
-const MAX_ROUTED_PASSES: usize = 3;
 pub(super) const MAX_LOGICAL_ROWS: u64 = 65_536;
 
 /// One routed enhancement snapshot, split by transport.
@@ -263,12 +261,14 @@ impl EnhancementEffects<WalletDatabase> for ProductionEnhancementEffects<'_> {
 }
 
 impl RoutedPayloadEnhancement {
-    /// Services one routed snapshot in bounded passes: rediscovery, private
-    /// queries, a reread, then routed public payloads. Passes repeat only while
-    /// the durable snapshot changes. Private failures defer PIR for this sync
-    /// session and never dispatch public work; a local database failure is
-    /// returned instead of deferred. Only a routed public request
-    /// reaches lightwalletd. Cancellation stops before the next dispatch.
+    /// Services one routed snapshot in one pass: rediscovery, private
+    /// queries, a reread, then routed public payloads. Work the pass unlocks
+    /// (a record that moves a transaction to the other route aside) waits for
+    /// the next drain point: whether another private round runs now must not
+    /// depend on what the replies said. Private failures defer PIR for this
+    /// sync session and never dispatch public work; a local database failure
+    /// is returned instead of deferred. Only a routed public request reaches
+    /// lightwalletd. Cancellation stops before the next dispatch.
     pub(in crate::wallet::sync_engine) async fn run<W: RecoveryWallet, E: EnhancementEffects<W>>(
         &mut self,
         db: &mut W,
@@ -276,41 +276,37 @@ impl RoutedPayloadEnhancement {
         effects: &mut E,
         should_exit: &impl Fn() -> bool,
     ) -> Result<(), EnhancePirRunError> {
-        let mut previous = None;
-        for _ in 0..MAX_ROUTED_PASSES {
-            if should_exit() {
-                return Err(EnhancePirRunError::ExitRequested);
-            }
-            let work = db.work()?;
-            if work.is_empty() || previous.as_ref() == Some(&work) {
-                break;
-            }
-            if self.private_work_enabled() && !work.private.is_empty() {
-                match self
-                    .run_private(db, route, effects, &work, should_exit)
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(EnhancePirRunError::ExitRequested) => {
-                        return Err(EnhancePirRunError::ExitRequested)
-                    }
-                    // A local database failure is not a service outage: the
-                    // sync must fail rather than report success with recovered
-                    // details left unpersisted.
-                    Err(error @ EnhancePirRunError::Failed(SyncError::Db(_))) => return Err(error),
-                    Err(error) => self.defer_after(error),
+        if should_exit() {
+            return Err(EnhancePirRunError::ExitRequested);
+        }
+        let work = db.work()?;
+        if work.is_empty() {
+            return Ok(());
+        }
+        if self.private_work_enabled() && !work.private.is_empty() {
+            match self
+                .run_private(db, route, effects, &work, should_exit)
+                .await
+            {
+                Ok(()) => {}
+                Err(EnhancePirRunError::ExitRequested) => {
+                    return Err(EnhancePirRunError::ExitRequested)
                 }
+                // A local database failure is not a service outage: the
+                // sync must fail rather than report success with recovered
+                // details left unpersisted.
+                Err(error @ EnhancePirRunError::Failed(SyncError::Db(_))) => return Err(error),
+                Err(error) => self.defer_after(error),
             }
-            // Applying a record can atomically move a transaction to LWD, and
-            // rediscovery can resolve a mixed shape; dispatch that in this pass.
-            let routed = db.work()?;
-            if should_exit() {
-                return Err(EnhancePirRunError::ExitRequested);
-            }
-            if !routed.public.is_empty() {
-                effects.public(db, &routed.public, should_exit).await;
-            }
-            previous = Some(work);
+        }
+        // Applying a record can atomically move a transaction to LWD, and
+        // rediscovery can resolve a mixed shape; dispatch that in this pass.
+        let routed = db.work()?;
+        if should_exit() {
+            return Err(EnhancePirRunError::ExitRequested);
+        }
+        if !routed.public.is_empty() {
+            effects.public(db, &routed.public, should_exit).await;
         }
         if should_exit() {
             return Err(EnhancePirRunError::ExitRequested);

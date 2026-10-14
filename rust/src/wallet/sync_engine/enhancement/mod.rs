@@ -64,8 +64,6 @@ use auxiliary::{fees::backfill_stored_fees, transparent_history::HistoryPass};
 use payload::{EnhancePirRunError, ProductionEnhancementEffects, RoutedPayloadEnhancement};
 use transport::RoutedTransport;
 
-const MAX_CHECKPOINT_PASSES: usize = 3;
-
 /// One immutable policy and private payload session for a foreground sync.
 pub(super) struct EnhancementSession {
     policy: EnhancementPolicy,
@@ -137,45 +135,44 @@ impl EnhancementSession {
         let mut attempted_statuses = HashSet::new();
         let mut history = HistoryPass::default();
 
-        for _ in 0..MAX_CHECKPOINT_PASSES {
-            let requests = db
-                .transaction_data_requests()
-                .map_err(|error| SyncError::db(format!("transaction_data_requests: {error}")))?;
-            let status_work = db
-                .transaction_status_work()
-                .map_err(|error| SyncError::db(format!("transaction_status_work: {error}")))?;
-            let status_actionable = status::run_requests(
-                &mut status_reader,
+        // One pass per checkpoint. Work a reply unlocks (a status that makes
+        // a transaction mined, history that names another transaction) waits
+        // for the next checkpoint: whether another round of lookups runs now
+        // must not depend on what a reply said.
+        let requests = db
+            .transaction_data_requests()
+            .map_err(|error| SyncError::db(format!("transaction_data_requests: {error}")))?;
+        let status_work = db
+            .transaction_status_work()
+            .map_err(|error| SyncError::db(format!("transaction_status_work: {error}")))?;
+        status::run_requests(
+            &mut status_reader,
+            db,
+            &status_work,
+            &gate,
+            &mut attempted_statuses,
+            &mut self.private_status_failed,
+            &self.db_path,
+            &mut self.ready_resubmission,
+            should_exit,
+        )
+        .await?;
+        if should_exit() {
+            return Ok(true);
+        }
+        history
+            .run_requests(
+                client,
                 db,
-                &status_work,
-                &gate,
-                &mut attempted_statuses,
-                &mut self.private_status_failed,
                 &self.db_path,
-                &mut self.ready_resubmission,
+                &requests,
+                self.network,
+                &gate,
                 should_exit,
             )
             .await?;
-            if should_exit() {
-                return Ok(true);
-            }
-            let history_actionable = history
-                .run_requests(
-                    client,
-                    db,
-                    &self.db_path,
-                    &requests,
-                    self.network,
-                    &gate,
-                    should_exit,
-                )
-                .await?;
-            if should_exit() {
-                return Ok(true);
-            }
-            if !status_actionable && !history_actionable {
-                break;
-            }
+        if should_exit() {
+            return Ok(true);
         }
 
         self.run_payload_recovery(db, client, cached, should_exit)
