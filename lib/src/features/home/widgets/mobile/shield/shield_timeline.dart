@@ -47,7 +47,7 @@ abstract final class ShieldTimeline {
   /// The particle shield locks (success haptic), then a wave of light and
   /// scale rolls through it from top to bottom.
   static const lock = 1.00;
-  static const wave = Window(1.02, 0.90);
+  static const wave = Window(1.18, 0.32);
 
   /// On the lock the scheme turns from black-and-white (frame 1) to crimson
   /// (frame 2): the light below warms and widens.

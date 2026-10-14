@@ -931,9 +931,8 @@ class ParticleField extends ChangeNotifier {
           : groupBalance;
       final e = _blinkEnvelope(t - _blinkAt[i]);
       final g = _mode[i] == _Mode.shield ? _wave(_shY[i], a) : 0.0;
-      // The wave lifts dots only partway to white, so it reads as a soft
-      // sheen rather than a flare.
-      final flash = math.max(e, g * 0.55);
+      // A brief white band marks the lock, as in the original video.
+      final flash = math.max(e, (g * 1.3).clamp(0.0, 1.0));
 
       // At the handover each particle is pinned to its exact glyph point,
       // so dots and crisp text/icon coincide pixel for pixel.
@@ -952,7 +951,7 @@ class ParticleField extends ChangeNotifier {
       final px = c0.dx + (x - c0.dx) * s;
       final py = c0.dy + (y - c0.dy) * s;
       final grow = _mode[i] == _Mode.emit ? _eGrow[i] : 1.0;
-      final size = visSize * s * grow * (1 + bump * (0.9 * e + 0.35 * g));
+      final size = visSize * s * grow * (1 + bump * (0.9 * e + 0.55 * g));
       var alpha = visAlpha + (1 - visAlpha) * flash;
       alpha *= global;
       if (alpha < 0.004) continue;
@@ -987,7 +986,7 @@ class ParticleField extends ChangeNotifier {
           px,
           py,
           math.max(size * 4.5, 8),
-          0.16 * g * global,
+          0.24 * g * global,
           0xFF,
           0xFF,
           0xFF,
