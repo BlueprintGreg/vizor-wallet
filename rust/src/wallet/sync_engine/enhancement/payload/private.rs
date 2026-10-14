@@ -21,7 +21,7 @@ use zakura_pir_enhance::transport::{self, PendingClient};
 use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
 use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
-    EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
+    EnhancePirRequest, EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_primitives::transaction::TxId;
 use zcash_protocol::consensus::BlockHeight;
@@ -95,6 +95,10 @@ pub(in crate::wallet::sync_engine) struct RoutedPayloadEnhancement {
     pub(super) accepted_routing: Option<transport::Client>,
     pub(super) private_failed_for_sync: bool,
     rediscovery_attempts: Vec<IronwoodEnhanceDiscoveryRequest>,
+    /// The private queries this drain may ask, when it ends a checkpoint:
+    /// those that existed when the checkpoint began. A query a status or
+    /// history reply unlocked during the checkpoint waits for the next one.
+    pub(in crate::wallet::sync_engine) snapshot: Option<BTreeSet<EnhancePirRequest>>,
 }
 #[derive(Debug)]
 pub(in crate::wallet::sync_engine) enum EnhancePirRunError {
@@ -138,6 +142,7 @@ impl RoutedPayloadEnhancement {
             accepted_routing: None,
             private_failed_for_sync: false,
             rediscovery_attempts: Vec::new(),
+            snapshot: None,
         }
     }
     pub(in crate::wallet::sync_engine) fn enabled(&self) -> bool {
@@ -264,7 +269,7 @@ impl RoutedPayloadEnhancement {
         }
         let work = db
             .work()?
-            .without_content_failures(&self.db_path)
+            .askable(&self.db_path, self.snapshot.as_ref())
             .prepared();
         if work.query_count() == 0 {
             return Ok(());
@@ -315,7 +320,7 @@ impl RoutedPayloadEnhancement {
             // reply would have completed them.
             let work = db
                 .work()?
-                .without_content_failures(&self.db_path)
+                .askable(&self.db_path, self.snapshot.as_ref())
                 .prepared();
             if work.query_count() == 0 {
                 break;
