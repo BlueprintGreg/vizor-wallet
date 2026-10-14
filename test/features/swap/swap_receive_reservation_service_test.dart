@@ -291,6 +291,12 @@ class _Store implements ReceiveReservationStore {
   }
 
   @override
+  Future<bool> isScanning(String address) async {
+    events.add('scanning:$address');
+    return true;
+  }
+
+  @override
   Future<void> observe({
     required bool incoming,
     required String depositAddress,

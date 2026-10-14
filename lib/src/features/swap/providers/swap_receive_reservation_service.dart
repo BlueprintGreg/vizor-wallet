@@ -80,6 +80,9 @@ abstract interface class ReceiveReservationStore {
   /// Binds a refund quote's deposit address to its reserved refund key.
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote);
 
+  /// Whether the wallet still scans the one-time key behind swap address `address`.
+  Future<bool> isScanning(String address);
+
   /// Records a provider status, fetched at `checkedAt`, on the swap operations with
   /// this deposit address and memo.
   Future<void> observe({
@@ -159,6 +162,13 @@ class RustReceiveReservationStore implements ReceiveReservationStore {
         depositAddress: quote.depositInstruction.address,
         deadlineSeconds: unixSeconds(requireDepositDeadline(quote)),
       );
+  @override
+  Future<bool> isScanning(String address) => api.isSwapAddressScanning(
+    dbPath: path,
+    networkName: network,
+    accountUuid: account,
+    address: address,
+  );
   @override
   Future<void> observe({
     required bool incoming,
@@ -275,6 +285,13 @@ class SwapReceiveReservationService {
         throw StateError('These deposit instructions were not saved.');
       }
     });
+  }
+
+  /// Whether the wallet still scans the one-time key behind `account`'s swap address
+  /// `address`; false once it closed, as when an unpaid reservation is reclaimed.
+  Future<bool> isScanning(String account, String address) async {
+    if (!supportsAccount(account)) return false;
+    return _run(() async => (await store(account)).isScanning(address));
   }
 
   /// Shares a successful activity poll, fetched at `checkedAt`, with the wallet,

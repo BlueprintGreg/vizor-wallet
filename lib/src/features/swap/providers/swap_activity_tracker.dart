@@ -12,6 +12,19 @@ import 'swap_receive_reservation_service.dart';
 
 const swapActivityStatusRefreshInterval = Duration(seconds: 30);
 
+/// How long after an incoming swap's deposit deadline the wallet keeps its unpaid
+/// reservation: the wallet library's `RECEIVE_RECLAIM_SECONDS`. Only a status fetched
+/// after it reclaims the reservation.
+const swapReceiveReclaimGrace = Duration(hours: 2);
+
+/// How often an expired incoming swap is polled until the wallet reclaims its
+/// reservation.
+const swapReclaimStatusInterval = Duration(minutes: 10);
+
+/// When the wallet stops scanning a swap key whatever its status: the wallet
+/// library's `COMPLETION_LIMIT_SECS` after the deposit deadline.
+const swapKeyCompletionLimit = Duration(days: 30);
+
 final swapActivityTrackerProvider = Provider<SwapActivityTracker>((ref) {
   return SwapActivityTracker(
     activityStore: ref.read(swapActivityStoreProvider),
@@ -31,6 +44,14 @@ final swapActivityTrackerProvider = Provider<SwapActivityTracker>((ref) {
             snapshot: snapshot,
             checkedAt: checkedAt,
           );
+    },
+    isSwapAddressScanning: (intent) async {
+      final account = intent.accountUuid;
+      final address = intent.oneClickRecipient;
+      if (account == null || address == null) return false;
+      return ref
+          .read(swapReceiveReservationServiceProvider)
+          .isScanning(account, address);
     },
     lifecycle: ref.read(ledgerOperationLifecycleProvider),
     swapProvider: ref.read(swapIntentProvider),
@@ -167,7 +188,7 @@ class SwapActivityStatusRefresher {
 }
 
 class SwapActivityTracker {
-  const SwapActivityTracker({
+  SwapActivityTracker({
     required SwapActivityStore activityStore,
     required SwapProvider swapProvider,
     bool Function()? isTorEnabled,
@@ -175,15 +196,24 @@ class SwapActivityTracker {
     LedgerOperationLifecycle? lifecycle,
     Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
     onProviderSnapshot,
+    Future<bool> Function(SwapIntent)? isSwapAddressScanning,
   }) : _activityStore = activityStore,
        _swapProvider = swapProvider,
        _isTorEnabled = isTorEnabled,
        _onRecordsChanged = onRecordsChanged,
        _lifecycle = lifecycle,
-       _onProviderSnapshot = onProviderSnapshot;
+       _onProviderSnapshot = onProviderSnapshot,
+       _isSwapAddressScanning = isSwapAddressScanning;
 
   final Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   _onProviderSnapshot;
+
+  /// Whether the wallet still scans the intent's one-time swap address.
+  final Future<bool> Function(SwapIntent)? _isSwapAddressScanning;
+
+  /// Expired intents whose swap key the wallet no longer scans, so they need no
+  /// more polling.
+  final Set<String> _closedSwapKeyIntentIds = {};
   final LedgerOperationLifecycle? _lifecycle;
 
   // Share the wallet deletion drain with durable send operations. Acquire before
@@ -329,6 +359,12 @@ class SwapActivityTracker {
       )) {
         continue;
       }
+      // An automatic poll of an expired swap only serves to reclaim its key.
+      if (!includeTerminal &&
+          intent.status.isTerminal &&
+          !await _swapKeyAwaitsReclaim(intent)) {
+        continue;
+      }
       final checkedAt = DateTime.now().toUtc();
       try {
         final updated = await _refreshProviderBackedIntent(
@@ -413,6 +449,41 @@ class SwapActivityTracker {
     return intent.depositAddress ?? intent.id;
   }
 
+  /// Whether the wallet still scans expired `intent`'s swap key, remembering a
+  /// closed one. A check that fails counts as open, so polling goes on.
+  Future<bool> _swapKeyAwaitsReclaim(SwapIntent intent) async {
+    if (_closedSwapKeyIntentIds.contains(intent.id)) return false;
+    final check = _isSwapAddressScanning;
+    if (check == null) return false;
+    bool scanning;
+    try {
+      scanning = await check(intent);
+    } catch (e) {
+      log('Swap: swap key check failed intent=${intent.id} error=$e');
+      return true;
+    }
+    if (!scanning) _closedSwapKeyIntentIds.add(intent.id);
+    return scanning;
+  }
+
+  /// Whether `intent` is an incoming swap that expired unpaid and whose key may
+  /// still await reclamation, due a poll every [swapReclaimStatusInterval]: the
+  /// wallet reclaims an unpaid reservation only with a status fetched
+  /// [swapReceiveReclaimGrace] after the deposit deadline, which the poll that
+  /// expired the swap never is.
+  static bool _awaitsReclaim(SwapIntent intent, DateTime now) {
+    final deadline = intent.depositDeadline?.toUtc();
+    final checkedAt = intent.lastStatusCheckedAt?.toUtc();
+    return intent.direction == SwapDirection.externalToZec &&
+        intent.status == SwapIntentStatus.expired &&
+        intent.oneClickRecipient != null &&
+        deadline != null &&
+        !now.isBefore(deadline.add(swapReceiveReclaimGrace)) &&
+        now.isBefore(deadline.add(swapKeyCompletionLimit)) &&
+        (checkedAt == null ||
+            now.difference(checkedAt) >= swapReclaimStatusInterval);
+  }
+
   static bool _shouldAutoRefreshIntent(
     SwapIntent intent, {
     required String accountUuid,
@@ -423,13 +494,14 @@ class SwapActivityTracker {
     // failed, or after the provider has observed a deposit. An unknown
     // provider status does not establish that funds were never sent.
     return _isPersistableIntent(intent, accountUuid: accountUuid) &&
-        !intent.status.isTerminal &&
-        (intent.direction == SwapDirection.externalToZec ||
-            intent.status == SwapIntentStatus.providerStatusUnknown ||
-            intent.depositClaimedAt != null ||
-            (intent.depositTxHash?.trim().isNotEmpty ?? false) ||
-            intent.hasConfirmedDepositEvidence ||
-            intent.hasProviderObservedDepositEvidence);
+        ((!intent.status.isTerminal &&
+                (intent.direction == SwapDirection.externalToZec ||
+                    intent.status == SwapIntentStatus.providerStatusUnknown ||
+                    intent.depositClaimedAt != null ||
+                    (intent.depositTxHash?.trim().isNotEmpty ?? false) ||
+                    intent.hasConfirmedDepositEvidence ||
+                    intent.hasProviderObservedDepositEvidence)) ||
+            _awaitsReclaim(intent, DateTime.now().toUtc()));
   }
 
   static bool _canRefreshIntent(
