@@ -20,6 +20,7 @@ import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/home/widgets/ledger_shield_signing_overlay.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operation_service.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_operation_lifecycle.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
@@ -257,6 +258,51 @@ void main() {
       expect(find.text('Try again'), findsNothing);
     });
   }
+
+  testWidgets('the next device approval releases the previous broadcast lease', (
+    tester,
+  ) async {
+    final operations = _FakeLedgerSignedOperationService();
+    final nextSignature = Completer<List<int>>();
+    var signatures = 0;
+    var reads = 0;
+    var completed = false;
+    await tester.pumpWidget(
+      _harness(
+        operationService: operations,
+        sync: _FakeSyncNotifier(),
+        ledgerSigner: (_) async =>
+            ++signatures == 1 ? [7, 8, 9] : await nextSignature.future,
+        onComplete: () => completed = true,
+        progressReader:
+            ({required dbPath, required network, required accountUuid}) async =>
+                LedgerShieldingProgress(
+                  inputCount: [2, 1, 1, 0][reads++],
+                  inputLimit: 1,
+                  belowThreshold: false,
+                ),
+      ),
+    );
+    await _pumpUntil(tester, () => signatures == 2);
+    expect(signatures, 2);
+    final lifecycle = ProviderScope.containerOf(
+      tester.element(find.byType(LedgerShieldSigningOverlay)),
+    ).read(ledgerOperationLifecycleProvider);
+    var drained = false;
+    final drain = lifecycle.quiesceAndDrain().then((_) => drained = true);
+    await tester.pump();
+    expect(
+      drained,
+      isTrue,
+      reason:
+          'Device approval must not keep account mutations waiting for the prior broadcast',
+    );
+    await drain;
+    lifecycle.resume();
+    nextSignature.complete([7, 8, 9]);
+    await _pumpUntil(tester, () => completed);
+    expect(operations.broadcasts, hasLength(2));
+  });
 
   testWidgets('checkpoint retry retains signature and operation identity', (
     tester,

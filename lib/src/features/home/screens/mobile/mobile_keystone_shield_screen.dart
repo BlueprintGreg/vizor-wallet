@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart' show Colors, Icons, Scaffold;
+import 'package:flutter/material.dart' show Colors, Icons;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,11 +24,13 @@ import '../../../../services/camera_permission_settings.dart';
 import '../../../../services/qr_scanner.dart';
 import '../../../address_scan/widgets/mobile_address_scan_view.dart'
     show MobileScanCameraErrorOverlay, MobileScanViewfinderCorners;
-import '../../../keystone/widgets/keystone_pczt_qr_stage.dart';
 import '../../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
 import '../../../send/services/sapling_params.dart';
 import '../../services/transparent_shielding_service.dart';
+import '../../../../core/formatting/zec_amount.dart';
+import '../../../../providers/wallet_provider.dart';
+import '../../widgets/mobile/shield/mobile_shield_scene.dart';
 
 enum _ShieldSignStage {
   preparing,
@@ -64,6 +67,13 @@ class _MobileKeystoneShieldScreenState
     extends ConsumerState<MobileKeystoneShieldScreen>
     with WidgetsBindingObserver, ExternalActionGuardHoldMixin {
   var _stage = _ShieldSignStage.preparing;
+  bool _started = false;
+  bool _done = false;
+  late final String _accountUuid;
+  late final String _network;
+  late final BigInt _amount;
+  BigInt? _shieldedAmount;
+  BigInt? _fee;
   String? _error;
   String? _statusMessage;
   List<String> _urParts = const [];
@@ -86,7 +96,16 @@ class _MobileKeystoneShieldScreenState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_preparePczt());
+    _accountUuid = activeShieldingAccountUuid(ref);
+    _network = ref.read(rpcEndpointFailoverProvider).current.networkName;
+    final sync = (ref.read(syncProvider).value ?? SyncState()).scopedToAccount(
+      _accountUuid,
+    );
+    _amount = sync.shieldTransparentAmount > BigInt.zero
+        ? sync.shieldTransparentAmount + sync.shieldTransparentFee
+        : sync.transparentBalance;
+    _shieldedAmount = sync.shieldTransparentAmount;
+    _fee = sync.shieldTransparentFee;
   }
 
   @override
@@ -106,7 +125,8 @@ class _MobileKeystoneShieldScreenState
 
   Future<void> _preparePczt() async {
     try {
-      final accountUuid = activeShieldingAccountUuid(ref);
+      _requireOriginalAccount();
+      final accountUuid = _accountUuid;
       final dbPath = await getWalletDbPath();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
       final shieldPczt = await rust_sync.createShieldTransparentPczt(
@@ -116,6 +136,7 @@ class _MobileKeystoneShieldScreenState
         accountUuid: accountUuid,
       );
 
+      if (!mounted) return;
       var saplingParams = await loadSaplingParamsStatus();
       if (shieldPczt.needsSaplingParams && !saplingParams.complete) {
         final confirmed = await _confirmSaplingParamsDownload();
@@ -144,6 +165,8 @@ class _MobileKeystoneShieldScreenState
         _stage = _ShieldSignStage.showQr;
         _saplingParams = saplingParams;
         _needsSaplingParams = shieldPczt.needsSaplingParams;
+        _shieldedAmount = shieldPczt.shieldedZatoshi;
+        _fee = shieldPczt.feeZatoshi;
         _urParts = urParts;
       });
 
@@ -307,6 +330,7 @@ class _MobileKeystoneShieldScreenState
       final dbPath = await getWalletDbPath();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
       attemptedEndpoint = endpoint;
+      _requireOriginalAccount();
       final result = await rust_sync.extractAndBroadcastPczt(
         dbPath: dbPath,
         lightwalletdUrl: endpoint.normalizedLightwalletdUrl,
@@ -316,6 +340,7 @@ class _MobileKeystoneShieldScreenState
         spendParamsPath: _needsSaplingParams ? saplingParams.spendPath : null,
         outputParamsPath: _needsSaplingParams ? saplingParams.outputPath : null,
       );
+      if (!mounted) return;
       log(
         'MobileKeystoneShield: broadcast shield txid=${result.txid} '
         'status=${result.status}',
@@ -338,9 +363,10 @@ class _MobileKeystoneShieldScreenState
         });
         return;
       }
-      context.pop(const MobileKeystoneShieldResult.succeeded());
+      setState(() => _done = true);
     } catch (e, st) {
       log('MobileKeystoneShield._broadcast: ERROR: $e\n$st');
+      if (!mounted) return;
       await _maybeSwitchBroadcastEndpoint(e, attemptedEndpoint);
       if (!mounted) return;
       final postBroadcastMessage = postBroadcastShieldErrorMessage(e);
@@ -415,230 +441,147 @@ class _MobileKeystoneShieldScreenState
     context.pop();
   }
 
+  void _requireOriginalAccount() {
+    if (_network != ref.read(rpcEndpointFailoverProvider).current.networkName ||
+        _accountUuid != ref.read(walletProvider).value?.activeAccountUuid) {
+      throw StateError(
+        'The selected account or network changed. Return to your wallet.',
+      );
+    }
+  }
+
+  void _start() {
+    if (_started) return;
+    setState(() => _started = true);
+    unawaited(_preparePczt());
+  }
+
   @override
   Widget build(BuildContext context) {
     final scanning = _stage == _ShieldSignStage.scanning;
-    return PopScope<void>(
-      canPop: _stage != _ShieldSignStage.broadcasting,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _cancel();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (scanning) _buildScanner() else _buildQrStage(),
-            SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpacing.sm,
-                      vertical: AppSpacing.s,
-                    ),
-                    child: Row(
-                      children: [
-                        if (scanning)
-                          Semantics(
-                            button: true,
-                            label: 'Toggle flashlight',
-                            excludeSemantics: true,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () =>
-                                  unawaited(_scanController?.toggleTorch()),
-                              child: const SizedBox(
-                                width: 44,
-                                height: 44,
-                                child: Icon(
-                                  Icons.flashlight_on_outlined,
-                                  color: Colors.white,
-                                  size: 24,
-                                ),
-                              ),
-                            ),
-                          ),
-                        const Spacer(),
-                        Semantics(
-                          button: true,
-                          label: 'Cancel signing',
-                          excludeSemantics: true,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _cancel,
-                            child: const SizedBox(
-                              width: 44,
-                              height: 44,
-                              child: Center(
-                                child: AppIcon(
-                                  AppIcons.cross,
-                                  size: 24,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  _buildBottomBar(),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    final terminal =
+        _stage == _ShieldSignStage.failed ||
+        _stage == _ShieldSignStage.broadcastWarning;
+    return MobileShieldScene(
+      phase: !_started
+          ? MobileShieldPhase.review
+          : _done
+          ? MobileShieldPhase.succeeded
+          : terminal
+          ? MobileShieldPhase.failed
+          : scanning || _stage == _ShieldSignStage.showQr
+          ? MobileShieldPhase.hardware
+          : MobileShieldPhase.working,
+      amount: formatZecAmount(_amount),
+      resultAmount: formatZecAmount(_shieldedAmount ?? _amount),
+      title: !_started
+          ? 'Transparent balance'
+          : _done
+          ? 'Shielding transaction sent'
+          : scanning
+          ? 'Scan your Keystone signature'
+          : _stage == _ShieldSignStage.showQr
+          ? 'Approve with Keystone'
+          : terminal
+          ? 'Shielding needs attention'
+          : 'Preparing your shielding transaction…',
+      body: _done
+          ? 'Waiting for confirmation. Follow the transaction in Activity.'
+          : terminal
+          ? _statusMessage ?? _error
+          : _stage == _ShieldSignStage.showQr
+          ? 'Scan this QR with Keystone, approve on your device, then scan its signed QR.'
+          : null,
+      feeText: !_started && _fee != null
+          ? 'Network fee: ${formatZecAmount(_fee!)} ZEC'
+          : null,
+      focusBuilder:
+          _started &&
+              !_done &&
+              !terminal &&
+              (scanning || _stage == _ShieldSignStage.showQr)
+          ? (context, constraints) => scanning
+                ? _buildScanner(constraints)
+                : _buildQrStage(constraints)
+          : null,
+      canLeave: _stage != _ShieldSignStage.broadcasting,
+      onCommit: _start,
+      onClose: _done
+          ? () => context.pop(const MobileKeystoneShieldResult.succeeded())
+          : _cancel,
+      onComplete: () =>
+          context.pop(const MobileKeystoneShieldResult.succeeded()),
+      footer: !_started || _done ? null : _buildBottomBar(),
     );
   }
 
-  Widget _buildQrStage() {
-    final colors = context.colors;
-    final error = _stage == _ShieldSignStage.broadcastWarning
-        ? _statusMessage ??
-              'The shield transaction status is uncertain. Check activity before trying again.'
-        : _error;
+  Widget _buildQrStage(BoxConstraints constraints) =>
+      MobileShieldKeystoneQr(constraints: constraints, urParts: _urParts);
 
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-        child: Column(
-          children: [
-            const SizedBox(height: 72),
-            Text(
-              _stage == _ShieldSignStage.broadcasting
-                  ? 'Broadcasting shield tx'
-                  : 'Shield transparent balance',
-              textAlign: TextAlign.center,
-              style: AppTypography.headlineSmall.copyWith(color: Colors.white),
-            ),
-            const SizedBox(height: AppSpacing.s),
-            Text(
-              _stage == _ShieldSignStage.broadcasting
-                  ? 'Keep Vizor open while the transaction is sent.'
-                  : 'Use your Keystone wallet to scan this shielding QR code. Follow the steps on your device.',
-              textAlign: TextAlign.center,
-              style: AppTypography.bodyMedium.copyWith(
-                color: const Color(0xCCFFFFFF),
-              ),
-            ),
-            const Spacer(),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final availableWidth = constraints.maxWidth.isFinite
-                    ? constraints.maxWidth
-                    : 312.0;
-                final qrSize = (availableWidth - AppSpacing.sm * 2)
-                    .clamp(220.0, 280.0)
-                    .toDouble();
-                return Container(
-                  padding: const EdgeInsets.all(AppSpacing.sm),
-                  decoration: BoxDecoration(
-                    color: colors.background.ground,
-                    borderRadius: BorderRadius.circular(AppRadii.large),
-                  ),
-                  child: KeystonePcztQrStage(
-                    phase: switch (_stage) {
-                      _ShieldSignStage.showQr => KeystonePcztQrStagePhase.ready,
-                      _ShieldSignStage.failed ||
-                      _ShieldSignStage.broadcastWarning =>
-                        KeystonePcztQrStagePhase.failed,
-                      _ => KeystonePcztQrStagePhase.preparing,
-                    },
-                    urParts: _urParts,
-                    error: error,
-                    size: qrSize,
-                    scanOptimized: true,
-                  ),
-                );
-              },
-            ),
-            const Spacer(),
-            const SizedBox(height: 96),
-          ],
-        ),
+  Widget _buildScanner(BoxConstraints constraints) {
+    final viewSize = math.max(
+      80.0,
+      math.min(
+        260.0,
+        math.min(constraints.maxWidth, constraints.maxHeight - 100),
       ),
     );
-  }
-
-  Widget _buildScanner() {
-    const viewfinderSize = 260.0;
-    final scanController = _scanController;
-    if (scanController == null) return const SizedBox.shrink();
-
-    return Stack(
-      fit: StackFit.expand,
+    final controller = _scanController;
+    if (controller == null) return const SizedBox.shrink();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        AnimatedUrScannerView(
-          controller: scanController,
-          expectedUrType: 'zcash-pczt',
-          scanSessionResetToken: _stage,
-          errorBuilder: (context, error) => const SizedBox.shrink(),
-          onProgress: (progress) {
-            if (!mounted || _scanProgress == progress) return;
-            setState(() => _scanProgress = progress);
-          },
-          onDecodeError: _handleDecodeError,
-          onComplete: (result) => unawaited(_handleScanComplete(result)),
-        ),
-        ColorFiltered(
-          colorFilter: const ColorFilter.mode(
-            Color(0x99000000),
-            BlendMode.srcOut,
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Container(
-                decoration: const BoxDecoration(
-                  color: Colors.black,
-                  backgroundBlendMode: BlendMode.dstOut,
+        SizedBox(
+          width: viewSize,
+          height: viewSize,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadii.large),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                AnimatedUrScannerView(
+                  controller: controller,
+                  expectedUrType: 'zcash-pczt',
+                  scanWindow: Rect.fromLTWH(0, 0, viewSize, viewSize),
+                  scanSessionResetToken: _stage,
+                  errorBuilder: (context, error) => const SizedBox.shrink(),
+                  onProgress: (progress) {
+                    if (mounted && _scanProgress != progress) {
+                      setState(() => _scanProgress = progress);
+                    }
+                  },
+                  onDecodeError: _handleDecodeError,
+                  onComplete: (result) =>
+                      unawaited(_handleScanComplete(result)),
                 ),
-              ),
-              Center(
-                child: Container(
-                  width: viewfinderSize,
-                  height: viewfinderSize,
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius: BorderRadius.circular(AppRadii.large),
-                  ),
+                const MobileScanViewfinderCorners(),
+                MobileScanCameraErrorOverlay(
+                  controller: controller,
+                  maxWidth: viewSize,
+                  permissionDeniedMessage:
+                      'Allow camera access in Settings to scan Keystone signatures.',
+                  unavailableMessage: 'The camera is unavailable right now.',
+                  onOpenSettings: _openCameraSettings,
                 ),
-              ),
-            ],
-          ),
-        ),
-        Center(
-          child: SizedBox(
-            width: viewfinderSize,
-            height: viewfinderSize,
-            child: const MobileScanViewfinderCorners(),
-          ),
-        ),
-        MobileScanCameraErrorOverlay(
-          controller: scanController,
-          maxWidth: viewfinderSize,
-          permissionDeniedMessage:
-              'Camera access is off. Allow it in Settings to scan Keystone signatures.',
-          unavailableMessage: 'The camera is unavailable right now.',
-          onOpenSettings: _openCameraSettings,
-        ),
-        Align(
-          alignment: Alignment.center,
-          child: Padding(
-            padding: const EdgeInsets.only(top: viewfinderSize + 96),
-            child: Text(
-              _decoding
-                  ? 'Reading signature...'
-                  : _scanHint ??
-                        (_scanProgress > 0
-                            ? 'Scanning... $_scanProgress%'
-                            : 'Scan the signed QR on your Keystone'),
-              textAlign: TextAlign.center,
-              style: AppTypography.bodyMedium.copyWith(color: Colors.white),
+              ],
             ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          _decoding
+              ? 'Reading signature…'
+              : _scanHint ?? 'Scanning… $_scanProgress%',
+          textAlign: TextAlign.center,
+          style: AppTypography.bodyMedium.copyWith(color: Colors.white),
+        ),
+        AppButton(
+          variant: AppButtonVariant.ghost,
+          onPressed: () => unawaited(controller.toggleTorch()),
+          child: const Icon(
+            Icons.flashlight_on_outlined,
+            color: Colors.white,
+            semanticLabel: 'Toggle flashlight',
           ),
         ),
       ],

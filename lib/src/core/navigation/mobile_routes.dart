@@ -8,6 +8,7 @@ import '../feedback/app_review.dart';
 import '../../features/accounts/screens/mobile/mobile_accounts_screen.dart';
 import '../../features/activity/screens/mobile/mobile_activity_screen.dart';
 import '../../features/home/screens/mobile/mobile_home_screen.dart';
+import '../../features/home/screens/mobile/mobile_software_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_keystone_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_ledger_shield_screen.dart';
 import '../../features/migration/screens/mobile/mobile_ironwood_migration_flow_screen.dart';
@@ -407,6 +408,13 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
               FadeTransition(opacity: animation, child: child),
         );
       },
+    ),
+    GoRoute(
+      path: '/home/shield',
+      pageBuilder: (context, state) => CupertinoPage(
+        key: state.pageKey,
+        child: const MobileSoftwareShieldScreen(),
+      ),
     ),
     GoRoute(
       path: '/home/keystone-shield',

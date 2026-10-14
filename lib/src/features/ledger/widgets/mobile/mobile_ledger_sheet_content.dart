@@ -18,20 +18,44 @@ class MobileLedgerSheetContent extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => MobileModalScaffold(
-    title: title,
-    titleMaxLines: 3,
-    showClose: onClose != null,
-    onClose: onClose ?? () {},
-    constrainBody: true,
-    child: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: children,
-      ),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final inline =
+        context
+            .dependOnInheritedWidgetOfExactType<LedgerInlinePresentation>() !=
+        null;
+    final body = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: inline
+          ? CrossAxisAlignment.center
+          : CrossAxisAlignment.stretch,
+      children: [
+        if (inline) ...[
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: AppTypography.headlineSmall.copyWith(
+              color: const Color(0xFFFFFFFF),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+        ],
+        ...children,
+        if (inline && onClose != null) ...[
+          const SizedBox(height: AppSpacing.md),
+          MobileLedgerAction('Back to wallet', onPressed: onClose),
+        ],
+      ],
+    );
+    if (inline) return body;
+    return MobileModalScaffold(
+      title: title,
+      titleMaxLines: 3,
+      showClose: onClose != null,
+      onClose: onClose ?? () {},
+      constrainBody: true,
+      child: SingleChildScrollView(child: body),
+    );
+  }
 }
 
 class MobileLedgerMessage extends StatelessWidget {
@@ -122,4 +146,12 @@ class MobileLedgerAction extends StatelessWidget {
       child: Text(label),
     ),
   );
+}
+
+/// Keeps existing connection and recovery owners mounted while their content
+/// is presented inside the shielding scene instead of a separate sheet.
+class LedgerInlinePresentation extends InheritedWidget {
+  const LedgerInlinePresentation({required super.child, super.key});
+  @override
+  bool updateShouldNotify(LedgerInlinePresentation oldWidget) => false;
 }

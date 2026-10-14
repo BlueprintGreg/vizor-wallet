@@ -72,6 +72,17 @@ String? shieldBalanceErrorDetails(Object error) {
   return message.isEmpty ? null : message;
 }
 
+typedef SoftwareTransparentShieldRunner =
+    Future<rust_sync.ShieldTransparentResult> Function({
+      required WidgetRef ref,
+      required String accountUuid,
+      String logContext,
+    });
+final softwareTransparentShieldRunnerProvider =
+    Provider<SoftwareTransparentShieldRunner>(
+      (_) => shieldTransparentSoftwareBalance,
+    );
+
 Future<rust_sync.ShieldTransparentResult> shieldTransparentSoftwareBalance({
   required WidgetRef ref,
   required String accountUuid,

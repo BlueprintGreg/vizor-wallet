@@ -336,7 +336,6 @@ Future<void> _runMobileImportScenario(WidgetTester tester) async {
   await _enterMobilePasscode(tester, '123456');
   await tester.pumpAndSettle();
 
-
   await _pumpUntil(
     tester,
     () => tester.any(find.byKey(const ValueKey('mobile_biometrics_not_now'))),
@@ -426,6 +425,18 @@ Future<void> _runMobileShieldScenario(WidgetTester tester) async {
   );
   await _pumpUntil(
     tester,
+    () => tester.any(find.byKey(const ValueKey('mobile_shield_slide'))),
+    description: 'mobile shielding review',
+    timeout: const Duration(minutes: 2),
+  );
+  final shieldSlide = find.byKey(const ValueKey('mobile_shield_slide'));
+  await tester.dragFrom(
+    tester.getTopLeft(shieldSlide) + const Offset(35, 30),
+    const Offset(300, 0),
+  );
+  await tester.pump(const Duration(milliseconds: 500));
+  await _pumpUntil(
+    tester,
     () => tester.any(_ledgerSigningText(LedgerSigningStage.sending.status)),
     description: 'mobile Ledger shield approval prompt',
     timeout: const Duration(minutes: 2),
@@ -435,6 +446,13 @@ Future<void> _runMobileShieldScenario(WidgetTester tester) async {
     findsOneWidget,
   );
   expect(await approval, isTrue);
+  await _pumpUntil(
+    tester,
+    () => tester.any(find.byKey(const ValueKey('mobile_shield_complete'))),
+    description: 'mobile shielding result',
+    timeout: const Duration(minutes: 2),
+  );
+  await tester.tap(find.byKey(const ValueKey('mobile_shield_complete')));
   await _pumpUntil(
     tester,
     () =>

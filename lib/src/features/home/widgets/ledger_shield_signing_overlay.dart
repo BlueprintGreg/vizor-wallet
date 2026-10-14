@@ -20,7 +20,11 @@ import '../../ledger/services/ledger_operation_lifecycle.dart';
 import '../../ledger/services/ledger_signed_operation_service.dart';
 import '../../ledger/widgets/ledger_device_app_prompt.dart';
 import '../../ledger/widgets/ledger_signing_modal.dart';
-import '../../ledger/widgets/mobile_ledger_signing_surface.dart';
+import '../../ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
+import '../../../core/navigation/external_action_guard_hold.dart';
+import '../../../core/formatting/zec_amount.dart';
+import '../../../providers/account_provider.dart';
+import 'mobile/shield/mobile_shield_scene.dart';
 import '../../send/services/sapling_params.dart';
 import '../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
@@ -72,6 +76,13 @@ class _LedgerShieldSigningOverlayState
   String? _accountUuid;
   String? _operationId;
   bool _operationCheckpointed = false;
+  bool _momentStarted = false;
+  bool _momentComplete = false;
+  late final BigInt _initialAmount;
+  late final BigInt _initialFee;
+  BigInt _shieldedTotal = BigInt.zero;
+  int _sentRounds = 0;
+  BigInt? _roundShielded;
   int _round = 1;
   int _roundCount = 1;
   int? _pendingInputs;
@@ -89,12 +100,20 @@ class _LedgerShieldSigningOverlayState
   void initState() {
     super.initState();
     _cancelLedgerOperation = ref.read(ledgerOperationCancellerProvider);
+    final uuid = ref.read(accountProvider).value?.activeAccountUuid;
+    final sync = (ref.read(syncProvider).value ?? SyncState()).scopedToAccount(
+      uuid,
+    );
+    _initialAmount = sync.shieldTransparentAmount > BigInt.zero
+        ? sync.shieldTransparentAmount + sync.shieldTransparentFee
+        : sync.transparentBalance;
+    _initialFee = sync.shieldTransparentFee;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!widget.mobile) {
         ref.read(appLayoutProvider.notifier).setMode(AppLayoutMode.large);
       }
-      unawaited(_prepareAndSign());
+      if (!widget.mobile) unawaited(_prepareAndSign());
     });
   }
 
@@ -115,6 +134,9 @@ class _LedgerShieldSigningOverlayState
 
   Future<void> _prepareAndSign() async {
     try {
+      if (ref.read(ledgerOperationLifecycleProvider).isPaused) {
+        throw StateError('Ledger operations are paused for wallet changes.');
+      }
       final accountUuid = ref.read(walletProvider).value?.activeAccountUuid;
       if (accountUuid == null) throw StateError('No active account.');
       if (_accountUuid != null && _accountUuid != accountUuid) {
@@ -150,7 +172,7 @@ class _LedgerShieldSigningOverlayState
       final work = await _readProgress();
       if (!mounted || _cancelled) return;
       if (work.inputCount == 0) {
-        widget.onComplete();
+        _completeShielding();
         return;
       }
       if (work.belowThreshold) {
@@ -170,6 +192,7 @@ class _LedgerShieldSigningOverlayState
         accountUuid: accountUuid,
       );
 
+      _roundShielded = shieldPczt.shieldedZatoshi;
       var saplingParams = await loadSaplingParamsStatus();
       if (shieldPczt.needsSaplingParams && !saplingParams.complete) {
         final confirmed = await _showDownloadPrompt();
@@ -336,17 +359,23 @@ class _LedgerShieldSigningOverlayState
     }
   }
 
-  Future<void> _broadcastCheckpointed() => ref
-      .read(ledgerOperationLifecycleProvider)
-      .run(_broadcastCheckpointedWithLease);
+  Future<void> _broadcastCheckpointed() async {
+    if (!mounted || _cancelled) return;
+    final sent = await ref
+        .read(ledgerOperationLifecycleProvider)
+        .run(_broadcastCheckpointedWithLease);
+    // The signed result is durable before the lease ends. Device approval for
+    // the next round must remain outside that lease so wallet mutations drain.
+    if (sent && mounted && !_cancelled) await _continueOrComplete();
+  }
 
-  Future<void> _broadcastCheckpointedWithLease() async {
+  Future<bool> _broadcastCheckpointedWithLease() async {
     final operationId = _operationId;
     final saplingParams = _saplingParams;
     if (operationId == null || !_operationCheckpointed) {
       throw StateError('Ledger shield transaction is not checkpointed.');
     }
-    if (!mounted || _cancelled) return;
+    if (!mounted || _cancelled) return false;
 
     setState(() {
       _phase = LedgerSigningModalPhase.broadcasting;
@@ -373,7 +402,7 @@ class _LedgerShieldSigningOverlayState
       } catch (e) {
         log('LedgerShieldConfirm: refreshAfterSend failed: $e');
       }
-      if (!mounted) return;
+      if (!mounted) return false;
       if (result.status != 'broadcasted') {
         setState(() {
           _phase = LedgerSigningModalPhase.failed;
@@ -383,21 +412,27 @@ class _LedgerShieldSigningOverlayState
             message: result.message,
           );
         });
-        return;
+        return false;
       }
-      await _continueOrComplete();
+      _sentRounds++;
+      if (_roundShielded != null) {
+        _shieldedTotal += _roundShielded!;
+        _roundShielded = null;
+      }
+      return true;
     } catch (e, st) {
       log('LedgerShieldConfirm._broadcast: ERROR: $e\n$st');
       if (isTerminalLedgerSignedOperationError(e)) {
         _operationCheckpointed = false;
         _operationId = null;
       }
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _phase = LedgerSigningModalPhase.failed;
         _canRetry = true;
         _error = _friendlyError(e);
       });
+      return false;
     }
   }
 
@@ -432,7 +467,27 @@ class _LedgerShieldSigningOverlayState
     return (work.inputCount + work.inputLimit - 1) ~/ work.inputLimit;
   }
 
+  void _completeShielding() {
+    if (widget.mobile && mounted) {
+      if (_sentRounds == 0) {
+        _pauseEarly(
+          'No spendable transparent funds remain. Return to your wallet.',
+        );
+        return;
+      }
+      setState(() => _momentComplete = true);
+    } else {
+      widget.onComplete();
+    }
+  }
+
   Future<void> _continueOrComplete() async {
+    if (ref.read(ledgerOperationLifecycleProvider).isPaused) {
+      _pauseEarly(
+        'Shielding paused while wallet changes finish. Return to your wallet.',
+      );
+      return;
+    }
     final rust_sync.LedgerShieldingProgress work;
     try {
       work = await _readProgress();
@@ -445,7 +500,7 @@ class _LedgerShieldSigningOverlayState
     }
     if (!mounted || _cancelled) return;
     if (work.inputCount == 0) {
-      widget.onComplete();
+      _completeShielding();
       return;
     }
     if (work.belowThreshold) {
@@ -603,7 +658,7 @@ class _LedgerShieldSigningOverlayState
 
   @override
   Widget build(BuildContext context) {
-    final canLeave = !_isBroadcasting;
+    final canLeave = _momentComplete || !_isBroadcasting;
     final modal = LedgerSigningModal(
       connectionScope: _connectionScope,
       accountUuid: _accountUuid,
@@ -637,24 +692,63 @@ class _LedgerShieldSigningOverlayState
           : null,
     );
     if (widget.mobile) {
-      return Stack(
-        key: const ValueKey('mobile_ledger_shield_signing_surface'),
-        fit: StackFit.expand,
-        children: [
-          MobileLedgerSigningSurface(
-            title: 'Shield with Ledger',
-            canLeave: canLeave,
-            onBack: () => unawaited(_cancelToHome()),
-            child: modal,
-          ),
-          if (_showSaplingParamsPrompt)
-            Positioned.fill(
-              child: SaplingParamsPrompt(
-                onDownload: () => _resolveSaplingParamsDialog(true),
-                onCancel: () => _resolveSaplingParamsDialog(false),
-              ),
+      return ExternalActionGuardHold(
+        child: Stack(
+          key: const ValueKey('mobile_ledger_shield_signing_surface'),
+          fit: StackFit.expand,
+          children: [
+            MobileShieldScene(
+              phase: !_momentStarted
+                  ? MobileShieldPhase.review
+                  : _momentComplete
+                  ? MobileShieldPhase.succeeded
+                  : _phase == LedgerSigningModalPhase.failed
+                  ? MobileShieldPhase.failed
+                  : _isBroadcasting
+                  ? MobileShieldPhase.working
+                  : MobileShieldPhase.hardware,
+              amount: formatZecAmount(_initialAmount),
+              resultAmount: _shieldedTotal > BigInt.zero
+                  ? formatZecAmount(_shieldedTotal)
+                  : '—',
+              title: !_momentStarted
+                  ? 'Transparent balance'
+                  : _momentComplete
+                  ? 'Shielding transactions sent'
+                  : _isBroadcasting
+                  ? 'Sending your shielding transaction…'
+                  : 'Shield with Ledger',
+              body: _momentComplete
+                  ? 'Waiting for confirmation. Follow your transactions in Activity.'
+                  : _isBroadcasting
+                  ? 'Transaction $_round of $_roundCount. Keep Vizor open.'
+                  : null,
+              feeText: !_momentStarted
+                  ? 'First network fee: ${formatZecAmount(_initialFee)} ZEC. Each approval creates a separate transaction.'
+                  : null,
+              focusChild: _momentStarted && !_momentComplete && !_isBroadcasting
+                  ? LedgerInlinePresentation(child: modal)
+                  : null,
+              canLeave: canLeave,
+              onCommit: () {
+                if (_momentStarted) return;
+                setState(() => _momentStarted = true);
+                unawaited(_prepareAndSign());
+              },
+              onClose: _momentComplete
+                  ? widget.onComplete
+                  : () => unawaited(_cancelToHome()),
+              onComplete: widget.onComplete,
             ),
-        ],
+            if (_showSaplingParamsPrompt)
+              Positioned.fill(
+                child: SaplingParamsPrompt(
+                  onDownload: () => _resolveSaplingParamsDialog(true),
+                  onCancel: () => _resolveSaplingParamsDialog(false),
+                ),
+              ),
+          ],
+        ),
       );
     }
     return Stack(

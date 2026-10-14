@@ -22,7 +22,6 @@ import '../../../../core/privacy/privacy_mask.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_icon.dart';
-import '../../../../core/widgets/app_toast.dart';
 import '../../../../core/widgets/app_tooltip.dart';
 import '../../../../providers/account_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
@@ -58,11 +57,9 @@ import '../../../swap/models/swap_activity_navigation.dart';
 import '../../../swap/providers/swap_state_provider.dart';
 import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
 import '../../services/transparent_balance_display.dart';
+import '../../widgets/mobile/shield/shield_balance_roll.dart';
 import '../../providers/backup_reminder_provider.dart';
 import '../../widgets/mobile_home_carousel.dart';
-import '../../services/transparent_shielding_service.dart';
-import 'mobile_keystone_shield_screen.dart';
-import 'mobile_ledger_shield_screen.dart';
 
 /// Mobile home tab: shielded balance card, send/receive actions, and
 /// up to ten recent activity rows — Figma `HOME` section frames
@@ -832,6 +829,16 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   }
 
   bool _isShieldingBalance = false;
+  String? _balanceRollFrom;
+
+  @override
+  void didUpdateWidget(_HomeContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activeAccountUuid != widget.activeAccountUuid ||
+        oldWidget.privacyModeEnabled != widget.privacyModeEnabled) {
+      _balanceRollFrom = null;
+    }
+  }
 
   void _openTransactionStatus(
     BuildContext context,
@@ -950,70 +957,48 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 
+  BigInt _visibleShieldedBalance() =>
+      widget.ironwoodMigrationCta.mode == IronwoodHomeMigrationCtaMode.start
+      ? widget.sync.orchardBalance + widget.sync.orchardPendingBalance
+      : widget.sync.saplingBalance +
+            widget.sync.orchardBalance +
+            widget.sync.ironwoodBalance +
+            widget.sync.saplingPendingBalance +
+            widget.sync.orchardPendingBalance +
+            widget.sync.ironwoodPendingBalance;
+
   Future<void> _shieldTransparentBalance() async {
     if (_isShieldingBalance) return;
-
-    late final String accountUuid;
+    final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
+    if (accountUuid == null) return;
+    final kind = ref
+        .read(accountProvider.notifier)
+        .hardwareSignerKindForAccount(accountUuid);
+    final route = switch (kind) {
+      HardwareSignerKind.ledger => '/home/ledger-shield',
+      HardwareSignerKind.keystone => '/home/keystone-shield',
+      _ => '/home/shield',
+    };
+    final before = _visibleShieldedBalance();
+    setState(() {
+      _isShieldingBalance = true;
+      _balanceRollFrom = null;
+    });
     try {
-      accountUuid = activeShieldingAccountUuid(ref);
-    } catch (_) {
-      _showShieldToast('No active account.');
-      return;
-    }
-
-    final accountNotifier = ref.read(accountProvider.notifier);
-    final hardwareSignerKind = accountNotifier.hardwareSignerKindForAccount(
-      accountUuid,
-    );
-    if (hardwareSignerKind == HardwareSignerKind.ledger) {
-      final result = await context.push<MobileLedgerShieldResult>(
-        '/home/ledger-shield',
-      );
-      if (mounted && result != null) {
-        showAppToast(context, 'Shielding complete');
-      }
-      return;
-    }
-    if (hardwareSignerKind == HardwareSignerKind.keystone) {
-      final result = await context.push<MobileKeystoneShieldResult>(
-        '/home/keystone-shield',
-      );
-      if (!mounted || result == null) return;
-      final message = result.message;
-      if (message != null && message.isNotEmpty) {
-        _showShieldToast(message);
-      } else if (result.succeeded) {
-        showAppToast(context, 'Shielding complete');
-      }
-      return;
-    }
-
-    setState(() => _isShieldingBalance = true);
-    try {
-      final result = await shieldTransparentSoftwareBalance(
-        ref: ref,
-        accountUuid: accountUuid,
-        logContext: 'MobileHome',
-      );
-      if (!mounted) return;
-      final warning = shieldBalanceBroadcastStatusMessage(result);
-      if (warning != null) {
-        _showShieldToast(warning);
-      } else {
-        showAppToast(context, 'Shielding complete');
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _showShieldToast(friendlyShieldBalanceError(e));
+      await context.push<void>(route);
     } finally {
       if (mounted) {
-        setState(() => _isShieldingBalance = false);
+        setState(() {
+          _isShieldingBalance = false;
+          if (ref.read(accountProvider).value?.activeAccountUuid ==
+              accountUuid) {
+            _balanceRollFrom = ZecAmount.fromZatoshi(
+              before,
+            ).compactBalance.amountText;
+          }
+        });
       }
     }
-  }
-
-  void _showShieldToast(String message) {
-    showAppToast(context, message, iconName: AppIcons.warning);
   }
 
   String? _absorbedReceiveAmountText(rust_sync.TransactionInfo? transaction) {
@@ -1036,14 +1021,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     // the payment-URI drain in `app.dart` cannot drift away from what this
     // button does.
     final sendDisabled = ref.watch(migrationSendGateProvider);
-    final shieldedBalance = migrationRequired
-        ? sync.orchardBalance + sync.orchardPendingBalance
-        : sync.saplingBalance +
-              sync.orchardBalance +
-              sync.ironwoodBalance +
-              sync.saplingPendingBalance +
-              sync.orchardPendingBalance +
-              sync.ironwoodPendingBalance;
+    final shieldedBalance = _visibleShieldedBalance();
     final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
         shieldedBalance > BigInt.zero ||
@@ -1160,6 +1138,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       shieldedBalance,
                     ).compactBalance.amountText,
               fiatBalanceText: shieldedFiatBalanceText,
+              balanceRollFrom: privacyModeEnabled ? null : _balanceRollFrom,
               priceChange24hPct: priceChange24hPct,
               transparentBalanceText: transparentBalance.text(
                 (amount) =>
@@ -1733,6 +1712,7 @@ String? _mobileHomeFiatTextForZatoshi(
 class _BalanceCard extends StatelessWidget {
   const _BalanceCard({
     required this.balanceText,
+    this.balanceRollFrom,
     required this.fiatBalanceText,
     required this.priceChange24hPct,
     required this.transparentBalanceText,
@@ -1749,6 +1729,7 @@ class _BalanceCard extends StatelessWidget {
   });
 
   final String balanceText;
+  final String? balanceRollFrom;
   final String? fiatBalanceText;
   final double? priceChange24hPct;
   final String transparentBalanceText;
@@ -1877,31 +1858,66 @@ class _BalanceCard extends StatelessWidget {
                           ),
                           const SizedBox(height: AppSpacing.xs),
                         ],
-                        Text.rich(
-                          key: const ValueKey('mobile_home_shielded_balance'),
-                          TextSpan(
+                        if (balanceRollFrom != null && !privacyModeEnabled)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              TextSpan(
-                                text: '$balanceText ',
-                                style: _mobileHomeBalanceAmountStyle.copyWith(
-                                  color: cardText.withValues(
-                                    alpha: balanceDisabled ? 0.4 : 1,
+                              Flexible(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Semantics(
+                                    label:
+                                        '$balanceText $kZcashDefaultCurrencyTicker',
+                                    child: ExcludeSemantics(
+                                      child: ShieldBalanceRoll(
+                                        balanceText,
+                                        fromText: balanceRollFrom,
+                                        delay: const Duration(
+                                          milliseconds: 260,
+                                        ),
+                                        style: _mobileHomeBalanceAmountStyle
+                                            .copyWith(color: cardText),
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                              TextSpan(
-                                text: kZcashDefaultCurrencyTicker,
+                              const SizedBox(width: 8),
+                              Text(
+                                kZcashDefaultCurrencyTicker,
                                 style: _mobileHomeBalanceTickerStyle.copyWith(
-                                  color: cardText.withValues(
-                                    alpha: balanceDisabled ? 0.4 : 1,
-                                  ),
+                                  color: cardText,
                                 ),
                               ),
                             ],
+                          )
+                        else
+                          Text.rich(
+                            key: const ValueKey('mobile_home_shielded_balance'),
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: '$balanceText ',
+                                  style: _mobileHomeBalanceAmountStyle.copyWith(
+                                    color: cardText.withValues(
+                                      alpha: balanceDisabled ? 0.4 : 1,
+                                    ),
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: kZcashDefaultCurrencyTicker,
+                                  style: _mobileHomeBalanceTickerStyle.copyWith(
+                                    color: cardText.withValues(
+                                      alpha: balanceDisabled ? 0.4 : 1,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
                       ],
                     ),
                   ),
