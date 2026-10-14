@@ -402,7 +402,9 @@ fn transparent_stop_reason(
         return Some(match cause {
             HoldCause::Withdrawn(_) | HoldCause::Unreconciled => TransparentStopReason::Withdrawn,
             HoldCause::LegacyDiscrepancy => TransparentStopReason::LegacyDiscrepancy,
-            HoldCause::Stalled => TransparentStopReason::Stalled,
+            // A directory entry that failed three times shows as the same
+            // stall: recovery cannot finish until something changes.
+            HoldCause::Stalled | HoldCause::FailedEntries => TransparentStopReason::Stalled,
         });
     }
     opt_out_unfinished.then_some(TransparentStopReason::OptOutUnfinished)
@@ -655,6 +657,10 @@ pub(crate) enum TransparentDetailsView {
     Pending,
     /// The last lookup failed; a later sync retries.
     Unavailable,
+    /// Three lookups failed on content, so no sync asks again until the
+    /// transaction is mined at another height or public authority is granted.
+    /// A receipt shows it as [`Self::Unavailable`] but stops waiting for it.
+    GaveUp,
     /// The private publication does not cover the transaction.
     NotCovered,
 }
@@ -1556,6 +1562,7 @@ fn transparent_details_view(view: TransparentDisplayView) -> TransparentDetailsV
         }
         TransparentDisplayView::Pending => TransparentDetailsView::Pending,
         TransparentDisplayView::Unavailable => TransparentDetailsView::Unavailable,
+        TransparentDisplayView::GaveUp => TransparentDetailsView::GaveUp,
         TransparentDisplayView::NotCovered => TransparentDetailsView::NotCovered,
     }
 }

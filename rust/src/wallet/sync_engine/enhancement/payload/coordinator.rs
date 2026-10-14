@@ -82,6 +82,15 @@ pub(in crate::wallet::sync_engine) trait RecoveryWallet {
         request: EnhancePirRequest,
         record: &zakura_pir_enhance::EnhanceRecord,
     ) -> Result<EnhancePirStoreResult, EnhancePirRunError>;
+    /// Counts one content failure for `requests`, every request of one
+    /// transaction in one row whose reply arrived but did not decode. The
+    /// wallet stops querying a position after three such failures or
+    /// rejections in the open wallet session. Never called for a request
+    /// failure (an HTTP refusal, a transport error, a timeout).
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError>;
 }
 
 impl RecoveryWallet for WalletDatabase {
@@ -111,6 +120,15 @@ impl RecoveryWallet for WalletDatabase {
     ) -> Result<EnhancePirStoreResult, EnhancePirRunError> {
         Ok(with_wallet_db_write_lock("enhance_pir.apply", || {
             self.apply_ironwood_enhance_record(request, record)
+        })
+        .map_err(|e| SyncError::db(e.to_string()))?)
+    }
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError> {
+        Ok(with_wallet_db_write_lock("enhance_pir.unreadable", || {
+            self.record_ironwood_enhance_unreadable(requests)
         })
         .map_err(|e| SyncError::db(e.to_string()))?)
     }

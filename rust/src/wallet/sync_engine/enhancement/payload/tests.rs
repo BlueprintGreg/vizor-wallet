@@ -187,6 +187,8 @@ struct Wallet {
     transparent_at: Option<u64>,
     /// Cancellation requested while a record is being applied.
     cancel_on_apply: Option<Rc<Cell<bool>>>,
+    /// Each batch of requests reported as unreadable, in order.
+    unreadable: Vec<Vec<EnhancePirRequest>>,
 }
 impl Wallet {
     fn new(positions: &[u64]) -> Self {
@@ -199,6 +201,7 @@ impl Wallet {
             refreshed_anchor: Anchor::Accepted,
             transparent_at: None,
             cancel_on_apply: None,
+            unreadable: vec![],
         }
     }
 }
@@ -268,6 +271,13 @@ impl RecoveryWallet for Wallet {
         }
         self.pending.retain(|r| *r != request);
         Ok(EnhancePirStoreResult::Stored)
+    }
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError> {
+        self.unreadable.push(requests.to_vec());
+        Ok(())
     }
 }
 fn sync() -> RoutedPayloadEnhancement {
@@ -458,9 +468,10 @@ async fn authenticated_transparent_flag_reroutes_after_snapshot_reread() {
 async fn suspended_work_stays_private_and_needs_no_network() {
     let service = Service::new([]);
     let mut wallet = Wallet::new(&[]);
-    wallet.other = vec![EnhancePirWork::Suspended(
-        EnhancePirSuspension::OutgoingNotRecoverable(request(5)),
-    )];
+    wallet.other = vec![
+        EnhancePirWork::Suspended(EnhancePirSuspension::OutgoingNotRecoverable(request(5))),
+        EnhancePirWork::Suspended(EnhancePirSuspension::Rejected(request(6))),
+    ];
     let mut effects = Effects::default();
     sync()
         .run(&mut wallet, &service, &mut effects, &|| false)
@@ -468,7 +479,7 @@ async fn suspended_work_stays_private_and_needs_no_network() {
         .unwrap();
     assert!(effects.public.is_empty());
     assert_eq!(service.init_count.get(), 0);
-    assert_eq!(wallet.other.len(), 1);
+    assert_eq!(wallet.other.len(), 2);
 }
 
 #[tokio::test]
