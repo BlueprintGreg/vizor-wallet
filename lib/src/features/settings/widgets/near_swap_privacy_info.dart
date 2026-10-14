@@ -9,23 +9,26 @@ import '../../../core/widgets/app_modal_shape.dart';
 
 /// NEAR swap privacy subtitle while Private queries is on.
 const kNearSwapPrivacyOnCopy =
-    "Each swap uses new one-time addresses, so your swaps can't be linked to "
-    'your wallet or to each other.';
+    "Each swap uses new one-time Zcash addresses, so NEAR can't link your "
+    'swaps through your Zcash wallet.';
 
 /// NEAR swap privacy subtitle while Private queries is off.
 const kNearSwapPrivacyOffCopy =
     'Turn on Private queries to create private swap addresses. Each swap '
-    "would get new one-time addresses that can't be linked to your wallet.";
+    'would get new one-time Zcash addresses.';
 
 /// Title of the NEAR swap privacy explanation.
 const kNearSwapPrivacyInfoTitle = "What's this?";
 
 /// Paragraphs of the NEAR swap privacy explanation.
 const kNearSwapPrivacyInfoParagraphs = [
-  'When you swap with NEAR Intents, your wallet gives NEAR an address for the '
-      'payout and another for any refund. With NEAR swap privacy on, each '
-      'swap gets new addresses made just for it, so NEAR and anyone watching '
-      "the chain can't tie them to your wallet or to your other swaps.",
+  'When you swap with NEAR Intents, your wallet gives NEAR a Zcash address for '
+      'the payout and another for any refund. With NEAR swap privacy on, each '
+      'swap gets new Zcash addresses made just for it, so NEAR and anyone '
+      "watching the chain can't tie them to your wallet or to your other swaps.",
+  'Addresses you enter yourself, like an Ethereum address you reuse for '
+      'several swaps, are still shared with NEAR and can link those swaps. '
+      "Hardware wallet accounts don't use one-time addresses.",
   'Your recovery phrase still recovers everything. When you restore your '
       'wallet, it finds these payments using private queries, which is why '
       'Private queries needs to be on.',

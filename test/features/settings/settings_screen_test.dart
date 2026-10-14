@@ -629,6 +629,12 @@ void main() {
     for (final paragraph in kNearSwapPrivacyInfoParagraphs) {
       expect(find.text(paragraph), findsOneWidget);
     }
+    // It names what one-time Zcash addresses leave linkable.
+    expect(find.textContaining('still shared with NEAR'), findsOneWidget);
+    expect(
+      find.textContaining("Hardware wallet accounts don't use"),
+      findsOneWidget,
+    );
     await tester.tap(
       find.byKey(const ValueKey('near_swap_privacy_info_close')),
     );
