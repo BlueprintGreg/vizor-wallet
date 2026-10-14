@@ -501,7 +501,15 @@ mod tests {
         assert!(work.contains(&suspended), "{work:?}");
         assert!(!work.contains(&query));
 
-        let other = open(&other_path);
+        let mut other = open(&other_path);
+        // The copy is a wallet first opened now: make its query due, as the
+        // fixture does for the original.
+        {
+            use zcash_client_backend::data_api::{WalletRead as _, WalletWrite as _};
+            other.set_enhance_pir_max_delay(std::time::Duration::ZERO);
+            let tip = other.chain_height().unwrap().unwrap();
+            other.update_chain_tip(tip).unwrap();
+        }
         let work = other.transaction_enhancement_work().unwrap();
         assert!(work.contains(&query), "another wallet keeps its allowance");
         assert!(!work.contains(&suspended));

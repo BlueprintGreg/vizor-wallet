@@ -63,7 +63,7 @@ fn classify(error: Error) -> LookupError {
         Error::Capacity => LookupError::Unavailable,
         Error::Timeout => LookupError::Timeout,
         Error::Cancelled => LookupError::Cancelled,
-        Error::Malformed => LookupError::Malformed,
+        Error::Malformed | Error::Unreadable => LookupError::Malformed,
         Error::Unavailable | Error::Pir => LookupError::Unavailable,
     }
 }
@@ -94,6 +94,7 @@ fn status_error(error: LookupError) -> StatusError {
         LookupError::Stale => StatusError::Stale,
         LookupError::Timeout => StatusError::Timeout,
         LookupError::Malformed => StatusError::Malformed,
+        LookupError::Unreadable => StatusError::Unreadable,
         LookupError::Cancelled => StatusError::Cancelled,
         LookupError::Transport { code } => StatusError::Transport { code },
         LookupError::LocalStorage => StatusError::LocalStorage,
