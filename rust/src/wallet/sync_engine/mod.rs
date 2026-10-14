@@ -3224,6 +3224,8 @@ async fn run_sync_impl(
 
     let mut current_tip_height: u64 = tip.height;
     log::info!("[{}] sync: chain tip = {}", elapsed(), current_tip_height);
+    // A new block lets work that failed on content count, and be asked, again.
+    enhancement::content_failures::at_tip(db_data_path, current_tip_height);
 
     // Retained send-lock expiry requires a usable target height.
     crate::wallet::sync::recover_orphaned_send_locks(db_data_path, network)
@@ -6897,16 +6899,23 @@ pub(crate) fn enhance_recovery_status(
 ) -> Result<crate::api::sync::EnhanceRecoveryStatus, String> {
     let mut db = open_wallet_db_readonly_with_timeout(path, network, READ_DB_BUSY_TIMEOUT)?;
     EnhancementPolicy::current(network).configure_db(&mut db);
-    recovery_status_for(&db, enhancement::phase(path))
+    recovery_status_for(&db, path, enhancement::phase(path))
 }
 
 /// Counts recovery work in a database already configured with the current
 /// enhancement policy.
+///
+/// Work that failed on content at the current chain tip is left out: it waits
+/// for the next block (see [`enhancement::content_failures`]), so whether a
+/// recovery-only restart happens never depends on whether a reply was bad.
 fn recovery_status_for(
     db: &WalletDatabase,
+    db_path: &str,
     service_state: String,
 ) -> Result<crate::api::sync::EnhanceRecoveryStatus, String> {
+    use enhancement::content_failures;
     use zcash_client_backend::data_api::enhance_pir::EnhancePirRead;
+    use zcash_client_backend::data_api::enhance_pir::EnhancePirWork;
     use zcash_client_backend::data_api::enhance_pir::TransactionEnhancementWork;
     use zcash_client_backend::data_api::status::{TransactionStatusRead, TransactionStatusWork};
     // `run_requests` defers private status failures for the session while the
@@ -6917,12 +6926,18 @@ fn recovery_status_for(
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|work| matches!(work, TransactionStatusWork::Private(_)))
+        .filter(|work| !content_failures::status_failed(db_path, &work.txid()))
         .count();
     let work = zakura_pir_enhance::wallet::PreparedWork::new(
         db.transaction_enhancement_work()
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter_map(|work| match work {
+                TransactionEnhancementWork::Private(EnhancePirWork::Query(request))
+                    if content_failures::enhance_failed(db_path, &request) =>
+                {
+                    None
+                }
                 TransactionEnhancementWork::Private(work) => Some(work),
                 TransactionEnhancementWork::Public(_) => None,
             }),

@@ -176,6 +176,7 @@ where
             // for a later sync, and the other txids are still asked, so
             // nothing else in the sync changes.
             Err(StatusError::Malformed) if is_private(&work) => {
+                super::content_failures::status(db_path, txid);
                 log::warn!(
                     "private status reply did not decode; the transaction waits for a later sync"
                 );

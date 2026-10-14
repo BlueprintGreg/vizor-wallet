@@ -4,6 +4,7 @@
 //! deferred-failure state, and rediscovery attempts for one full sync. The
 //! sibling scheduler owns transport selection; this module never converts a
 //! private failure or suspension into public transaction-ID retrieval.
+use super::super::content_failures;
 use super::{
     super::{
         super::SyncError,
@@ -88,7 +89,7 @@ pub(super) fn random_rediscovery_offset() -> u32 {
 
 pub(in crate::wallet::sync_engine) struct RoutedPayloadEnhancement {
     network: WalletNetwork,
-    db_path: String,
+    pub(super) db_path: String,
     pub(super) endpoint: Option<String>,
     pending_routing: Option<PendingClient>,
     pub(super) accepted_routing: Option<transport::Client>,
@@ -261,7 +262,10 @@ impl RoutedPayloadEnhancement {
         if should_exit() {
             return Err(EnhancePirRunError::ExitRequested);
         }
-        let work = db.work()?.prepared();
+        let work = db
+            .work()?
+            .without_content_failures(&self.db_path)
+            .prepared();
         if work.query_count() == 0 {
             return Ok(());
         }
@@ -306,8 +310,13 @@ impl RoutedPayloadEnhancement {
         }
         for attempt in 0..=1 {
             // Re-read after a partial batch: successfully stored rows are no
-            // longer pending, and only the durable remainder is retried.
-            let work = db.work()?.prepared();
+            // longer pending, and only the durable remainder is retried. Rows
+            // that failed on content stay out of the retry, as an honest
+            // reply would have completed them.
+            let work = db
+                .work()?
+                .without_content_failures(&self.db_path)
+                .prepared();
             if work.query_count() == 0 {
                 break;
             }
@@ -346,7 +355,13 @@ impl RoutedPayloadEnhancement {
                                 // A failed row query (`ClientError::Row`) is a
                                 // request failure and stops below, as before.
                                 Err(ClientError::Response(_)) => {
-                                    report_unreadable(db, &work, result.position, &mut unreadable)?;
+                                    report_unreadable(
+                                        db,
+                                        &self.db_path,
+                                        &work,
+                                        result.position,
+                                        &mut unreadable,
+                                    )?;
                                     continue;
                                 }
                                 result => result?,
@@ -358,6 +373,7 @@ impl RoutedPayloadEnhancement {
                                     // Like an unreadable record, it does not
                                     // stop the rest of the batch.
                                     EnhancePirStoreResult::Rejected => {
+                                        content_failures::enhance(&self.db_path, [request]);
                                         log::warn!(
                                             "sync: a private Ironwood enhancement record failed wallet authentication"
                                         );
@@ -412,6 +428,7 @@ impl RoutedPayloadEnhancement {
 /// counted in this batch, so a row with several bad records counts once.
 fn report_unreadable(
     db: &mut impl RecoveryWallet,
+    db_path: &str,
     work: &PreparedWork,
     position: u64,
     reported: &mut BTreeSet<(TxId, u64)>,
@@ -431,7 +448,9 @@ fn report_unreadable(
     for txid in txids {
         if reported.insert((txid, row)) {
             log::warn!("sync: a private Ironwood enhancement record did not decode");
-            db.record_unreadable(&work.requests_in_row(txid, row))?;
+            let requests = work.requests_in_row(txid, row);
+            db.record_unreadable(&requests)?;
+            content_failures::enhance(db_path, requests);
         }
     }
     Ok(())
