@@ -1,14 +1,11 @@
 import 'package:flutter/painting.dart';
 
-/// The brushed-metal finish of the drag pin (Figma 8810:78587), shared by
-/// the pin and the shielded "ZEC" pill: a linear fill #8D939E to #1F1F25 and
-/// a 2px inside stroke graded white, #44454A at 56%, #ECECEC, both top to
-/// bottom.
+/// The original video's bright neutral silver drag pin and its inside edge.
 abstract final class Metal {
   static const _fill = LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
-    colors: [Color(0xFF8D939E), Color(0xFF1F1F25)],
+    colors: [Color(0xFFEDEEEE), Color(0xFF858B89)],
   );
 
   static const _stroke = LinearGradient(

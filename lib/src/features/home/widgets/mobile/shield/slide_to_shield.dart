@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/physics.dart';
@@ -235,6 +235,7 @@ class _SlideToShieldState extends State<SlideToShield>
               child: _Track(
                 progress: p,
                 flash: flash,
+                knobX: x,
                 label: _Label(
                   progress: p,
                   shimmer: reduce ? null : _shimmer.value,
@@ -275,12 +276,14 @@ class _Track extends StatelessWidget {
   const _Track({
     required this.progress,
     required this.flash,
+    required this.knobX,
     required this.label,
     required this.knob,
   });
 
   final double progress;
   final double flash;
+  final double knobX;
   final Widget label;
   final Widget knob;
 
@@ -288,8 +291,7 @@ class _Track extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = progress;
     final radius = BorderRadius.circular(99);
-    // Black glass at 40%, no edge. Dragging lifts a faint haze around it;
-    // the lock flashes it.
+    // Crimson glass with light concentrated around the silver pin.
     final tint = 0.10 * flash;
     return Stack(
       clipBehavior: Clip.none,
@@ -297,7 +299,7 @@ class _Track extends StatelessWidget {
         // Outer haze, fading in with the drag.
         Positioned.fill(
           child: IgnorePointer(
-            child: CustomPaint(painter: _OuterGlowPainter(p)),
+            child: CustomPaint(painter: _OuterGlowPainter(p, knobX)),
           ),
         ),
         ClipRRect(
@@ -307,15 +309,20 @@ class _Track extends StatelessWidget {
             children: [
               Positioned.fill(
                 child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 27.5, sigmaY: 27.5),
-                  child: ColoredBox(
-                    color: Color.alphaBlend(
-                      _white.withValues(alpha: tint),
-                      Color.lerp(
-                        const Color(0x663B1729),
-                        const Color(0x994F1832),
-                        p,
-                      )!,
+                  filter: ui.ImageFilter.blur(sigmaX: 27.5, sigmaY: 27.5),
+                  child: CustomPaint(
+                    painter: _TrackPainter(knobX, p, tint),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: radius,
+                    border: Border.all(
+                      color: const Color(0x33774B5D),
+                      width: 0.75,
                     ),
                   ),
                 ),
@@ -333,13 +340,13 @@ class _Track extends StatelessWidget {
 /// Track drop shadow drawn only outside the glass (Figma's "show shadow
 /// behind node" is off), so the translucent fill stays clean.
 class _OuterGlowPainter extends CustomPainter {
-  _OuterGlowPainter(this.opacity);
+  _OuterGlowPainter(this.progress, this.knobX);
 
-  final double opacity;
+  final double progress;
+  final double knobX;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (opacity <= 0.001) return;
     final rect = Offset.zero & size;
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(99));
     canvas.save();
@@ -349,18 +356,53 @@ class _OuterGlowPainter extends CustomPainter {
         ..addRect(rect.inflate(400))
         ..addRRect(rrect),
     );
-    canvas.drawRRect(
-      rrect,
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(knobX + 30, size.height / 2),
+        width: 110,
+        height: 52,
+      ),
       Paint()
-        ..color = _white.withValues(alpha: 0.22 * opacity)
-        // Figma blur radius 125 = Gaussian sigma 62.5.
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 62.5),
+        ..color = const Color(
+          0xFFAA2455,
+        ).withValues(alpha: 0.18 + 0.22 * progress)
+        ..maskFilter = const MaskFilter.blur(ui.BlurStyle.normal, 24),
     );
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_OuterGlowPainter old) => old.opacity != opacity;
+  bool shouldRepaint(_OuterGlowPainter old) =>
+      old.progress != progress || old.knobX != knobX;
+}
+
+class _TrackPainter extends CustomPainter {
+  const _TrackPainter(this.knobX, this.progress, this.flash);
+
+  final double knobX;
+  final double progress;
+  final double flash;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(rect, Paint()..color = const Color(0xB3302028));
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = ui.Gradient.radial(Offset(knobX + 30, size.height / 2), 100, [
+          const Color(0xFFAA2455).withValues(alpha: 0.36 + 0.32 * progress),
+          const Color(0x00AA2455),
+        ]),
+    );
+    if (flash > 0) {
+      canvas.drawRect(rect, Paint()..color = _white.withValues(alpha: flash));
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TrackPainter old) =>
+      old.knobX != knobX || old.progress != progress || old.flash != flash;
 }
 
 class _Label extends StatelessWidget {
