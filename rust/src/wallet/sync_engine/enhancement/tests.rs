@@ -1602,6 +1602,31 @@ mod tests {
         );
     }
 
+    /// A position that waits for its first query is pending, not complete,
+    /// and not a reason for a recovery-only restart: the checkpoint at each
+    /// block asks it once due.
+    #[test]
+    fn a_waiting_enhance_position_is_pending_without_a_restart() {
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+        let (dir, due, _) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        // A wallet first opened in this app session, read before any write:
+        // its query waits the full delay.
+        let path = dir.path().join("fresh.db").to_str().unwrap().to_owned();
+        std::fs::copy(&due, &path).unwrap();
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            crate::wallet::network::WalletNetwork::Regtest,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+        db.set_status_mode(TransactionStatusMode::Private);
+        let status = super::super::super::recovery_status_for(&db, &path, String::new()).unwrap();
+        assert_eq!(status.queries, 0, "a waiting position is not asked yet");
+        assert_eq!(status.suspended, 1, "a waiting position is still pending");
+    }
+
     #[tokio::test]
     async fn local_storage_status_errors_fail_sync_without_deferring() {
         use zakura_transaction_status::{StatusError, StatusObservation};
