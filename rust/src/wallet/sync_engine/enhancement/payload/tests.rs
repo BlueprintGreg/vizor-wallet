@@ -44,6 +44,12 @@ struct Service {
     /// row arrives and decodes, but whose every record carries reserved flag
     /// bits, so none of them decodes as a record.
     unreadable_posts: RefCell<std::collections::BTreeSet<usize>>,
+    /// Query replies (counted as above) whose body arrives cut in half.
+    truncated_posts: RefCell<std::collections::BTreeSet<usize>>,
+    /// Query replies (counted as above) that fail with this error instead.
+    failed_posts: RefCell<std::collections::BTreeMap<usize, fn() -> ClientError>>,
+    /// Every request in order: its path and body length.
+    transcript: RefCell<Vec<(String, usize)>>,
 }
 
 /// A reply body after the binding header whose every plaintext coefficient
@@ -111,6 +117,9 @@ impl Service {
             cancel_on_refresh: Cell::new(false),
             fail_refresh: Cell::new(false),
             unreadable_posts: RefCell::new(Default::default()),
+            truncated_posts: RefCell::new(Default::default()),
+            failed_posts: RefCell::new(Default::default()),
+            transcript: RefCell::new(vec![]),
         }
     }
 }
@@ -125,6 +134,13 @@ impl transport::Transport for Service {
         request: transport::Request,
     ) -> Result<transport::ResponseBody, ClientError> {
         assert!(!self.cancelled.get(), "network dispatch after cancellation");
+        self.transcript.borrow_mut().push((
+            request
+                .url
+                .trim_start_matches("https://example.test")
+                .to_owned(),
+            request.body.len(),
+        ));
         let bytes = if request.url.ends_with("/init") {
             self.init_count.set(self.init_count.get() + 1);
             if self.init_count.get() > 1 {
@@ -161,6 +177,10 @@ impl transport::Transport for Service {
             if let Some(Some(status)) = self.statuses.borrow_mut().pop_front() {
                 return Err(ClientError::HttpStatus(status));
             }
+            let post = self.posts.borrow().len() - 1;
+            if let Some(error) = self.failed_posts.borrow().get(&post) {
+                return Err(error());
+            }
             let m = self.manifest.borrow();
             assert_eq!(
                 binding.generation, m.generation,
@@ -177,6 +197,9 @@ impl transport::Transport for Service {
                 response.extend(unreadable_row(len - header));
             }
             response.resize(len, 0);
+            if self.truncated_posts.borrow().contains(&post) {
+                response.truncate(len / 2);
+            }
             response
         };
         let mut body = request.response_body();
@@ -1035,4 +1058,182 @@ async fn cancellation_interrupts_a_stalled_success_body() {
     let (result, ()) = tokio::join!(request, cancel);
     assert!(matches!(result, Err(RoutedHttpError::Cancelled)));
     assert!(tokio::time::Instant::now() - started < HTTP_TIMEOUT);
+}
+
+/// Runs one drain of `positions` against `service` and returns the wallet,
+/// whether private Enhance was deferred for the sync, and the service's
+/// request transcript.
+async fn drain_once(service: &Service, positions: &[u64]) -> (Wallet, bool, Vec<(String, usize)>) {
+    let mut wallet = Wallet::new(positions);
+    let mut drain = sync();
+    drain
+        .run(&mut wallet, service, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    let transcript = service.transcript.borrow().clone();
+    (wallet, drain.private_failed_for_sync, transcript)
+}
+
+/// A reply body cut short is a request outcome: the service chose it without
+/// knowing which row was asked. It counts against no request and defers the
+/// rest of the sync, but the batch it arrived in is still asked to the end,
+/// in the order and with the bodies an honest service would see.
+#[tokio::test]
+async fn a_truncated_row_reply_leaves_the_request_transcript_unchanged() {
+    let (honest, deferred, honest_transcript) = drain_once(&Service::new([]), &THREE_ROWS).await;
+    assert_eq!(honest.applied, THREE_ROWS);
+    assert!(!deferred);
+
+    let service = Service::new([]);
+    service.truncated_posts.borrow_mut().insert(0);
+    let (wallet, deferred, transcript) = drain_once(&service, &THREE_ROWS).await;
+    assert_eq!(transcript, honest_transcript, "the same requests, in order");
+    assert_eq!(wallet.applied, [40, 70], "the later rows are still applied");
+    assert!(wallet.unreadable.is_empty(), "a request outcome counts nothing");
+    assert!(deferred, "a request outcome defers private Enhance");
+}
+
+/// Request outcomes inside one row's query are not about the row: none is
+/// counted, private Enhance is deferred, and the batch is still asked to the
+/// end.
+#[tokio::test]
+async fn row_request_failures_count_nothing_and_finish_the_batch() {
+    let (_, _, honest_transcript) = drain_once(&Service::new([]), &THREE_ROWS).await;
+    let failures: [fn() -> ClientError; 5] = [
+        || ClientError::Transport("connection reset".into()),
+        || ClientError::HttpStatus(500),
+        || ClientError::Json(serde_json::from_str::<u8>("x").unwrap_err()),
+        || ClientError::Generation("session rotated".into()),
+        || ClientError::Response("HTTP body exceeds limit".into()),
+    ];
+    for failure in failures {
+        let service = Service::new([]);
+        service.failed_posts.borrow_mut().insert(0, failure);
+        let (wallet, deferred, transcript) = drain_once(&service, &THREE_ROWS).await;
+        let label = failure();
+        assert_eq!(transcript, honest_transcript, "{label}");
+        assert_eq!(wallet.applied, [40, 70], "{label}");
+        assert!(wallet.unreadable.is_empty(), "{label}");
+        assert!(deferred, "{label}");
+    }
+}
+
+/// A row reply that arrived for the session but whose row does not decrypt
+/// or decode is a content outcome: the service could aim it at chosen rows.
+/// The call to record it carries every request in that row, private Enhance
+/// stays on, and the batch is asked exactly as an honest service sees it.
+#[tokio::test]
+async fn an_unreadable_row_reply_reports_that_rows_requests() {
+    let positions = [0, 1, 5, 40];
+    let (_, _, honest_transcript) = drain_once(&Service::new([]), &positions).await;
+    let failures: [fn() -> ClientError; 2] = [
+        || ClientError::Pir("decryption failed".into()),
+        || ClientError::Response("short row".into()),
+    ];
+    for (block, failure) in failures.into_iter().enumerate() {
+        // Each case at a new block: content failures wait for the next one.
+        next_block(block as u64 + 1);
+        let service = Service::new([]);
+        service.failed_posts.borrow_mut().insert(0, failure);
+        let (wallet, deferred, transcript) = drain_once(&service, &positions).await;
+        let label = failure();
+        assert_eq!(transcript, honest_transcript, "{label}");
+        assert_eq!(
+            wallet.unreadable,
+            [vec![request(0), request(1), request(5)]],
+            "{label}"
+        );
+        assert_eq!(wallet.applied, [40], "{label}");
+        assert!(!deferred, "{label}: a content outcome is not an outage");
+    }
+}
+
+/// The scripted service's routing over a real wallet database, so the
+/// wallet's own session counts content failures.
+struct RealWallet(crate::wallet::sync_engine::WalletDatabase);
+impl RecoveryWallet for RealWallet {
+    fn work(&self) -> Result<RoutedWork, EnhancePirRunError> {
+        self.0.work()
+    }
+    fn accept(&self, network: WalletNetwork, m: &Manifest) -> Result<Acceptance, EnhancePirRunError> {
+        // The scripted anchor is not in this wallet's chain.
+        Wallet::new(&[]).accept(network, m)
+    }
+    fn apply(
+        &mut self,
+        request: EnhancePirRequest,
+        record: &EnhanceRecord,
+    ) -> Result<EnhancePirStoreResult, EnhancePirRunError> {
+        self.0.apply(request, record)
+    }
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError> {
+        self.0.record_unreadable(requests)
+    }
+}
+
+/// No lightwalletd work: the real wallet's private query is all there is.
+#[derive(Default)]
+struct NoEffects;
+impl EnhancementEffects<RealWallet> for NoEffects {
+    async fn rediscover(
+        &mut self,
+        _: &mut RealWallet,
+        _: IronwoodEnhanceDiscoveryRequest,
+        _: &impl Fn() -> bool,
+    ) -> Result<(), EnhancePirRunError> {
+        unreachable!("the wallet has no rediscovery work")
+    }
+    async fn public(
+        &mut self,
+        _: &mut RealWallet,
+        _: &[PublicTransactionEnhancementRequest],
+        _: &impl Fn() -> bool,
+    ) {
+    }
+}
+
+/// Three syncs that each get an unreadable row for the same position leave
+/// it suspended as rejected in a real wallet database, and the next sync
+/// does not ask for it.
+#[tokio::test]
+async fn three_unreadable_rows_suspend_the_position_in_the_wallet() {
+    use zcash_client_backend::data_api::enhance_pir::{EnhancementMode, TransactionEnhancementWork};
+    let (_dir, path, pending) =
+        crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+    let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+        &path,
+        WalletNetwork::Regtest,
+        crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+    )
+    .unwrap();
+    db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+    let mut wallet = RealWallet(db);
+    let service = Service::new([]);
+    for post in 0..10 {
+        service
+            .failed_posts
+            .borrow_mut()
+            .insert(post, || ClientError::Pir("decryption failed".into()));
+    }
+    for sync_number in 1..=4 {
+        next_block(sync_number as u64);
+        sync()
+            .run(&mut wallet, &service, &mut NoEffects, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(service.posts.borrow().len(), sync_number.min(3));
+    }
+    let work = {
+        use zcash_client_backend::data_api::enhance_pir::EnhancePirRead;
+        wallet.0.transaction_enhancement_work().unwrap()
+    };
+    assert!(
+        work.contains(&TransactionEnhancementWork::Private(
+            EnhancePirWork::Suspended(EnhancePirSuspension::Rejected(pending))
+        )),
+        "{work:?}"
+    );
 }

@@ -825,7 +825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incomplete_private_status_trips_feedback_gate_without_public_fallback() {
+    async fn incomplete_private_status_coverage_leaves_the_sync_successful() {
         use zakura_transaction_status::{StatusError, StatusObservation};
         let (file, mut db, tx) =
             scanned_transaction_missing_fee_test_db(BlockHeight::from_u32(100), false);
@@ -844,21 +844,23 @@ mod tests {
         let requests = private.requests.clone();
         let mut reader = super::super::status::RoutedStatusReader::new(public, private);
         let mut attempted = std::collections::HashSet::new();
-        assert!(matches!(
-            super::super::status::run_requests(
-                &mut reader,
-                &mut db,
-                &work,
-                &allowed_gate(),
-                &mut attempted,
-                &mut false,
-                file.path().to_str().unwrap(),
-                &mut std::collections::HashSet::new(),
-                &|| false
-            )
-            .await,
-            Err(SyncError::PrivateStatusCoverageIncomplete)
-        ));
+        let mut private_failed = false;
+        // Missing coverage follows from a missing record: a content outcome,
+        // so it neither fails the sync nor turns private status off.
+        let result = super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut attempted,
+            &mut private_failed,
+            file.path().to_str().unwrap(),
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await;
+        assert!(result.is_ok(), "the sync continues, got {result:?}");
+        assert!(!private_failed, "private status stays on");
         assert_eq!(public_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
@@ -1025,19 +1027,19 @@ mod tests {
         }
     }
 
-    /// A private status reply that does not decode concerns its own
+    /// A private status row that does not decode concerns its own
     /// transaction's row, which a service could choose: the work stays for a
     /// later sync, private status stays on, and the rest of the status work
     /// is still asked.
     #[tokio::test]
-    async fn a_malformed_private_status_reply_defers_only_its_transaction() {
+    async fn an_unreadable_private_status_reply_defers_only_its_transaction() {
         use zakura_transaction_status::{StatusError, StatusObservation};
         let (_file, mut db, txid) = private_status_work_db();
         let item = db.transaction_status_work_for(txid).unwrap();
         // The same obligation twice stands in for the next transaction.
         let work = vec![item, item];
         let mut private = status_source(Ok(StatusObservation::NotFound));
-        private.script.push_back(Err(StatusError::Malformed));
+        private.script.push_back(Err(StatusError::Unreadable));
         let requests = private.requests.clone();
         let public = status_source(Ok(StatusObservation::NotFound));
         let mut reader = super::super::status::RoutedStatusReader::new(public, private);
@@ -1061,6 +1063,217 @@ mod tests {
         assert_eq!(requests.lock().unwrap().len(), 2, "the next item is asked");
     }
 
+    /// Private status work for two transactions the wallet does not hold.
+    fn two_private_status_items() -> (TxId, TxId, Vec<zcash_client_backend::data_api::status::TransactionStatusWork>) {
+        use zcash_client_backend::data_api::status::{
+            PrivateTransactionStatusRequest, TransactionStatusWork,
+        };
+        let a = TxId::from_bytes([0xa1; 32]);
+        let b = TxId::from_bytes([0xb2; 32]);
+        let work = [a, b]
+            .map(|txid| {
+                TransactionStatusWork::Private(PrivateTransactionStatusRequest::new(txid, None))
+            })
+            .to_vec();
+        (a, b, work)
+    }
+
+    /// An unreadable private status reply is about one transaction's row,
+    /// which a service could choose. It must not change which other
+    /// transactions are asked: the next txid in the same checkpoint is still
+    /// asked, and private status stays on.
+    #[tokio::test]
+    async fn an_unreadable_status_reply_for_one_txid_does_not_skip_the_next() {
+        use zakura_transaction_status::{StatusError, StatusObservation};
+        let (_file, mut db, _) = private_status_work_db();
+        let (a, b, work) = two_private_status_items();
+        let mut private = status_source(Ok(StatusObservation::NotFound));
+        private.script.push_back(Err(StatusError::Unreadable));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut private_failed = false;
+
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut private_failed,
+            _file.path().to_str().unwrap(),
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+
+        let asked: Vec<_> = requests.lock().unwrap().iter().map(|r| r.txid).collect();
+        assert_eq!(asked, [a, b], "txid B is asked after A's unreadable reply");
+        assert!(!private_failed, "an unreadable reply is not an outage");
+    }
+
+    /// A request outcome (here the service refusing with 503) is not about
+    /// any row: it still defers the rest of the checkpoint's private status
+    /// work, records no poll, and leaves the work due at the same tip.
+    #[tokio::test]
+    async fn a_refused_status_request_still_defers_the_checkpoint() {
+        use zakura_transaction_status::{StatusError, StatusObservation};
+        use zcash_client_backend::data_api::status::TransactionStatusWork;
+        let (file, mut db, txid) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        let mut work = db.transaction_status_work().unwrap();
+        assert_eq!(work.len(), 1);
+        let (_, b, other) = two_private_status_items();
+        work.push(other[1]);
+        let mut private = status_source(Ok(StatusObservation::NotFound));
+        private.script.push_back(Err(StatusError::Unavailable));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut private_failed = false;
+
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut private_failed,
+            &path,
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+
+        let asked: Vec<_> = requests.lock().unwrap().iter().map(|r| r.txid).collect();
+        assert_eq!(asked, [txid], "the 503 defers {b} to a later sync");
+        assert!(private_failed, "a refusal defers private status");
+        assert!(
+            db.transaction_status_work()
+                .unwrap()
+                .iter()
+                .any(|work| matches!(work, TransactionStatusWork::Private(_))
+                    && work.txid() == txid),
+            "no poll is recorded for a refusal: the work stays due at this tip"
+        );
+    }
+
+    /// The private status requests a wallet sends over 12 chain tips for one
+    /// unmined transaction, answering with `reply(tip_index)`: one entry per
+    /// request, (tip, txid).
+    async fn status_transcript(
+        reply: impl Fn(
+            u32,
+        ) -> Result<
+            zakura_transaction_status::StatusObservation,
+            zakura_transaction_status::StatusError,
+        >,
+    ) -> Vec<(u32, TxId)> {
+        use zakura_transaction_status::StatusObservation;
+        let (file, mut db, _) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        let start = u32::from(db.chain_height().unwrap().unwrap());
+        let mut transcript = vec![];
+        for index in 0..12 {
+            let tip = start + index;
+            db.update_chain_tip(BlockHeight::from_u32(tip)).unwrap();
+            super::super::content_failures::at_tip(&path, u64::from(tip));
+            let private = status_source(reply(index));
+            let requests = private.requests.clone();
+            let mut reader = super::super::status::RoutedStatusReader::new(
+                status_source(Ok(StatusObservation::NotFound)),
+                private,
+            );
+            let work = db.transaction_status_work().unwrap();
+            super::super::status::run_requests(
+                &mut reader,
+                &mut db,
+                &work,
+                &allowed_gate(),
+                &mut std::collections::HashSet::new(),
+                &mut false,
+                &path,
+                &mut std::collections::HashSet::new(),
+                &|| false,
+            )
+            .await
+            .unwrap();
+            transcript.extend(requests.lock().unwrap().iter().map(|r| (tip, r.txid)));
+        }
+        transcript
+    }
+
+    /// Whether and when a transaction mined, or what the service claims about
+    /// it, does not change which status queries the wallet sends: an honest
+    /// service that sees the transaction mined at the second tip and one that
+    /// forges "mined" at the first get the same requests, tip by tip.
+    #[tokio::test]
+    async fn honest_and_forged_mined_answers_get_the_same_status_requests() {
+        use zakura_transaction_status::StatusObservation;
+        let honest = status_transcript(|index| {
+            Ok(if index == 0 {
+                StatusObservation::NotFound
+            } else {
+                StatusObservation::Mined(BlockHeight::from_u32(111))
+            })
+        })
+        .await;
+        let forged =
+            status_transcript(|_| Ok(StatusObservation::Mined(BlockHeight::from_u32(110)))).await;
+        assert_eq!(forged, honest);
+        assert!(
+            honest.len() >= 10,
+            "the transaction is asked at every tip of its window: {honest:?}"
+        );
+    }
+
+    /// Work the wallet has already settled is still asked when it is due, so
+    /// the service cannot tell, but the answer is discarded.
+    #[tokio::test]
+    async fn a_settled_status_poll_is_asked_and_its_answer_discarded() {
+        use zakura_transaction_status::StatusObservation;
+        use zcash_client_backend::data_api::status::{
+            PrivateTransactionStatusRequest, TransactionStatusWork,
+        };
+        let (file, mut db, txid) = unmined_private_status_db();
+        let work = [TransactionStatusWork::Private(
+            PrivateTransactionStatusRequest::new(txid, None).with_settled(true),
+        )];
+        let private = status_source(Ok(StatusObservation::Mined(BlockHeight::from_u32(105))));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut ready = std::collections::HashSet::new();
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut false,
+            file.path().to_str().unwrap(),
+            &mut ready,
+            &|| false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "the poll is sent");
+        assert_eq!(
+            db.get_tx_height(txid).unwrap(),
+            None,
+            "the answer to a settled poll is not applied"
+        );
+        assert!(ready.is_empty(), "nothing is resubmitted");
+    }
+
     /// Private status work for one unmined transaction.
     fn unmined_private_status_db() -> (tempfile::NamedTempFile, WalletDatabase, TxId) {
         let (file, mut db, tx) =
@@ -1080,7 +1293,7 @@ mod tests {
 
     /// No private status txid is asked twice at one block, whatever its
     /// reply. An honest "not found" for an unmined transaction leaves its work
-    /// in place, as a malformed reply does; neither counts towards a
+    /// in place, as an unreadable reply does; neither counts towards a
     /// recovery-only restart, and neither is asked again, until the next
     /// block. An honest "mined" completes the work, so a forged reply must not
     /// be asked again either. A request failure is not a reply: it still
@@ -1092,12 +1305,12 @@ mod tests {
 
         for (reply, counted) in [
             (Ok(StatusObservation::NotFound), false),
-            (Err(StatusError::Malformed), false),
+            (Err(StatusError::Unreadable), false),
             (Err(StatusError::Unavailable), true),
         ] {
             let (file, mut db, _) = unmined_private_status_db();
             let path = file.path().to_str().unwrap().to_owned();
-            content_failures::at_tip(&path, 100);
+            content_failures::at_tip(&path, 110);
             let restart_units = |db: &WalletDatabase| {
                 super::super::super::recovery_status_for(db, &path, String::new())
                     .unwrap()
@@ -1137,7 +1350,8 @@ mod tests {
             sync(&mut db).await;
             assert_eq!(requests.lock().unwrap().len(), 1, "{reply:?}");
             // The next block asks again.
-            content_failures::at_tip(&path, 101);
+            db.update_chain_tip(BlockHeight::from_u32(111)).unwrap();
+            content_failures::at_tip(&path, 111);
             assert_eq!(restart_units(&db), 1, "{reply:?}");
             sync(&mut db).await;
             assert_eq!(requests.lock().unwrap().len(), 2, "{reply:?}");
