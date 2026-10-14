@@ -44,6 +44,7 @@ class _LedgerImmediateMigrationSigningOverlayState
   late final LedgerOperationCanceller _cancelLedgerOperation;
   String? _error;
   LedgerFailureGuidance? _deviceGuidance;
+  LedgerRequestFailure? _requestFailure;
 
   // Retrying the same request fails the same way on the device.
   bool get _requestNeedsRebuilding => _deviceGuidance?.retryable == false;
@@ -81,6 +82,7 @@ class _LedgerImmediateMigrationSigningOverlayState
         _phase = LedgerSigningModalPhase.preparing;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
     }
     try {
@@ -133,6 +135,7 @@ class _LedgerImmediateMigrationSigningOverlayState
   }
 
   String _friendlyError(Object error) {
+    _requestFailure = LedgerRequestFailure.fromError(error);
     _deviceGuidance = ledgerFailureGuidance(
       error,
       requestKind: LedgerRequestKind.migration,
@@ -161,11 +164,13 @@ class _LedgerImmediateMigrationSigningOverlayState
   @override
   Widget build(BuildContext context) {
     final modal = LedgerSigningModal(
+      cancelling: _cancelled,
       connectionScope: _connectionScope,
       accountUuid: widget.accountUuid,
       phase: _phase,
       failure: _phase == LedgerSigningModalPhase.failed
           ? LedgerSigningFailurePresentation(
+              requestFailure: _requestFailure,
               pairingInvalid: _deviceGuidance?.pairingInvalid ?? false,
               bluetoothRecovery: _deviceGuidance?.bluetoothRecovery ?? false,
               pairingRecovery: _deviceGuidance?.pairingRecovery ?? false,

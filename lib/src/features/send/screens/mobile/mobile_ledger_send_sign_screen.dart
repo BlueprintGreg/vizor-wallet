@@ -369,6 +369,7 @@ class _MobileLedgerSendSignScreenState
     } else if (guidance != null) {
       presentation = LedgerSigningFailurePresentation(
         title: 'Ledger needs attention',
+        requestFailure: LedgerRequestFailure.fromError(error),
         statusLabel: 'Action needed',
         message: guidance.message,
         showDeviceAppPrompt: guidance.showDeviceAppPrompt,
@@ -390,6 +391,7 @@ class _MobileLedgerSendSignScreenState
       };
       presentation = LedgerSigningFailurePresentation(
         title: 'Ledger signing failed',
+        requestFailure: LedgerRequestFailure.fromError(error),
         statusLabel: 'Action needed',
         message: message,
         showDeviceAppPrompt: false,
@@ -442,10 +444,10 @@ class _MobileLedgerSendSignScreenState
           title: terminal
               ? 'Signed transaction needs attention'
               : 'Could not save signed transaction',
-          statusLabel: terminal ? 'Recovery required' : 'Signature preserved',
+          statusLabel: terminal ? 'Recovery required' : 'Action needed',
           message: terminal
               ? 'Vizor could not verify the saved transaction. Do not sign or send it again.'
-              : 'Your Ledger signature is preserved. Retry saving without approving another transaction.',
+              : 'Keep Vizor open and retry saving. No new Ledger approval needed.',
           showDeviceAppPrompt: false,
           actionLabel: terminal ? null : 'Retry saving',
         );
@@ -503,6 +505,7 @@ class _MobileLedgerSendSignScreenState
       if (failure != null) {
         _failure = LedgerSigningFailurePresentation(
           title: failure.title,
+          requestFailure: failure.requestFailure,
           statusLabel: failure.statusLabel,
           message: 'Could not finish cancelling. Please try again.',
           showDeviceAppPrompt: false,
@@ -575,6 +578,7 @@ class _MobileLedgerSendSignScreenState
       canLeave: canLeave,
       onBack: () => unawaited(_cancelAndPop()),
       child: LedgerSigningModal(
+        cancelling: _cancelled || _releasing,
         accountUuid: widget.args.proposalAccountUuid,
         phase: _phase,
         failure: _failure,

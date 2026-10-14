@@ -71,6 +71,7 @@ class _PaymentLinkLedgerSigningOverlayState
   bool _requestNeedsRebuilding = false;
   String? _error;
   LedgerFailureGuidance? _deviceGuidance;
+  LedgerRequestFailure? _requestFailure;
 
   final _connectionScope = LedgerConnectionScope();
 
@@ -102,6 +103,7 @@ class _PaymentLinkLedgerSigningOverlayState
           _phase = LedgerSigningModalPhase.broadcasting;
           _error = null;
           _deviceGuidance = null;
+          _requestFailure = null;
         });
         final result = await _service.resume(
           accountUuid: widget.sourceAccountUuid,
@@ -117,6 +119,7 @@ class _PaymentLinkLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.preparing;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       _draft ??= widget.batch == null
           ? await _service.prepare(
@@ -193,6 +196,9 @@ class _PaymentLinkLedgerSigningOverlayState
         setState(() {
           _phase = LedgerSigningModalPhase.failed;
           _terminal = error is LedgerGiftFundingTerminalException;
+          _requestFailure = !_checkpointed && !_terminal
+              ? LedgerRequestFailure.fromError(error)
+              : null;
           _deviceGuidance = ledgerFailureGuidance(
             error,
             requestKind: LedgerRequestKind.giftCard,
@@ -279,6 +285,7 @@ class _PaymentLinkLedgerSigningOverlayState
         _cleanup = null;
         _phase = LedgerSigningModalPhase.failed;
         _deviceGuidance = null;
+        _requestFailure = null;
         _error = 'Could not finish cancelling. Please try again.';
       });
     }
@@ -306,11 +313,13 @@ class _PaymentLinkLedgerSigningOverlayState
     final canRetry = !unavailable && !_terminal && !_requestNeedsRebuilding;
     final canLeave = !_durableBusy && !_cancelled;
     final modal = LedgerSigningModal(
+      cancelling: _cancelled,
       connectionScope: _connectionScope,
       accountUuid: widget.sourceAccountUuid,
       phase: _phase,
       failure: _phase == LedgerSigningModalPhase.failed
           ? LedgerSigningFailurePresentation(
+              requestFailure: _requestFailure,
               pairingInvalid: _deviceGuidance?.pairingInvalid ?? false,
               pairingRecovery:
                   !_checkpointed &&

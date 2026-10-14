@@ -17,6 +17,7 @@ import 'package:go_router/go_router.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/ledger/ledger_capability.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operation_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
@@ -137,13 +138,15 @@ void main() {
         expect(
           find.text(
             accessRecovery
-                ? 'Ready to reconnect'
+                ? 'Reconnect Ledger'
                 : ledgerFailureGuidance(original)!.message,
           ),
           findsOneWidget,
         );
         expect(
-          find.text('The transaction was rejected on your Ledger.'),
+          find.text(
+            'Signing was declined on Ledger. Try again when you’re ready.',
+          ),
           findsNothing,
         );
         expect(find.text('Open the Zcash app'), findsNothing);
@@ -153,7 +156,7 @@ void main() {
         expect(
           find.text(
             accessRecovery
-                ? 'Ready to reconnect'
+                ? 'Reconnect Ledger'
                 : ledgerFailureGuidance(original)!.message,
           ),
           findsNothing,
@@ -322,6 +325,9 @@ void main() {
       await tester.pump();
       queuedRetry();
       await tester.pump();
+      expect(find.text('Cancelling request'), findsOneWidget);
+      expect(find.text('Finish transaction'), findsNothing);
+      expect(find.text('Try again'), findsNothing);
       expect(signCalls, 1);
       expect(
         tester
@@ -496,7 +502,12 @@ void main() {
     await tester.tap(find.text('Open signing'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Signature preserved'), findsOneWidget);
+    expect(
+      find.text(
+        'Keep Vizor open and retry saving. No new Ledger approval needed.',
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Retry saving'), findsOneWidget);
     expect(await tester.binding.handlePopRoute(), isTrue);
     await tester.pump();
@@ -568,7 +579,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('The transaction was rejected on your Ledger.'),
+      find.text('Signing was declined on Ledger. Try again when you’re ready.'),
       findsOneWidget,
     );
     expect(find.text('Try again'), findsOneWidget);
@@ -663,7 +674,12 @@ void main() {
     await tester.tap(find.text('Open signing'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Signature preserved'), findsOneWidget);
+    expect(
+      find.text(
+        'Keep Vizor open and retry saving. No new Ledger approval needed.',
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.text('Retry saving'));
     await tester.pumpAndSettle();
 
@@ -702,11 +718,16 @@ void main() {
         .begin('account-1');
     firstProgress('sending');
     await tester.pump();
-    expect(find.text('Processing with Ledger'), findsOneWidget);
+    expect(find.text('Sign transaction'), findsOneWidget);
     firstProgress('reviewing');
     await tester.pump();
-    expect(find.text('Confirm on your Ledger'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Sign transaction'), findsOneWidget);
     expect(find.text('Transaction 1 of 2'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate((w) => w is AppIcon && w.name == AppIcons.loader),
+      findsOneWidget,
+    );
 
     first.complete(const [4]);
     await tester.pump();
@@ -716,11 +737,16 @@ void main() {
         .begin('account-1');
     firstProgress('finishing');
     await tester.pump();
-    expect(find.text('Preparing transaction'), findsOneWidget);
+    expect(find.text('Prepare transaction'), findsOneWidget);
     secondProgress('reviewing');
     await tester.pump();
-    expect(find.text('Confirm on your Ledger'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Sign transaction'), findsOneWidget);
     expect(find.text('Transaction 2 of 2'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate((w) => w is AppIcon && w.name == AppIcons.loader),
+      findsOneWidget,
+    );
 
     second.complete(const [8]);
     await tester.pumpAndSettle();

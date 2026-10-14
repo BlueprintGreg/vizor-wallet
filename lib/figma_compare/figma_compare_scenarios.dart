@@ -919,6 +919,12 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'ledger-signing-proofs-pending',
+    description: 'Ledger signing: approved while Vizor finishes preparation',
+    builder: _buildLedgerSigningProofsPending,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'ledger-signing-memo-hash-update',
     description: 'Ledger signing: memo needs a newer Zcash app',
     builder: _buildLedgerSigningMemoHashUpdate,
@@ -3307,6 +3313,13 @@ Widget _buildLedgerSigningProcessingMultiple(BuildContext context) =>
 Widget _buildLedgerSigningFinishing(BuildContext context) =>
     buildLedgerSigningPreview(
       phase: LedgerSigningModalPhase.saving,
+      signingStage: LedgerSigningStage.finishing,
+      mobile: kAppFormFactor == AppFormFactor.mobile,
+    );
+
+Widget _buildLedgerSigningProofsPending(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.finishing,
       signingStage: LedgerSigningStage.finishing,
       mobile: kAppFormFactor == AppFormFactor.mobile,
     );
