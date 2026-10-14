@@ -668,7 +668,7 @@ async fn queries_unlocked_during_a_checkpoint_wait_for_the_next() {
     let service = Service::new([]);
     let mut wallet = Wallet::new(&[0, 40]);
     let mut drain = sync();
-    drain.snapshot = Some([request(0)].into());
+    drain.snapshot = Some(snapshot([EnhancePirWork::Query(request(0))]));
     drain
         .run(&mut wallet, &service, &mut Effects::default(), &|| false)
         .await
@@ -683,6 +683,42 @@ async fn queries_unlocked_during_a_checkpoint_wait_for_the_next() {
         .await
         .unwrap();
     assert_eq!(wallet.applied, [0, 40]);
+}
+
+/// A snapshot holding exactly `work`.
+fn snapshot(
+    work: impl IntoIterator<Item = EnhancePirWork>,
+) -> super::super::content_failures::PrivateWork {
+    super::super::content_failures::PrivateWork::new(
+        work.into_iter()
+            .map(zcash_client_backend::data_api::enhance_pir::TransactionEnhancementWork::Private),
+        [],
+    )
+}
+
+/// A rediscovery job that a reply created during the drain point waits for
+/// the next block like a query: it downloads a block, which the service
+/// could time.
+#[tokio::test]
+async fn rediscovery_unlocked_during_a_checkpoint_waits_for_the_next() {
+    let service = Service::new([]);
+    let mut wallet = Wallet::new(&[]);
+    wallet.other = vec![EnhancePirWork::Rediscover(rediscovery())];
+    let mut effects = Effects::default();
+    let mut drain = sync();
+    drain.snapshot = Some(snapshot([]));
+    drain
+        .run(&mut wallet, &service, &mut effects, &|| false)
+        .await
+        .unwrap();
+    assert!(effects.rediscovered.is_empty());
+
+    drain.snapshot = Some(snapshot([EnhancePirWork::Rediscover(rediscovery())]));
+    drain
+        .run(&mut wallet, &service, &mut effects, &|| false)
+        .await
+        .unwrap();
+    assert_eq!(effects.rediscovered, [rediscovery()]);
 }
 
 /// A record the wallet rejects is counted by the wallet and no longer stops

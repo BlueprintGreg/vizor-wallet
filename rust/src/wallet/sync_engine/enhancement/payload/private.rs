@@ -21,7 +21,7 @@ use zakura_pir_enhance::transport::{self, PendingClient};
 use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
 use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
-    EnhancePirRequest, EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
+    EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_primitives::transaction::TxId;
 use zcash_protocol::consensus::BlockHeight;
@@ -95,10 +95,10 @@ pub(in crate::wallet::sync_engine) struct RoutedPayloadEnhancement {
     pub(super) accepted_routing: Option<transport::Client>,
     pub(super) private_failed_for_sync: bool,
     rediscovery_attempts: Vec<IronwoodEnhanceDiscoveryRequest>,
-    /// The private queries this drain may ask, when it ends a checkpoint:
-    /// those that existed when the checkpoint began. A query a status or
-    /// history reply unlocked during the checkpoint waits for the next one.
-    pub(in crate::wallet::sync_engine) snapshot: Option<BTreeSet<EnhancePirRequest>>,
+    /// The private work this drain may ask: the queries and rediscovery jobs
+    /// that existed when its drain point began. Work a status, history or
+    /// Enhance reply created since waits for the next block.
+    pub(in crate::wallet::sync_engine) snapshot: Option<content_failures::PrivateWork>,
 }
 #[derive(Debug)]
 pub(in crate::wallet::sync_engine) enum EnhancePirRunError {
@@ -145,6 +145,12 @@ impl RoutedPayloadEnhancement {
             snapshot: None,
         }
     }
+    /// Test seam for a private Enhance endpoint on a network without one.
+    #[cfg(test)]
+    pub(in crate::wallet::sync_engine) fn set_endpoint(&mut self, endpoint: &str) {
+        self.endpoint = Some(endpoint.to_owned());
+    }
+
     pub(in crate::wallet::sync_engine) fn enabled(&self) -> bool {
         self.endpoint.is_some()
     }

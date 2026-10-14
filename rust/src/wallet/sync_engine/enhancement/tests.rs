@@ -674,6 +674,9 @@ mod tests {
                 zakura_transaction_status::StatusError,
             >,
         >,
+        /// Runs as each reply is given, standing in for what the reply
+        /// changes in the wallet.
+        on_reply: Option<Box<dyn Fn()>>,
     }
     impl zakura_transaction_status::StatusSource for FakeStatusSource {
         type Session = Self;
@@ -691,6 +694,9 @@ mod tests {
             zakura_transaction_status::StatusError,
         > {
             self.requests.lock().unwrap().push(request);
+            if let Some(on_reply) = &self.on_reply {
+                on_reply();
+            }
             self.script.pop_front().unwrap_or(self.response)
         }
     }
@@ -705,6 +711,7 @@ mod tests {
             requests: Default::default(),
             response,
             script: Default::default(),
+            on_reply: None,
         }
     }
 
@@ -1192,6 +1199,194 @@ mod tests {
         );
         content_failures::at_tip(&path, 101);
         assert_eq!(queries(&db), 1, "the next block asks again");
+    }
+
+    /// A row without the transaction's status record is a reply about that
+    /// transaction. It waits for the next block like any other answer: it is
+    /// neither counted towards a restart nor asked again at this tip.
+    #[tokio::test]
+    async fn a_missing_status_record_waits_for_the_next_block() {
+        use super::super::content_failures;
+        use zakura_transaction_status::{StatusError, StatusObservation};
+
+        let (file, mut db, _) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        content_failures::at_tip(&path, 100);
+        let private = status_source(Err(StatusError::CoverageIncomplete));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut sync = async |db: &mut WalletDatabase| {
+            let work = db.transaction_status_work().unwrap();
+            super::super::status::run_requests(
+                &mut reader,
+                db,
+                &work,
+                &allowed_gate(),
+                &mut std::collections::HashSet::new(),
+                &mut false,
+                &path,
+                &mut std::collections::HashSet::new(),
+                &|| false,
+            )
+            .await
+        };
+        assert!(matches!(
+            sync(&mut db).await,
+            Err(SyncError::PrivateStatusCoverageIncomplete)
+        ));
+        let restart_units = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .status
+        };
+        assert_eq!(restart_units(&db), 0);
+        sync(&mut db).await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "not asked again here");
+
+        content_failures::at_tip(&path, 101);
+        assert_eq!(restart_units(&db), 1, "the next block counts it");
+        let _ = sync(&mut db).await;
+        assert_eq!(requests.lock().unwrap().len(), 2, "and asks it");
+    }
+
+    /// An Enhance transport that refuses every request and counts them.
+    #[derive(Default)]
+    struct RefusingEnhance(std::sync::atomic::AtomicUsize);
+
+    impl zakura_pir_enhance::transport::Transport for RefusingEnhance {
+        async fn execute(
+            &self,
+            _: zakura_pir_enhance::transport::Request,
+        ) -> Result<zakura_pir_enhance::transport::ResponseBody, zakura_pir_enhance::ClientError>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(zakura_pir_enhance::ClientError::Transport("offline".into()))
+        }
+    }
+
+    /// A status reply that makes a transaction mined unlocks its Enhance
+    /// query. Through whole checkpoints: the query is not asked in the
+    /// checkpoint whose reply created it, nor in another checkpoint at the
+    /// same block, and it does not count towards a recovery-only restart
+    /// there. The next block counts it and asks it. Whether more lookups
+    /// follow never depends on what a reply said.
+    #[tokio::test]
+    async fn work_a_status_reply_unlocks_waits_for_the_next_block() {
+        use super::super::content_failures;
+        use crate::wallet::sync_engine::test_lwd::CapturingLwd;
+        use zakura_transaction_status::StatusObservation;
+        use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
+
+        let (_dir, path, _) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let network = WalletNetwork::Regtest;
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let (txid, height): (Vec<u8>, u32) = conn
+            .query_row(
+                "SELECT q.txid, t.mined_height FROM tx_retrieval_queue q
+                 JOIN transactions t ON t.txid = q.txid WHERE q.query_type = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // The query appears only when the status reply arrives.
+        conn.execute("DELETE FROM tx_retrieval_queue WHERE query_type = 1", [])
+            .unwrap();
+        // Status is asked for transactions the wallet does not see mined.
+        conn.execute(
+            "UPDATE transactions SET mined_height = NULL WHERE txid = ?1",
+            [&txid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 0)",
+            [&txid],
+        )
+        .unwrap();
+        let mut status = status_source(Ok(StatusObservation::Mined(BlockHeight::from_u32(height))));
+        let requests = status.requests.clone();
+        let unlock_path = path.clone();
+        let unlock_txid = txid.clone();
+        status.on_reply = Some(Box::new(move || {
+            rusqlite::Connection::open(&unlock_path)
+                .unwrap()
+                .execute(
+                    "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 1)
+                     ON CONFLICT (txid, query_type) DO NOTHING",
+                    [&unlock_txid],
+                )
+                .unwrap();
+        }));
+
+        let policy = super::super::EnhancementPolicy::current(network)
+            .with_private_queries()
+            .with_transparent_mode(TransparentLedgerMode::PrivateRequired);
+        let session = || {
+            let mut session = super::EnhancementSession::with_policy(network, &path, policy);
+            session.payload.set_endpoint("https://example.test");
+            session
+        };
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            network,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        let mut lwd = CapturingLwd::start(Vec::new()).await;
+        let enhance = RefusingEnhance::default();
+        let queries = |db: &mut WalletDatabase| {
+            policy.configure_db(db);
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .queries
+        };
+        let tip = 1_000;
+        content_failures::at_tip(&path, tip);
+
+        session()
+            .checkpoint_with(&mut db, &mut lwd.client, None, status, &enhance, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "the status is asked");
+        assert_eq!(queries(&mut db), 0, "the unlocked query is not counted");
+        assert_eq!(enhance.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Another checkpoint at the same block.
+        session()
+            .checkpoint_with(
+                &mut db,
+                &mut lwd.client,
+                None,
+                status_source(Ok(StatusObservation::NotFound)),
+                &enhance,
+                &|| false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(queries(&mut db), 0);
+        assert_eq!(enhance.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // The next block.
+        content_failures::at_tip(&path, tip + 1);
+        assert_eq!(queries(&mut db), 1, "the next block counts it");
+        session()
+            .checkpoint_with(
+                &mut db,
+                &mut lwd.client,
+                None,
+                status_source(Ok(StatusObservation::NotFound)),
+                &enhance,
+                &|| false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            enhance.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "and asks it"
+        );
     }
 
     #[tokio::test]

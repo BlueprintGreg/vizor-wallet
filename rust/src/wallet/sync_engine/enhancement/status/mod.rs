@@ -120,11 +120,10 @@ where
         .copied()
         .filter(|work| !attempted.contains(&work.txid()))
         .filter(|work| !(*private_failed && is_private(work)))
-        // A private txid answered at this tip waits for the next block,
-        // whatever the reply said.
+        // A private txid answered at this tip, or created by a reply here,
+        // waits for the next block, whatever the reply said.
         .filter(|work| {
-            !(is_private(work)
-                && super::content_failures::status_was_answered(db_path, &work.txid()))
+            !is_private(work) || super::content_failures::may_ask_status(db_path, &work.txid())
         })
         .filter(|work| public_allowed || is_private(work))
         .collect();
@@ -160,6 +159,11 @@ where
                 observation.into()
             }
             Err(StatusError::CoverageIncomplete) if is_private(&work) => {
+                // A row without this txid's record is a reply about it, so
+                // the txid waits for the next block like any other answer.
+                // The sync then fails without retrying at this tip (see
+                // `SyncError::recovery_strategy`).
+                super::content_failures::status_answered(db_path, txid);
                 // GetStatus work is expected to be highly unlikely in private
                 // mode. Temporarily fail visibly so this feedback gate detects
                 // real occurrences; if users encounter it, we will design the

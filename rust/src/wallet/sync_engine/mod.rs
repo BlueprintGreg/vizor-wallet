@@ -3603,6 +3603,10 @@ async fn run_sync_impl(
                                     fresh_tip.height,
                                 );
                                 current_tip_height = fresh_tip.height;
+                                enhancement::content_failures::at_tip(
+                                    db_data_path,
+                                    current_tip_height,
+                                );
                                 completion_tip_validation_required = true;
                             }
                         }
@@ -3636,6 +3640,7 @@ async fn run_sync_impl(
                                 fresh_tip.height,
                             );
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             initial_total = pending_blocks;
                             prev_remaining = pending_blocks;
                             if checking_cycle > 0 && pending_blocks > 0 {
@@ -3730,6 +3735,7 @@ async fn run_sync_impl(
                                 ))
                             })?;
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             let promoted_ranges = db.suggest_scan_ranges().map_err(|e| {
                                 SyncError::db(format!(
                                     "suggest_scan_ranges after final tip advance: {e}"
@@ -3783,6 +3789,7 @@ async fn run_sync_impl(
                                 fresh_tip.height,
                             );
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             initial_total = repair_pending_blocks;
                             prev_remaining = repair_pending_blocks;
                             progress_fn(begin_checking(
@@ -3886,6 +3893,7 @@ async fn run_sync_impl(
                     .await?;
                     if let ReleasedResubmission::TipAdvanced(fresh_height) = outcome {
                         current_tip_height = fresh_height;
+                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                         let promoted_ranges = db.suggest_scan_ranges().map_err(|e| {
                             SyncError::db(format!("suggest_scan_ranges after tip promotion: {e}"))
                         })?;
@@ -4506,6 +4514,10 @@ async fn run_sync_impl(
                         ) {
                             Ok(_) => {
                                 current_tip_height = fresh_tip.height;
+                                enhancement::content_failures::at_tip(
+                                    db_data_path,
+                                    current_tip_height,
+                                );
                                 completion_tip_validation_required = true;
                                 last_periodic_tip_refresh_attempt = std::time::Instant::now();
                             }
@@ -4550,6 +4562,7 @@ async fn run_sync_impl(
                             fresh_tip.height,
                         );
                         current_tip_height = fresh_tip.height;
+                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                         initial_total = pending_blocks;
                         prev_remaining = pending_blocks;
                         if checking_cycle > 0 && pending_blocks > 0 {
@@ -6905,9 +6918,10 @@ pub(crate) fn enhance_recovery_status(
 /// Counts recovery work in a database already configured with the current
 /// enhancement policy.
 ///
-/// Work that failed on content at the current chain tip is left out: it waits
-/// for the next block (see [`enhancement::content_failures`]), so whether a
-/// recovery-only restart happens never depends on whether a reply was bad.
+/// Work that failed on content, got a reply, or was created by a reply at the
+/// current chain tip is left out: it waits for the next block (see
+/// [`enhancement::content_failures`]), so whether a recovery-only restart
+/// happens never depends on what a reply said.
 fn recovery_status_for(
     db: &WalletDatabase,
     db_path: &str,
@@ -6915,7 +6929,6 @@ fn recovery_status_for(
 ) -> Result<crate::api::sync::EnhanceRecoveryStatus, String> {
     use enhancement::content_failures;
     use zcash_client_backend::data_api::enhance_pir::EnhancePirRead;
-    use zcash_client_backend::data_api::enhance_pir::EnhancePirWork;
     use zcash_client_backend::data_api::enhance_pir::TransactionEnhancementWork;
     use zcash_client_backend::data_api::status::{TransactionStatusRead, TransactionStatusWork};
     // `run_requests` defers private status failures for the session while the
@@ -6926,20 +6939,21 @@ fn recovery_status_for(
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|work| matches!(work, TransactionStatusWork::Private(_)))
-        .filter(|work| !content_failures::status_was_answered(db_path, &work.txid()))
+        .filter(|work| content_failures::may_ask_status(db_path, &work.txid()))
         .count();
     let work = zakura_pir_enhance::wallet::PreparedWork::new(
         db.transaction_enhancement_work()
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter_map(|work| match work {
-                TransactionEnhancementWork::Private(EnhancePirWork::Query(request))
-                    if content_failures::enhance_failed(db_path, &request) =>
+                TransactionEnhancementWork::Private(work)
+                    if content_failures::may_ask(db_path, &work) =>
                 {
+                    Some(work)
+                }
+                TransactionEnhancementWork::Private(_) | TransactionEnhancementWork::Public(_) => {
                     None
                 }
-                TransactionEnhancementWork::Private(work) => Some(work),
-                TransactionEnhancementWork::Public(_) => None,
             }),
     );
     Ok(crate::api::sync::EnhanceRecoveryStatus {
