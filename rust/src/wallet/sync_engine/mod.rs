@@ -9,7 +9,7 @@ use rusqlite::{params, OptionalExtension};
 use shardtree::error::{InsertionError, QueryError, ShardTreeError};
 use tonic::transport::Channel;
 use zcash_client_backend::data_api::{
-    chain::{self, error::Error as ChainError, scan_cached_blocks},
+    chain::{self, error::Error as ChainError, scan_cached_blocks_with_one_time_ivks},
     ll::LowLevelWalletWrite,
     scanning::{ScanPriority, ScanRange},
     wallet::ConfirmationsPolicy,
@@ -60,6 +60,8 @@ pub(crate) mod mempool;
 #[cfg(test)]
 mod private_recovery_reorg_tests;
 mod retry_progress;
+mod swap_private;
+pub(crate) use swap_private::fetch_seen;
 #[cfg(test)]
 pub(crate) mod test_lwd;
 mod tip_cache;
@@ -94,9 +96,9 @@ pub enum SyncEventKind {
     /// ephemeral address checks report it again when they change wallet data.
     Completed,
     /// A post-sync follow-up (private transparent recovery, transparent
-    /// details) changed wallet data after completion was reported. The sync
-    /// stays complete; its stream, and the running guard, end only once
-    /// every follow-up has.
+    /// details, one-time key restore sweeps) changed wallet data after
+    /// completion was reported. The sync stays complete; its stream, and the
+    /// running guard, end only once every follow-up has.
     FollowupUpdated,
 }
 
@@ -3031,7 +3033,7 @@ async fn run_payment_link_claim_sync_once(
             return Ok(());
         }
 
-        let scan_result = scan_cached_blocks(
+        let scan_result = scan_cached_blocks_with_one_time_ivks(
             &network,
             &block_source,
             &mut db,
@@ -3151,6 +3153,16 @@ async fn run_sync_impl(
     let mut db =
         with_wallet_db_write_lock("sync_engine.open_db", || open_db(db_data_path, network))?;
     let mut enhancement = EnhancementSession::new(network, db_data_path);
+    let one_time_ivks = crate::wallet::one_time_ivk::supported(network);
+    // One-time IVK maintenance never stops sync: a key it registers later rescans from
+    // its start.
+    if one_time_ivks {
+        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.prepare", || {
+            crate::wallet::one_time_ivk::maintain_recovery(&mut db)
+        }) {
+            log::warn!("One-time IVK maintenance deferred: {e}");
+        }
+    }
     // The main-phase rewind budget also covers a reorg detected by the
     // initial tip response, before the scan queue has been created.
     let mut main_rewinds_this_run: u32 = 0;
@@ -3878,6 +3890,46 @@ async fn run_sync_impl(
                     {
                         return Ok(());
                     }
+                    if one_time_ivks {
+                        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.complete", || {
+                            crate::wallet::one_time_ivk::maintain_recovery(&mut db)
+                        }) {
+                            log::warn!("One-time IVK maintenance deferred: {e}");
+                        }
+                    }
+                    // Maintenance or an earlier sweep may have queued a key's rescan;
+                    // scan that before declaring sync complete.
+                    let rescan_ranges = db
+                        .suggest_scan_ranges()
+                        .map_err(|e| SyncError::db(e.to_string()))?;
+                    if rescan_ranges.iter().any(is_pending_scan_range) {
+                        reset_promoted_scan_progress(
+                            &rescan_ranges,
+                            &mut initial_total,
+                            &mut prev_remaining,
+                        );
+                        if initial_total > 0 {
+                            progress_fn(begin_checking(
+                                &mut checking_cycle,
+                                initial_total,
+                                current_tip_height,
+                            ));
+                        }
+                        progress_display_mode = ProgressDisplayMode::Work;
+                        queued_ranges = Some(rescan_ranges);
+                        prefetch = None;
+                        continue;
+                    }
+                    if one_time_ivks {
+                        let verified_tip =
+                            block_height_from_u64(current_tip_height, "verified chain tip")?;
+                        // A key that fails to close keeps scanning until a later sync.
+                        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.close", || {
+                            crate::wallet::one_time_ivk::close_finished_keys(&mut db, verified_tip)
+                        }) {
+                            log::warn!("Closing finished one-time keys deferred: {e}");
+                        }
+                    }
                     let released = enhancement.take_ready_resubmission();
                     // This path completes without a post-batch pass, so a
                     // transaction released by a final status observation is
@@ -4142,7 +4194,7 @@ async fn run_sync_impl(
                 );
             }
             voting_scan_end = Some(end);
-            scan_cached_blocks(
+            scan_cached_blocks_with_one_time_ivks(
                 &network,
                 &block_source,
                 &mut db,
@@ -4999,6 +5051,23 @@ async fn run_sync_impl(
                 phase: String::new(),
             });
         }
+    }
+
+    // Restore sweeps of one-time keys are the last follow-up: they reach the receiver
+    // directory under a three-minute budget, so neither completion nor the work above
+    // waits for them. They run under the same cancellation and never fail the sync
+    // (see [`swap_private::run`]). A finished sweep may have stored payments, so it
+    // reports `FollowupUpdated`; its rescan runs next sync. Background preparation
+    // syncs skip the sweeps, as they skip the transparent follow-ups.
+    if one_time_ivks
+        && running_mode != 2
+        && !should_exit()
+        && swap_private::run(&mut db, network, &should_exit).await
+    {
+        progress_fn(followup_updated_event((
+            final_scanned_height,
+            final_tip_height,
+        )));
     }
 
     Ok(())

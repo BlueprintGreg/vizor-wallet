@@ -4231,6 +4231,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-native"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
+dependencies = [
+ "ipir-sp",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "reinspiring",
+]
+
+[[package]]
 name = "pir-observability"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4794,6 +4806,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "receiver-directory"
+version = "0.0.1"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
+dependencies = [
+ "bitcoin",
+ "incrementalmerkletree",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zakura-orchard",
+ "zcash_note_encryption",
+]
+
+[[package]]
+name = "receiver-pir"
+version = "0.0.1"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
+dependencies = [
+ "hex",
+ "pir-native 0.1.0 (git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1)",
+ "rand 0.8.8",
+ "receiver-directory",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "redb"
 version = "4.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5056,10 +5098,13 @@ dependencies = [
  "zakura-client-sqlite",
  "zakura-jubjub",
  "zakura-keys",
+ "zakura-near-intents",
+ "zakura-one-time-ivk",
  "zakura-orchard",
  "zakura-pasta-curves",
  "zakura-pczt",
  "zakura-pir-enhance",
+ "zakura-pir-receiver",
  "zakura-pir-status",
  "zakura-pir-transparent",
  "zakura-primitives",
@@ -7497,7 +7542,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82f5dd7d5c42a4dd7e8904b1fdfb34290c054a207bf4f4d5a5e107718c4043f4"
 dependencies = [
  "hex",
- "pir-native",
+ "pir-native 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon",
  "serde",
  "serde_json",
@@ -8778,6 +8823,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zakura-near-intents"
+version = "0.0.1-rc0"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=6b3a30d433bd125fcf19d3ec108e90554120e377#6b3a30d433bd125fcf19d3ec108e90554120e377"
+dependencies = [
+ "zakura-one-time-ivk",
+ "zakura-protocol",
+]
+
+[[package]]
 name = "zakura-one-time-ivk"
 version = "0.0.1-rc0"
 source = "git+https://github.com/zakura-core/wallet-libraries?rev=6b3a30d433bd125fcf19d3ec108e90554120e377#6b3a30d433bd125fcf19d3ec108e90554120e377"
@@ -8922,6 +8976,19 @@ dependencies = [
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "reinspiring",
+]
+
+[[package]]
+name = "zakura-pir-receiver"
+version = "0.0.1-rc0"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=6b3a30d433bd125fcf19d3ec108e90554120e377#6b3a30d433bd125fcf19d3ec108e90554120e377"
+dependencies = [
+ "receiver-directory",
+ "receiver-pir",
+ "thiserror 2.0.21",
+ "zakura-client-backend",
+ "zakura-one-time-ivk",
+ "zakura-protocol",
 ]
 
 [[package]]
