@@ -15,10 +15,6 @@
 //! is left out of the restart count and is not asked again until the next
 //! block. No status txid is asked twice at one tip, whatever the reply.
 //!
-//! The wallet's status poll window (`TransactionStatusWrite::
-//! record_private_status_poll`) decides which status lookups are due at a
-//! tip; this record bounds what is sent. Both hold for every reply.
-//!
 //! Work a reply creates at this tip waits for the next block too. A status
 //! reply that makes a transaction mined, or an Enhance record that names more
 //! work, adds queries, rediscovery jobs or status lookups that an honest reply

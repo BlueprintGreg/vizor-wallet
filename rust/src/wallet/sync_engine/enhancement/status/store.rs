@@ -31,26 +31,6 @@ pub(in crate::wallet::sync_engine::enhancement) fn persist_status_observation(
     })
 }
 
-/// Records that a private status reply for `txid` came back at chain tip
-/// `tip`, whatever it said, so the work is not due again before the next
-/// tip. Without a known tip there is no schedule to advance.
-pub(super) fn record_private_poll(
-    db: &mut WalletDatabase,
-    txid: zcash_primitives::transaction::TxId,
-    tip: Option<u32>,
-) -> Result<(), SyncError> {
-    use zcash_client_backend::data_api::status::TransactionStatusWrite;
-    let Some(tip) = tip else {
-        return Ok(());
-    };
-    with_wallet_db_write_lock("sync_engine.enhance.record_private_status_poll", || {
-        db.record_private_status_poll(txid, zcash_protocol::consensus::BlockHeight::from_u32(tip))
-    })
-    .map_err(|error: zcash_client_sqlite::error::SqliteClientError| {
-        SyncError::db(format!("record_private_status_poll: {error}"))
-    })
-}
-
 /// A private negative observation applies only to the work and decision height that were
 /// queried. A concurrent rewind, policy change, or tip advance makes it inconclusive.
 /// Returns true only for conclusive recovery observations held pending until

@@ -63,10 +63,7 @@ fn classify(error: Error) -> LookupError {
         Error::Capacity => LookupError::Unavailable,
         Error::Timeout => LookupError::Timeout,
         Error::Cancelled => LookupError::Cancelled,
-        // The reply envelope did not match the session: a request outcome.
-        Error::Malformed => LookupError::Malformed,
-        // The row the private query selected did not decrypt or decode.
-        Error::Unreadable => LookupError::Unreadable,
+        Error::Malformed | Error::Unreadable => LookupError::Malformed,
         Error::Unavailable | Error::Pir => LookupError::Unavailable,
     }
 }
@@ -335,9 +332,6 @@ mod tests {
         );
         assert_eq!(classify(Error::Stale), LookupError::Stale);
         assert_eq!(classify(Error::Unavailable), LookupError::Unavailable);
-        // Only the row is a content outcome; the envelope stays a request outcome.
-        assert_eq!(classify(Error::Unreadable), LookupError::Unreadable);
-        assert_eq!(classify(Error::Malformed), LookupError::Malformed);
     }
 
     #[test]

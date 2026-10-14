@@ -3,18 +3,10 @@
 //! A reader selects exactly one source for its lifetime. When private Status
 //! PIR is selected, initialization or observation failure is inconclusive and
 //! must not fall back to a public transaction-ID request. It also never fails
-//! the sync, except for a local wallet database failure
-//! (`StatusError::LocalStorage`).
-//!
-//! Private polls follow the wallet's fixed schedule, never the replies.
-//! Every private reply, whatever it said, is recorded as that tip's poll and
-//! as answered at this block (`content_failures`), and the next transaction
-//! is asked. Only a request outcome, which the service chooses without
-//! knowing which row was asked (a refusal, an overload, a stale publication,
-//! a transport error or a reply that does not match the session), records
-//! nothing: the work stays due at this tip and private status is skipped for
-//! the rest of the session, so a lagging or unreachable service cannot stall
-//! scanning.
+//! the sync, except for the explicit coverage feedback gate and a local wallet
+//! database failure (`StatusError::LocalStorage`): other work stays
+//! durable and private status is skipped for the rest of the session, so a
+//! lagging or unreachable service cannot stall scanning.
 
 mod private;
 mod public;
@@ -128,9 +120,8 @@ where
         .copied()
         .filter(|work| !attempted.contains(&work.txid()))
         .filter(|work| !(*private_failed && is_private(work)))
-        // The wallet's poll window decides what is due at this tip. A private
-        // txid answered at this tip, or created by a reply here, still waits
-        // for the next block, whatever the reply said.
+        // A private txid answered at this tip, or created by a reply here,
+        // waits for the next block, whatever the reply said.
         .filter(|work| {
             !is_private(work) || super::content_failures::may_ask_status(db_path, &work.txid())
         })
@@ -162,29 +153,23 @@ where
         attempted.insert(txid);
         let observation = match reader.observe(work, required_through).await {
             Ok(observation) => {
-                if let TransactionStatusWork::Private(request) = work {
+                if is_private(&work) {
                     super::content_failures::status_answered(db_path, txid);
-                    store::record_private_poll(db, txid, required_through)?;
-                    // The poll was due, so it was sent; the wallet already
-                    // holds a conclusive status, so the answer is dropped.
-                    if request.settled() {
-                        continue;
-                    }
                 }
                 observation.into()
             }
-            // Content outcomes: the reply came back, but its row did not
-            // decode, or the service's record could not prove the
-            // transaction absent. A service could aim either at chosen rows,
-            // so neither changes what is asked next. The poll is recorded and
-            // the work stays durable for its next scheduled tip.
-            Err(error @ (StatusError::Unreadable | StatusError::CoverageIncomplete))
-                if is_private(&work) =>
-            {
+            Err(StatusError::CoverageIncomplete) if is_private(&work) => {
+                // A row without this txid's record is a reply about it, so
+                // the txid waits for the next block like any other answer.
+                // The sync then fails without retrying at this tip (see
+                // `SyncError::recovery_strategy`).
                 super::content_failures::status_answered(db_path, txid);
-                store::record_private_poll(db, txid, required_through)?;
-                log::warn!("private status reply was inconclusive ({error}); the transaction waits for its next poll");
-                continue;
+                // GetStatus work is expected to be highly unlikely in private
+                // mode. Temporarily fail visibly so this feedback gate detects
+                // real occurrences; if users encounter it, we will design the
+                // complete negative-coverage recovery instead of silently
+                // weakening privacy.
+                return Err(SyncError::PrivateStatusCoverageIncomplete);
             }
             // The gated public source reports a withheld observation as
             // `Cancelled`; the rest of the public work is withheld too.
@@ -201,9 +186,20 @@ where
                     "transaction status: local wallet database read failed",
                 ));
             }
+            // A reply that did not decode is about this txid's row: a
+            // service could aim it at chosen rows. The work stays durable
+            // for a later sync, and the other txids are still asked, so
+            // nothing else in the sync changes.
+            Err(StatusError::Malformed) if is_private(&work) => {
+                super::content_failures::status_answered(db_path, txid);
+                log::warn!(
+                    "private status reply did not decode; the transaction waits for a later sync"
+                );
+                continue;
+            }
             Err(error) if is_private(&work) => {
-                // A request outcome: keep the work due and stop querying the
-                // private service for this session. Never a public fallback.
+                // Inconclusive: keep the work and stop querying the private
+                // service for this session. Never a public fallback.
                 log::warn!(
                     "private status observation failed; deferring for this session: {error}"
                 );

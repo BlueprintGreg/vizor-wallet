@@ -30,6 +30,13 @@ pub(crate) enum SyncError {
     /// retry path is the right response.
     Network(String),
 
+    /// Private Status PIR could not prove that its snapshot covered the
+    /// transaction-status decision. A later block can repair publication lag,
+    /// but changing lightwalletd endpoints cannot. The sync is not retried at
+    /// the same tip: the reply was about one transaction, and asking again
+    /// seconds later would show the service what it said.
+    PrivateStatusCoverageIncomplete,
+
     /// Local SQLite / `WalletDb` failure. Usually non-retryable (permissions,
     /// disk full, schema corruption) — propagate up and let the caller decide.
     Db(String),
@@ -154,7 +161,9 @@ impl SyncError {
                 to_height: at_height.saturating_sub(REWIND_DISTANCE),
             },
             SyncError::Network(_) | SyncError::Other(_) => RecoveryStrategy::RetryWithBackoff,
-            SyncError::Db(_) | SyncError::Parse(_) => RecoveryStrategy::Fatal,
+            SyncError::PrivateStatusCoverageIncomplete | SyncError::Db(_) | SyncError::Parse(_) => {
+                RecoveryStrategy::Fatal
+            }
         }
     }
 
@@ -196,6 +205,7 @@ impl SyncError {
         match self {
             SyncError::Network(message) => is_endpoint_failover_candidate_message(message),
             SyncError::Continuity { .. }
+            | SyncError::PrivateStatusCoverageIncomplete
             | SyncError::Db(_)
             | SyncError::Parse(_) => false,
             SyncError::Other(message) => is_endpoint_failover_candidate_message(message),
@@ -244,6 +254,9 @@ impl fmt::Display for SyncError {
                 write!(f, "chain continuity broken at height {at_height}: {detail}")
             }
             SyncError::Network(msg) => write!(f, "network: {msg}"),
+            SyncError::PrivateStatusCoverageIncomplete => {
+                write!(f, "private status coverage incomplete")
+            }
             SyncError::Db(msg) => write!(f, "db: {msg}"),
             SyncError::Parse(msg) => write!(f, "parse: {msg}"),
             SyncError::Other(msg) => write!(f, "other: {msg}"),
@@ -308,6 +321,17 @@ mod tests {
         );
     }
 
+    /// A row without the transaction's status record is a reply about that
+    /// transaction. Retrying the sync seconds later at the same block would
+    /// show the service what it said, so the sync fails without a retry.
+    #[test]
+    fn private_status_coverage_is_not_retried_at_the_same_tip() {
+        assert_eq!(
+            SyncError::PrivateStatusCoverageIncomplete.recovery_strategy(),
+            RecoveryStrategy::Fatal,
+        );
+    }
+
     #[test]
     fn endpoint_failover_candidate_is_limited_to_transport_failures() {
         assert!(
@@ -325,6 +349,7 @@ mod tests {
             detail: "PrevHashMismatch".into(),
         }
         .is_endpoint_failover_candidate());
+        assert!(!SyncError::PrivateStatusCoverageIncomplete.is_endpoint_failover_candidate());
         assert!(!is_endpoint_failover_candidate_message(
             "Endpoint is for test, but this wallet uses main."
         ));
@@ -382,6 +407,10 @@ mod tests {
         assert!(format!("{}", SyncError::Db("x".into())).starts_with("db: "));
         assert!(format!("{}", SyncError::Parse("x".into())).starts_with("parse: "));
         assert!(format!("{}", SyncError::Other("x".into())).starts_with("other: "));
+        assert_eq!(
+            format!("{}", SyncError::PrivateStatusCoverageIncomplete),
+            "private status coverage incomplete"
+        );
     }
 
     #[test]
