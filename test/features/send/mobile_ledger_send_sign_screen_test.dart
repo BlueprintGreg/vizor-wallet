@@ -2,6 +2,9 @@
 library;
 
 import 'dart:async';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_device_request.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_device_selection.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_procedure.dart';
 import 'package:flutter/services.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_failure_guidance.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_mobile_ble_service.dart';
@@ -247,6 +250,538 @@ void main() {
     ]);
     expect(result?.operationId, 'send:account-1:flow-1');
     expect(result?.reviewArgs, same(_args));
+  });
+
+  testWidgets(
+    'Ledger signing starts while proofs are pending and waits before saving',
+    (tester) async {
+      final proofs = Completer<List<int>>();
+      final signature = Completer<List<int>>();
+      final service = _FakeOperationService();
+      var signs = 0;
+      await tester.pumpWidget(
+        _app(
+          operationService: service,
+          proofAdder:
+              ({required pcztBytes, spendParamsPath, outputParamsPath}) =>
+                  proofs.future,
+          signer: (_) {
+            signs++;
+            return signature.future;
+          },
+        ),
+      );
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        signs,
+        1,
+        reason: 'Proof generation must not delay the Ledger request.',
+      );
+      expect(service.checkpointCalls, 0);
+      signature.complete(const [4]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('Approved on Ledger. Vizor is finishing the transaction.'),
+        findsOneWidget,
+      );
+      expect(find.text('Finish transaction'), findsOneWidget);
+      expect(find.text('Keep Vizor open.'), findsOneWidget);
+      expect(find.text('Keep Ledger connected.'), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is AppIcon && w.name == AppIcons.loader,
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<LedgerSigningModal>(find.byType(LedgerSigningModal))
+            .onCancel,
+        isNull,
+      );
+      expect(service.checkpointCalls, 0);
+      proofs.complete(const [3]);
+      await tester.pumpAndSettle();
+      expect(service.checkpointCalls, 1);
+      expect(signs, 1);
+    },
+  );
+
+  testWidgets(
+    'proofs completing first retain Ledger approval until its response',
+    (tester) async {
+      final proofs = Completer<List<int>>();
+      final signature = Completer<List<int>>();
+      final service = _FakeOperationService();
+      await tester.pumpWidget(
+        _app(
+          operationService: service,
+          proofAdder:
+              ({required pcztBytes, spendParamsPath, outputParamsPath}) =>
+                  proofs.future,
+          signer: (_) => signature.future,
+        ),
+      );
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      await tester.pump();
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(LedgerSigningModal)),
+      );
+      container.read(ledgerSigningProgressProvider.notifier).begin('account-1')(
+        'reviewing',
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      proofs.complete(const [3]);
+      await tester.pump();
+      expect(
+        tester
+            .widget<LedgerSigningModal>(find.byType(LedgerSigningModal))
+            .phase,
+        LedgerSigningModalPhase.awaitingDevice,
+      );
+      expect(
+        find.text('When prompted, check the amount and recipient on Ledger.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Approved on Ledger.'), findsNothing);
+      expect(service.checkpointCalls, 0);
+      signature.complete(const [4]);
+      await tester.pumpAndSettle();
+      expect(service.checkpointCalls, 1);
+    },
+  );
+
+  testWidgets(
+    'proof failure drains Ledger before retry and ignores its late signature',
+    (tester) async {
+      final proofs = Completer<List<int>>();
+      final signature = Completer<List<int>>();
+      final cancelled = Completer<void>();
+      final events = <String>[];
+      final service = _FakeOperationService(events: events);
+      var proves = 0;
+      var signs = 0;
+      await tester.pumpWidget(
+        _app(
+          operationService: service,
+          proofAdder:
+              ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+                proves++;
+                return proves == 1 ? proofs.future : Future.value(const [3]);
+              },
+          signer: (_) {
+            signs++;
+            return signs == 1 ? signature.future : Future.value(const [8]);
+          },
+          canceller: () => cancelled.future,
+        ),
+      );
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      await tester.pump();
+      proofs.completeError(StateError('proof generation failed'));
+      await tester.pump();
+      expect(find.text('Cancelling request'), findsOneWidget);
+      expect(find.text('Try again'), findsNothing);
+      cancelled.complete();
+      await tester.pump();
+      expect(
+        find.text('Try again'),
+        findsNothing,
+        reason:
+            'Native cancellation alone must not release a still-active signing future.',
+      );
+      signature.complete(const [4]);
+      await tester.pumpAndSettle();
+      expect(find.text('Could not finish transaction'), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(proves, 2);
+      expect(signs, 2);
+      expect(events, contains('checkpoint:[3]:[8]'));
+      expect(events, isNot(contains('checkpoint:[3]:[4]')));
+    },
+  );
+
+  testWidgets(
+    'proof failure after signing retries proofs without another Ledger approval',
+    (tester) async {
+      final proofs = Completer<List<int>>();
+      final signature = Completer<List<int>>();
+      final service = _FakeOperationService();
+      var proves = 0;
+      var signs = 0;
+      var cancels = 0;
+      await tester.pumpWidget(
+        _app(
+          operationService: service,
+          proofAdder:
+              ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+                proves++;
+                return proves == 1 ? proofs.future : Future.value(const [3]);
+              },
+          signer: (_) {
+            signs++;
+            return signature.future;
+          },
+          canceller: () async {
+            cancels++;
+          },
+        ),
+      );
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      await tester.pump();
+      signature.complete(const [4]);
+      await tester.pump();
+      proofs.completeError(StateError('proof generation failed'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Keep Vizor open and try again. No new Ledger approval needed.',
+        ),
+        findsOneWidget,
+      );
+      expect(cancels, 0);
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(proves, 2);
+      expect(signs, 1);
+      expect(service.checkpointCalls, 1);
+    },
+  );
+
+  testWidgets('signing retry reuses a proof job that is still running', (
+    tester,
+  ) async {
+    final proofs = Completer<List<int>>();
+    final signatures = List.generate(2, (_) => Completer<List<int>>());
+    final service = _FakeOperationService();
+    var proves = 0;
+    var signs = 0;
+    await tester.pumpWidget(
+      _app(
+        operationService: service,
+        proofAdder: ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+          proves++;
+          return proofs.future;
+        },
+        signer: (_) => signatures[signs++].future,
+      ),
+    );
+    await tester.tap(find.text('Open signing'));
+    await tester.pump();
+    await tester.pump();
+    signatures[0].completeError(StateError(_deviceRejected));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Try again'));
+    await tester.pump();
+    await tester.pump();
+    expect(proves, 1);
+    expect(signs, 2);
+    proofs.complete(const [3]);
+    signatures[1].complete(const [4]);
+    await tester.pumpAndSettle();
+    expect(service.checkpointCalls, 1);
+  });
+
+  testWidgets(
+    'decline retry keeps preparation complete through readiness and reuses its PCZT',
+    (tester) async {
+      final params = Completer<SaplingParamsStatus>();
+      final proofs = Completer<List<int>>();
+      final signatures = List.generate(2, (_) => Completer<List<int>>());
+      final reports = <LedgerSigningProgressReporter>[];
+      final events = <String>[];
+      final service = _FakeOperationService();
+      late ProviderContainer container;
+      var loads = 0, proves = 0, signs = 0;
+      await tester.pumpWidget(
+        _app(
+          operationService: service,
+          events: events,
+          paramsLoader: () =>
+              ++loads == 2 ? params.future : Future.value(_params),
+          proofAdder:
+              ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+                proves++;
+                return proofs.future;
+              },
+          signer: (_) {
+            reports.add(
+              container
+                  .read(ledgerSigningProgressProvider.notifier)
+                  .begin('account-1'),
+            );
+            return signatures[signs++].future;
+          },
+        ),
+      );
+      container = ProviderScope.containerOf(
+        tester.element(find.text('Open signing')),
+      );
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      await tester.pump();
+      reports.last('reviewing');
+      await tester.pump(const Duration(milliseconds: 400));
+      signatures.first.completeError(StateError(_deviceRejected));
+      await tester.pumpAndSettle();
+      expect(find.text('Request declined'), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      // Observe the frame before the retry can even start another Ledger call.
+      expect(
+        tester
+            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .currentStep,
+        1,
+      );
+      expect(
+        find.byWidgetPredicate((w) => w is AppIcon && w.name == AppIcons.check),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is AppIcon && w.name == AppIcons.loader,
+        ),
+        findsOneWidget,
+      );
+      expect(signs, 1);
+      expect(find.text('Keep Ledger connected.'), findsOneWidget);
+      params.complete(_params);
+      await tester.pump();
+      await tester.pump();
+      final readiness = container.read(
+        ledgerAppReadinessStateProvider.notifier,
+      );
+      readiness.update(
+        const LedgerAppReadinessState.inProgress(
+          LedgerAppReadinessPhase.checkingDevice,
+        ),
+      );
+      await tester.pump();
+      expect(
+        tester
+            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .currentStep,
+        1,
+      );
+      readiness.update(
+        const LedgerAppReadinessState.inProgress(
+          LedgerAppReadinessPhase.confirmOpening,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Confirm opening Zcash on Ledger.'), findsOneWidget);
+      expect(find.text('Keep Zcash open.'), findsOneWidget);
+      expect(
+        tester
+            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .currentStep,
+        1,
+      );
+      readiness.update(const LedgerAppReadinessState.ready('3.9.4'));
+      reports.last('sending', deviceModel: 'Ledger Flex');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('It may take about 10 seconds.'), findsOneWidget);
+      reports.last('reviewing');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('When prompted, check the amount and recipient on Ledger.'),
+        findsOneWidget,
+      );
+      signatures.last.complete(const [4]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('Approved on Ledger. Vizor is finishing the transaction.'),
+        findsOneWidget,
+      );
+      expect(service.checkpointCalls, 0);
+      proofs.complete(const [3]);
+      await tester.pumpAndSettle();
+      expect(events.where((event) => event == 'create'), hasLength(1));
+      expect(events.where((event) => event == 'redact:[1]'), hasLength(1));
+      expect(proves, 1);
+      expect(signs, 2);
+      expect(service.checkpointCalls, 1);
+    },
+  );
+
+  for (final blockedStage in ['validation', 'transport preparation']) {
+    testWidgets(
+      'proof cancellation during $blockedStage reselects on the first retry and preserves the TEX signature',
+      (tester) async {
+        final proof = Completer<List<int>>();
+        final preparation = Completer<void>();
+        final requests = LedgerDeviceRequests();
+        final ble = _RetryBle();
+        final service = _FakeOperationService();
+        final events = <String>[];
+        late ProviderContainer container;
+        var proves = 0, validations = 0, transportCalls = 0, approvals = 0;
+        final ui =
+            _app(
+                  usePublicSigner: true,
+                  args: _texArgs,
+                  operationService: service,
+                  events: events,
+                  proofAdder:
+                      ({
+                        required pcztBytes,
+                        spendParamsPath,
+                        outputParamsPath,
+                      }) => ++proves == 2
+                      ? proof.future
+                      : Future.value([pcztBytes.single + 2]),
+                  canceller: () async => requests.cancel(),
+                  signer: (_) async {
+                    final call = ++transportCalls;
+                    final check = requests.capture();
+                    final scope = LedgerConnectionScope.current!;
+                    if (call == 1) {
+                      scope.selected = LedgerSelectedConnection(
+                        'account-1',
+                        _retryDevice,
+                        requests.capture(),
+                      );
+                    }
+                    if (blockedStage == 'transport preparation' && call == 2) {
+                      await preparation.future;
+                    }
+                    check();
+                    Future<List<int>> approve() async => [
+                      ++approvals == 1 ? 4 : 8,
+                    ];
+                    return container
+                        .read(ledgerConnectionServiceProvider)
+                        .run(
+                          accountUuid: 'account-1',
+                          usb: approve,
+                          bluetooth: (_) => approve(),
+                        );
+                  },
+                )
+                as ProviderScope;
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              ...ui.overrides,
+              accountProvider.overrideWith(_RetryAccount.new),
+              ledgerPcztSupportValidatorProvider.overrideWithValue((_) async {
+                if (++validations == 2 && blockedStage == 'validation') {
+                  await preparation.future;
+                }
+              }),
+              ledgerTargetPlatformProvider.overrideWithValue(
+                TargetPlatform.iOS,
+              ),
+              ledgerDeviceRequestsProvider.overrideWithValue(requests),
+              ledgerMobileBleServiceProvider.overrideWithValue(ble),
+              ledgerAppReadinessDeviceForTransportProvider(
+                LedgerConnectionTransport.bluetooth,
+              ).overrideWithValue(_RetryReadyDevice()),
+            ],
+            child: ui.child,
+          ),
+        );
+        container = ProviderScope.containerOf(
+          tester.element(find.text('Open signing')),
+        );
+        await tester.tap(find.text('Open signing'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(validations, 2);
+        expect(approvals, 1);
+        proof.completeError(StateError('second proof failed'));
+        await tester.pump();
+        expect(find.text('Cancelling request'), findsOneWidget);
+        expect(find.text('Try again'), findsNothing);
+        preparation.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Could not finish transaction'), findsOneWidget);
+        await tester.tap(find.text('Try again'));
+        await tester.pumpAndSettle();
+        final selection = container.read(ledgerDeviceSelectionProvider);
+        expect(
+          selection,
+          isNotNull,
+          reason:
+              'The first retry must discard the cancelled connection guard.',
+        );
+        expect(find.text('Ledger signing failed'), findsNothing);
+        expect(approvals, 1);
+        // Use the production selection and verification boundary to continue.
+        await selection!.select(_retryDevice, () {}, () {});
+        await tester.pumpAndSettle();
+        expect(approvals, 2);
+        expect(service.batchCheckpointCalls, 1);
+        expect(service.batchSignatures, [
+          [4],
+          [8],
+        ]);
+        expect(service.batchProofs, [
+          [3],
+          [7],
+        ]);
+        expect(events.where((event) => event == 'create-tex'), hasLength(1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('cancellation ignores late proofs and stops further TEX rounds', (
+    tester,
+  ) async {
+    final proofs = Completer<List<int>>();
+    final signature = Completer<List<int>>();
+    final service = _FakeOperationService();
+    var proves = 0;
+    var signs = 0;
+    var discards = 0;
+    await tester.pumpWidget(
+      _app(
+        args: _texArgs,
+        operationService: service,
+        proofAdder: ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+          proves++;
+          return proofs.future;
+        },
+        signer: (_) {
+          signs++;
+          return signature.future;
+        },
+        onDiscard: () async {
+          discards++;
+          return true;
+        },
+      ),
+    );
+    await tester.tap(find.text('Open signing'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == 'Close',
+      ),
+    );
+    await tester.pumpAndSettle();
+    proofs.complete(const [3]);
+    signature.complete(const [4]);
+    await tester.pumpAndSettle();
+    expect(proves, 1);
+    expect(signs, 1);
+    expect(discards, 1);
+    expect(service.batchCheckpointCalls, 0);
+    expect(find.text('Open signing'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -542,16 +1077,26 @@ void main() {
     await tester.tap(find.text('Open signing'));
     await tester.pumpAndSettle();
 
-    expect(events, [
-      'create-tex',
-      'redact:[1]',
-      'redact:[5]',
-      'proofs:[1]',
-      'proofs:[5]',
-      'sign:[2]',
-      'sign:[6]',
-      'checkpoint-batch:[[3], [7]]:[[4], [5]]',
-    ]);
+    expect(
+      events,
+      containsAllInOrder([
+        'create-tex',
+        'redact:[1]',
+        'redact:[5]',
+        'sign:[2]',
+        'sign:[6]',
+        'checkpoint-batch:[[3], [7]]:[[4], [5]]',
+      ]),
+    );
+    expect(
+      events,
+      containsAllInOrder([
+        'proofs:[1]',
+        'proofs:[5]',
+        'checkpoint-batch:[[3], [7]]:[[4], [5]]',
+      ]),
+    );
+    expect(signCalls, 2);
     expect(operationService.checkpointCalls, 0);
     expect(operationService.batchCheckpointCalls, 1);
   });
@@ -764,6 +1309,8 @@ Widget _app({
   Future<void>? creationGate,
   _Route? route,
   Future<SaplingParamsStatus> Function()? paramsLoader,
+  MobileLedgerSendProofAdder? proofAdder,
+  bool usePublicSigner = false,
   void Function(String)? onCreate,
 }) {
   final router = GoRouter(
@@ -823,6 +1370,7 @@ Widget _app({
             return [pcztBytes.single + 1];
           },
           addProofs:
+              proofAdder ??
               ({required pcztBytes, spendParamsPath, outputParamsPath}) async {
                 events?.add('proofs:$pcztBytes');
                 return [pcztBytes.single + 2];
@@ -837,9 +1385,14 @@ Widget _app({
     overrides: [
       appBootstrapProvider.overrideWithValue(_bootstrap),
       if (route != null) rpcEndpointFailoverProvider.overrideWith(() => route),
-      ledgerPcztSignerProvider.overrideWithValue(
-        (_, pcztBytes) => signer(pcztBytes),
-      ),
+      if (usePublicSigner)
+        ledgerPcztTransportSignerProvider.overrideWithValue(
+          (_, pcztBytes) => signer(pcztBytes),
+        )
+      else
+        ledgerPcztSignerProvider.overrideWithValue(
+          (_, pcztBytes) => signer(pcztBytes),
+        ),
       ledgerOperationCancellerProvider.overrideWithValue(
         canceller ?? () async {},
       ),
@@ -960,3 +1513,65 @@ const _deviceRejected =
 
 const _hostRejected =
     'ledger_status_6a80: Ledger rejected the PCZT data or key path';
+
+const _retryDevice = LedgerBleDevice(
+  id: 'retry-device',
+  name: 'My Ledger',
+  model: 'Flex',
+);
+
+class _RetryAccount extends AccountNotifier {
+  @override
+  AccountState build() => const AccountState(
+    accounts: [
+      AccountInfo(
+        uuid: 'account-1',
+        name: 'Ledger',
+        order: 0,
+        isHardware: true,
+        hardwareSignerKind: HardwareSignerKind.ledger,
+        zip32AccountIndex: 0,
+        ledgerDeviceId: 'retry-device',
+        ledgerLastTransport: LedgerConnectionTransport.bluetooth,
+      ),
+    ],
+    activeAccountUuid: 'account-1',
+    activeAddress: 'u1active',
+  );
+}
+
+class _RetryReadyDevice implements LedgerAppReadinessDevice {
+  @override
+  Future<LedgerDeviceAppSnapshot> queryZcashApp() async =>
+      const LedgerDeviceAppSnapshot(
+        status: LedgerDeviceAppStatus.open,
+        version: '3.9.4',
+      );
+  @override
+  Future<LedgerDeviceAppSnapshot> requestOpenZcashApp() => queryZcashApp();
+}
+
+class _RetryBle implements LedgerMobileBleService {
+  String? _connectedId = _retryDevice.id;
+  @override
+  String? get connectedDeviceId => _connectedId;
+  @override
+  Future<bool> requestPermissions() async => true;
+  @override
+  Future<void> stopDiscovery() async {}
+  @override
+  Future<void> disconnect() async {
+    _connectedId = null;
+  }
+
+  @override
+  Future<void> connect(LedgerBleDevice device) async {
+    _connectedId = device.id;
+  }
+
+  @override
+  Stream<LedgerDiscoveryUpdate> discoverDevices() =>
+      Stream.value(const LedgerDevicesDiscovered([_retryDevice]));
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
