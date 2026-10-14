@@ -349,7 +349,7 @@ async fn observed_coverage_at_the_current_tip_promotes_after_one_trusted_pass() 
     assert_last_known(&wallet, VALUE);
 
     let calls = source.calls();
-    let RunOutcome::Finished(stats) = run_required(&mut wallet, &source).await else {
+    let RunOutcome::Finished(stats) = run_required_once(&mut wallet, &source).await else {
         panic!("recovery finishes");
     };
     assert_eq!(source.calls(), calls + 1, "one pass was enough");

@@ -172,7 +172,7 @@ features = ["wallet"]
 # crates.io package; see the `[patch.crates-io]` comment below.
 [dependencies.zakura-pir-transparent]
 git = "https://github.com/zakura-core/wallet-libraries"
-rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae"
+rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26"
 default-features = false
 # `sqlite` applies a batch to the wallet and acknowledges it in one call.
 features = ["sqlite"]
@@ -224,7 +224,7 @@ features = ["test-fixtures"]
 # dependency above.
 [dev-dependencies.zakura-pir-transparent]
 git = "https://github.com/zakura-core/wallet-libraries"
-rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae"
+rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26"
 default-features = false
 features = ["sqlite", "testing"]
 
@@ -264,8 +264,17 @@ assertions_on_constants = "allow"
 # not released on crates.io yet. Keep its rev equal to these so its path
 # dependencies on the backend and SQLite crates resolve to the patched sources.
 #
-# Pinned to wallet-libraries main at PR #177 (release packaging checks only),
-# after PR #175 (the testing fake txid display publication on txid-4k8),
+# Pinned to wallet-libraries main at PR #195 (the wallet-pir transparent
+# crates from crates.io at 0.1.0-rc.4), after PR #193 (the Enhance row
+# accessor for reporting an unreadable reply), PR #194 and PR #188 (a receipt lookup
+# given up after three content failures reads as its own view state), PR #189
+# and PR #187 (a format-6 transparent recovery cache upgrades in place to
+# format 7), PR #182 (a bad reply fails one directory entry, and three hold the
+# account; the wallet-pir transparent crates from git at 0.1.0-rc.4), PR #181
+# (one recovery pass per sync), PR #180 (Enhance rejections capped per position
+# in an in-memory session), PR #179 (one receipt retry schedule for every
+# content outcome), PR #190 and PR #176 (the reaction-leak plans), PR #177
+# (release packaging checks only), after PR #175 (the testing fake txid display publication on txid-4k8),
 # PR #174 (the wallet-pir transparent crates from crates.io at 0.1.0-rc.3,
 # which read the 4,096-row txid display tables),
 # PR #169 (the ipir-sp family at 0.1.0-rc.7), PR #167 (the 8-bit txid
@@ -292,14 +301,14 @@ assertions_on_constants = "allow"
 # so their public types stay unified. Keep every wallet-libraries dependency at
 # this exact revision.
 [patch.crates-io]
-zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-transaction-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-pir-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-pir-native = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
-zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", rev = "391d0b0247f0e07cfdea855ce87fcdf8ba376aae" }
+zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-transaction-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-pir-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-pir-native = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
+zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", rev = "3acb18a2f3eaff8f4739d1b26edc73095b80ff26" }
 
 # Flutter debug builds use Cargokit + Cargo's dev profile (`cargo build`
 # without `--release`). Rust crypto and voting flows are slow under the default

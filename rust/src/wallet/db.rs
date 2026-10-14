@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Mutex, MutexGuard, OnceLock, TryLockError,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use voting_crypto_deps::rand::rngs::OsRng;
-use zcash_client_sqlite::{util::SystemClock, WalletDb};
+use zcash_client_sqlite::{util::SystemClock, EnhancePirSession, WalletDb};
 
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::transparent_ledger_mode_for;
@@ -172,6 +173,28 @@ pub(crate) fn open_wallet_db_readonly_with_timeout(
 fn wallet_db(conn: rusqlite::Connection, db_path: &str, network: WalletNetwork) -> WalletDatabase {
     WalletDb::from_connection(conn, network, SystemClock, OsRng)
         .with_transparent_ledger_mode(transparent_ledger_mode_for(db_path, network))
+        .with_enhance_pir_session(enhance_pir_session(db_path))
+}
+
+/// The Enhance PIR session of the wallet at `db_path`, shared by every handle
+/// this process opens on it.
+///
+/// The session counts, in memory, the Enhance replies for each note position
+/// that failed on content; the library stops querying a position after three.
+/// One session lives for the app's lifetime, so the bound holds across syncs
+/// and handles within one app session, and an app restart starts a fresh
+/// allowance. Sessions are keyed by path and never shared between wallets; a
+/// wallet recreated at the same path drops counts for requests it no longer
+/// has at its first work read.
+pub(crate) fn enhance_pir_session(db_path: &str) -> EnhancePirSession {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, EnhancePirSession>>> = OnceLock::new();
+    SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(db_path.to_owned())
+        .or_default()
+        .clone()
 }
 
 /// A configured wallet handle over a connection the caller already holds, so

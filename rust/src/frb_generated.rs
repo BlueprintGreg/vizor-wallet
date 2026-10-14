@@ -14715,7 +14715,8 @@ impl SseDecode for crate::api::sync::TransparentDetailsState {
             0 => crate::api::sync::TransparentDetailsState::Available,
             1 => crate::api::sync::TransparentDetailsState::Pending,
             2 => crate::api::sync::TransparentDetailsState::Unavailable,
-            3 => crate::api::sync::TransparentDetailsState::NotCovered,
+            3 => crate::api::sync::TransparentDetailsState::GaveUp,
+            4 => crate::api::sync::TransparentDetailsState::NotCovered,
             _ => unreachable!("Invalid variant for TransparentDetailsState: {}", inner),
         };
     }
@@ -19654,7 +19655,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::TransparentDetailsState
             Self::Available => 0.into_dart(),
             Self::Pending => 1.into_dart(),
             Self::Unavailable => 2.into_dart(),
-            Self::NotCovered => 3.into_dart(),
+            Self::GaveUp => 3.into_dart(),
+            Self::NotCovered => 4.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -23650,7 +23652,8 @@ impl SseEncode for crate::api::sync::TransparentDetailsState {
                 crate::api::sync::TransparentDetailsState::Available => 0,
                 crate::api::sync::TransparentDetailsState::Pending => 1,
                 crate::api::sync::TransparentDetailsState::Unavailable => 2,
-                crate::api::sync::TransparentDetailsState::NotCovered => 3,
+                crate::api::sync::TransparentDetailsState::GaveUp => 3,
+                crate::api::sync::TransparentDetailsState::NotCovered => 4,
                 _ => {
                     unimplemented!("");
                 }

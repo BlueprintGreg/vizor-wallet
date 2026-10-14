@@ -768,7 +768,7 @@ pub enum TransparentStopReason {
     LegacyDiscrepancy,
     /// The service withdrew a publication the account was recovered from.
     Withdrawn,
-    /// Recovery stalled repeatedly.
+    /// Recovery stalled repeatedly, or a record it needs failed three times.
     Stalled,
     /// The wallet requires private recovery while private queries are off:
     /// turning them off did not finish. Turning them off again restores public
@@ -3017,6 +3017,10 @@ pub enum TransparentDetailsState {
     /// The last lookup failed; a later sync retries when the service is
     /// reachable.
     Unavailable,
+    /// The lookup was given up after three replies failed on content: no sync
+    /// asks again until the transaction is mined at another height. Show it as
+    /// `Unavailable`, but do not re-read or prioritise it.
+    GaveUp,
     /// Private mode cannot look the transaction up: the private publication
     /// does not cover it.
     NotCovered,
@@ -3212,6 +3216,7 @@ pub fn get_transaction_detail(
                 wallet_sync::TransparentDetailsView::Unavailable => {
                     TransparentDetailsState::Unavailable
                 }
+                wallet_sync::TransparentDetailsView::GaveUp => TransparentDetailsState::GaveUp,
                 wallet_sync::TransparentDetailsView::NotCovered => {
                     TransparentDetailsState::NotCovered
                 }

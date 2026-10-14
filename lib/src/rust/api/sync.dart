@@ -3384,6 +3384,11 @@ enum TransparentDetailsState {
   /// reachable.
   unavailable,
 
+  /// The lookup was given up after three replies failed on content: no sync
+  /// asks again until the transaction is mined at another height. Show it as
+  /// `Unavailable`, but do not re-read or prioritise it.
+  gaveUp,
+
   /// Private mode cannot look the transaction up: the private publication
   /// does not cover it.
   notCovered,
@@ -3436,7 +3441,7 @@ enum TransparentStopReason {
   /// The service withdrew a publication the account was recovered from.
   withdrawn,
 
-  /// Recovery stalled repeatedly.
+  /// Recovery stalled repeatedly, or a record it needs failed three times.
   stalled,
 
   /// The wallet requires private recovery while private queries are off:

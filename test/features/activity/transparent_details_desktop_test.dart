@@ -189,6 +189,20 @@ void main() {
     });
   }
 
+  testWidgets('desktop receipt shows a given-up lookup as unavailable and '
+      'stops waiting for it', (tester) async {
+    final details = ScriptedDetails([
+      transparentDetail(rust_sync.TransparentDetailsState.gaveUp),
+    ]);
+    final prioritized = await _pump(tester, details);
+    expect(find.text(kTransparentDetailsUnavailableText), findsOneWidget);
+    expect(prioritized, isEmpty, reason: 'no sync asks for it again');
+    final before = details.calls;
+    await tester.pump(kTransparentDetailsPollInterval * 3);
+    expect(details.calls, before, reason: 'nothing to wait for');
+    await _close(tester);
+  });
+
   testWidgets('desktop receipt says not covered in private mode', (
     tester,
   ) async {
