@@ -120,6 +120,12 @@ where
         .copied()
         .filter(|work| !attempted.contains(&work.txid()))
         .filter(|work| !(*private_failed && is_private(work)))
+        // A private txid answered at this tip waits for the next block,
+        // whatever the reply said.
+        .filter(|work| {
+            !(is_private(work)
+                && super::content_failures::status_was_answered(db_path, &work.txid()))
+        })
         .filter(|work| public_allowed || is_private(work))
         .collect();
     let actionable = !pending.is_empty();
@@ -147,7 +153,12 @@ where
         let txid = work.txid();
         attempted.insert(txid);
         let observation = match reader.observe(work, required_through).await {
-            Ok(observation) => observation.into(),
+            Ok(observation) => {
+                if is_private(&work) {
+                    super::content_failures::status_answered(db_path, txid);
+                }
+                observation.into()
+            }
             Err(StatusError::CoverageIncomplete) if is_private(&work) => {
                 // GetStatus work is expected to be highly unlikely in private
                 // mode. Temporarily fail visibly so this feedback gate detects
@@ -176,7 +187,7 @@ where
             // for a later sync, and the other txids are still asked, so
             // nothing else in the sync changes.
             Err(StatusError::Malformed) if is_private(&work) => {
-                super::content_failures::status(db_path, txid);
+                super::content_failures::status_answered(db_path, txid);
                 log::warn!(
                     "private status reply did not decode; the transaction waits for a later sync"
                 );
