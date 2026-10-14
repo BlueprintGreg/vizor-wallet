@@ -8395,6 +8395,55 @@ void main() {
     expect(reservations, 2);
   });
 
+  testWidgets('refreshing a refund quote reserves another refund key', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    var reservations = 0;
+    final store = _BindingReceiveReservationStore();
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        swapProvider: _NewDepositPerQuoteSwapProvider(),
+        reservationStore: store,
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          return SwapZecStagingAddress(
+            address: 'u1swap$reservations',
+            refundIndex: BigInt.from(reservations),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.zecToExternal);
+    notifier.updateAmount('0.5');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    notifier.expireReviewQuote();
+    await notifier.showReview(preserveCurrentReview: true);
+    await tester.pumpAndSettle();
+
+    final state = container.read(swapStateProvider);
+    expect(state.quoteError, isNull);
+    expect(state.reviewVisible, isTrue);
+    expect(state.reviewQuote?.depositInstruction.address, 't1deposit2');
+    expect(state.reviewAddressPlan?.oneClickRefundTo, 'u1swap2');
+    expect(store.bindings, {
+      BigInt.one: 't1deposit1',
+      BigInt.two: 't1deposit2',
+    });
+  });
+
   testWidgets('POC amount edits share an in-flight address reservation', (
     tester,
   ) async {
@@ -10688,6 +10737,7 @@ Widget _routerHarness(
   Duration? priceRefreshInterval,
   ReserveOrchardAddress? loadShieldedAddress,
   ReserveSwapAddress? reserveSwapAddress,
+  ReceiveReservationStore? reservationStore,
   bool seedSwapActivityFixtures = true,
   AppBootstrapState? bootstrap,
   AccountNotifier Function()? accountNotifier,
@@ -10749,7 +10799,8 @@ Widget _routerHarness(
                 );
               },
           reservations: SwapReceiveReservationService(
-            store: (_) async => _FakeReceiveReservationStore(),
+            store: (_) async =>
+                reservationStore ?? _FakeReceiveReservationStore(),
           ),
         ),
       ),

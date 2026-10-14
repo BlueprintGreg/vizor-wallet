@@ -825,6 +825,7 @@ class SwapNotifier extends Notifier<SwapState> {
       if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
         return;
       }
+      final staging = _reviewStagingAddress;
       final addressPlan = stagingAddress.toAddressPlan(
         direction: direction,
         externalAsset: externalAsset,
@@ -847,6 +848,12 @@ class SwapNotifier extends Notifier<SwapState> {
                   ),
                 ),
           );
+      // The quote bound the refund key to its deposit, so the next quote, a
+      // refresh included, reserves another key.
+      if (quote.swapRefundIndex != null &&
+          identical(_reviewStagingAddress, staging)) {
+        _reviewStagingAddress = null;
+      }
       if (generation != _quoteGeneration) {
         return;
       }
