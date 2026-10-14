@@ -72,6 +72,8 @@ class _MobileKeystoneShieldScreenState
   var _stage = _ShieldSignStage.preparing;
   bool _started = false;
   bool _qrVisualReady = false;
+  bool _closed = false;
+  int _scanGeneration = 0;
   bool _done = false;
   late final String _accountUuid;
   late final String _network;
@@ -120,6 +122,8 @@ class _MobileKeystoneShieldScreenState
 
   @override
   void dispose() {
+    _closed = true;
+    _scanGeneration++;
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_scanController?.dispose());
     super.dispose();
@@ -220,6 +224,8 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _startScanning() {
+    if (_closed || _stage != _ShieldSignStage.showQr || !_qrVisualReady) return;
+    _scanGeneration++;
     _scanController ??= MobileScannerController(
       facing: CameraFacing.back,
       formats: QrScanner.formats,
@@ -233,6 +239,8 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _backToQr() {
+    if (_closed || _decoding || _stage != _ShieldSignStage.scanning) return;
+    _scanGeneration++;
     setState(() {
       _stage = _ShieldSignStage.showQr;
       _scanHint = null;
@@ -241,6 +249,7 @@ class _MobileKeystoneShieldScreenState
   }
 
   Future<void> _openCameraSettings() async {
+    if (_closed || _stage != _ShieldSignStage.scanning) return;
     _restartCameraOnResume = true;
     final opened = await CameraPermissionSettings.open();
     if (!opened) {
@@ -250,6 +259,7 @@ class _MobileKeystoneShieldScreenState
   }
 
   Future<void> _restartCameraAfterSettings() async {
+    if (_closed || _stage != _ShieldSignStage.scanning) return;
     final scanController = _scanController;
     if (scanController == null ||
         scanController.value.isStarting ||
@@ -264,8 +274,14 @@ class _MobileKeystoneShieldScreenState
     }
   }
 
-  Future<void> _handleScanComplete(ScanResult result) async {
-    if (_decoding) return;
+  bool _isActiveScan(int generation) =>
+      mounted &&
+      !_closed &&
+      _stage == _ShieldSignStage.scanning &&
+      generation == _scanGeneration;
+
+  Future<void> _handleScanComplete(ScanResult result, int generation) async {
+    if (!_isActiveScan(generation) || _decoding) return;
     setState(() {
       _decoding = true;
       _scanHint = null;
@@ -274,13 +290,14 @@ class _MobileKeystoneShieldScreenState
       final signedPczt = await rust_keystone.decodePcztFromCbor(
         cbor: result.data,
       );
-      while (mounted && _pcztWithProofs == null && !_proofsFailed) {
-        if (_stage == _ShieldSignStage.failed) break;
+      while (_isActiveScan(generation) &&
+          _pcztWithProofs == null &&
+          !_proofsFailed) {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       }
       final pcztWithProofs = _pcztWithProofs;
       final saplingParams = _saplingParams;
-      if (!mounted) return;
+      if (!_isActiveScan(generation)) return;
       if (pcztWithProofs == null || saplingParams == null) {
         setState(() {
           _decoding = false;
@@ -295,6 +312,7 @@ class _MobileKeystoneShieldScreenState
         saplingParams: saplingParams,
       );
     } catch (e, st) {
+      if (!_isActiveScan(generation)) return;
       log('MobileKeystoneShield: signed PCZT decode error: $e\n$st');
       if (!mounted) return;
       setState(() {
@@ -319,6 +337,8 @@ class _MobileKeystoneShieldScreenState
     required Uint8List signatures,
     required SaplingParamsStatus saplingParams,
   }) async {
+    if (!mounted || _closed) return;
+    _scanGeneration++;
     setState(() {
       _stage = _ShieldSignStage.broadcasting;
       _error = null;
@@ -427,11 +447,16 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _cancel() {
-    if (_stage == _ShieldSignStage.broadcasting) return;
+    if (_closed || _stage == _ShieldSignStage.broadcasting) return;
+    _closed = true;
+    _scanGeneration++;
     context.pop();
   }
 
   void _finishWarningOrFailure() {
+    if (_closed) return;
+    _closed = true;
+    _scanGeneration++;
     final message = _statusMessage;
     if (_stage == _ShieldSignStage.broadcastWarning &&
         message != null &&
@@ -452,7 +477,7 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _start() {
-    if (_started) return;
+    if (_closed || _started) return;
     setState(() => _started = true);
     unawaited(_preparePczt());
   }
@@ -519,26 +544,32 @@ class _MobileKeystoneShieldScreenState
   Widget _buildScanner(BoxConstraints constraints, KeystoneShieldMorph morph) {
     final controller = _scanController;
     if (controller == null) return const SizedBox.shrink();
+    final generation = _scanGeneration;
     return KeystoneShieldScannerSurface(
       constraints: constraints,
       morph: morph,
       decoding: _decoding,
       progress: _scanProgress,
       hint: _scanHint,
-      onToggleTorch: () => unawaited(controller.toggleTorch()),
+      onToggleTorch: () {
+        if (_isActiveScan(generation)) unawaited(controller.toggleTorch());
+      },
       cameraBuilder: (viewSize) => AnimatedUrScannerView(
         controller: controller,
         expectedUrType: 'zcash-pczt',
         scanWindow: Rect.fromLTWH(0, 0, viewSize, viewSize),
-        scanSessionResetToken: _stage,
+        scanSessionResetToken: generation,
         errorBuilder: (context, error) => const SizedBox.shrink(),
         onProgress: (progress) {
-          if (mounted && _scanProgress != progress) {
+          if (_isActiveScan(generation) && _scanProgress != progress) {
             setState(() => _scanProgress = progress);
           }
         },
-        onDecodeError: _handleDecodeError,
-        onComplete: (result) => unawaited(_handleScanComplete(result)),
+        onDecodeError: (error) {
+          if (_isActiveScan(generation)) _handleDecodeError(error);
+        },
+        onComplete: (result) =>
+            unawaited(_handleScanComplete(result, generation)),
       ),
       cameraErrorBuilder: (viewSize) => MobileScanCameraErrorOverlay(
         controller: controller,
