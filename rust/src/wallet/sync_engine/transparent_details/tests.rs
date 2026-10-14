@@ -1243,8 +1243,10 @@ async fn stage_failure_protocol_sync_ok_balances_unchanged() {
     let lwd = CapturingLwd::start_with(Vec::new(), 0, |_| {}).await;
     let before = balance(&fixture);
     let outcome = followup_with(&fixture, required(), &lwd).await;
+    // A malformed display map is chosen without knowing any txid, so it is
+    // an outage, not a content failure against this transaction.
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.deferred == 1),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.deferred == 1),
         "{outcome:?}"
     );
     assert_eq!(paths(&service), ["/v2/txid/init"]);
