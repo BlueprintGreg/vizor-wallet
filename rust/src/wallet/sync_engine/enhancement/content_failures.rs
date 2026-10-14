@@ -23,7 +23,8 @@
 //! of another kind would not have added. Asking them now, or counting them
 //! towards a restart, would show the service what its reply said. So every
 //! drain point compares the private work before and after it runs, records
-//! what appeared as unlocked at this tip, and that work is neither asked nor
+//! what appeared as unlocked at this tip, including positions still waiting
+//! for their first query, and that work is neither asked nor
 //! counted until the next block.
 //!
 //! Request failures (a refusal, an overload, a transport error) are not
@@ -43,7 +44,8 @@ use zcash_client_backend::data_api::status::TransactionStatusWork;
 use zcash_primitives::transaction::TxId;
 
 /// The private work that exists at one moment: Enhance queries, rediscovery
-/// jobs and status lookups.
+/// jobs and status lookups. Waiting positions retain their query identity so
+/// expiring a timer neither loses reply-created work nor creates new work.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PrivateWork {
     queries: BTreeSet<EnhancePirRequest>,
@@ -59,7 +61,9 @@ impl PrivateWork {
         let mut work = Self::default();
         for item in enhancement {
             match item {
-                TransactionEnhancementWork::Private(EnhancePirWork::Query(request)) => {
+                TransactionEnhancementWork::Private(
+                    EnhancePirWork::Query(request) | EnhancePirWork::Waiting { request, .. },
+                ) => {
                     work.queries.insert(request);
                 }
                 TransactionEnhancementWork::Private(EnhancePirWork::Rediscover(request)) => {
@@ -78,13 +82,15 @@ impl PrivateWork {
         work
     }
 
-    /// Whether `work` is part of this snapshot. Suspended and waiting work
-    /// is never asked, so it always is.
+    /// Whether `work` is part of this snapshot. A waiting position keeps its
+    /// identity when it becomes due; suspended work is never asked.
     pub(crate) fn contains(&self, work: &EnhancePirWork) -> bool {
         match work {
-            EnhancePirWork::Query(request) => self.queries.contains(request),
+            EnhancePirWork::Query(request) | EnhancePirWork::Waiting { request, .. } => {
+                self.queries.contains(request)
+            }
             EnhancePirWork::Rediscover(request) => self.rediscovery.contains(request),
-            EnhancePirWork::Suspended(_) | EnhancePirWork::Waiting { .. } => true,
+            EnhancePirWork::Suspended(_) => true,
         }
     }
 
@@ -203,7 +209,71 @@ pub(crate) fn may_ask_status(db_path: &str, txid: &TxId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zcash_client_backend::data_api::enhance_pir::IronwoodEnhanceRequestId;
     use zcash_client_backend::data_api::status::PrivateTransactionStatusRequest;
+
+    fn waiting_request() -> EnhancePirRequest {
+        EnhancePirRequest::new(
+            42.into(),
+            IronwoodEnhanceRequestId::new(TxId::from_bytes([0x43; 32]), 0),
+        )
+    }
+
+    fn waiting_work(request: EnhancePirRequest) -> PrivateWork {
+        PrivateWork::new(
+            [TransactionEnhancementWork::Private(
+                EnhancePirWork::Waiting {
+                    request,
+                    not_before: std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(75),
+                },
+            )],
+            [],
+        )
+    }
+
+    /// Expiring a reply-created position's wait must not allow a lookup or
+    /// recovery restart at the same block. The next block releases it.
+    #[test]
+    fn a_waiting_query_a_reply_created_stays_blocked_when_due() {
+        let path = "waiting-query-created-by-a-reply";
+        let request = waiting_request();
+        at_tip(path, 10);
+        unlocked(path, &PrivateWork::default(), &waiting_work(request));
+
+        // The library returns Query instead of Waiting once its clock
+        // reaches the deadline. Dispatch and restart counting share this gate.
+        let due = EnhancePirWork::Query(request);
+        assert!(
+            !may_ask(path, &due),
+            "the deadline does not advance the block"
+        );
+        at_tip(path, 10);
+        assert!(
+            !may_ask(path, &due),
+            "another sync at this block stays blocked"
+        );
+        at_tip(path, 11);
+        assert!(may_ask(path, &due), "the next block releases the query");
+    }
+
+    /// A position already waiting before the checkpoint is not reply-created
+    /// just because its timer expires while the checkpoint runs.
+    #[test]
+    fn an_existing_waiting_query_becoming_due_is_not_reply_created() {
+        let path = "existing-waiting-query-becoming-due";
+        let request = waiting_request();
+        let before = waiting_work(request);
+        let due = EnhancePirWork::Query(request);
+        assert!(
+            before.contains(&due),
+            "the snapshot keeps the waiting identity"
+        );
+        let after = PrivateWork::new([TransactionEnhancementWork::Private(due)], []);
+        at_tip(path, 10);
+        unlocked(path, &before, &after);
+        assert!(may_ask(path, &due), "time alone does not create reply work");
+    }
 
     /// A status lookup that a reply created at this tip is neither asked nor
     /// counted until the next block, like an Enhance query.

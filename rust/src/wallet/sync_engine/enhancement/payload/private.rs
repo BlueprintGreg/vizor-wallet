@@ -346,7 +346,8 @@ impl RoutedPayloadEnhancement {
                         let mut unreadable = BTreeSet::new();
                         // A request outcome inside the batch defers the
                         // rest of the sync once the batch has been asked to
-                        // its end, so the requests never depend on a reply.
+                        // its end. The client stops dispatch on HTTP 429/503;
+                        // stale routing and cancellation also stop below.
                         let mut refused = None;
                         while let Some(result) = results.next().await {
                             if should_exit() {

@@ -6979,9 +6979,9 @@ fn recovery_status_for(
         queries: work.query_count() as u32,
         rediscovery: work.rediscover.len() as u32,
         // A position waiting for its first query is pending, not complete,
-        // but not a restart reason: the checkpoint at each block picks it up
-        // once it is due. It is listed with the work that cannot be retried
-        // now.
+        // but not a restart reason while waiting. Once due, block processing
+        // or recovery retries pick it up, unless a reply created it at this
+        // tip. It is listed with the work that cannot be retried now.
         suspended: (work.suspended + work.waiting) as u32,
         status: status as u32,
         service_state,

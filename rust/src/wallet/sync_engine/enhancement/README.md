@@ -187,6 +187,8 @@ recovering
     |
     +-- HTTP 409/410 --> refresh once ---------> retry unfinished work
     |
+    +-- HTTP 429/503 --------------------------> stop dispatch; retrying later
+    |
     +-- unreadable row or record, or a record
     |   the wallet rejects --------------------> counted; rest of batch asked
     |
@@ -201,14 +203,23 @@ a record in it that does not decode, and a record the wallet rejects are
 content outcomes: a service could aim them at chosen rows. Each is counted
 against the requests of its transaction in that row (three suspend the
 position for the wallet session), and the rest of the batch is asked as an
-honest reply would have it. A request failure (an HTTP refusal, a transport or
-JSON error, a rotated generation, a body over the size limit, or a reply whose
-length or binding does not match the session) counts nothing; the batch is
+honest reply would have it. Other request failures (an HTTP refusal, a transport
+or JSON error, a rotated generation, a body over the size limit, or a reply whose
+length or binding does not match the session) count nothing; the batch is
 still asked to its end, and then private Enhance waits for a later sync.
+HTTP 429/503 stop dispatch inside the client; consuming the remaining results
+does not send those requests. HTTP 409/410 instead refresh routing once and
+retry unfinished work. None of these request failures consumes the content
+failure allowance.
 
 A newly queued position waits a random time of up to 75 seconds before its
-first query (`EnhancePirWork::Waiting`). It is pending, not complete, and the
-checkpoint at each block asks it once it is due.
+first query (`EnhancePirWork::Waiting`). It is pending, not complete, and
+does not cause a recovery restart while waiting. Once due, ordinary pending
+work can be picked up by block processing or the existing recovery retry
+schedule, including at an unchanged tip. Work a reply created remains blocked
+until the next block even if its timer expires first: before/after snapshots
+keep waiting request identities as well as ready ones. The delay is therefore
+not a bound on when the recovered memo appears.
 
 Accepted routing, pending routing, rediscovery attempts, and
 `private_failed_for_sync` are session-scoped. Successfully persisted records
