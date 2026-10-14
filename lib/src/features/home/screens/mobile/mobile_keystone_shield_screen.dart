@@ -1,8 +1,7 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart' show Colors, Icons;
+import 'package:flutter/material.dart' show Colors;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,7 +22,7 @@ import '../../../../rust/api/sync.dart' as rust_sync;
 import '../../../../services/camera_permission_settings.dart';
 import '../../../../services/qr_scanner.dart';
 import '../../../address_scan/widgets/mobile_address_scan_view.dart'
-    show MobileScanCameraErrorOverlay, MobileScanViewfinderCorners;
+    show MobileScanCameraErrorOverlay;
 import '../../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
 import '../../../send/services/sapling_params.dart';
@@ -31,6 +30,8 @@ import '../../services/transparent_shielding_service.dart';
 import '../../../../core/formatting/zec_amount.dart';
 import '../../../../providers/wallet_provider.dart';
 import '../../widgets/mobile/shield/mobile_shield_scene.dart';
+import '../../widgets/mobile/shield/keystone_shield_morph.dart';
+import '../../widgets/mobile/shield/keystone_shield_scanner_surface.dart';
 import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 
 enum _ShieldSignStage {
@@ -70,6 +71,7 @@ class _MobileKeystoneShieldScreenState
     with WidgetsBindingObserver, ExternalActionGuardHoldMixin {
   var _stage = _ShieldSignStage.preparing;
   bool _started = false;
+  bool _qrVisualReady = false;
   bool _done = false;
   late final String _accountUuid;
   late final String _network;
@@ -486,15 +488,23 @@ class _MobileKeystoneShieldScreenState
           ? 'Shielding needs attention'
           : 'Shielding your balance…',
       body: terminal ? _statusMessage ?? _error : null,
-      focusBuilder:
-          _started &&
-              !_done &&
-              !terminal &&
-              (scanning || _stage == _ShieldSignStage.showQr)
-          ? (context, constraints) => scanning
-                ? _buildScanner(constraints)
-                : _buildQrStage(constraints)
-          : null,
+      keystoneFocus: KeystoneShieldFocus(
+        stage: _started && !_done && !terminal
+            ? scanning
+                  ? KeystoneShieldFocusStage.scanner
+                  : _stage == _ShieldSignStage.showQr
+                  ? KeystoneShieldFocusStage.qr
+                  : KeystoneShieldFocusStage.cloud
+            : KeystoneShieldFocusStage.cloud,
+        urParts: _urParts,
+        scannerBuilder: (constraints, morph) =>
+            _buildScanner(constraints, morph),
+        onQrReadyChanged: (ready) {
+          if (mounted && _qrVisualReady != ready) {
+            setState(() => _qrVisualReady = ready);
+          }
+        },
+      ),
       canLeave: _stage != _ShieldSignStage.broadcasting,
       onCommit: _start,
       onClose: _done
@@ -506,76 +516,38 @@ class _MobileKeystoneShieldScreenState
     );
   }
 
-  Widget _buildQrStage(BoxConstraints constraints) =>
-      MobileShieldKeystoneQr(constraints: constraints, urParts: _urParts);
-
-  Widget _buildScanner(BoxConstraints constraints) {
-    final viewSize = math.max(
-      80.0,
-      math.min(
-        260.0,
-        math.min(constraints.maxWidth, constraints.maxHeight - 100),
-      ),
-    );
+  Widget _buildScanner(BoxConstraints constraints, KeystoneShieldMorph morph) {
     final controller = _scanController;
     if (controller == null) return const SizedBox.shrink();
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          width: viewSize,
-          height: viewSize,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadii.large),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                AnimatedUrScannerView(
-                  controller: controller,
-                  expectedUrType: 'zcash-pczt',
-                  scanWindow: Rect.fromLTWH(0, 0, viewSize, viewSize),
-                  scanSessionResetToken: _stage,
-                  errorBuilder: (context, error) => const SizedBox.shrink(),
-                  onProgress: (progress) {
-                    if (mounted && _scanProgress != progress) {
-                      setState(() => _scanProgress = progress);
-                    }
-                  },
-                  onDecodeError: _handleDecodeError,
-                  onComplete: (result) =>
-                      unawaited(_handleScanComplete(result)),
-                ),
-                const MobileScanViewfinderCorners(),
-                MobileScanCameraErrorOverlay(
-                  controller: controller,
-                  maxWidth: viewSize,
-                  permissionDeniedMessage:
-                      'Allow camera access in Settings to scan Keystone signatures.',
-                  unavailableMessage: 'The camera is unavailable right now.',
-                  onOpenSettings: _openCameraSettings,
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          _decoding
-              ? 'Reading signature…'
-              : _scanHint ?? 'Scanning… $_scanProgress%',
-          textAlign: TextAlign.center,
-          style: AppTypography.bodyMedium.copyWith(color: Colors.white),
-        ),
-        AppButton(
-          variant: AppButtonVariant.ghost,
-          onPressed: () => unawaited(controller.toggleTorch()),
-          child: const Icon(
-            Icons.flashlight_on_outlined,
-            color: Colors.white,
-            semanticLabel: 'Toggle flashlight',
-          ),
-        ),
-      ],
+    return KeystoneShieldScannerSurface(
+      constraints: constraints,
+      morph: morph,
+      decoding: _decoding,
+      progress: _scanProgress,
+      hint: _scanHint,
+      onToggleTorch: () => unawaited(controller.toggleTorch()),
+      cameraBuilder: (viewSize) => AnimatedUrScannerView(
+        controller: controller,
+        expectedUrType: 'zcash-pczt',
+        scanWindow: Rect.fromLTWH(0, 0, viewSize, viewSize),
+        scanSessionResetToken: _stage,
+        errorBuilder: (context, error) => const SizedBox.shrink(),
+        onProgress: (progress) {
+          if (mounted && _scanProgress != progress) {
+            setState(() => _scanProgress = progress);
+          }
+        },
+        onDecodeError: _handleDecodeError,
+        onComplete: (result) => unawaited(_handleScanComplete(result)),
+      ),
+      cameraErrorBuilder: (viewSize) => MobileScanCameraErrorOverlay(
+        controller: controller,
+        maxWidth: viewSize,
+        permissionDeniedMessage:
+            'Allow camera access in Settings to scan Keystone signatures.',
+        unavailableMessage: 'The camera is unavailable right now.',
+        onOpenSettings: _openCameraSettings,
+      ),
     );
   }
 
@@ -600,6 +572,8 @@ class _MobileKeystoneShieldScreenState
                   Expanded(
                     child: AppButton(
                       expand: true,
+                      constrainContent: true,
+                      growWithContent: true,
                       variant: AppButtonVariant.ghost,
                       onPressed: _finishWarningOrFailure,
                       child: const Text(
@@ -613,6 +587,8 @@ class _MobileKeystoneShieldScreenState
                     child: AppButton(
                       key: const ValueKey('mobile_keystone_shield_retry'),
                       expand: true,
+                      constrainContent: true,
+                      growWithContent: true,
                       onPressed: _retryBroadcast,
                       child: const Text('Try again'),
                     ),
@@ -621,6 +597,8 @@ class _MobileKeystoneShieldScreenState
               )
             : AppButton(
                 expand: true,
+                constrainContent: true,
+                growWithContent: true,
                 onPressed: _finishWarningOrFailure,
                 child: const Text('Back to wallet'),
               ),
@@ -639,6 +617,8 @@ class _MobileKeystoneShieldScreenState
           Expanded(
             child: AppButton(
               expand: true,
+              constrainContent: true,
+              growWithContent: true,
               variant: AppButtonVariant.ghost,
               onPressed: _stage == _ShieldSignStage.broadcasting
                   ? null
@@ -654,13 +634,18 @@ class _MobileKeystoneShieldScreenState
             child: scanning
                 ? AppButton(
                     expand: true,
+                    constrainContent: true,
+                    growWithContent: true,
                     variant: AppButtonVariant.secondary,
                     onPressed: _decoding ? null : _backToQr,
                     child: const Text('Show QR'),
                   )
                 : AppButton(
                     expand: true,
-                    onPressed: _stage == _ShieldSignStage.showQr
+                    constrainContent: true,
+                    growWithContent: true,
+                    onPressed:
+                        _stage == _ShieldSignStage.showQr && _qrVisualReady
                         ? _startScanning
                         : null,
                     trailing: _stage == _ShieldSignStage.broadcasting

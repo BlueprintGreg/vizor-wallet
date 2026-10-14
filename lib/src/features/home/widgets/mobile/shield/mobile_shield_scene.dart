@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../../../../core/theme/app_theme.dart';
 import '../../../../../core/widgets/app_button.dart';
 import 'balance_art.dart';
+import 'keystone_shield_morph.dart';
 import 'mobile_shield_backdrop.dart';
 import 'particles/particle_field.dart';
 import 'shield_background.dart';
@@ -17,7 +18,6 @@ import 'shield_motion.dart';
 import 'shield_particle_art.dart';
 import 'shield_timeline.dart';
 import 'slide_to_shield.dart';
-import '../../../../keystone/widgets/keystone_pczt_qr_stage.dart';
 
 // Transaction owners supply real states. This presentation never starts a
 // transaction, guesses its progress, or treats a pending broadcast as success.
@@ -33,6 +33,7 @@ class MobileShieldScene extends StatefulWidget {
     this.body,
     this.focusChild,
     this.focusBuilder,
+    this.keystoneFocus,
     this.footer,
     this.onCommit,
     this.onClose,
@@ -48,6 +49,7 @@ class MobileShieldScene extends StatefulWidget {
   final String? body;
   final Widget? focusChild;
   final Widget Function(BuildContext, BoxConstraints)? focusBuilder;
+  final KeystoneShieldFocus? keystoneFocus;
   final Widget? footer;
   final VoidCallback? onCommit;
   final VoidCallback? onClose;
@@ -80,6 +82,8 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   late double _afterFontSize;
   _ShieldLayout? _layout;
   ui.Image? _backdropImage;
+  KeystoneShieldMorph? _keystone;
+  String? _keystoneFocusTitle;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
   double? get _a => _assemblyAt == null ? null : _clock.value - _assemblyAt!;
@@ -89,6 +93,11 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   void initState() {
     super.initState();
     _backdropImage = widget.backdrop?.image.clone();
+    if (widget.keystoneFocus != null) {
+      _keystone = KeystoneShieldMorph()..configure(widget.keystoneFocus!);
+      _keystoneFocusTitle = widget.title;
+      unawaited(_keystone!.prepare());
+    }
     WidgetsBinding.instance.addObserver(this);
     _prepare();
   }
@@ -108,6 +117,12 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   @override
   void didUpdateWidget(MobileShieldScene oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.keystoneFocus != null) {
+      if (widget.keystoneFocus!.stage != KeystoneShieldFocusStage.cloud) {
+        _keystoneFocusTitle = widget.title;
+      }
+      _keystone?.configure(widget.keystoneFocus!);
+    }
     if (oldWidget.backdrop != widget.backdrop) {
       final next = widget.backdrop?.image.clone();
       _backdropImage?.dispose();
@@ -261,6 +276,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     }
     if (widget.phase == MobileShieldPhase.succeeded &&
         _assemblyAt == null &&
+        (_keystone?.cloudReady ?? true) &&
         t >= 3) {
       _assemblyAt = t;
     }
@@ -268,7 +284,14 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     _field?.hapticsEnabled =
         widget.phase == MobileShieldPhase.working ||
         widget.phase == MobileShieldPhase.succeeded;
+    _field?.captureProjectedParticles = _keystone != null;
     _field?.update(t, a);
+    final morph = _keystone;
+    if (morph != null && t >= ShieldTimeline.fall.end) {
+      morph.reduceMotion = _reduce;
+      morph.devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
+      morph.update(t, _field?.projectedParticles ?? const []);
+    }
     if (a != null && a >= ShieldTimeline.lock && !_successHaptic) {
       _successHaptic = true;
       Haptics.success();
@@ -292,6 +315,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     _clock.dispose();
     _drag.dispose();
     _field?.dispose();
+    _keystone?.dispose();
     _art?.dispose();
     _backdropImage?.dispose();
     super.dispose();
@@ -374,6 +398,16 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                   ),
                 ),
               ),
+              if (_keystone != null)
+                AnimatedBuilder(
+                  animation: _clock,
+                  builder: (_, _) => IgnorePointer(
+                    child: ColoredBox(
+                      key: const ValueKey('mobile_keystone_black_background'),
+                      color: Color.fromRGBO(0, 0, 0, _keystone!.blackMix),
+                    ),
+                  ),
+                ),
               FadeTransition(
                 opacity: CurvedAnimation(
                   parent: _entrance,
@@ -401,11 +435,13 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                         animation: _clock,
                         builder: (_, _) {
                           final auxiliary =
+                              (_keystone?.active ?? false) ||
                               widget.focusChild != null ||
                               widget.focusBuilder != null ||
                               widget.phase == MobileShieldPhase.failed ||
                               widget.phase == MobileShieldPhase.pending;
                           final content = Stack(
+                            key: _keystone?.spaceKey,
                             fit: StackFit.expand,
                             children: [
                               _visual(layout, auxiliary && _focusRevealed),
@@ -413,6 +449,17 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                                 _functionalContent(constraints)
                               else
                                 _normalControls(layout),
+                              if (_keystone != null && _focusRevealed)
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: CustomPaint(
+                                      painter: _KeystoneMorphPainter(
+                                        _keystone!,
+                                        _clock,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                             ],
                           );
                           if (!auxiliary &&
@@ -575,15 +622,51 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
           Expanded(
             child: LayoutBuilder(
               builder: (context, available) {
-                final child =
-                    widget.focusBuilder?.call(
-                      context,
-                      BoxConstraints(
-                        maxWidth: math.min(360, available.maxWidth),
-                        maxHeight: available.maxHeight,
-                      ),
-                    ) ??
-                    widget.focusChild;
+                final morph = _keystone;
+                final focus = widget.keystoneFocus;
+                final child = morph != null && focus != null
+                    ? SizedBox(
+                        width: math.min(360, available.maxWidth),
+                        height: available.maxHeight,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            if (morph.stage == KeystoneShieldFocusStage.qr)
+                              KeystoneShieldAnchor(
+                                key: const ValueKey(
+                                  'mobile_shield_keystone_qr',
+                                ),
+                                morph: morph,
+                                kind: KeystoneShieldAnchorKind.qr,
+                                child: SizedBox.square(
+                                  dimension: math.max(
+                                    1,
+                                    math.min(
+                                      312,
+                                      math.min(
+                                        available.maxWidth,
+                                        available.maxHeight,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Semantics(
+                                    label: 'Keystone transaction QR',
+                                  ),
+                                ),
+                              ),
+                            if (morph.scannerVisible)
+                              focus.scannerBuilder(available, morph),
+                          ],
+                        ),
+                      )
+                    : widget.focusBuilder?.call(
+                            context,
+                            BoxConstraints(
+                              maxWidth: math.min(360, available.maxWidth),
+                              maxHeight: available.maxHeight,
+                            ),
+                          ) ??
+                          widget.focusChild;
                 if (!_focusRevealed) return const SizedBox.shrink();
                 return Center(
                   child: SingleChildScrollView(
@@ -597,38 +680,47 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
             ),
           ),
           if (widget.focusChild == null)
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: constraints.maxHeight * 0.26,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    Text(
-                      widget.title,
-                      textAlign: TextAlign.center,
-                      style: AppTypography.bodyMedium.copyWith(
-                        color: const Color(0xFFFFFFFF),
-                      ),
-                    ),
-                    if (widget.body != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          widget.body!,
-                          textAlign: TextAlign.center,
-                          style: AppTypography.bodySmall.copyWith(
-                            color: const Color(0xCCFFFFFF),
-                          ),
+            Opacity(
+              opacity: _keystone?.leavingOpacity ?? 1,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: constraints.maxHeight * 0.26,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      Text(
+                        widget.phase == MobileShieldPhase.succeeded &&
+                                (_keystone?.active ?? false)
+                            ? _keystoneFocusTitle ?? 'Shielding your balance…'
+                            : widget.title,
+                        textAlign: TextAlign.center,
+                        style: AppTypography.bodyMedium.copyWith(
+                          color: const Color(0xFFFFFFFF),
                         ),
                       ),
-                  ],
+                      if (widget.body != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            widget.body!,
+                            textAlign: TextAlign.center,
+                            style: AppTypography.bodySmall.copyWith(
+                              color: const Color(0xCCFFFFFF),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
           const SizedBox(height: 12),
           if (widget.footer != null)
-            widget.footer!
+            Opacity(
+              opacity: _keystone?.leavingOpacity ?? 1,
+              child: widget.footer!,
+            )
           else if (widget.focusChild == null &&
               widget.canLeave &&
               widget.onClose != null)
@@ -753,11 +845,14 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                 ),
               ),
             ),
-          if (_field != null)
+          if (_field != null &&
+              !(_focusRevealed &&
+                  (_keystone?.active ?? false) &&
+                  _keystone!.particles.isNotEmpty))
             Positioned.fill(
               child: RepaintBoundary(
                 child: CustomPaint(
-                  painter: auxiliary
+                  painter: auxiliary && !(_keystone?.active ?? false)
                       ? _FocusParticles(_field!, layout.cloudCenter)
                       : ParticlePainter(_field!),
                 ),
@@ -884,43 +979,6 @@ class _FocusParticles extends CustomPainter {
       old.field != field || old.center != center;
 }
 
-class MobileShieldKeystoneQr extends StatelessWidget {
-  const MobileShieldKeystoneQr({
-    required this.constraints,
-    required this.urParts,
-    super.key,
-  });
-  final BoxConstraints constraints;
-  final List<String> urParts;
-  @override
-  Widget build(BuildContext context) {
-    final size = math.max(
-      1.0,
-      math.min(
-        280.0,
-        math.min(constraints.maxWidth - 32, constraints.maxHeight - 32),
-      ),
-    );
-    return Center(
-      child: Container(
-        key: const ValueKey('mobile_shield_keystone_qr'),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFFFFF),
-          borderRadius: BorderRadius.circular(AppRadii.large),
-        ),
-        child: KeystonePcztQrStage(
-          phase: KeystonePcztQrStagePhase.ready,
-          urParts: urParts,
-          error: null,
-          size: size,
-          scanOptimized: true,
-        ),
-      ),
-    );
-  }
-}
-
 class _AmountDissolve extends StatelessWidget {
   const _AmountDissolve({required this.progress, required this.child});
 
@@ -946,4 +1004,13 @@ class _AmountDissolve extends StatelessWidget {
       child: child,
     );
   }
+}
+
+class _KeystoneMorphPainter extends CustomPainter {
+  _KeystoneMorphPainter(this.morph, Listenable clock) : super(repaint: clock);
+  final KeystoneShieldMorph morph;
+  @override
+  void paint(Canvas canvas, Size size) => morph.paint(canvas);
+  @override
+  bool shouldRepaint(_KeystoneMorphPainter old) => old.morph != morph;
 }

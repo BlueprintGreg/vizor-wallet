@@ -1,3 +1,5 @@
+import '../figma_compare/keystone_shield_capture.dart';
+import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../src/features/onboarding/import/desktop_import_method_selection_screen.dart';
 import '../src/features/onboarding/import/desktop_hardware_selection_screen.dart';
 import '../src/providers/enhance_pir_provider.dart';
@@ -1684,6 +1686,36 @@ Widget buildMobileShieldHomeFlowUseCase(BuildContext context) =>
           ),
     );
 
+/// Interactive Keystone capture using production Home and shielding visuals.
+Widget buildMobileKeystoneShieldHomeFlowUseCase(BuildContext context) =>
+    _buildMobileHomeUseCase(
+      accountState: _accountsDesignState.copyWith(
+        accounts: [
+          AccountInfo(
+            uuid: _accountsDesignState.activeAccountUuid!,
+            name: 'Keystone',
+            order: 0,
+            isHardware: true,
+            hardwareSignerKind: HardwareSignerKind.keystone,
+            profilePictureId: kDefaultProfilePictureId,
+          ),
+        ],
+      ),
+      votingVisible: false,
+      shieldFlow: true,
+      keystoneShieldPreview: true,
+      syncState:
+          _homeSyncedState(
+            orchardBalance: BigInt.from(1492000000),
+            transparentBalance: BigInt.from(1412000000),
+            canShieldTransparentBalance: true,
+            recentTransactions: [_homeTx(1), _homeTx(2)],
+          ).copyWith(
+            shieldTransparentAmount: BigInt.from(1411990000),
+            shieldTransparentFee: BigInt.from(10000),
+          ),
+    );
+
 Widget buildMobileHomeGiftCardsUseCase(BuildContext context) {
   final transactions = _previewGiftCardActivityTransactions();
   return _buildMobileHomeUseCase(
@@ -3335,6 +3367,7 @@ Widget _buildMobileHomeUseCase({
   bool setupPreview = false,
   bool inheritWalletState = false,
   bool shieldFlow = false,
+  bool keystoneShieldPreview = false,
   bool votingVisible = true,
   required AccountState accountState,
   required SyncState syncState,
@@ -3358,6 +3391,7 @@ Widget _buildMobileHomeUseCase({
     openAccountsSheet: openAccountsSheet,
     showStaticIronwoodAnnouncement: showStaticIronwoodAnnouncement,
     shieldFlow: shieldFlow,
+    keystoneShieldPreview: keystoneShieldPreview,
   );
   return ProviderScope(
     overrides: [
@@ -4146,12 +4180,14 @@ class _MobileHomeHarness extends StatefulWidget {
     required this.openAccountsSheet,
     required this.showStaticIronwoodAnnouncement,
     this.shieldFlow = false,
+    this.keystoneShieldPreview = false,
   });
 
   final String initialLocation;
   final bool openAccountsSheet;
   final bool showStaticIronwoodAnnouncement;
   final bool shieldFlow;
+  final bool keystoneShieldPreview;
 
   @override
   State<_MobileHomeHarness> createState() => _MobileHomeHarnessState();
@@ -4167,7 +4203,36 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
     if (widget.shieldFlow) {
       _router = GoRouter(
         initialLocation: widget.initialLocation,
-        routes: buildMobileRoutes(entryRoutes: const []),
+        routes: [
+          for (final route in buildMobileRoutes(entryRoutes: const []))
+            if (widget.keystoneShieldPreview &&
+                route is GoRoute &&
+                route.path == '/home/keystone-shield')
+              GoRoute(
+                path: route.path,
+                pageBuilder: (context, state) => CustomTransitionPage(
+                  key: state.pageKey,
+                  opaque: false,
+                  transitionDuration: const Duration(milliseconds: 520),
+                  reverseTransitionDuration: const Duration(milliseconds: 340),
+                  transitionsBuilder: (_, animation, _, child) =>
+                      FadeTransition(opacity: animation, child: child),
+                  child: KeystoneShieldMotionPreview(
+                    backdrop: state.extra as MobileShieldBackdrop?,
+                    onSubmitted: () =>
+                        (ProviderScope.containerOf(
+                                  context,
+                                  listen: false,
+                                ).read(syncProvider.notifier)
+                                as _PreviewShieldSyncNotifier)
+                            .finishShielding(BigInt.from(1411990000)),
+                    onClose: () => context.pop(),
+                  ),
+                ),
+              )
+            else
+              route,
+        ],
       );
       return;
     }

@@ -75,6 +75,28 @@ class FieldGeometry {
   int get strays => count - balancePoints.length - iconPoints.length;
 }
 
+/// A projected particle, used when another shape takes over the same field.
+class ShieldParticleSample {
+  const ShieldParticleSample({
+    required this.position,
+    required this.size,
+    required this.alpha,
+    this.velocity = Offset.zero,
+    this.color = const Color(0xFFFFFFFF),
+    this.square = 0,
+    this.extent,
+    this.arrival = 1,
+  });
+  final Offset position;
+  final Offset velocity;
+  final double size;
+  final double alpha;
+  final Color color;
+  final double square;
+  final Size? extent;
+  final double arrival;
+}
+
 enum _Mode { attached, cloud, shield, balance, emit }
 
 /// The particle system behind the shield moment.
@@ -107,6 +129,9 @@ class ParticleField extends ChangeNotifier {
   bool hapticsEnabled = true;
   final int n;
   final math.Random _rng;
+  bool captureProjectedParticles = false;
+  final List<ShieldParticleSample> _projected = [];
+  List<ShieldParticleSample> get projectedParticles => _projected;
 
   // ── Tunables ──
   static const _focal = 700.0;
@@ -874,6 +899,7 @@ class ParticleField extends ChangeNotifier {
     final dustA = _dustAlpha(t, a);
     _count = 0;
     _gCount = 0;
+    _projected.clear();
 
     // Far dust behind everything.
     if (dustA > 0.001) {
@@ -949,9 +975,20 @@ class ParticleField extends ChangeNotifier {
       final size = visSize * s * grow * (1 + bump * (0.9 * e + 0.55 * g));
       var alpha = visAlpha + (1 - visAlpha) * flash;
       alpha *= global;
-      if (alpha < 0.004) continue;
       final white = math.max(visWhite, flash);
       final grey = (0xD9 + (0xFF - 0xD9) * white).round();
+      if (captureProjectedParticles) {
+        _projected.add(
+          ShieldParticleSample(
+            position: Offset(px, py),
+            velocity: Offset(_vx[i] * s, _vy[i] * s),
+            size: size,
+            alpha: alpha,
+            color: Color.fromARGB(255, grey, grey, grey),
+          ),
+        );
+      }
+      if (alpha < 0.004) continue;
 
       // Fast movers stretch into streaks along their velocity.
       final speed =

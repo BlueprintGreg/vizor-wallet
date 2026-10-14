@@ -91,6 +91,15 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'mobile-keystone-shield-home-flow',
+    description: 'Keystone shielding: QR and camera particle transitions',
+    allowPointer: true,
+    builder: buildMobileKeystoneShieldHomeFlowUseCase,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-shield-home-flow',
     description: 'Mobile home to shielding with a frozen blurred backdrop',
     builder: buildMobileShieldHomeFlowUseCase,

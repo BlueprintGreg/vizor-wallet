@@ -1,3 +1,5 @@
+import '../src/features/home/widgets/mobile/shield/keystone_shield_morph.dart';
+import 'keystone_shield_capture.dart';
 import 'package:flutter/widgets.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import '../src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
@@ -28,9 +30,10 @@ Widget buildMobileShieldKeystone(BuildContext context) => MobileShieldScene(
   phase: MobileShieldPhase.hardware,
   amount: '0.9912331',
   title: 'Approve with Keystone',
-  focusBuilder: (context, constraints) => MobileShieldKeystoneQr(
-    constraints: constraints,
-    urParts: const ['ur:zcash-pczt/hdcxfixture'],
+  keystoneFocus: KeystoneShieldFocus(
+    stage: KeystoneShieldFocusStage.qr,
+    urParts: keystoneShieldPreviewParts,
+    scannerBuilder: (_, _) => const SizedBox.shrink(),
   ),
   onClose: _noop,
 );

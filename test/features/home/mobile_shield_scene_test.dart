@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
+import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/keystone_shield_morph.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 
@@ -272,9 +273,10 @@ void main() {
           title: 'Approve with Keystone',
           body:
               'Scan this QR with Keystone, approve on your device, then scan its signed QR.',
-          focusBuilder: (context, c) => MobileShieldKeystoneQr(
-            constraints: c,
+          keystoneFocus: KeystoneShieldFocus(
+            stage: KeystoneShieldFocusStage.qr,
             urParts: const ['ur:zcash-pczt/fixture'],
+            scannerBuilder: (_, _) => const SizedBox.shrink(),
           ),
           footer: const SizedBox(height: 80),
           onClose: () {},
