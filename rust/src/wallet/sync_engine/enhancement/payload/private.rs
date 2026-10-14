@@ -16,10 +16,10 @@ use super::{
 use crate::wallet::network::WalletNetwork;
 use futures::StreamExt;
 use zakura_pir_enhance::transport::{self, PendingClient};
-use zakura_pir_enhance::wallet::Acceptance;
-use zakura_pir_enhance::{ClientError, Manifest};
+use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
+use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
-    EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
+    EnhancePirRequest, EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_protocol::consensus::BlockHeight;
 /// Debug builds only: overrides the Enhance PIR endpoint. Release builds
@@ -333,6 +333,18 @@ impl RoutedPayloadEnhancement {
                                     stale = Some(status);
                                     break;
                                 }
+                                // The row reply arrived but this record did not
+                                // decode: a content failure the service could
+                                // aim at chosen rows, so it counts toward the
+                                // position's suspension. A failed row query
+                                // arrives as `ClientError::Row` and never counts.
+                                Err(error @ ClientError::Response(_)) => {
+                                    db.record_unreadable(&unreadable_batch(
+                                        &work,
+                                        result.position,
+                                    ))?;
+                                    return Err(error.into());
+                                }
                                 result => result?,
                             };
                             for (request, record) in work.map_record(result.position, record) {
@@ -378,13 +390,30 @@ impl RoutedPayloadEnhancement {
         }
         let remaining = db.work()?.prepared();
         log::info!(
-            "sync: private recovery has {} active queries, {} rediscovery jobs, and {} suspended obligations",
+            "sync: private recovery has {} active queries, {} waiting, {} rediscovery jobs, and {} suspended obligations",
             remaining.query_count(),
+            remaining.waiting,
             remaining.rediscover.len(),
             remaining.suspended
         );
         Ok(())
     }
+}
+
+/// The requests of every `(txid, row)` batch with a request at `position`:
+/// what one undecodable record at `position` is reported against.
+fn unreadable_batch(work: &PreparedWork, position: u64) -> Vec<EnhancePirRequest> {
+    let row = position / RECORDS_PER_ROW as u64;
+    work.batches_by_tx_and_row()
+        .into_iter()
+        .filter(|((_, batch_row), requests)| {
+            *batch_row == row
+                && requests
+                    .iter()
+                    .any(|request| u64::from(request.position()) == position)
+        })
+        .flat_map(|(_, requests)| requests)
+        .collect()
 }
 /// A bad candidate cannot invalidate a separately revalidated current session.
 /// Cancellation always wins, even when old coverage remains usable. A local
@@ -600,5 +629,33 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(ClientError::Json(_))));
+    }
+
+    #[test]
+    fn an_unreadable_record_reports_its_transactions_row_batch() {
+        use zcash_client_backend::data_api::enhance_pir::{
+            EnhancePirWork, IronwoodEnhanceRequestId,
+        };
+        use zcash_primitives::transaction::TxId;
+        let request = |txid: u8, position: u64| {
+            EnhancePirRequest::new(
+                position.into(),
+                IronwoodEnhanceRequestId::new(TxId::from_bytes([txid; 32]), position as u32),
+            )
+        };
+        let next_row = RECORDS_PER_ROW as u64;
+        let (a0, a1, b2, a_next) = (
+            request(1, 0),
+            request(1, 1),
+            request(2, 2),
+            request(1, next_row),
+        );
+        let work = PreparedWork::new([a0, a1, b2, a_next].map(EnhancePirWork::Query));
+
+        let mut reported = unreadable_batch(&work, 1);
+        reported.sort_by_key(|request| u64::from(request.position()));
+        assert_eq!(reported, [a0, a1]);
+        assert_eq!(unreadable_batch(&work, 2), [b2]);
+        assert!(unreadable_batch(&work, next_row + 1).is_empty());
     }
 }

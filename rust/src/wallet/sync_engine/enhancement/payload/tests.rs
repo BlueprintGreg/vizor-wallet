@@ -269,6 +269,9 @@ impl RecoveryWallet for Wallet {
         self.pending.retain(|r| *r != request);
         Ok(EnhancePirStoreResult::Stored)
     }
+    fn record_unreadable(&mut self, _: &[EnhancePirRequest]) -> Result<(), EnhancePirRunError> {
+        unreachable!("the scripted service never returns an undecodable record")
+    }
 }
 fn sync() -> RoutedPayloadEnhancement {
     let mut sync = RoutedPayloadEnhancement::new(WalletNetwork::Main, true, "scripted-pir-wallet");

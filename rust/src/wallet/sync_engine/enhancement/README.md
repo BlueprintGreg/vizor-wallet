@@ -188,6 +188,14 @@ Accepted routing, pending routing, rediscovery attempts, and
 remain committed even if a later record fails. The next attempt rereads the
 database and processes only unfinished obligations.
 
+A record the wallet rejects, or one whose bytes fail to decode after its row
+reply arrived, counts against its position; the third suspends it
+(`EnhancePirSuspension::Rejected`). A failed row query never counts. The
+counts, and each newly queued position's random first-query delay, live in
+the library's `EnhancePirSession`, which `db.rs` shares across every wallet
+handle for the process lifetime, so syncs keep them and an app restart
+resets them.
+
 Recovery phases in `payload/diagnostics.rs` are advisory UI state. They must
 never drive routing, persistence, or privacy decisions.
 

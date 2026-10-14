@@ -82,6 +82,13 @@ pub(in crate::wallet::sync_engine) trait RecoveryWallet {
         request: EnhancePirRequest,
         record: &zakura_pir_enhance::EnhanceRecord,
     ) -> Result<EnhancePirStoreResult, EnhancePirRunError>;
+    /// Counts a reply whose record bytes failed to decode against `requests`'
+    /// three-strike allowance; see
+    /// [`EnhancePirWrite::record_ironwood_enhance_unreadable`].
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError>;
 }
 
 impl RecoveryWallet for WalletDatabase {
@@ -111,6 +118,15 @@ impl RecoveryWallet for WalletDatabase {
     ) -> Result<EnhancePirStoreResult, EnhancePirRunError> {
         Ok(with_wallet_db_write_lock("enhance_pir.apply", || {
             self.apply_ironwood_enhance_record(request, record)
+        })
+        .map_err(|e| SyncError::db(e.to_string()))?)
+    }
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError> {
+        Ok(with_wallet_db_write_lock("enhance_pir.unreadable", || {
+            self.record_ironwood_enhance_unreadable(requests)
         })
         .map_err(|e| SyncError::db(e.to_string()))?)
     }
