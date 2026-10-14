@@ -223,7 +223,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -234,7 +234,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1632,7 +1632,7 @@ checksum = "dd5f2b7218a51c827a11d22d1439b598121fac94bf9b99452e4afffe512d78c9"
 dependencies = [
  "heck 0.4.1",
  "indexmap 2.14.2",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -1777,7 +1777,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2023,7 +2023,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3329,7 +3329,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3743,7 +3743,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4218,6 +4218,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-control"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
+dependencies = [
+ "axum 0.7.9",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "pir-native"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4247,6 +4260,16 @@ name = "pir-observability"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1adddf7e3ac9297a7fbe939df8f23f0a4d01643b7523a5f376c5690eb96e89b"
+dependencies = [
+ "axum 0.7.9",
+ "http-body",
+ "serde",
+]
+
+[[package]]
+name = "pir-observability"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
 dependencies = [
  "axum 0.7.9",
  "http-body",
@@ -4547,7 +4570,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck 0.4.1",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "petgraph 0.8.3",
@@ -4579,7 +4602,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4592,7 +4615,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4826,6 +4849,7 @@ version = "0.0.1"
 source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
 dependencies = [
  "hex",
+ "ipir-sp",
  "pir-native 0.1.0 (git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1)",
  "rand 0.8.8",
  "receiver-directory",
@@ -4833,6 +4857,21 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "receiver-pir-server"
+version = "0.0.1"
+source = "git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1#98b05c4c706be1b18085347d1e9b60712cb883d5"
+dependencies = [
+ "axum 0.7.9",
+ "hex",
+ "pir-control 0.1.0 (git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1)",
+ "pir-observability 0.1.0 (git+https://github.com/valargroup/wallet-pir?tag=transparent-v0.1.0-rc.1)",
+ "receiver-directory",
+ "receiver-pir",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -5040,6 +5079,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "anyhow",
+ "axum 0.7.9",
  "base64 0.22.1",
  "bip0039",
  "bytes",
@@ -5067,6 +5107,8 @@ dependencies = [
  "prost 0.14.4",
  "rand 0.8.8",
  "rand_core 0.6.4",
+ "receiver-pir",
+ "receiver-pir-server",
  "redb",
  "regex",
  "rusqlite",
@@ -5154,7 +5196,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5167,7 +5209,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5336,7 +5378,7 @@ version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9465315bc9d4566e1724f0fffcbcc446268cb522e60f9a27bcded6b19c108113"
 dependencies = [
- "bitcoin_hashes 0.12.0",
+ "bitcoin_hashes 0.14.101",
  "secp256k1-sys",
 ]
 
@@ -5755,7 +5797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5976,7 +6018,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7578,8 +7620,8 @@ dependencies = [
  "http-body",
  "ipir-sp",
  "memmap2",
- "pir-control",
- "pir-observability",
+ "pir-control 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pir-observability 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon",
  "reinspiring",
  "rustix 1.1.5",
@@ -8154,7 +8196,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8307,15 +8349,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
