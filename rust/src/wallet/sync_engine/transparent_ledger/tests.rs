@@ -513,19 +513,24 @@ async fn empty_ranges_complete_recovery() {
 }
 
 #[tokio::test]
-async fn partial_pages_resume_in_the_same_run_and_across_runs() {
+async fn partial_pages_resume_across_runs() {
     let mut wallet = private_wallet();
     let address = derived(&wallet, TransparentKeyScope::EXTERNAL, 0);
     let source = FixtureSource::new(main_hash);
     source
         .receive(receive(1, address, 10_000, 120))
         .split_pages();
+    // One pass per run: the first opens the page, the next completes it.
     let RunOutcome::Finished(stats) = recover(&mut wallet, &source).await else {
         panic!("recovery did not finish");
     };
-    // One pass opens the page and the next completes it; activity near the
-    // window end adds a pass for the grown window.
-    assert!(stats.commits >= 2);
+    assert_eq!((source.calls(), stats.commits), (1, 1));
+    let recovery = wallet
+        .db
+        .transparent_candidate_recovery(wallet.account)
+        .unwrap();
+    assert_eq!(recovery.pending_pages, 1);
+    recover(&mut wallet, &source).await;
     assert_complete(&wallet, &source);
 
     // The source fails after opening the page: it stays open for a later run.
@@ -539,10 +544,12 @@ async fn partial_pages_resume_in_the_same_run_and_across_runs() {
     source.on_call(|| {}).on_call(move || {
         failing.fail(Some(SourceError::Failed));
     });
-    assert!(matches!(
-        recover(&mut wallet, &source).await,
-        RunOutcome::Finished(_)
-    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            recover(&mut wallet, &source).await,
+            RunOutcome::Finished(_)
+        ));
+    }
     let recovery = wallet
         .db
         .transparent_candidate_recovery(wallet.account)
@@ -572,19 +579,26 @@ async fn cancellation_keeps_committed_passes() {
         .on_call(|| {})
         .on_call(move || flag.store(true, Ordering::SeqCst));
     let should_exit = || exit.load(Ordering::SeqCst);
-    let outcome = run(
-        &mut wallet.db,
-        &wallet.path,
-        NETWORK,
-        required(),
-        &Observed(&source),
-        None,
-        now,
-        &should_exit,
-    )
-    .await
-    .unwrap();
-    assert_eq!(outcome, RunOutcome::Exited);
+    // The first run's only pass opens the page; the next run's is cancelled.
+    let mut outcomes = Vec::new();
+    for _ in 0..2 {
+        outcomes.push(
+            run(
+                &mut wallet.db,
+                &wallet.path,
+                NETWORK,
+                required(),
+                &Observed(&source),
+                None,
+                now,
+                &should_exit,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    assert!(matches!(outcomes[0], RunOutcome::Finished(_)));
+    assert_eq!(outcomes[1], RunOutcome::Exited);
     assert_eq!(source.calls(), 2);
     // The first pass's open page is durable; the cancelled answer is not.
     assert_eq!(
@@ -607,7 +621,20 @@ async fn cancellation_keeps_committed_passes() {
 async fn window_growth_repeats_at_the_same_target() {
     let mut wallet = private_wallet();
     let before = production_dump(&wallet.path);
-    let last = last_derived_external(&wallet);
+    // The end of the candidate's restore window, past the wallet's own
+    // addresses.
+    let last = watched(&wallet)
+        .iter()
+        .filter_map(|watched| match watched.origin {
+            WatchOrigin::CandidateWindow { scope, index }
+                if scope == TransparentKeyScope::EXTERNAL =>
+            {
+                Some(index.index())
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap();
     let source = FixtureSource::new(main_hash);
     // Activity at the window end extends it; activity in the extension
     // extends it again.
@@ -615,10 +642,22 @@ async fn window_growth_repeats_at_the_same_target() {
         .receive(receive(1, external(&wallet, last), 10_000, 150))
         .receive(receive(2, external(&wallet, last + 1), 20_000, 160));
 
+    // Each growth waits for the next run's pass.
     let RunOutcome::Finished(stats) = recover(&mut wallet, &source).await else {
         panic!("recovery did not finish");
     };
-    assert!(stats.commits >= 2, "growth must trigger another pass");
+    assert_eq!((source.calls(), stats.commits), (1, 1));
+    assert_ne!(
+        wallet
+            .db
+            .transparent_candidate_recovery(wallet.account)
+            .unwrap()
+            .blockers,
+        []
+    );
+    while source.calls() < 3 {
+        recover(&mut wallet, &source).await;
+    }
     assert_complete(&wallet, &source);
     assert!(watched(&wallet)
         .iter()
@@ -1820,8 +1859,9 @@ async fn ledger_spent_receiving_and_change_addresses_extend_private_discovery() 
     let _mode = activate(&mut wallet).await;
     let source = FixtureSource::new(main_hash);
     source.trust();
-    // Fully spent history fills the initial gaps; funded addresses beyond them
-    // must be found by later passes, for both receiving and change scopes.
+    // Fully spent history fills the gap limits; funded addresses beyond them
+    // are found for both receiving and change scopes. All lie inside the
+    // candidate's restore window, so the first pass finds them.
     for (scope, gap, tag_base) in [
         (TransparentKeyScope::EXTERNAL, 10, 10u8),
         (TransparentKeyScope::INTERNAL, 5, 50u8),
@@ -1836,10 +1876,7 @@ async fn ledger_spent_receiving_and_change_addresses_extend_private_discovery() 
         }
     }
     run_required(&mut wallet, &source).await;
-    assert!(
-        source.calls_for(wallet.account) > 1,
-        "used gaps require another pass"
-    );
+    assert_eq!(source.calls_for(wallet.account), 1);
     assert_eq!(balance(&wallet, &wallet.uuid).transparent, 2 * VALUE);
     assert_eq!(lifecycle(&wallet, wallet.account), AccountLifecycle::Active);
     let recovery = wallet
