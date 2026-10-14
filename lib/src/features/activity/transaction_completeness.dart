@@ -194,8 +194,12 @@ bool transparentDetailsAwaited(
 }) => switch (detail?.transparentDetailsState) {
   rust_sync.TransparentDetailsState.pending => true,
   rust_sync.TransparentDetailsState.unavailable => privateQueriesEnabled,
+  // Listed, not defaulted, so a new state has to decide whether it is
+  // waited on.
   rust_sync.TransparentDetailsState.gaveUp => false,
-  _ => false,
+  rust_sync.TransparentDetailsState.available => false,
+  rust_sync.TransparentDetailsState.notCovered => false,
+  null => false,
 };
 
 /// Names the recipient of a send the account recorded no recipient for.

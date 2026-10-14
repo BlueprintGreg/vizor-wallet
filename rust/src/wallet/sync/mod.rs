@@ -34,6 +34,8 @@ pub(crate) mod proposal_locks;
 mod send;
 mod transactions;
 pub(crate) use transactions::has_recovered_status_work;
+#[cfg(test)]
+pub(crate) use transactions::private_shielding_tests;
 pub(crate) use transactions::resolve_recovered_nonmined_status;
 pub(crate) use transactions::ResubmittableTx;
 
