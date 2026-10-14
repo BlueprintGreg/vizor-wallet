@@ -279,6 +279,12 @@ positive records; a missing record is then `CoverageIncomplete`. `Mempool` and
 `Forked` are distinct source observations but both persist as the wallet's
 not-in-main-chain state.
 
+Manifest/setup validation failures and oversized, truncated, or incorrectly
+bound query responses defer private status for the session and leave the
+transaction eligible for the ordinary recovery backoff. Only malformed
+contents of a row received in a valid query envelope suppress that transaction
+until the next block. Neither path permits a public fallback.
+
 `CoverageIncomplete` is an explicit feedback gate. `GetStatus` work is
 expected to be highly unlikely in private mode, so Vizor surfaces a clear
 Settings action and pauses automatic sync instead of silently weakening
