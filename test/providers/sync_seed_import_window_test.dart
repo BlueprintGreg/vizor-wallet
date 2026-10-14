@@ -197,12 +197,15 @@ rust_sync.ApiSyncProgressEvent _event(rust_sync.ApiSyncEventKind kind) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final api = _Api();
+  // When set, marking companions out of backups waits for it.
+  Completer<void>? backupGate;
   setUpAll(() => RustLib.initMock(api: api));
   tearDownAll(RustLib.dispose);
   setUp(() {
     api.running = false;
     api.historyReads = 0;
     api.syncs.clear();
+    backupGate = null;
   });
 
   late ProviderContainer container;
@@ -221,7 +224,7 @@ void main() {
   Future<void> addAccount(WidgetTester tester, {required bool imported}) async {
     sync = SyncNotifier(
       walletDbPathResolver: () async => 'wallet.db',
-      excludeCompanionsFromBackup: (_) async {},
+      excludeCompanionsFromBackup: (_) => backupGate?.future ?? Future.value(),
     );
     container = ProviderContainer(
       overrides: [
@@ -375,6 +378,22 @@ void main() {
     sync.handleAppHideForTesting();
     expect(sync.seedImportSyncWindowOpenForTesting, isFalse);
     await tester.pump(kSeedImportSyncInterval);
+    await settle(tester);
+    expect(api.syncs, hasLength(1));
+    await done(tester);
+  });
+
+  testWidgets('hiding the app while a quiet sync prepares starts no sync', (
+    tester,
+  ) async {
+    await addAccount(tester, imported: true);
+    await endFirstSync(tester);
+    backupGate = Completer<void>();
+    await tester.pump(kSeedImportSyncInterval);
+    await settle(tester);
+    expect(api.syncs, hasLength(1), reason: 'waiting on the backup marking');
+    sync.handleAppHideForTesting();
+    backupGate!.complete();
     await settle(tester);
     expect(api.syncs, hasLength(1));
     await done(tester);

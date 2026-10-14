@@ -947,14 +947,19 @@ fn trial_decrypt_account_uuids(
         let keys = db
             .get_one_time_transaction_keys(tx.txid(), None, &receivers)
             .map_err(|e| format!("get one-time keys: {e}"))?;
-        zcash_client_backend::decrypt_transaction_with_one_time_ivks(
-            &network,
-            None,
-            Some(chain_tip_height),
-            tx,
-            &ufvks,
-            keys,
-        )
+        // With no keys, a second pass would repeat the first.
+        if keys.is_empty() {
+            decrypted
+        } else {
+            zcash_client_backend::decrypt_transaction_with_one_time_ivks(
+                &network,
+                None,
+                Some(chain_tip_height),
+                tx,
+                &ufvks,
+                keys,
+            )
+        }
     } else {
         decrypted
     };

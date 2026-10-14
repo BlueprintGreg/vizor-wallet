@@ -2681,35 +2681,40 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// receipts. It is skipped while another sync runs or [startSync] would
   /// hold off, and a start requested meanwhile queues behind it.
   void _startQuietSync() {
-    if (_syncSub != null ||
-        _isSyncing ||
-        _foregroundSyncRecovery != null ||
-        _walletMutationPauseCount > 0 ||
-        _recoverySettingTransition ||
-        _authoritativeSpendableOperationCount > 0 ||
-        _privateStatusCoverageNeedsSettings() ||
-        rust_sync.isSyncRunning()) {
-      return;
-    }
     final gen = _syncGen;
     final epoch = _sensitiveStateEpoch;
-    // A stop, a lock or a regular start since this one began cancels it.
-    bool current() =>
+    final foregroundEpoch = _foregroundEpoch;
+    final accountUuid = _getActiveAccountUuid();
+    // Checked again after each await, so a stop, lock, hide, account switch,
+    // regular start or spendable-operation lease meanwhile cancels it.
+    bool mayRun() =>
         ref.mounted &&
+        !_isShuttingDown &&
         gen == _syncGen &&
         epoch == _sensitiveStateEpoch &&
+        foregroundEpoch == _foregroundEpoch &&
+        _isInForeground &&
+        accountUuid != null &&
+        _getActiveAccountUuid() == accountUuid &&
         !_requiresUnlock &&
+        _syncSub == null &&
         !_isSyncing &&
-        _syncSub == null;
+        _foregroundSyncRecovery == null &&
+        _walletMutationPauseCount == 0 &&
+        !_recoverySettingTransition &&
+        _authoritativeSpendableOperationCount == 0 &&
+        !_privateStatusCoverageNeedsSettings() &&
+        !rust_sync.isSyncRunning();
+    if (!mayRun()) return;
     unawaited(
       () async {
         final dbPath = await _getDbPath();
-        if (!current()) return;
+        if (!mayRun()) return;
         await _keepCompanionsOutOfBackups(dbPath);
-        if (!current() || rust_sync.isSyncRunning()) return;
+        if (!mayRun()) return;
         final endpoint = _endpointConfig;
         log('Sync: starting a quiet sync after a seed import');
-        rust_sync.setActiveSyncAccount(accountUuid: _getActiveAccountUuid());
+        rust_sync.setActiveSyncAccount(accountUuid: accountUuid);
         void ended() {
           if (!ref.mounted || gen != _syncGen) return;
           _syncSub = null;
