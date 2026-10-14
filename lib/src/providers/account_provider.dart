@@ -6,7 +6,8 @@ import 'dart:typed_data';
 
 import '../services/voting/voting_file_cache.dart';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../features/ledger/services/ledger_operation_lifecycle.dart';
@@ -382,7 +383,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
         );
         firstWalletDbPath = dbPath;
         firstWalletNetwork = network;
-        await _deleteExistingDb(dbPath);
+        await deleteWalletDbFiles(dbPath);
         final result = await rust_wallet.importWallet(
           mnemonic: mnemonic,
           bip39Passphrase: '',
@@ -518,7 +519,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
     final String createdAddress;
     try {
       if (firstAccount) {
-        await _deleteExistingDb(dbPath);
+        await deleteWalletDbFiles(dbPath);
         final created = await rust_wallet.importWallet(
           mnemonic: mnemonic,
           bip39Passphrase: '',
@@ -878,7 +879,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
         );
         firstWalletDbPath = dbPath;
         firstWalletNetwork = network;
-        await _deleteExistingDb(dbPath);
+        await deleteWalletDbFiles(dbPath);
       }
 
       final result = await rust_wallet.importSoftwareWalletWithAccountDiscovery(
@@ -2020,7 +2021,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
 
     var dbDeleted = false;
     try {
-      await _deleteExistingDb(dbPath);
+      await deleteWalletDbFiles(dbPath);
       dbDeleted = true;
       for (final revocation in migrationRevocations) {
         revocation.commit();
@@ -2072,6 +2073,15 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
         await _storage.deleteAll();
       } catch (e, st) {
         recordError('secure storage wipe', e, st);
+      }
+      // Linux startup refuses wallet DBs the keyring has no record of, so
+      // databases left by an earlier keyring failure go with this wallet.
+      if (defaultTargetPlatform == TargetPlatform.linux) {
+        try {
+          await discardWalletDbsWithoutRecord();
+        } catch (e, st) {
+          recordError('orphaned wallet db cleanup', e, st);
+        }
       }
       // The saved Private queries choice is install-scoped and survives this
       // wipe. After the reset succeeds, its runtime is reapplied below and the
@@ -2570,7 +2580,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
         await _recordPendingLinkedSetup(normalizedNetwork, accountsToImport);
         firstWalletDbPath = dbPath;
         firstWalletNetwork = normalizedNetwork;
-        await _deleteExistingDb(dbPath);
+        await deleteWalletDbFiles(dbPath);
       }
 
       final importedAccounts = <AccountInfo>[];
@@ -2906,27 +2916,9 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
     return normalizedNetwork;
   }
 
-  /// Deletes the wallet database at [dbPath] and everything kept beside it.
-  /// Directories go first: when one cannot be deleted the database is still
-  /// intact, so the caller keeps its stored name and a retry finds it.
-  Future<void> _deleteExistingDb(String dbPath) async {
-    for (final path in walletDbCleanupDirectories(dbPath)) {
-      final directory = Directory(path);
-      if (directory.existsSync()) {
-        directory.deleteSync(recursive: true);
-      }
-    }
-    for (final path in walletDbCleanupPaths(dbPath)) {
-      final file = File(path);
-      if (file.existsSync()) {
-        file.deleteSync();
-      }
-    }
-  }
-
   Future<void> _replaceDbForFirstWallet(String dbPath, String network) async {
     await _assertFirstWalletDbIsEmpty(dbPath, network);
-    await _deleteExistingDb(dbPath);
+    await deleteWalletDbFiles(dbPath);
   }
 
   Future<void> _assertFirstWalletDbIsEmpty(
@@ -3043,6 +3035,33 @@ Future<void> clearTorPrivacyStateForReset({
     await preferences.remove(kTorEnabledPreferenceKey);
   } catch (e, st) {
     log('resetWallet: tor route preference cleanup failed: $e\n$st');
+  }
+}
+
+/// Deletes the wallet database at [dbPath] and everything kept beside it.
+/// Directories go first: when one cannot be deleted the database is still
+/// intact, so the caller keeps its stored name and a retry finds it.
+Future<void> deleteWalletDbFiles(String dbPath) async {
+  for (final path in walletDbCleanupDirectories(dbPath)) {
+    final directory = Directory(path);
+    if (directory.existsSync()) {
+      directory.deleteSync(recursive: true);
+    }
+  }
+  for (final path in walletDbCleanupPaths(dbPath)) {
+    final file = File(path);
+    if (file.existsSync()) {
+      file.deleteSync();
+    }
+  }
+}
+
+/// Deletes the wallet databases that [findWalletDbsWithoutRecord] reports, so
+/// startup can begin onboarding after the user chooses to start over. Does
+/// nothing once the secure store records a wallet database again.
+Future<void> discardWalletDbsWithoutRecord() async {
+  for (final dbPath in await findWalletDbsWithoutRecord()) {
+    await deleteWalletDbFiles(dbPath);
   }
 }
 

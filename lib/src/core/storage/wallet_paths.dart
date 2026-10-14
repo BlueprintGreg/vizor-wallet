@@ -56,6 +56,34 @@ Future<String?> getExistingWalletDbPath({
   return '${directory.path}${Platform.pathSeparator}$name';
 }
 
+final _walletDbFilePattern = RegExp(r'^zcash_wallet(?:_[a-zA-Z0-9_-]+)?\.db$');
+
+/// Lists wallet databases in the support directory when the secure store
+/// records no wallet database name, and an empty list whenever it records one.
+///
+/// A keyring that silently returns nothing, for example after the Secret
+/// Service provider changed or lost its data, would otherwise let startup
+/// assign a new name and open onboarding beside the user's real wallet.
+Future<List<String>> findWalletDbsWithoutRecord({
+  AppSecureStore? secureStore,
+  Future<Directory> Function() resolveSupportDirectory =
+      getApplicationSupportDirectory,
+}) async {
+  final recorded = await (secureStore ?? AppSecureStore.instance).readPlain(
+    kWalletDbNameKey,
+  );
+  if (recorded != null && recorded.isNotEmpty) return const [];
+  final directory = await resolveSupportDirectory();
+  if (!await directory.exists()) return const [];
+  final dbPaths = <String>[];
+  await for (final entity in directory.list(followLinks: false)) {
+    if (entity is! File) continue;
+    final name = entity.path.split(Platform.pathSeparator).last;
+    if (_walletDbFilePattern.hasMatch(name)) dbPaths.add(entity.path);
+  }
+  return dbPaths;
+}
+
 Future<String> getTorDataDirectoryPath() async {
   final dir = await getWalletSupportDirectory();
   return '${dir.path}${Platform.pathSeparator}tor';

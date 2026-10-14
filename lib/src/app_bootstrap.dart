@@ -1,7 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show
+        TargetPlatform,
+        defaultTargetPlatform,
+        kDebugMode,
+        kIsWeb,
+        visibleForTesting;
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -44,6 +50,10 @@ enum AppBootstrapFailureKind {
   secureStorageUnavailable,
   startupFailure,
   walletDbMigrationFailed,
+
+  /// Wallet databases exist but the keyring records none of them. See
+  /// `findWalletDbsWithoutRecord`.
+  walletRecordMissing,
 }
 
 class AppBootstrapState {
@@ -251,6 +261,21 @@ Future<AppBootstrapState> loadAppBootstrap({
       StorageBootstrapStage.started,
     );
     await ensureIosSecureStoreAccessibilityMigrated();
+    // Linux pairs one keyring item with one support directory per app ID, so
+    // a wallet DB without a keyring record means the keyring lost its data.
+    if (!kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.linux &&
+        (await findWalletDbsWithoutRecord(secureStore: storage)).isNotEmpty) {
+      log('bootstrap: wallet data exists without a keyring record');
+      await SecureStorageDiagnostics.instance.bootstrap(
+        StorageBootstrapStage.blocked,
+      );
+      return AppBootstrapState.blocked(
+        failureKind: AppBootstrapFailureKind.walletRecordMissing,
+        failureMessage:
+            'Vizor found wallet data that the system keyring has no record of.',
+      );
+    }
     await storage.ensureWalletDbName();
     await _applyE2eBootstrapOverrides(storage);
     var passwordRotationRecoveryFailed = false;

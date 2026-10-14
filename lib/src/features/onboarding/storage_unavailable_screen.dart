@@ -2,7 +2,8 @@ import 'dart:async' show unawaited;
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
-import 'package:flutter/material.dart' show Colors, Scaffold;
+import 'package:flutter/material.dart'
+    show Colors, Dialog, Scaffold, showDialog;
 import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,7 +14,15 @@ import '../../core/layout/app_layout.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_button.dart';
 import '../../core/widgets/app_icon.dart';
+import '../../core/widgets/app_modal_shape.dart';
+import '../../providers/account_provider.dart'
+    show discardWalletDbsWithoutRecord;
 import 'shared/onboarding_welcome_art.dart';
+
+/// Deletes the wallet data the keyring has no record of. Tests override it.
+final discardWalletDbsWithoutRecordProvider = Provider<Future<void> Function()>(
+  (_) => discardWalletDbsWithoutRecord,
+);
 
 class StorageUnavailableScreen extends ConsumerStatefulWidget {
   const StorageUnavailableScreen({super.key});
@@ -26,6 +35,7 @@ class StorageUnavailableScreen extends ConsumerStatefulWidget {
 class _StorageUnavailableScreenState
     extends ConsumerState<StorageUnavailableScreen> {
   bool _isRetrying = false;
+  bool _isStartingOver = false;
   String? _retryError;
 
   @override
@@ -65,6 +75,38 @@ class _StorageUnavailableScreenState
     }
   }
 
+  /// Deletes the unreadable wallet data after the user confirms, then reloads
+  /// startup so it opens onboarding.
+  Future<void> _startOver() async {
+    if (_isRetrying || _isStartingOver) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => const _StartOverDialog(),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _isStartingOver = true;
+      _retryError = null;
+    });
+    try {
+      await ref.read(discardWalletDbsWithoutRecordProvider)();
+      await ref.read(appBootstrapRetryProvider)();
+    } catch (error, stackTrace) {
+      log('storage unavailable start over failed: $error\n$stackTrace');
+      if (mounted) {
+        setState(() {
+          _retryError = 'Vizor could not delete the old wallet data.';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isStartingOver = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -75,9 +117,13 @@ class _StorageUnavailableScreenState
           child: _StorageUnavailablePane(
             child: _StorageUnavailableContent(
               isRetrying: _isRetrying,
+              isStartingOver: _isStartingOver,
               retryError: _retryError,
               onRetry: () {
                 unawaited(_retry());
+              },
+              onStartOver: () {
+                unawaited(_startOver());
               },
             ),
           ),
@@ -147,13 +193,17 @@ class _StorageUnavailablePane extends StatelessWidget {
 class _StorageUnavailableContent extends ConsumerWidget {
   const _StorageUnavailableContent({
     required this.isRetrying,
+    required this.isStartingOver,
     required this.retryError,
     required this.onRetry,
+    required this.onStartOver,
   });
 
   final bool isRetrying;
+  final bool isStartingOver;
   final String? retryError;
   final VoidCallback onRetry;
+  final VoidCallback onStartOver;
 
   static const double _contentWidth = 360;
 
@@ -205,7 +255,7 @@ class _StorageUnavailableContent extends ConsumerWidget {
           ],
           const SizedBox(height: AppSpacing.lg),
           AppButton(
-            onPressed: isRetrying ? null : onRetry,
+            onPressed: isRetrying || isStartingOver ? null : onRetry,
             minWidth: 172,
             leading: AppIcon(
               isRetrying ? AppIcons.loader : AppIcons.renew,
@@ -213,6 +263,19 @@ class _StorageUnavailableContent extends ConsumerWidget {
             ),
             child: Text(isRetrying ? 'Retrying' : 'Retry'),
           ),
+          if (failureKind == AppBootstrapFailureKind.walletRecordMissing) ...[
+            const SizedBox(height: AppSpacing.xs),
+            AppButton(
+              key: const ValueKey('storage_unavailable_start_over'),
+              onPressed: isRetrying || isStartingOver ? null : onStartOver,
+              variant: AppButtonVariant.secondary,
+              minWidth: 172,
+              leading: isStartingOver
+                  ? const AppIcon(AppIcons.loader, animated: true)
+                  : null,
+              child: Text(isStartingOver ? 'Starting over' : 'Start over'),
+            ),
+          ],
           if (isDesktopLayoutPlatform) ...[
             const SizedBox(height: AppSpacing.xs),
             AppButton(
@@ -231,6 +294,9 @@ class _StorageUnavailableContent extends ConsumerWidget {
   }
 
   String _title(AppBootstrapFailureKind? failureKind) {
+    if (failureKind == AppBootstrapFailureKind.walletRecordMissing) {
+      return 'Unable to open your wallet';
+    }
     if (failureKind == AppBootstrapFailureKind.walletDbMigrationFailed) {
       return 'Unable to update wallet database';
     }
@@ -241,6 +307,9 @@ class _StorageUnavailableContent extends ConsumerWidget {
   }
 
   String _body(AppBootstrapFailureKind? failureKind) {
+    if (failureKind == AppBootstrapFailureKind.walletRecordMissing) {
+      return 'Vizor found wallet data, but the system keyring has no record of it. Restore the keyring and try again, or start over and restore your wallet with its secret passphrase.';
+    }
     if (failureKind == AppBootstrapFailureKind.walletDbMigrationFailed) {
       return 'Vizor needs to update the local wallet database before opening this version. Try again, or quit and restart Vizor.';
     }
@@ -253,4 +322,69 @@ class _StorageUnavailableContent extends ConsumerWidget {
   }
 
   bool get _isLinux => !kIsWeb && defaultTargetPlatform == TargetPlatform.linux;
+}
+
+class _StartOverDialog extends StatelessWidget {
+  const _StartOverDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Dialog(
+      key: const ValueKey('storage_unavailable_start_over_dialog'),
+      backgroundColor: colors.background.ground,
+      shape: appModalShape(BorderRadius.circular(AppRadii.medium)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Start over?',
+                style: AppTypography.bodyMediumStrong.copyWith(
+                  color: colors.text.accent,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'Vizor will delete the wallet data it can\'t open. Your funds '
+                'stay on the blockchain, and you can restore them with your '
+                'secret passphrase.',
+                style: AppTypography.bodyMedium.copyWith(
+                  color: colors.text.secondary,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Without your secret passphrase, this wallet can\'t be '
+                'recovered.',
+                style: AppTypography.bodySmall.copyWith(
+                  color: colors.text.warning,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppButton(
+                key: const ValueKey('storage_unavailable_start_over_confirm'),
+                expand: true,
+                variant: AppButtonVariant.destructive,
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Delete and start over'),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              AppButton(
+                key: const ValueKey('storage_unavailable_start_over_cancel'),
+                expand: true,
+                variant: AppButtonVariant.ghost,
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -4,6 +4,8 @@ import 'package:zcash_wallet/src/services/voting/voting_file_cache.dart';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -725,6 +727,61 @@ void main() {
       },
     );
   }
+
+  test(
+    'Linux wallet reset deletes DBs left by a lost keyring record',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      const currentName = 'zcash_wallet_0123456789abcdef01234567.db';
+      const orphanName = 'zcash_wallet_fedcba9876543210fedcba98.db';
+      FlutterSecureStorage.setMockInitialValues({
+        kWalletDbNameKey: currentName,
+      });
+      final supportDirectory = Directory.systemTemp.createTempSync(
+        'vizor-orphan-reset',
+      );
+      addTearDown(() => supportDirectory.deleteSync(recursive: true));
+      File fileNamed(String name) => File('${supportDirectory.path}/$name');
+      for (final name in [
+        currentName,
+        orphanName,
+        '$orphanName-wal',
+        'shared_preferences.json',
+      ]) {
+        fileNamed(name).writeAsStringSync('data');
+      }
+      const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProvider, (call) async {
+            if (call.method == 'getApplicationSupportDirectory') {
+              return supportDirectory.path;
+            }
+            throw MissingPluginException('Unexpected path provider call.');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProvider, null);
+      });
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final container = ProviderContainer(
+        overrides: [
+          transparentOptOutStoreProvider.overrideWithValue(_ResetOptOutStore()),
+          enhancePirBackgroundSinkProvider.overrideWithValue((_) async {}),
+          appBootstrapProvider.overrideWithValue(_bootstrapWithAccounts()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(accountProvider.future);
+
+      await container.read(accountProvider.notifier).resetWallet();
+
+      expect(fileNamed(currentName).existsSync(), isFalse);
+      expect(fileNamed(orphanName).existsSync(), isFalse);
+      expect(fileNamed('$orphanName-wal').existsSync(), isFalse);
+      expect(fileNamed('shared_preferences.json').existsSync(), isTrue);
+    },
+  );
 
   test('private recovery ignores stale enabled state off mainnet', () {
     final container = ProviderContainer(

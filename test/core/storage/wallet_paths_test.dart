@@ -74,4 +74,57 @@ void main() {
       expect(directoryReads, 0);
     },
   );
+
+  group('findWalletDbsWithoutRecord', () {
+    late Directory directory;
+
+    setUp(() async {
+      directory = await Directory.systemTemp.createTemp('wallet-record-');
+      addTearDown(() => directory.delete(recursive: true));
+      for (final name in [
+        'zcash_wallet_0123456789abcdef01234567.db',
+        'zcash_wallet_0123456789abcdef01234567.db-wal',
+        'zcash_wallet_0123456789abcdef01234567.db.voting',
+        'shared_preferences.json',
+      ]) {
+        await File('${directory.path}/$name').writeAsString('data');
+      }
+      await Directory(
+        '${directory.path}/zcash_wallet_0123456789abcdef01234567.db.tpir',
+      ).create();
+      await Directory('${directory.path}/zcash_wallet_dir.db').create();
+    });
+
+    test('lists wallet databases when no name is recorded', () async {
+      final store = AppSecureStore.testing(
+        storage: const FlutterSecureStorage(),
+      );
+
+      final paths = await findWalletDbsWithoutRecord(
+        secureStore: store,
+        resolveSupportDirectory: () async => directory,
+      );
+
+      expect(paths, [
+        '${directory.path}${Platform.pathSeparator}'
+            'zcash_wallet_0123456789abcdef01234567.db',
+      ]);
+    });
+
+    test('reports nothing while a wallet name is recorded', () async {
+      FlutterSecureStorage.setMockInitialValues({
+        kWalletDbNameKey: 'zcash_wallet_fedcba9876543210fedcba98.db',
+      });
+      final store = AppSecureStore.testing(
+        storage: const FlutterSecureStorage(),
+      );
+
+      final paths = await findWalletDbsWithoutRecord(
+        secureStore: store,
+        resolveSupportDirectory: () async => directory,
+      );
+
+      expect(paths, isEmpty);
+    });
+  });
 }
