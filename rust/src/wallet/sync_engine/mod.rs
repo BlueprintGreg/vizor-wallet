@@ -6934,6 +6934,9 @@ fn recovery_status_for(
     // `run_requests` defers private status failures for the session while the
     // obligation stays durable. Without counting it here, a wallet with no
     // payload work would never schedule the retry once Status PIR recovers.
+    // Work whose poll was recorded at this tip, whatever the reply said, is
+    // not listed again before the next tip, and the per-block record keeps
+    // out what a reply answered or created here.
     let status = db
         .transaction_status_work()
         .map_err(|e| e.to_string())?
