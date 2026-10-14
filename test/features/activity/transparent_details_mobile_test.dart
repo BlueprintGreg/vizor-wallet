@@ -173,6 +173,20 @@ void main() {
     await _close(tester);
   });
 
+  testWidgets('mobile receipt shows given-up details as unavailable '
+      'without polling', (tester) async {
+    final details = ScriptedDetails([
+      transparentDetail(rust_sync.TransparentDetailsState.gaveUp),
+    ]);
+    final prioritized = await _pump(tester, details);
+    expectGaveUpNotice();
+    expect(prioritized, isEmpty);
+    final before = details.calls;
+    await tester.pump(kTransparentDetailsPollInterval * 3);
+    expect(details.calls, before, reason: 'nothing to wait for');
+    await _close(tester);
+  });
+
   testWidgets('mobile receipt says not covered in private mode', (
     tester,
   ) async {

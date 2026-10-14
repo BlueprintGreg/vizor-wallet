@@ -195,7 +195,7 @@ void main() {
       transparentDetail(rust_sync.TransparentDetailsState.gaveUp),
     ]);
     final prioritized = await _pump(tester, details);
-    expect(find.text(kTransparentDetailsUnavailableText), findsOneWidget);
+    expectGaveUpNotice();
     expect(prioritized, isEmpty);
     final before = details.calls;
     await tester.pump(kTransparentDetailsPollInterval * 3);

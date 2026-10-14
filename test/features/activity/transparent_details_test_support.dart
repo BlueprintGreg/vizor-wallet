@@ -5,6 +5,7 @@ import 'package:flutter/material.dart'
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
+import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/activity/transaction_completeness.dart';
 import 'package:zcash_wallet/src/features/address_book/models/address_book_contact.dart';
 import 'package:zcash_wallet/src/features/address_book/providers/address_book_provider.dart';
@@ -121,6 +122,24 @@ class ControlledDetails extends ScriptedDetails {
     final index = calls++;
     return answers[index < answers.length ? index : answers.length - 1];
   }
+}
+
+/// Given-up details read as unavailable, without the loader or the promise
+/// of a later update that pending details carry.
+void expectGaveUpNotice() {
+  final row = find.byKey(const ValueKey('transparent_details_gave_up'));
+  expect(row, findsOneWidget);
+  expect(find.text(kTransparentDetailsGaveUpText), findsOneWidget);
+  expect(find.text(kTransparentDetailsUnavailableText), findsNothing);
+  expect(
+    find.descendant(
+      of: row,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is AppIcon && widget.name == AppIcons.loader,
+      ),
+    ),
+    findsNothing,
+  );
 }
 
 /// The desktop and mobile receipts must serialize polls and reject reads
@@ -1342,6 +1361,7 @@ void transparentReceiptParityTests({
       expect(_showsAddress(transparentOwnAddress), findsWidgets);
       expect(_supplementalCard, findsNothing);
       expect(find.text(kTransparentDetailsUnavailableText), findsNothing);
+      expect(find.text(kTransparentDetailsGaveUpText), findsNothing);
       expect(find.text(kTransparentDetailsNotCoveredText), findsNothing);
       // Awaited details are still asked for first and polled.
       final awaited =

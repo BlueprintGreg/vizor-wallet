@@ -125,6 +125,11 @@ rust_sync.TransactionInfo? provisionalRoleSuccessor(
 const kTransparentDetailsUnavailableText =
     'Details unavailable — will update when the service is reachable';
 
+/// Shown for a transaction whose outputs the wallet gave up looking up
+/// privately. Unlike [kTransparentDetailsUnavailableText], no later sync
+/// fills them in.
+const kTransparentDetailsGaveUpText = 'Details unavailable';
+
 /// Shown when private mode cannot look the transaction's outputs up.
 const kTransparentDetailsNotCoveredText = 'Not available in private mode';
 
@@ -186,8 +191,7 @@ const kTransparentDetailsPollInterval = Duration(seconds: 5);
 /// keeps re-reading it and asks for it to be looked up first. A failed
 /// lookup is worth waiting on only with Private queries on, where the
 /// private service may answer later; with it off the receipt stops there,
-/// as it always has. A lookup the wallet gave up on is shown as unavailable
-/// but never awaited.
+/// as it always has. A lookup the wallet gave up on is never awaited.
 bool transparentDetailsAwaited(
   rust_sync.TransactionDetail? detail, {
   required bool privateQueriesEnabled,

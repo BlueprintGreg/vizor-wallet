@@ -63,6 +63,13 @@ class TransparentDetailsSection extends StatelessWidget {
           value: kTransparentDetailsNotCoveredText,
           valueColor: colors.text.secondary,
         )
+      else if (notice == rust_sync.TransparentDetailsState.gaveUp)
+        ReviewListRow(
+          key: const ValueKey('transparent_details_gave_up'),
+          label: 'Details',
+          value: kTransparentDetailsGaveUpText,
+          valueColor: colors.text.secondary,
+        )
       else if (notice != null)
         ReviewListRow(
           key: const ValueKey('transparent_details_unavailable'),
