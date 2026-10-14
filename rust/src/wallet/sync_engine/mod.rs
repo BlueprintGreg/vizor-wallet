@@ -6979,11 +6979,7 @@ fn recovery_status_for(
     Ok(crate::api::sync::EnhanceRecoveryStatus {
         queries: work.query_count() as u32,
         rediscovery: work.rediscover.len() as u32,
-        // A position waiting for its first query is pending, not complete,
-        // but not a restart reason while waiting. Once due, block processing
-        // or recovery retries pick it up, unless a reply created it at this
-        // tip. It is listed with the work that cannot be retried now.
-        suspended: (work.suspended + work.waiting) as u32,
+        suspended: work.suspended as u32,
         status: status as u32,
         transparent_retry_due: transparent_ledger::service_retry_due(db_path),
         service_state,

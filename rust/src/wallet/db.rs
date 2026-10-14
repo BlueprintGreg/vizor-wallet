@@ -502,11 +502,9 @@ mod tests {
         assert!(!work.contains(&query));
 
         let mut other = open(&other_path);
-        // The copy is a wallet first opened now: make its query due, as the
-        // fixture does for the original.
+        // The copy starts a separate session with its own failure allowance.
         {
             use zcash_client_backend::data_api::{WalletRead as _, WalletWrite as _};
-            other.set_enhance_pir_max_delay(std::time::Duration::ZERO);
             let tip = other.chain_height().unwrap().unwrap();
             other.update_chain_tip(tip).unwrap();
         }
