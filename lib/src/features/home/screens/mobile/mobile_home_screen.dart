@@ -57,7 +57,6 @@ import '../../../swap/models/swap_activity_navigation.dart';
 import '../../../swap/providers/swap_state_provider.dart';
 import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
 import '../../services/transparent_balance_display.dart';
-import '../../widgets/mobile/shield/shield_balance_roll.dart';
 import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../../providers/backup_reminder_provider.dart';
 import '../../widgets/mobile_home_carousel.dart';
@@ -830,16 +829,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   }
 
   bool _isShieldingBalance = false;
-  String? _balanceRollFrom;
-
-  @override
-  void didUpdateWidget(_HomeContent oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.activeAccountUuid != widget.activeAccountUuid ||
-        oldWidget.privacyModeEnabled != widget.privacyModeEnabled) {
-      _balanceRollFrom = null;
-    }
-  }
 
   void _openTransactionStatus(
     BuildContext context,
@@ -958,16 +947,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 
-  BigInt _visibleShieldedBalance() =>
-      widget.ironwoodMigrationCta.mode == IronwoodHomeMigrationCtaMode.start
-      ? widget.sync.orchardBalance + widget.sync.orchardPendingBalance
-      : widget.sync.saplingBalance +
-            widget.sync.orchardBalance +
-            widget.sync.ironwoodBalance +
-            widget.sync.saplingPendingBalance +
-            widget.sync.orchardPendingBalance +
-            widget.sync.ironwoodPendingBalance;
-
   Future<void> _shieldTransparentBalance() async {
     if (_isShieldingBalance) return;
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
@@ -980,26 +959,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       HardwareSignerKind.keystone => '/home/keystone-shield',
       _ => '/home/shield',
     };
-    final before = _visibleShieldedBalance();
     final backdrop = MobileShieldBackdropHost.capture(context);
-    setState(() {
-      _isShieldingBalance = true;
-      _balanceRollFrom = null;
-    });
+    setState(() => _isShieldingBalance = true);
     try {
       await context.push<void>(route, extra: backdrop);
     } finally {
       backdrop?.dispose();
       if (mounted) {
-        setState(() {
-          _isShieldingBalance = false;
-          if (ref.read(accountProvider).value?.activeAccountUuid ==
-              accountUuid) {
-            _balanceRollFrom = ZecAmount.fromZatoshi(
-              before,
-            ).compactBalance.amountText;
-          }
-        });
+        setState(() => _isShieldingBalance = false);
       }
     }
   }
@@ -1024,7 +991,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     // the payment-URI drain in `app.dart` cannot drift away from what this
     // button does.
     final sendDisabled = ref.watch(migrationSendGateProvider);
-    final shieldedBalance = _visibleShieldedBalance();
+    final shieldedBalance = migrationRequired
+        ? sync.orchardBalance + sync.orchardPendingBalance
+        : sync.saplingBalance +
+              sync.orchardBalance +
+              sync.ironwoodBalance +
+              sync.saplingPendingBalance +
+              sync.orchardPendingBalance +
+              sync.ironwoodPendingBalance;
     final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
         shieldedBalance > BigInt.zero ||
@@ -1141,7 +1115,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       shieldedBalance,
                     ).compactBalance.amountText,
               fiatBalanceText: shieldedFiatBalanceText,
-              balanceRollFrom: privacyModeEnabled ? null : _balanceRollFrom,
               priceChange24hPct: priceChange24hPct,
               transparentBalanceText: transparentBalance.text(
                 (amount) =>
@@ -1715,7 +1688,6 @@ String? _mobileHomeFiatTextForZatoshi(
 class _BalanceCard extends StatelessWidget {
   const _BalanceCard({
     required this.balanceText,
-    this.balanceRollFrom,
     required this.fiatBalanceText,
     required this.priceChange24hPct,
     required this.transparentBalanceText,
@@ -1732,7 +1704,6 @@ class _BalanceCard extends StatelessWidget {
   });
 
   final String balanceText;
-  final String? balanceRollFrom;
   final String? fiatBalanceText;
   final double? priceChange24hPct;
   final String transparentBalanceText;
@@ -1861,66 +1832,31 @@ class _BalanceCard extends StatelessWidget {
                           ),
                           const SizedBox(height: AppSpacing.xs),
                         ],
-                        if (balanceRollFrom != null && !privacyModeEnabled)
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
+                        Text.rich(
+                          key: const ValueKey('mobile_home_shielded_balance'),
+                          TextSpan(
                             children: [
-                              Flexible(
-                                child: FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.centerLeft,
-                                  child: Semantics(
-                                    label:
-                                        '$balanceText $kZcashDefaultCurrencyTicker',
-                                    child: ExcludeSemantics(
-                                      child: ShieldBalanceRoll(
-                                        balanceText,
-                                        fromText: balanceRollFrom,
-                                        delay: const Duration(
-                                          milliseconds: 260,
-                                        ),
-                                        style: _mobileHomeBalanceAmountStyle
-                                            .copyWith(color: cardText),
-                                      ),
-                                    ),
+                              TextSpan(
+                                text: '$balanceText ',
+                                style: _mobileHomeBalanceAmountStyle.copyWith(
+                                  color: cardText.withValues(
+                                    alpha: balanceDisabled ? 0.4 : 1,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                kZcashDefaultCurrencyTicker,
+                              TextSpan(
+                                text: kZcashDefaultCurrencyTicker,
                                 style: _mobileHomeBalanceTickerStyle.copyWith(
-                                  color: cardText,
+                                  color: cardText.withValues(
+                                    alpha: balanceDisabled ? 0.4 : 1,
+                                  ),
                                 ),
                               ),
                             ],
-                          )
-                        else
-                          Text.rich(
-                            key: const ValueKey('mobile_home_shielded_balance'),
-                            TextSpan(
-                              children: [
-                                TextSpan(
-                                  text: '$balanceText ',
-                                  style: _mobileHomeBalanceAmountStyle.copyWith(
-                                    color: cardText.withValues(
-                                      alpha: balanceDisabled ? 0.4 : 1,
-                                    ),
-                                  ),
-                                ),
-                                TextSpan(
-                                  text: kZcashDefaultCurrencyTicker,
-                                  style: _mobileHomeBalanceTickerStyle.copyWith(
-                                    color: cardText.withValues(
-                                      alpha: balanceDisabled ? 0.4 : 1,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ],
                     ),
                   ),
