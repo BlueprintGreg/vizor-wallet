@@ -25,7 +25,19 @@ void main() {
       size: const Size(393, 852),
     ),
     (name: 'qr-hold', camera: null, seconds: 3.5, size: const Size(393, 852)),
+    (
+      name: 'qr-buttons-entering',
+      camera: null,
+      seconds: 2.9,
+      size: const Size(393, 852),
+    ),
     (name: 'qr-small', camera: null, seconds: 3.5, size: const Size(320, 568)),
+    (
+      name: 'camera-buttons-changing',
+      camera: 0.09,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
     (
       name: 'camera-forming',
       camera: 0.4,
@@ -39,6 +51,12 @@ void main() {
       size: const Size(393, 852),
     ),
     (name: 'returning', camera: 8.45, seconds: 3.5, size: const Size(393, 852)),
+    (
+      name: 'buttons-leaving',
+      camera: 8.13,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
     (name: 'cloud', camera: 9.3, seconds: 3.5, size: const Size(393, 852)),
     (name: 'success', camera: 15.4, seconds: 3.5, size: const Size(393, 852)),
   ]) {

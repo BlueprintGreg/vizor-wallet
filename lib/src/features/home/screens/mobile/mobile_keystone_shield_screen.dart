@@ -14,7 +14,6 @@ import '../../../../core/navigation/external_action_guard_hold.dart';
 import '../../../../core/storage/wallet_paths.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_button.dart';
-import '../../../../core/widgets/app_icon.dart';
 import '../../../../providers/rpc_endpoint_failover_provider.dart';
 import '../../../../providers/sync_provider.dart';
 import '../../../../rust/api/keystone.dart' as rust_keystone;
@@ -31,6 +30,7 @@ import '../../../../core/formatting/zec_amount.dart';
 import '../../../../providers/wallet_provider.dart';
 import '../../widgets/mobile/shield/mobile_shield_scene.dart';
 import '../../widgets/mobile/shield/keystone_shield_morph.dart';
+import '../../widgets/mobile/shield/keystone_shield_footer.dart';
 import '../../widgets/mobile/shield/keystone_shield_scanner_surface.dart';
 import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 
@@ -636,61 +636,13 @@ class _MobileKeystoneShieldScreenState
       );
     }
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.md,
-        AppSpacing.s,
-        AppSpacing.md,
-        AppSpacing.md,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: AppButton(
-              expand: true,
-              constrainContent: true,
-              growWithContent: true,
-              variant: AppButtonVariant.ghost,
-              onPressed: _stage == _ShieldSignStage.broadcasting
-                  ? null
-                  : _cancel,
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ),
-          const SizedBox(width: AppSpacing.s),
-          Expanded(
-            child: scanning
-                ? AppButton(
-                    expand: true,
-                    constrainContent: true,
-                    growWithContent: true,
-                    variant: AppButtonVariant.secondary,
-                    onPressed: _decoding ? null : _backToQr,
-                    child: const Text('Show QR'),
-                  )
-                : AppButton(
-                    expand: true,
-                    constrainContent: true,
-                    growWithContent: true,
-                    onPressed:
-                        _stage == _ShieldSignStage.showQr && _qrVisualReady
-                        ? _startScanning
-                        : null,
-                    trailing: _stage == _ShieldSignStage.broadcasting
-                        ? const AppIcon(AppIcons.loader)
-                        : const AppIcon(AppIcons.chevronForward),
-                    child: Text(
-                      _stage == _ShieldSignStage.broadcasting
-                          ? 'Broadcasting...'
-                          : 'Next step',
-                    ),
-                  ),
-          ),
-        ],
-      ),
+    return KeystoneShieldFooter(
+      showQr: !scanning && _stage != _ShieldSignStage.broadcasting,
+      onCancel: _stage == _ShieldSignStage.broadcasting ? null : _cancel,
+      onNext: _stage == _ShieldSignStage.showQr && _qrVisualReady
+          ? _startScanning
+          : null,
+      onShowQr: scanning && !_decoding ? _backToQr : null,
     );
   }
 }

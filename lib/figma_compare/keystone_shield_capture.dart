@@ -1,12 +1,10 @@
 // Deterministic visual fixture; never imported by the production entry point.
 import 'dart:async';
 import 'package:flutter/widgets.dart';
-import '../src/core/theme/app_theme.dart';
-import '../src/core/widgets/app_button.dart';
-import '../src/core/widgets/app_icon.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import '../src/features/home/widgets/mobile/shield/keystone_shield_morph.dart';
+import '../src/features/home/widgets/mobile/shield/keystone_shield_footer.dart';
 import '../src/features/home/widgets/mobile/shield/keystone_shield_scanner_surface.dart';
 
 const keystoneShieldPreviewParts = [
@@ -140,48 +138,11 @@ class _KeystoneShieldMotionPreviewState
         ),
       ),
       footer: hardware
-          ? Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.md,
-                AppSpacing.s,
-                AppSpacing.md,
-                AppSpacing.md,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: AppButton(
-                      expand: true,
-                      constrainContent: true,
-                      growWithContent: true,
-                      variant: AppButtonVariant.ghost,
-                      onPressed: widget.onClose,
-                      child: const Text(
-                        'Cancel',
-                        style: TextStyle(color: Color(0xFFFFFFFF)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.s),
-                  Expanded(
-                    child: AppButton(
-                      expand: true,
-                      constrainContent: true,
-                      growWithContent: true,
-                      variant: scanner
-                          ? AppButtonVariant.secondary
-                          : AppButtonVariant.primary,
-                      onPressed: scanner
-                          ? (_decoding ? null : _showQr)
-                          : (_qrReady ? _scan : null),
-                      trailing: scanner
-                          ? null
-                          : const AppIcon(AppIcons.chevronForward),
-                      child: Text(scanner ? 'Show QR' : 'Next step'),
-                    ),
-                  ),
-                ],
-              ),
+          ? KeystoneShieldFooter(
+              showQr: !scanner,
+              onCancel: widget.onClose,
+              onNext: _qrReady ? _scan : null,
+              onShowQr: _decoding ? null : _showQr,
             )
           : null,
     );

@@ -107,6 +107,47 @@ class KeystoneShieldMorph {
   double _fromGlyph = 0;
   double devicePixelRatio = 1;
   bool reduceMotion = false;
+  double footerOpacity = 0;
+  double? _footerAt;
+  double _footerFrom = 0;
+  double _footerTo = 0;
+  double _footerDuration = 0.3;
+
+  double get footerDy =>
+      reduceMotion || _footerTo == 0 ? 0 : 6 * (1 - footerOpacity);
+  bool get footerInteractive =>
+      _goal != KeystoneShieldFocusStage.cloud && footerOpacity >= 0.999;
+
+  void _fadeFooter(double target) {
+    _footerFrom = footerOpacity;
+    _footerTo = target;
+    _footerAt = _time;
+    _footerDuration = reduceMotion
+        ? 0.12
+        : target == 1
+        ? 0.3
+        : 0.25;
+  }
+
+  void _updateFooter() {
+    final entranceDuration = reduceMotion ? 0.12 : 0.3;
+    if (_goal != KeystoneShieldFocusStage.cloud &&
+        _footerTo != 1 &&
+        !_pending &&
+        (_start == null || (_time - _start!) >= _duration - entranceDuration)) {
+      _fadeFooter(1);
+      if (_start != null) _footerAt = _start! + _duration - entranceDuration;
+    }
+    final at = _footerAt;
+    if (at == null) return;
+    final p = ((_time - at) / _footerDuration).clamp(0.0, 1.0);
+    footerOpacity = ui.lerpDouble(
+      _footerFrom,
+      _footerTo,
+      Curves.easeOut.transform(p),
+    )!;
+    if (p == 1) _footerAt = null;
+  }
 
   KeystoneShieldFocusStage get stage => _goal;
   bool get active =>
@@ -171,6 +212,7 @@ class KeystoneShieldMorph {
       _fromGlyph = _glyphMix;
       _progress = 0;
       _goal = focus.stage;
+      if (_goal == KeystoneShieldFocusStage.cloud) _fadeFooter(0);
       _pending = true;
       _start = null;
       _reportReady(false);
@@ -357,6 +399,7 @@ class KeystoneShieldMorph {
       } else if (cloudReady) {
         _particles = List.of(cloud);
       }
+      _updateFooter();
       return;
     }
     _progress = ((time - start) / _duration).clamp(0.0, 1.0);
@@ -432,6 +475,7 @@ class KeystoneShieldMorph {
       }
     }
     _particles = next;
+    _updateFooter();
     if (_progress >= 1) {
       if (_goal == KeystoneShieldFocusStage.cloud && cloud.isNotEmpty) {
         _particles = List.of(cloud);

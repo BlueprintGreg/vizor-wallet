@@ -84,6 +84,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   ui.Image? _backdropImage;
   KeystoneShieldMorph? _keystone;
   String? _keystoneFocusTitle;
+  Widget? _keystoneFooter;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
   double? get _a => _assemblyAt == null ? null : _clock.value - _assemblyAt!;
@@ -96,6 +97,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     if (widget.keystoneFocus != null) {
       _keystone = KeystoneShieldMorph()..configure(widget.keystoneFocus!);
       _keystoneFocusTitle = widget.title;
+      _keystoneFooter = widget.footer;
       unawaited(_keystone!.prepare());
     }
     WidgetsBinding.instance.addObserver(this);
@@ -122,6 +124,11 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
         _keystoneFocusTitle = widget.title;
       }
       _keystone?.configure(widget.keystoneFocus!);
+      if (widget.footer != null &&
+          widget.phase != MobileShieldPhase.failed &&
+          widget.phase != MobileShieldPhase.pending) {
+        _keystoneFooter = widget.footer;
+      }
     }
     if (oldWidget.backdrop != widget.backdrop) {
       final next = widget.backdrop?.image.clone();
@@ -615,6 +622,13 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   );
 
   Widget _functionalContent(BoxConstraints constraints) {
+    final morph = _keystone;
+    final footer =
+        widget.footer ?? (morph?.active == true ? _keystoneFooter : null);
+    final animateFooter =
+        morph != null &&
+        widget.phase != MobileShieldPhase.failed &&
+        widget.phase != MobileShieldPhase.pending;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
       child: Column(
@@ -716,11 +730,27 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
               ),
             ),
           const SizedBox(height: 12),
-          if (widget.footer != null)
-            Opacity(
-              opacity: _keystone?.leavingOpacity ?? 1,
-              child: widget.footer!,
-            )
+          if (footer != null)
+            if (animateFooter)
+              ExcludeSemantics(
+                excluding: !morph.footerInteractive,
+                child: ExcludeFocus(
+                  excluding: !morph.footerInteractive,
+                  child: IgnorePointer(
+                    ignoring: !morph.footerInteractive,
+                    child: Opacity(
+                      key: const ValueKey('mobile_keystone_footer_visibility'),
+                      opacity: morph.footerOpacity,
+                      child: Transform.translate(
+                        offset: Offset(0, morph.footerDy),
+                        child: footer,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else
+              footer
           else if (widget.focusChild == null &&
               widget.canLeave &&
               widget.onClose != null)
