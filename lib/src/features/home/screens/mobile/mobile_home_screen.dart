@@ -58,6 +58,7 @@ import '../../../swap/providers/swap_state_provider.dart';
 import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
 import '../../services/transparent_balance_display.dart';
 import '../../widgets/mobile/shield/shield_balance_roll.dart';
+import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../../providers/backup_reminder_provider.dart';
 import '../../widgets/mobile_home_carousel.dart';
 
@@ -980,13 +981,15 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       _ => '/home/shield',
     };
     final before = _visibleShieldedBalance();
+    final backdrop = MobileShieldBackdropHost.capture(context);
     setState(() {
       _isShieldingBalance = true;
       _balanceRollFrom = null;
     });
     try {
-      await context.push<void>(route);
+      await context.push<void>(route, extra: backdrop);
     } finally {
+      backdrop?.dispose();
       if (mounted) {
         setState(() {
           _isShieldingBalance = false;

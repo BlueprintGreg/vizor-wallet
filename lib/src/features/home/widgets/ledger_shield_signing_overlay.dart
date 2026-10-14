@@ -25,6 +25,7 @@ import '../../../core/navigation/external_action_guard_hold.dart';
 import '../../../core/formatting/zec_amount.dart';
 import '../../../providers/account_provider.dart';
 import 'mobile/shield/mobile_shield_scene.dart';
+import 'mobile/shield/mobile_shield_backdrop.dart';
 import '../../send/services/sapling_params.dart';
 import '../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
@@ -47,12 +48,14 @@ class LedgerShieldSigningOverlay extends ConsumerStatefulWidget {
     required this.onCancel,
     required this.onComplete,
     this.mobile = false,
+    this.mobileBackdrop,
     super.key,
   });
 
   final VoidCallback onCancel;
   final VoidCallback onComplete;
   final bool mobile;
+  final MobileShieldBackdrop? mobileBackdrop;
 
   @override
   ConsumerState<LedgerShieldSigningOverlay> createState() =>
@@ -696,6 +699,7 @@ class _LedgerShieldSigningOverlayState
           fit: StackFit.expand,
           children: [
             MobileShieldScene(
+              backdrop: widget.mobileBackdrop,
               phase: !_momentStarted
                   ? MobileShieldPhase.review
                   : _momentComplete

@@ -31,6 +31,7 @@ import '../../services/transparent_shielding_service.dart';
 import '../../../../core/formatting/zec_amount.dart';
 import '../../../../providers/wallet_provider.dart';
 import '../../widgets/mobile/shield/mobile_shield_scene.dart';
+import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 
 enum _ShieldSignStage {
   preparing,
@@ -54,7 +55,8 @@ class MobileKeystoneShieldResult {
 }
 
 class MobileKeystoneShieldScreen extends ConsumerStatefulWidget {
-  const MobileKeystoneShieldScreen({super.key});
+  const MobileKeystoneShieldScreen({this.backdrop, super.key});
+  final MobileShieldBackdrop? backdrop;
 
   @override
   ConsumerState<MobileKeystoneShieldScreen> createState() =>
@@ -460,6 +462,7 @@ class _MobileKeystoneShieldScreenState
         _stage == _ShieldSignStage.failed ||
         _stage == _ShieldSignStage.broadcastWarning;
     return MobileShieldScene(
+      backdrop: widget.backdrop,
       phase: !_started
           ? MobileShieldPhase.review
           : _done

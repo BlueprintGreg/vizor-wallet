@@ -7,9 +7,11 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../providers/sync_provider.dart';
 import '../../services/transparent_shielding_service.dart';
 import '../../widgets/mobile/shield/mobile_shield_scene.dart';
+import '../../widgets/mobile/shield/mobile_shield_backdrop.dart';
 
 class MobileSoftwareShieldScreen extends ConsumerStatefulWidget {
-  const MobileSoftwareShieldScreen({super.key});
+  const MobileSoftwareShieldScreen({this.backdrop, super.key});
+  final MobileShieldBackdrop? backdrop;
   @override
   ConsumerState<MobileSoftwareShieldScreen> createState() =>
       _MobileSoftwareShieldScreenState();
@@ -73,6 +75,7 @@ class _MobileSoftwareShieldScreenState
 
   @override
   Widget build(BuildContext context) => MobileShieldScene(
+    backdrop: widget.backdrop,
     phase: _phase,
     amount: formatZecAmount(_amount),
     resultAmount: formatZecAmount(_resultAmount ?? _expected),

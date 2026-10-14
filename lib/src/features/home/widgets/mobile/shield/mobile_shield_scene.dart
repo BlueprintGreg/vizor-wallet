@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../../../../core/theme/app_theme.dart';
 import '../../../../../core/widgets/app_button.dart';
 import 'balance_art.dart';
+import 'mobile_shield_backdrop.dart';
 import 'particles/particle_field.dart';
 import 'shield_background.dart';
 import 'shield_haptics.dart';
@@ -28,6 +29,7 @@ class MobileShieldScene extends StatefulWidget {
     required this.amount,
     required this.title,
     this.resultAmount,
+    this.backdrop,
     this.body,
     this.focusChild,
     this.focusBuilder,
@@ -41,6 +43,7 @@ class MobileShieldScene extends StatefulWidget {
   final MobileShieldPhase phase;
   final String amount;
   final String? resultAmount;
+  final MobileShieldBackdrop? backdrop;
   final String title;
   final String? body;
   final Widget? focusChild;
@@ -76,6 +79,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   late double _beforeFontSize;
   late double _afterFontSize;
   _ShieldLayout? _layout;
+  ui.Image? _backdropImage;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
   double? get _a => _assemblyAt == null ? null : _clock.value - _assemblyAt!;
@@ -84,6 +88,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   @override
   void initState() {
     super.initState();
+    _backdropImage = widget.backdrop?.image.clone();
     WidgetsBinding.instance.addObserver(this);
     _prepare();
   }
@@ -103,6 +108,11 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   @override
   void didUpdateWidget(MobileShieldScene oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.backdrop != widget.backdrop) {
+      final next = widget.backdrop?.image.clone();
+      _backdropImage?.dispose();
+      _backdropImage = next;
+    }
     if (oldWidget.amount != widget.amount ||
         oldWidget.resultAmount != widget.resultAmount) {
       _prepare();
@@ -283,6 +293,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     _drag.dispose();
     _field?.dispose();
     _art?.dispose();
+    _backdropImage?.dispose();
     super.dispose();
   }
 
@@ -326,10 +337,30 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
           if (!didPop && widget.canLeave) widget.onClose?.call();
         },
         child: Scaffold(
-          backgroundColor: const Color(0xFF000000),
+          backgroundColor: const Color(0x00000000),
           body: Stack(
             fit: StackFit.expand,
             children: [
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ColoredBox(
+                    color: const Color(0xFF000000),
+                    child: _backdropImage == null
+                        ? null
+                        : ImageFiltered(
+                            imageFilter: ui.ImageFilter.blur(
+                              sigmaX: 7.5,
+                              sigmaY: 7.5,
+                              tileMode: ui.TileMode.clamp,
+                            ),
+                            child: RawImage(
+                              image: _backdropImage,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                  ),
+                ),
+              ),
               AnimatedBuilder(
                 animation: _clock,
                 builder: (_, _) => CustomPaint(
@@ -340,7 +371,6 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                             _a!,
                             VMotion.ease,
                           ),
-                    drag: _drag,
                   ),
                 ),
               ),

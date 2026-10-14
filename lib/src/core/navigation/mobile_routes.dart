@@ -11,6 +11,7 @@ import '../../features/home/screens/mobile/mobile_home_screen.dart';
 import '../../features/home/screens/mobile/mobile_software_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_keystone_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_ledger_shield_screen.dart';
+import '../../features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../../features/migration/screens/mobile/mobile_ironwood_migration_flow_screen.dart';
 import '../../features/migration/models/mobile_ironwood_migration_status_entry.dart';
 import '../../features/migration/screens/ironwood_migration_flow_screen.dart'
@@ -78,9 +79,11 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
     StatefulShellRoute.indexedStack(
       pageBuilder: (context, state, navigationShell) => CupertinoPage(
         key: state.pageKey,
-        child: _MobileTabShell(
-          navigationShell: navigationShell,
-          tabs: _allMobileTabs,
+        child: MobileShieldBackdropHost(
+          child: _MobileTabShell(
+            navigationShell: navigationShell,
+            tabs: _allMobileTabs,
+          ),
         ),
       ),
       branches: [
@@ -413,9 +416,14 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
       path: '/home/shield',
       pageBuilder: (context, state) => CustomTransitionPage(
         key: state.pageKey,
+        opaque: false,
         transitionDuration: const Duration(milliseconds: 520),
         reverseTransitionDuration: const Duration(milliseconds: 340),
-        child: const MobileSoftwareShieldScreen(),
+        child: MobileSoftwareShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) =>
             FadeTransition(opacity: animation, child: child),
       ),
@@ -424,9 +432,14 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
       path: '/home/keystone-shield',
       pageBuilder: (context, state) => CustomTransitionPage(
         key: state.pageKey,
+        opaque: false,
         transitionDuration: const Duration(milliseconds: 520),
         reverseTransitionDuration: const Duration(milliseconds: 340),
-        child: const MobileKeystoneShieldScreen(),
+        child: MobileKeystoneShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) =>
             FadeTransition(opacity: animation, child: child),
       ),
@@ -500,9 +513,15 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
       pageBuilder: (context, state) => CustomTransitionPage(
         key: state.pageKey,
         opaque: false,
+        transitionDuration: const Duration(milliseconds: 520),
+        reverseTransitionDuration: const Duration(milliseconds: 340),
         transitionsBuilder: (context, animation, secondaryAnimation, child) =>
             FadeTransition(opacity: animation, child: child),
-        child: const MobileLedgerShieldScreen(),
+        child: MobileLedgerShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
       ),
     ),
     GoRoute(
