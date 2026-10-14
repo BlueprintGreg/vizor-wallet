@@ -1367,24 +1367,25 @@ mod tests {
         use super::super::content_failures;
         use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
 
-        let (file, db, txid) = unmined_private_status_db();
+        use zcash_client_backend::data_api::status::TransactionStatusWrite;
+
+        let (file, mut db, txid) = unmined_private_status_db();
         let path = file.path().to_str().unwrap().to_owned();
-        content_failures::at_tip(&path, 100);
         let status = |db: &WalletDatabase| {
             super::super::super::recovery_status_for(db, &path, String::new())
                 .unwrap()
                 .status
         };
         assert_eq!(status(&db), 1);
-        content_failures::status_answered(&path, txid);
+        // Any reply, here an unreadable one, records this tip's poll.
+        db.record_private_status_poll(txid, BlockHeight::from_u32(110))
+            .unwrap();
         assert_eq!(
             status(&db),
             0,
-            "a malformed reply leaves nothing to restart for"
+            "an unreadable reply leaves nothing to restart for"
         );
-        content_failures::at_tip(&path, 100);
-        assert_eq!(status(&db), 0, "the same block");
-        content_failures::at_tip(&path, 101);
+        db.update_chain_tip(BlockHeight::from_u32(111)).unwrap();
         assert_eq!(status(&db), 1, "the next block asks again");
 
         // One private Enhance query.
@@ -1425,7 +1426,7 @@ mod tests {
 
         let (file, mut db, _) = unmined_private_status_db();
         let path = file.path().to_str().unwrap().to_owned();
-        content_failures::at_tip(&path, 100);
+        content_failures::at_tip(&path, 110);
         let private = status_source(Err(StatusError::CoverageIncomplete));
         let requests = private.requests.clone();
         let mut reader = super::super::status::RoutedStatusReader::new(
@@ -1447,10 +1448,7 @@ mod tests {
             )
             .await
         };
-        assert!(matches!(
-            sync(&mut db).await,
-            Err(SyncError::PrivateStatusCoverageIncomplete)
-        ));
+        sync(&mut db).await.unwrap();
         let restart_units = |db: &WalletDatabase| {
             super::super::super::recovery_status_for(db, &path, String::new())
                 .unwrap()
@@ -1460,9 +1458,10 @@ mod tests {
         sync(&mut db).await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), 1, "not asked again here");
 
-        content_failures::at_tip(&path, 101);
+        db.update_chain_tip(BlockHeight::from_u32(111)).unwrap();
+        content_failures::at_tip(&path, 111);
         assert_eq!(restart_units(&db), 1, "the next block counts it");
-        let _ = sync(&mut db).await;
+        sync(&mut db).await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), 2, "and asks it");
     }
 
