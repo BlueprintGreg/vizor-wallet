@@ -1243,8 +1243,10 @@ async fn stage_failure_protocol_sync_ok_balances_unchanged() {
     let lwd = CapturingLwd::start_with(Vec::new(), 0, |_| {}).await;
     let before = balance(&fixture);
     let outcome = followup_with(&fixture, required(), &lwd).await;
+    // The service chose the bad init document without knowing the row, so
+    // the lookup defers as unavailable rather than as a content failure.
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.deferred == 1),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.deferred == 1),
         "{outcome:?}"
     );
     assert_eq!(paths(&service), ["/v2/txid/init"]);
