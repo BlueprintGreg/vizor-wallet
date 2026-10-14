@@ -267,9 +267,8 @@ assertions_on_constants = "allow"
 # Pinned to the tip of wallet-libraries PR #197 (private status polls on a
 # fixed schedule and a random wait before an Enhance position's first query,
 # both held in the open wallet's session memory, and a fixed restore window
-# for candidate transparent recovery; it takes the wallet-pir transparent
-# crates from git at 0.1.0-rc.4), on top of main at PR #195 (the wallet-pir transparent
-# crates from crates.io at 0.1.0-rc.4), after PR #193 (the Enhance row
+# for candidate transparent recovery), on top of main at PR #195 (the
+# wallet-pir transparent crates from crates.io at 0.1.0-rc.4), after PR #193 (the Enhance row
 # accessor for reporting an unreadable reply), PR #194 and PR #188 (a receipt lookup
 # given up after three content failures reads as its own view state), PR #189
 # and PR #187 (a format-6 transparent recovery cache upgrades in place to
