@@ -660,6 +660,31 @@ async fn three_unreadable_replies_suspend_the_position_for_good() {
     );
 }
 
+/// A drain that ends a checkpoint asks only the private queries that existed
+/// when the checkpoint began: a query that a status or history reply
+/// unlocked during it waits for the next drain point.
+#[tokio::test]
+async fn queries_unlocked_during_a_checkpoint_wait_for_the_next() {
+    let service = Service::new([]);
+    let mut wallet = Wallet::new(&[0, 40]);
+    let mut drain = sync();
+    drain.snapshot = Some([request(0)].into());
+    drain
+        .run(&mut wallet, &service, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [0]);
+    assert_eq!(wallet.pending, [request(40)]);
+    assert_eq!(service.posts.borrow().len(), 1);
+
+    drain.snapshot = None;
+    drain
+        .run(&mut wallet, &service, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [0, 40]);
+}
+
 /// A record the wallet rejects is counted by the wallet and no longer stops
 /// the batch: the other rows are still asked and applied.
 #[tokio::test]

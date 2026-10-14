@@ -139,7 +139,10 @@ impl EnhancementSession {
         // One pass per checkpoint. Work a reply unlocks (a status that makes
         // a transaction mined, history that names another transaction) waits
         // for the next checkpoint: whether another round of lookups runs now
-        // must not depend on what a reply said.
+        // must not depend on what a reply said. That includes the payload
+        // drain that ends the checkpoint: it asks only the private queries
+        // that exist now.
+        let queries = private_queries(db)?;
         let requests = db
             .transaction_data_requests()
             .map_err(|error| SyncError::db(format!("transaction_data_requests: {error}")))?;
@@ -176,8 +179,12 @@ impl EnhancementSession {
             return Ok(true);
         }
 
-        self.run_payload_recovery(db, client, cached, should_exit)
-            .await
+        self.payload.snapshot = Some(queries);
+        let drained = self
+            .run_payload_recovery(db, client, cached, should_exit)
+            .await;
+        self.payload.snapshot = None;
+        drained
     }
 
     /// Retries already-routed payload work without running metadata lanes.
@@ -206,6 +213,27 @@ impl EnhancementSession {
             Err(EnhancePirRunError::Failed(error)) => Err(error),
         }
     }
+}
+
+/// The wallet's private Enhance queries as they stand now.
+fn private_queries(
+    db: &WalletDatabase,
+) -> Result<
+    std::collections::BTreeSet<zcash_client_backend::data_api::enhance_pir::EnhancePirRequest>,
+    SyncError,
+> {
+    use zcash_client_backend::data_api::enhance_pir::{
+        EnhancePirRead, EnhancePirWork, TransactionEnhancementWork,
+    };
+    Ok(db
+        .transaction_enhancement_work()
+        .map_err(|error| SyncError::db(format!("transaction_enhancement_work: {error}")))?
+        .into_iter()
+        .filter_map(|work| match work {
+            TransactionEnhancementWork::Private(EnhancePirWork::Query(request)) => Some(request),
+            _ => None,
+        })
+        .collect())
 }
 
 #[cfg(test)]
