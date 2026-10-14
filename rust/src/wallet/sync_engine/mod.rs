@@ -3154,8 +3154,10 @@ async fn run_sync_impl(
         with_wallet_db_write_lock("sync_engine.open_db", || open_db(db_data_path, network))?;
     let mut enhancement = EnhancementSession::new(network, db_data_path);
     let one_time_ivks = crate::wallet::one_time_ivk::supported(network);
-    // One-time IVK maintenance never stops sync: a key it registers later rescans from
-    // its start.
+    // One-time IVK maintenance runs only at sync start, and never stops sync. Run after
+    // an Enhance reply, it would register a refund key from the memo that reply
+    // retrieved, and the key's restore sweep would follow in the same sync, so requests
+    // would depend on reply content. Such a key waits for the next sync.
     if one_time_ivks {
         if let Err(e) = with_wallet_db_write_lock("one_time_ivk.prepare", || {
             crate::wallet::one_time_ivk::maintain_recovery(&mut db)
@@ -3890,36 +3892,7 @@ async fn run_sync_impl(
                     {
                         return Ok(());
                     }
-                    if one_time_ivks {
-                        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.complete", || {
-                            crate::wallet::one_time_ivk::maintain_recovery(&mut db)
-                        }) {
-                            log::warn!("One-time IVK maintenance deferred: {e}");
-                        }
-                    }
-                    // Maintenance or an earlier sweep may have queued a key's rescan;
-                    // scan that before declaring sync complete.
-                    let rescan_ranges = db
-                        .suggest_scan_ranges()
-                        .map_err(|e| SyncError::db(e.to_string()))?;
-                    if rescan_ranges.iter().any(is_pending_scan_range) {
-                        reset_promoted_scan_progress(
-                            &rescan_ranges,
-                            &mut initial_total,
-                            &mut prev_remaining,
-                        );
-                        if initial_total > 0 {
-                            progress_fn(begin_checking(
-                                &mut checking_cycle,
-                                initial_total,
-                                current_tip_height,
-                            ));
-                        }
-                        progress_display_mode = ProgressDisplayMode::Work;
-                        queued_ranges = Some(rescan_ranges);
-                        prefetch = None;
-                        continue;
-                    }
+                    // No one-time IVK maintenance here (see sync start).
                     if one_time_ivks {
                         let verified_tip =
                             block_height_from_u64(current_tip_height, "verified chain tip")?;

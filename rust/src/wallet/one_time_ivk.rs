@@ -134,8 +134,9 @@ pub(crate) fn with_db<T, E: From<String>>(
 }
 
 /// Keeps every software account's one-time key recovery current, under the wallet write
-/// lock, when sync starts and at the tip. Sync calls it only where [`supported`]; it runs
-/// with both privacy switches off, since only new address issuance is opt-in.
+/// lock. Sync calls it only at its start (see `run_sync_impl`), and only where
+/// [`supported`]; it runs with both privacy switches off, since only new address
+/// issuance is opt-in.
 pub(crate) fn maintain_recovery(db: &mut WalletDatabase) -> Result<(), String> {
     for account in software_accounts(db)? {
         db.maintain_one_time_ivks(account)
@@ -219,6 +220,79 @@ mod tests {
         assert_eq!(keys(), (RECEIVE_GAP_LIMIT, 0));
         let error = require_new_address(WalletNetwork::Main).unwrap_err();
         assert!(error.contains("Enable Private queries"), "{error}");
+    }
+
+    /// A refund memo that Enhance retrieves during sync S neither registers its key nor
+    /// queues work before S ends: S's restore sweep selects no refund key and no rescan is
+    /// queued. Maintenance at the start of S+1 registers the key, and S+1's sweep selects
+    /// it. Sync runs `maintain_recovery` at its start and `close_finished_keys` at the tip.
+    #[test]
+    fn a_refund_memo_found_during_a_sync_is_swept_the_next_sync() {
+        use std::num::NonZeroU32;
+        use zakura_one_time_ivk::{swap::RefundMemo, KeyId, Purpose};
+        use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
+        use zcash_primitives::block::BlockHash;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let path = path.to_str().unwrap();
+        let network = WalletNetwork::Regtest;
+        super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
+        let (uuid, _) = super::super::keys::init_db_and_create_account(
+            path,
+            network,
+            &SecretVec::new(vec![0; 32]),
+            Some(100),
+            "POC",
+        )
+        .unwrap();
+        let account = parse_account_uuid(&uuid).unwrap();
+        let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
+        db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
+        // Scanned through 110, with the change of a funding transaction mined at 105 whose
+        // memo compact scanning did not carry.
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO blocks(height,hash,time,sapling_tree) VALUES(110,zeroblob(32),0,X'000000');
+             DELETE FROM scan_queue;
+             INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);
+             INSERT INTO transactions(id_tx,txid,mined_height,min_observed_height)
+                 VALUES(1,randomblob(32),105,105);
+             INSERT INTO ironwood_received_notes(transaction_id,action_index,account_id,
+                 diversifier,value,rho,rseed,is_change,recipient_key_scope,note_version)
+                 SELECT 1,0,id,zeroblob(11),0,zeroblob(32),zeroblob(32),1,1,0 FROM accounts;",
+        )
+        .unwrap();
+        let through = ChainPoint {
+            height: BlockHeight::from_u32(110),
+            hash: BlockHash([0; 32]),
+        };
+        let refund = KeyId::new(Purpose::Refund, 7);
+        // Whether the restore sweep a sync ends with selects the refund key.
+        let swept = |db: &mut WalletDatabase| {
+            db.prepare_one_time_sweeps(account, through, now().unwrap(), NonZeroU32::MAX)
+                .unwrap()
+                .unwrap()
+                .iter()
+                .any(|work| work.key == refund)
+        };
+        let rescan_queued = |db: &WalletDatabase| !db.suggest_scan_ranges().unwrap().is_empty();
+
+        // Sync S starts, then its Enhance drain retrieves the memo.
+        maintain_recovery(&mut db).unwrap();
+        conn.execute(
+            "UPDATE ironwood_received_notes SET memo = ?1",
+            [RefundMemo::new(7).encode().as_slice()],
+        )
+        .unwrap();
+        close_finished_keys(&mut db, through.height).unwrap();
+        assert!(!swept(&mut db), "S's sweep waits");
+        assert!(!rescan_queued(&db), "S queues no rescan");
+
+        // Sync S+1 starts.
+        maintain_recovery(&mut db).unwrap();
+        assert!(swept(&mut db), "S+1's sweep selects the key");
+        assert!(!rescan_queued(&db), "its rescan follows that sweep");
     }
 
     /// One-time IVKs cover the first account and accounts added from another seed,
