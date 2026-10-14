@@ -150,6 +150,61 @@ pub(super) fn external(ws: &TransparentAddressWatchSet<AccountUuid>) -> Transpar
         .address
 }
 
+/// Withdraws `account`'s settled coverage, as a later recovery run that grows
+/// the address window and stops before covering the new addresses does. Each
+/// commit covers the watch set and receives output `n` of `txid` at the last
+/// external address, until the window reaches addresses no commit covered: a
+/// candidate watched the library's fixed restore window, which [`cover`]
+/// covered, so growth inside it leaves the coverage settled.
+pub(super) fn grow_past_coverage(st: &mut State, account: AccountUuid, txid: [u8; 32]) {
+    for n in 0..16 {
+        let ws = watch(st, account);
+        let target = ws.target.unwrap().height;
+        let last = ws
+            .addresses
+            .iter()
+            .filter_map(|watched| match watched.origin {
+                WatchOrigin::Derived { scope, index } if scope == TransparentKeyScope::EXTERNAL => {
+                    Some((index.index(), watched.address))
+                }
+                _ => None,
+            })
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, address)| address)
+            .unwrap();
+        let mut grow = commit(&ws);
+        grow.receives = vec![ReceiveEvent {
+            metadata: Some(TransactionMetadata {
+                fee: WholeTransactionFee::Exact(zat(10_000)),
+                transparent_input_count: 1,
+                has_shielded_components: false,
+            }),
+            outpoint: OutPoint::new(txid, n),
+            address: last,
+            value: zat(30_000),
+            coinbase: false,
+            mined_height: target - 2,
+        }];
+        let db = st.wallet_mut().db_mut();
+        assert!(
+            db.apply_transparent_ledger_commit(grow)
+                .unwrap()
+                .window_grew
+        );
+        let snapshot = db
+            .transparent_ledger_snapshot(account, crate::wallet::confirmations_policy())
+            .unwrap();
+        if snapshot
+            .blockers
+            .iter()
+            .any(|blocker| matches!(blocker, RecoveryBlocker::Recovery(_)))
+        {
+            return;
+        }
+    }
+    panic!("the window never left the covered addresses");
+}
+
 /// Commits `receives` and repeats the coverage while the address window grows.
 pub(super) fn cover(st: &mut State, account: AccountUuid, receives: Vec<ReceiveEvent>) {
     let mut receives = Some(receives);

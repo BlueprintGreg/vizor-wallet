@@ -21,8 +21,8 @@ use zcash_primitives::block::BlockHash;
 use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
 
 use super::private_shielding_tests::{
-    commit, cover, external, regtest, revision, scan_unrelated_blocks, set_policy, watch, State,
-    NETWORK, NU6_3,
+    commit, cover, external, grow_past_coverage, regtest, revision, scan_unrelated_blocks,
+    set_policy, watch, State, NETWORK, NU6_3,
 };
 use super::*;
 use crate::wallet::network::configure_regtest_nu6_3_activation_height;
@@ -150,23 +150,7 @@ fn an_unsettled_private_receive_never_shows_the_senders_fee() {
     assert!(!settled[0].provisional);
 
     // Activity at the end of the window grows it, and the run stops there.
-    let ws = watch(&st, account);
-    let mut grow = commit(&ws);
-    grow.receives = vec![output(
-        0x62,
-        0,
-        last_derived(&st, account, TransparentKeyScope::EXTERNAL),
-        30_000,
-        target - 2,
-        transparent_only(10_000, 1),
-    )];
-    assert!(
-        st.wallet_mut()
-            .db_mut()
-            .apply_transparent_ledger_commit(grow)
-            .unwrap()
-            .window_grew
-    );
+    grow_past_coverage(&mut st, account, [0x62; 32]);
 
     let unsettled = rows(&st, account, 0x61);
     assert_eq!(unsettled.len(), 1);
@@ -306,23 +290,7 @@ fn settled_mixed_activity_does_not_inherit_incomplete_payment_details() {
 
         // Growing the recovery window withdraws settled coverage, even though
         // the shielded residual is still available. The warning must return.
-        let ws = watch(&st, account);
-        let mut grow = commit(&ws);
-        grow.receives = vec![output(
-            0x72,
-            0,
-            last_derived(&st, account, TransparentKeyScope::EXTERNAL),
-            30_000,
-            target - 2,
-            transparent_only(10_000, 1),
-        )];
-        assert!(
-            st.wallet_mut()
-                .db_mut()
-                .apply_transparent_ledger_commit(grow)
-                .unwrap()
-                .window_grew
-        );
+        grow_past_coverage(&mut st, account, [0x72; 32]);
         assert!(rows(&st, account, 0x71).iter().all(|row| row.provisional));
     }
 }
@@ -592,27 +560,9 @@ fn detail(st: &State, account: AccountUuid, tag: u8, tx_kind: &str) -> Transacti
     .unwrap()
 }
 
-/// Withdraws the account's settled coverage, as a later recovery run that
-/// grows the address window and stops before covering the new addresses does.
+/// Withdraws the account's settled coverage; see [`grow_past_coverage`].
 fn unsettle(st: &mut State, account: AccountUuid) {
-    let ws = watch(st, account);
-    let target = ws.target.unwrap().height;
-    let mut grow = commit(&ws);
-    grow.receives = vec![output(
-        0x0f,
-        0,
-        last_derived(st, account, TransparentKeyScope::EXTERNAL),
-        30_000,
-        target - 2,
-        transparent_only(10_000, 1),
-    )];
-    assert!(
-        st.wallet_mut()
-            .db_mut()
-            .apply_transparent_ledger_commit(grow)
-            .unwrap()
-            .window_grew
-    );
+    grow_past_coverage(st, account, [0x0f; 32]);
 }
 
 /// What a receipt shows of a row and its detail: the row's kind, amount,

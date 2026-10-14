@@ -35,8 +35,8 @@ use zcash_protocol::{
 };
 
 use super::private_shielding_tests::{
-    commit, cover, external, regtest, revision, scan_unrelated_blocks, set_policy, watch, State,
-    NU6_3,
+    commit, cover, external, grow_past_coverage, regtest, revision, scan_unrelated_blocks,
+    set_policy, watch, State, NU6_3,
 };
 use super::*;
 use crate::wallet::keys;
@@ -2318,30 +2318,7 @@ impl Recovered {
     /// Withdraws the account's settled coverage, as a later recovery run
     /// that grows the address window and stops before covering it does.
     fn unsettle(&mut self) {
-        let ws = watch(&self.st, self.account);
-        let target = ws.target.unwrap().height;
-        let mut grow = commit(&ws);
-        grow.receives = vec![event(
-            0x0f,
-            0,
-            last_derived(&self.st, self.account, TransparentKeyScope::EXTERNAL),
-            30_000,
-            target - 2,
-            Some(TransactionMetadata {
-                fee: WholeTransactionFee::Exact(Zatoshis::const_from_u64(10_000)),
-                transparent_input_count: 1,
-                has_shielded_components: false,
-            }),
-            false,
-        )];
-        assert!(
-            self.st
-                .wallet_mut()
-                .db_mut()
-                .apply_transparent_ledger_commit(grow)
-                .unwrap()
-                .window_grew
-        );
+        grow_past_coverage(&mut self.st, self.account, txid(0x0f));
     }
 }
 
