@@ -249,6 +249,23 @@ should_implement_trait = "allow"
 items_after_test_module = "allow"
 assertions_on_constants = "allow"
 
+# wallet-libraries main is ahead of its crates.io releases. Patch every
+# wallet-libraries crate in the graph to one revision so their public types
+# unify; the version requirements above must match the versions at that
+# revision. Drop this once a release includes it.
+#
+# Pinned to 6b3a30d4, wallet-libraries main.
+[patch.crates-io]
+zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pir-native = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pir-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-pir-transparent = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+zakura-transaction-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "6b3a30d433bd125fcf19d3ec108e90554120e377" }
+
 # Flutter debug builds use Cargokit + Cargo's dev profile (`cargo build`
 # without `--release`). Rust crypto and voting flows are slow under the default
 # debug opt-level=0, so keep debug assertions and symbols while making local

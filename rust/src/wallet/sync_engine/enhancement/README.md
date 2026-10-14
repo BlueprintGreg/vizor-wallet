@@ -476,22 +476,22 @@ until an account is promoted.
   cancellation stops between commits is not acknowledged, and the next pass
   replays it.
 - **Pass plan.** The adapter's `PassPlan` reads each pass and its settlement
-  and names the next step: pass again, refresh from a fresh watch set, wait,
-  hold, skip, stop, fail, or done. The coordinator keeps the time budgets, the
-  wait cap, the hold durations, the durable-policy check before a refresh,
-  and promotion.
-- **Continuations and waits.** `next` comes from the adapter's outcome:
-  `Complete`, `More` (pass again at once), `RetryAfter` (10 s behind a lagging
-  publication, 30 s after an overload) and `Stalled`. A further pass also
-  needs a grown window or a changed watch set. One run waits at most 90 s in
-  all; the lag is logged in blocks and the wait in seconds.
+  and names the next step: refresh from a fresh watch set, hold, skip, stop,
+  fail, or done. The coordinator keeps the time budgets, the hold durations,
+  the durable-policy check before a refresh, and promotion.
+- **One pass per sync.** Each account gets one counted pass per run. Its
+  retry (`Complete`, `More`, `After` for a lagging publication or an
+  overload, `Stalled`) ends the account's recovery for the sync: a grown
+  window, a changed watch set or a continuation waits for the next sync, so
+  a reply cannot trigger more traffic at once. The lag is logged in blocks.
 - **Bounds and order.** The active account goes first and the rest follow
-  from a per-wallet rotating cursor. Each account gets at most 8 passes and
-  120 s, and the run 180 s. A source call that ignores its exit signal is
+  from a per-wallet rotating cursor. Each account gets 120 s, and the run
+  180 s. A source call that ignores its exit signal is
   abandoned 30 s after the pass deadline.
 - **Holds.** A withdrawal, unreconciled retirements, legacy evidence the
-  complete ledger cannot explain (`LegacyDiscrepancy`), or three stalled runs
-  since the last complete one hold the account for an hour. Holds live in
+  complete ledger cannot explain (`LegacyDiscrepancy`), a directory entry
+  that failed on content three times, or three stalled runs since the last
+  complete one hold the account for an hour. Holds live in
   memory, so a restart retries once, and turning private queries off drops
   them with the facts they were held over. Held and quarantined accounts are
   skipped without a source call; the balance read reports the stop reason.

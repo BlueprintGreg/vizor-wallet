@@ -390,6 +390,7 @@ fn report(state: BatchState, progress: Progress) -> PassReport {
         commits: 0,
         retired: 0,
         publication_changed: false,
+        failed_entries: Default::default(),
     }
 }
 

@@ -3384,6 +3384,12 @@ enum TransparentDetailsState {
   /// reachable.
   unavailable,
 
+  /// Lookups were given up after repeated content failures from the private
+  /// service. Show it as [`Self::Unavailable`], but do not poll or prioritize
+  /// it: it changes only once the transaction is mined at another height or
+  /// private queries are turned off.
+  gaveUp,
+
   /// Private mode cannot look the transaction up: the private publication
   /// does not cover it.
   notCovered,

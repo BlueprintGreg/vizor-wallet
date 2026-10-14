@@ -1481,25 +1481,25 @@ async fn unreconciled_retirements_acknowledge_nothing_and_hold_the_account() {
 }
 
 #[tokio::test]
-async fn a_lagging_source_that_catches_up_within_the_cap_restores_authority() {
+async fn a_lagging_source_that_catches_up_by_the_next_sync_restores_authority() {
     let mut wallet = wallet();
     let _mode = activate(&mut wallet).await;
-    // Paused time lets the run spend its wait at once. Activation's drain
-    // must not see it.
-    tokio::time::pause();
-    let source = Arc::new(funded_source(&wallet));
+    let source = funded_source(&wallet);
     source.published_through(Some(TIP - 10));
-    let catching_up = source.clone();
-    source.on_call(|| {}).on_call(move || {
-        catching_up.published_through(None);
-    });
 
+    // A lagging pass ends the sync's recovery; it does not wait and ask again.
+    let RunOutcome::Finished(stats) = run_required(&mut wallet, &source).await else {
+        panic!("recovery finishes");
+    };
+    assert_eq!(source.calls(), 1);
+    assert_eq!((stats.qualified, stats.promoted), (1, 0));
+
+    source.published_through(None);
     let RunOutcome::Finished(stats) = run_required(&mut wallet, &source).await else {
         panic!("recovery finishes");
     };
     assert_eq!(source.calls(), 2);
-    assert_eq!(stats.publication_wait, Duration::from_secs(10));
-    assert_eq!((stats.qualified, stats.promoted), (2, 1));
+    assert_eq!((stats.qualified, stats.promoted), (1, 1));
     let current = balance(&wallet, &wallet.uuid);
     assert_eq!(
         current.transparent_authority,
@@ -1508,12 +1508,12 @@ async fn a_lagging_source_that_catches_up_within_the_cap_restores_authority() {
     assert_eq!(current.transparent, VALUE);
 }
 
-#[tokio::test(start_paused = true)]
-async fn publication_waits_stop_at_the_cap() {
+#[tokio::test]
+async fn an_overloaded_pass_ends_the_accounts_recovery_for_the_sync() {
     let mut wallet = private_wallet();
     let (_, other) = add_account(&wallet);
     let source = FixtureSource::new(main_hash);
-    // A capacity refusal waits thirty seconds.
+    // Every pass is refused for capacity.
     source.next(Some(Outcome::Overloaded));
 
     let outcome = run(
@@ -1531,18 +1531,15 @@ async fn publication_waits_stop_at_the_cap() {
     let RunOutcome::Finished(stats) = outcome else {
         panic!("recovery finishes");
     };
-    // Three waits reach the cap; the first account's fourth pass and the
-    // other account's only pass have none left.
-    assert_eq!(stats.publication_wait, PUBLICATION_WAIT_CAP);
-    assert_eq!(source.calls_for(wallet.account), 4);
+    // Each account passes once; the refusal's delay is the next sync's.
+    assert_eq!(source.calls_for(wallet.account), 1);
     assert_eq!(source.calls_for(other), 1);
     assert_eq!(stats.accounts, 2);
 
-    // The cap is per run.
-    let RunOutcome::Finished(stats) = recover(&mut wallet, &source).await else {
+    let RunOutcome::Finished(_) = recover(&mut wallet, &source).await else {
         panic!("recovery finishes");
     };
-    assert_eq!(stats.publication_wait, PUBLICATION_WAIT_CAP);
+    assert_eq!(source.calls_for(wallet.account), 2);
 }
 
 #[tokio::test]
