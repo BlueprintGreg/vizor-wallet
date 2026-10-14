@@ -178,10 +178,28 @@ recovering
     |
     +-- HTTP 409/410 --> refresh once ---------> retry unfinished work
     |
-    +-- ordinary failure ----------------------> retrying later
+    +-- unreadable row or record, or a record
+    |   the wallet rejects --------------------> counted; rest of batch asked
+    |
+    +-- request failure -----------------------> rest of batch asked,
+    |                                             then retrying later
     |
     `-- authenticated result ------------------> persist partial progress
 ```
+
+A reply that arrived for the session but whose row does not decrypt or decode,
+a record in it that does not decode, and a record the wallet rejects are
+content outcomes: a service could aim them at chosen rows. Each is counted
+against the requests of its transaction in that row (three suspend the
+position for the wallet session), and the rest of the batch is asked as an
+honest reply would have it. A request failure (an HTTP refusal, a transport or
+JSON error, a rotated generation, a body over the size limit, or a reply whose
+length or binding does not match the session) counts nothing; the batch is
+still asked to its end, and then private Enhance waits for a later sync.
+
+A newly queued position waits a random time of up to two minutes before its
+first query (`EnhancePirWork::Waiting`). It is pending, not complete, and the
+checkpoint at each block asks it once it is due.
 
 Accepted routing, pending routing, rediscovery attempts, and
 `private_failed_for_sync` are session-scoped. Successfully persisted records
@@ -235,10 +253,26 @@ Private Status PIR validates:
 4. coverage constraints for the requested observation,
 5. the anchor again after the query.
 
-HTTP 409/410 permits one private-session refresh. Most other failures remain
-inconclusive and never fail the sync. After the first private failure other
-than coverage, the session stops querying the private service and leaves the
-remaining private status work pending until the next sync.
+HTTP 409/410 permits one private-session refresh. Other failures remain
+inconclusive and never fail the sync.
+
+Private polls follow a fixed schedule: once at each of 10 chain tips (from the
+tip a transaction this wallet built was built at, or else from its first
+recorded poll), and once at the expiry height when that is past them, whether
+or not the transaction is mined. This window decides what is due at a tip.
+Every private reply, whatever it said, records that tip's poll and marks the
+txid answered at this block (`content_failures`), which bounds what is sent:
+the work is not asked again before the next tip, and the next transaction is
+asked. A row that does not decode (`Unreadable`) and `CoverageIncomplete` are
+such replies. Only a request outcome records nothing: the session then stops
+querying the private service and leaves the remaining private status work due
+until the next sync. A poll the wallet has already settled is still sent, and
+its answer dropped.
+
+The library keeps the polls in memory, in a `StatusPollSession`. Every handle
+the app opens on a wallet shares one session, keyed by the wallet's path like
+the Enhance session (`wallet/db.rs`), so a later handle at the same tip sees
+the poll. An app restart starts a fresh session.
 
 Each lookup carries the wallet's chain tip as its decision height. When the
 snapshot anchor is below it, the lookup drops the bound and accepts only
@@ -246,14 +280,9 @@ positive records; a missing record is then `CoverageIncomplete`. `Mempool` and
 `Forked` are distinct source observations but both persist as the wallet's
 not-in-main-chain state.
 
-`CoverageIncomplete` is an explicit feedback gate. `GetStatus` work is
-expected to be highly unlikely in private mode, so Vizor surfaces a clear
-Settings action and pauses automatic sync instead of silently weakening
-privacy. A missing record is a reply about its transaction, so the sync is not
-retried at the same tip and the transaction is not asked again until the next
-block. If production users encounter the gate, its
-complete negative-coverage recovery needs a dedicated design; there is no
-automatic public fallback.
+`CoverageIncomplete` leaves the obligation pending for its next scheduled poll;
+it neither fails the sync nor pauses polling. There is no automatic public
+fallback.
 
 ## Transparent history and fees
 
@@ -1089,8 +1118,8 @@ never tracks confirmations under private queries.
 Status work is read separately from transparent discovery. The returned variant is
 the dispatch authority. Private work carries the wallet's conservative inclusion
 evidence; the checkpoint supplies its decision height. Incomplete coverage leaves
-the obligation pending and is attempted at most once per checkpoint, without
-public fallback. Foreground, migration recovery, and the versioned native ABI use
+the obligation pending until its next scheduled poll, without public
+fallback. Foreground, migration recovery, and the versioned native ABI use
 the same routing contract. Mainnet private preference enables private status;
 there is no separate release gate.
 
