@@ -449,6 +449,7 @@ SyncProvider (sync_provider.dart)
   ├── startSyncAnyway() — unlock recovery path for cancelled-but-still-unwinding Rust sync
   ├── Polls getLatestBlockHeight every 10s after sync completes
   ├── Re-syncs automatically when new blocks detected or previous sync incomplete
+  ├── One recovery pass kRecoveryPassDelay after each sync ends (see _armRecoveryPass)
   ├── Duplicate sync guard: _isSyncing (Dart) + isSyncRunning() (Rust)
   ├── A start requested while its own stream still holds the Rust guard (its
   │   post-sync follow-ups included) is queued and runs when the stream ends;

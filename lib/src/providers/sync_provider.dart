@@ -824,6 +824,9 @@ class WalletMutationSyncPause {
   bool get hadWorkToPause => hadActiveSync || hadPolling || hadMempoolObserver;
 }
 
+/// Delay from the end of a block-driven sync to its one recovery pass.
+const kRecoveryPassDelay = Duration(seconds: 30);
+
 @visibleForTesting
 bool shouldStartSyncForPolledTip(SyncState? current, int latestTipHeight) {
   return !(current?.isSyncComplete ?? false) ||
@@ -869,16 +872,19 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     IronwoodMigrationBackgroundLifecycle? recoveryLifecycle,
     Duration recoveryTransitionTimeout = const Duration(seconds: 120),
     Future<void> Function(String dbPath)? excludeCompanionsFromBackup,
+    Duration recoveryPassDelay = kRecoveryPassDelay,
   }) : _walletDbPathResolver = walletDbPathResolver ?? getWalletDbPath,
        _recoveryLifecycle =
            recoveryLifecycle ?? IronwoodMigrationBackgroundLifecycle.instance,
        _recoveryTransitionTimeout = recoveryTransitionTimeout,
+       _recoveryPassDelay = recoveryPassDelay,
        _excludeCompanionsFromBackup =
            excludeCompanionsFromBackup ??
            excludeTransparentRecoveryCompanionsFromBackup;
 
   final IronwoodMigrationBackgroundLifecycle _recoveryLifecycle;
   final Duration _recoveryTransitionTimeout;
+  final Duration _recoveryPassDelay;
   final Future<void> Function(String dbPath) _excludeCompanionsFromBackup;
 
   /// Whether the wallet's transparent policy may be private now even though
@@ -1031,6 +1037,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   StreamSubscription? _syncSub;
   AppLifecycleListener? _lifecycleListener;
   Timer? _pollTimer;
+  Timer? _recoveryPassTimer;
+  // The attached sync is a recovery pass, which arms no other.
+  bool _activeSyncIsRecoveryPass = false;
+  // Set only while [_startSyncAs] starts a recovery pass.
+  bool _startingRecoveryPass = false;
   bool _pollCheckInFlight = false;
   bool _resumeTipCheckPending = false;
   int _sensitiveStateEpoch = 0;
@@ -1172,6 +1183,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       rust_sync.stopMempoolObserver();
       _lifecycleListener?.dispose();
       _pollTimer?.cancel();
+      _cancelRecoveryPass();
+    });
+
+    ref.listen(enhancePirProvider, (_, enabled) {
+      if (!enabled) _cancelRecoveryPass();
     });
 
     // Auto-start sync on account changes.
@@ -1427,6 +1443,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   void _stopForAppExit() {
     _resumeTipCheckPending = false;
     _queuedSyncStart = null;
+    _cancelRecoveryPass();
     ++_syncGen;
     ++_sensitiveStateEpoch;
     ++_progressEventVersion;
@@ -1492,6 +1509,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       return;
     }
     _queuedSyncStart = null;
+    _cancelRecoveryPass();
+    _activeSyncIsRecoveryPass = _startingRecoveryPass;
     ++_progressEventVersion;
     ++_balanceReadVersion;
     _authoritativeBalanceRecovery = null;
@@ -1734,6 +1753,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
                 }
               }
               _syncSub = null;
+              _armRecoveryPass();
               // Rust released its guard before closing the stream.
               _startQueuedSync();
             },
@@ -1905,7 +1925,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (switched) {
       log('Sync: retrying foreground sync with fallback endpoint');
       final current = state.value;
-      startSync(latestTipHeight: current?.chainTipHeight);
+      _startSyncAs(
+        recoveryPass: _activeSyncIsRecoveryPass,
+        latestTipHeight: current?.chainTipHeight,
+      );
       _startPolling();
       return;
     }
@@ -1965,6 +1988,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       ),
     );
     _startPolling();
+    _armRecoveryPass();
   }
 
   /// Recovery path for cases like unlock-after-sign-out where a previous
@@ -2024,6 +2048,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   void stopSync() {
     _resumeTipCheckPending = false;
     _queuedSyncStart = null;
+    _cancelRecoveryPass();
     _syncStartDeferred = false;
     _deferredSyncLatestTipHeight = null;
     ++_syncGen; // invalidate pending startSync callbacks
@@ -2242,6 +2267,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     FutureOr<void> Function()? onStoppingSync,
   }) async {
     _walletMutationPauseCount++;
+    _cancelRecoveryPass();
     final pause = _walletMutationSyncPauseSnapshot();
 
     try {
@@ -2318,6 +2344,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ref.read(publicDetailsLoadsProvider).cancel();
     _resumeTipCheckPending = false;
     _queuedSyncStart = null;
+    _cancelRecoveryPass();
     ref.read(pendingActivityEvidenceProvider.notifier).clear();
     _pendingMutationRestartSync = false;
     _pendingMutationRestartPolling = false;
@@ -2478,6 +2505,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   void _handleAppHide() {
     _isInForeground = false;
+    _cancelRecoveryPass();
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(false);
     ++_foregroundEpoch;
     if (!canRunAppProcessWork(isInForeground: _isInForeground)) {
@@ -2485,6 +2513,67 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _queuedSyncStart = null;
     }
   }
+
+  /// Arms one recovery pass [kRecoveryPassDelay] after a sync ends, whatever
+  /// its result. The pass is an ordinary sync at the unchanged tip, so it
+  /// drains Enhance work and runs the transparent follow-up without waiting
+  /// for another block.
+  ///
+  /// When it runs depends only on that sync ending, app lifecycle and
+  /// settings, never on reply content or remaining recovery work: it never
+  /// reads recovery status, and the pass itself arms no other. Lock,
+  /// backgrounding, a wallet mutation, turning Private queries off, or
+  /// another sync starting first cancels it; that sync arms its own.
+  void _armRecoveryPass() {
+    _cancelRecoveryPass();
+    if (_activeSyncIsRecoveryPass || !_recoveryPassAllowed) return;
+    _recoveryPassTimer = Timer(_recoveryPassDelay, _runRecoveryPass);
+  }
+
+  /// Cancels the pending recovery pass, if any.
+  void _cancelRecoveryPass() {
+    _recoveryPassTimer?.cancel();
+    _recoveryPassTimer = null;
+  }
+
+  /// Unlocked, in the foreground, with Private queries on and no wallet
+  /// mutation in progress.
+  bool get _recoveryPassAllowed =>
+      !_isShuttingDown &&
+      !_requiresUnlock &&
+      _isInForeground &&
+      _walletMutationPauseCount == 0 &&
+      !_recoverySettingTransition &&
+      ref.read(enhancePirProvider);
+
+  /// Starts the pass if it is still allowed and nothing else is syncing.
+  void _runRecoveryPass() {
+    _recoveryPassTimer = null;
+    if (!ref.mounted || !_recoveryPassAllowed) return;
+    // A running or deferred sync recovers anyway; the pass never queues.
+    if (_isSyncing ||
+        _syncSub != null ||
+        _authoritativeSpendableOperationCount > 0 ||
+        rust_sync.isSyncRunning()) {
+      return;
+    }
+    log('Sync: starting the delayed recovery pass');
+    _startSyncAs(recoveryPass: true);
+  }
+
+  /// [startSync], marking the sync it starts as a recovery pass or not.
+  void _startSyncAs({required bool recoveryPass, int? latestTipHeight}) {
+    _startingRecoveryPass = recoveryPass;
+    try {
+      startSync(latestTipHeight: latestTipHeight);
+    } finally {
+      _startingRecoveryPass = false;
+    }
+  }
+
+  /// Whether a recovery pass is pending.
+  @visibleForTesting
+  bool get recoveryPassArmedForTesting => _recoveryPassTimer != null;
 
   void _startPolling() {
     _pollTimer?.cancel();
