@@ -1,13 +1,14 @@
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        Mutex, MutexGuard, OnceLock, TryLockError,
+        LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
     },
     time::{Duration, Instant},
 };
 
 use voting_crypto_deps::rand::rngs::OsRng;
-use zcash_client_sqlite::{util::SystemClock, WalletDb};
+use zcash_client_sqlite::{util::SystemClock, EnhancePirSession, WalletDb};
 
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::transparent_ledger_mode_for;
@@ -172,6 +173,23 @@ pub(crate) fn open_wallet_db_readonly_with_timeout(
 fn wallet_db(conn: rusqlite::Connection, db_path: &str, network: WalletNetwork) -> WalletDatabase {
     WalletDb::from_connection(conn, network, SystemClock, OsRng)
         .with_transparent_ledger_mode(transparent_ledger_mode_for(db_path, network))
+        .with_enhance_pir_session(enhance_pir_session(db_path))
+}
+
+/// Enhance PIR sessions by wallet path, kept for the process lifetime.
+static ENHANCE_PIR_SESSIONS: LazyLock<Mutex<HashMap<String, EnhancePirSession>>> =
+    LazyLock::new(Default::default);
+
+/// The wallet's Enhance PIR session, shared by every handle [`wallet_db`]
+/// opens. It holds the library's per-position content-failure allowance and
+/// first-query delays, which a fresh session would reset.
+fn enhance_pir_session(db_path: &str) -> EnhancePirSession {
+    ENHANCE_PIR_SESSIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(db_path.to_owned())
+        .or_default()
+        .clone()
 }
 
 /// A configured wallet handle over a connection the caller already holds, so
