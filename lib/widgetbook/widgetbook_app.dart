@@ -322,6 +322,18 @@ class WidgetbookApp extends StatelessWidget {
                       builder: buildMobileUnlockFingerprintUseCase,
                     ),
                     WidgetbookUseCase(
+                      name: 'Use Face ID next time',
+                      builder: buildMobileUnlockFaceIdOptInUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Use Touch ID next time',
+                      builder: buildMobileUnlockTouchIdOptInUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Use fingerprint next time',
+                      builder: buildMobileUnlockFingerprintOptInUseCase,
+                    ),
+                    WidgetbookUseCase(
                       name: 'Forgot passcode',
                       builder: buildMobileForgotPasscodeSheetUseCase,
                     ),

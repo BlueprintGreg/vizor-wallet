@@ -1082,6 +1082,27 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-face-id',
+    description: 'Mobile unlock offering Face ID for the next unlock',
+    builder: buildMobileUnlockFaceIdOptInUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-touch-id',
+    description: 'Mobile unlock offering Touch ID for the next unlock',
+    builder: buildMobileUnlockTouchIdOptInUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-fingerprint',
+    description: 'Mobile unlock offering fingerprint for the next unlock',
+    builder: buildMobileUnlockFingerprintOptInUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-unlock-face-id',
     description: 'Mobile unlock with face-id',
     builder: buildMobileUnlockFaceIdUseCase,
