@@ -50,17 +50,16 @@ PY
 }
 
 run_flutter_phase() {
-  local test_file="$1"
+  # Never expand an empty array here: macOS bash 3.2 aborts on one under
+  # `set -u`, and inside the callers' `if` the runner then exits with 0.
+  local flutter_args=("$1" -d "$FLUTTER_DEVICE")
   shift
-  local form_factor_args=()
+  flutter_args+=("$@")
   if [[ "$VIZOR_FORM_FACTOR" == "mobile" ]]; then
-    form_factor_args+=(--dart-define=VIZOR_FORM_FACTOR=mobile)
+    flutter_args+=(--dart-define=VIZOR_FORM_FACTOR=mobile)
   fi
   fvm flutter test \
-    "$test_file" \
-    -d "$FLUTTER_DEVICE" \
-    "$@" \
-    "${form_factor_args[@]}" \
+    "${flutter_args[@]}" \
     --dart-define=ZCASH_DEFAULT_NETWORK=regtest \
     --dart-define=ZCASH_REGTEST_IRONWOOD_ACTIVATION_HEIGHT="$ACTIVATION_HEIGHT" \
     --dart-define=ZCASH_E2E_LIGHTWALLETD_URL="$LIGHTWALLETD_URL" \
