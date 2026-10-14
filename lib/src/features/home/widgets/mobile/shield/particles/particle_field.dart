@@ -152,11 +152,11 @@ class ParticleField extends ChangeNotifier {
   late final Int32List _digit;
   late final Uint8List _icon;
 
-  // Strays: once shielded they stream out of the field's center on a loop
-  // (life, first-spawn phase, base angle, reach, size), plus this frame's
-  // envelope and growth.
+  // Strays first continue outward from their shield positions. Later passes
+  // stream from the center; the first pass must not disappear and restart there.
   late final Uint8List _stray;
-  late final Float64List _eLife, _ePhase, _eSeed, _eReach, _eSize;
+  late final Float64List _eLife, _eSeed, _eReach, _eSize;
+  late final Float64List _eStartAt, _eStartX, _eStartY, _eStartZ;
   late final Float64List _eEnv, _eGrow;
 
   // ── Per-particle state ──
@@ -221,7 +221,10 @@ class ParticleField extends ChangeNotifier {
     _icon = Uint8List(n);
     _stray = Uint8List(n);
     _eLife = f();
-    _ePhase = f();
+    _eStartAt = f();
+    _eStartX = f();
+    _eStartY = f();
+    _eStartZ = f();
     _eSeed = f();
     _eReach = f();
     _eSize = f();
@@ -364,12 +367,9 @@ class ParticleField extends ChangeNotifier {
       final i = strays[k];
       _stray[i] = 1;
       _eLife[i] = _rand(3.6, 5.0);
-      // First spawns spread evenly across one life: a steady stream from
-      // the first beat, never a burst.
-      _ePhase[i] = 3.6 * (k + _rand(0, 0.8)) / strays.length;
       _eSeed[i] = _rand(0, 2 * math.pi);
       _eReach[i] = reach * _rand(0.7, 1.0);
-      _eSize[i] = _rand(2.6, 4.2);
+      _eSize[i] = _rand(1.0, 2.0);
       _delayB[i] = _rand(0, 0.3);
     }
     void pair(List<int> group, List<Offset> targets) {
@@ -648,8 +648,14 @@ class ParticleField extends ChangeNotifier {
         if (_mode[i] == _Mode.shield &&
             _stray[i] == 1 &&
             a >= ShieldTimeline.split + _delayB[i]) {
-          // Leaves the shield; its first pass out of the center starts on
-          // the landing beat (see [_emit]).
+          _eStartAt[i] = a;
+          _eStartX[i] = _x[i];
+          _eStartY[i] = _y[i];
+          _eStartZ[i] = _z[i];
+          _eSeed[i] = math.atan2(
+            _y[i] - geometry.emitter.dy,
+            _x[i] - geometry.emitter.dx,
+          );
           _mode[i] = _Mode.emit;
           _fadeTo(
             i,
@@ -685,40 +691,29 @@ class ParticleField extends ChangeNotifier {
     }
   }
 
-  /// One pass of an emitted particle: it appears a few points off the
-  /// field's center, travels out in its own direction (easing into speed,
-  /// growing as if coming closer), and fades before the screen edge. Each
-  /// new pass turns by the golden angle, so the directions never repeat.
-  /// Before its first pass the particle just fades out where it was in the
-  /// shield.
+  /// Preserve the shield's residual particles through the landing. Subsequent
+  /// passes turn by the golden angle and fade before the screen edge.
   void _emit(int i, double a) {
-    final local = a - ShieldTimeline.land - _ePhase[i];
-    if (local < 0) {
-      final gone = _smooth((a - ShieldTimeline.split - _delayB[i]) / 0.35);
-      _eEnv[i] = 1 - gone;
-      _eGrow[i] = 1;
-      _vx[i] = 0;
-      _vy[i] = 0;
-      return;
-    }
+    final local = math.max(0.0, a - _eStartAt[i]);
     final life = _eLife[i];
     final cycle = (local / life).floor();
     final u = local / life - cycle;
     final ang = _eSeed[i] + cycle * 2.39996;
     final dirX = math.cos(ang), dirY = math.sin(ang);
     final reach = _eReach[i];
-    final d = 6 + reach * math.pow(u, 1.3);
+    final first = cycle == 0;
+    final d = (first ? 0 : 6) + reach * math.pow(u, 1.3);
     // A slight sideways sway so the rays aren't ruler-straight.
     final sway = 7 * u * math.sin(1.7 * a + _noise[i] + cycle);
-    final c = geometry.emitter;
+    final c = first ? Offset(_eStartX[i], _eStartY[i]) : geometry.emitter;
     _x[i] = c.dx + dirX * d - dirY * sway;
     _y[i] = c.dy + dirY * d + dirX * sway;
-    _z[i] = 0;
+    _z[i] = first ? _eStartZ[i] * (1 - _smooth(local / 0.35)) : 0;
     final speed = reach * 1.3 * math.pow(math.max(u, 0.01), 0.3) / life;
     _vx[i] = dirX * speed;
     _vy[i] = dirY * speed;
-    _eEnv[i] = _smooth(u / 0.15) * (1 - _smooth((u - 0.6) / 0.4));
-    _eGrow[i] = 0.45 + 0.95 * u;
+    _eEnv[i] = (first ? 1 : _smooth(u / 0.15)) * (1 - _smooth((u - 0.6) / 0.4));
+    _eGrow[i] = first ? 1 : 0.45 + 0.95 * u;
   }
 
   void _toShield(int i, double t) {

@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
@@ -24,6 +25,73 @@ void main() {
       home: child,
     ),
   );
+  testWidgets('Complete fades in before it becomes interactive', (
+    tester,
+  ) async {
+    var completes = 0;
+    Widget scene(MobileShieldPhase phase) => host(
+      MobileShieldScene(
+        phase: phase,
+        amount: '14.12',
+        title: phase == MobileShieldPhase.succeeded
+            ? 'Shielded successfully'
+            : 'Shielding your balance…',
+        onComplete: () => completes++,
+      ),
+    );
+    await tester.pumpWidget(scene(MobileShieldPhase.working));
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    await tester.pumpWidget(scene(MobileShieldPhase.succeeded));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 3420));
+    final fade = tester.widget<Opacity>(
+      find.byKey(const ValueKey('mobile_shield_complete_fade')),
+    );
+    expect(fade.opacity, greaterThan(0));
+    expect(fade.opacity, lessThan(1));
+    final button = find.byKey(const ValueKey('mobile_shield_complete'));
+    expect(tester.widget<AppButton>(button).onPressed, isNull);
+    await tester.tap(button);
+    expect(completes, 0);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(tester.widget<AppButton>(button).onPressed, isNotNull);
+    await tester.tap(button);
+    expect(completes, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Cancel fades after commit while its input is already blocked', (
+    tester,
+  ) async {
+    var closes = 0;
+    Widget scene(MobileShieldPhase phase) => host(
+      MobileShieldScene(
+        phase: phase,
+        amount: '14.12',
+        title: 'Transparent Balance',
+        canLeave: phase == MobileShieldPhase.review,
+        onClose: () => closes++,
+      ),
+    );
+    await tester.pumpWidget(scene(MobileShieldPhase.review));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpWidget(scene(MobileShieldPhase.working));
+    await tester.pump(const Duration(milliseconds: 150));
+    final fade = tester.widget<Opacity>(
+      find
+          .ancestor(of: find.text('Cancel'), matching: find.byType(Opacity))
+          .first,
+    );
+    expect(fade.opacity, greaterThan(0));
+    expect(fade.opacity, lessThan(1));
+    await tester.tap(find.text('Cancel'), warnIfMissed: false);
+    expect(closes, 0);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Cancel'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   for (final size in [
     const Size(320, 568),
     const Size(360, 640),

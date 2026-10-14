@@ -70,9 +70,9 @@ abstract final class ShieldTimeline {
   /// The landing beat: the dots settle into the icon and the amount, the
   /// soft haptic plays, and the shield field scales out around them.
   static const land = 2.71;
-  // The crisp balance starts arriving while the dots are still converging.
+  // Keep a readable particle amount before the blurred crisp text takes over.
   static const textIn = Window(2.43, 0.70);
-  static const particlesOut = Window(2.58, 0.60);
+  static const particlesOut = Window(2.75, 0.45);
   static const successLabelIn = Window(3.06, 0.42);
   static const completeIn = Window(3.31, 0.46);
 

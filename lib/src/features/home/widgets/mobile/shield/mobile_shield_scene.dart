@@ -445,6 +445,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     final sliderOut = _review ? 0.0 : ShieldTimeline.sliderOut.eased(t);
     final statusIn = !_review ? ShieldTimeline.statusIn.eased(t) : 0.0;
     final statusOut = a == null ? 0.0 : ShieldTimeline.statusOut.eased(a);
+    final completeIn = a == null
+        ? 0.0
+        : ShieldTimeline.completeIn.eased(a, VMotion.ease);
     return Stack(
       children: [
         if (sliderOut < 1)
@@ -490,36 +493,54 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
               ),
             ),
           ),
-        if (_ready)
+        if (completeIn > 0)
           Positioned(
             left: layout.centerX - 176.5 / 2,
             top: layout.actionTop,
-            child: SizedBox(
-              width: 176.5,
-              height: 50,
-              child: AppButton(
-                key: const ValueKey('mobile_shield_complete'),
-                onPressed: widget.onComplete,
-                expand: true,
-                constrainContent: true,
-                variant: AppButtonVariant.secondary,
-                enabledBackgroundColor: const Color(0xFFFFFFFF),
-                enabledLabelColor: const Color(0xFF141818),
-                child: Text(
-                  'Complete',
-                  style: AppTypography.bodyMedium.copyWith(
-                    color: const Color(0xFF141818),
+            child: Opacity(
+              key: const ValueKey('mobile_shield_complete_fade'),
+              opacity: completeIn,
+              child: ExcludeSemantics(
+                excluding: !_ready,
+                child: SizedBox(
+                  width: 176.5,
+                  height: 50,
+                  child: AppButton(
+                    key: const ValueKey('mobile_shield_complete'),
+                    onPressed: _ready ? widget.onComplete : null,
+                    expand: true,
+                    constrainContent: true,
+                    variant: AppButtonVariant.secondary,
+                    disabledBackgroundColor: const Color(0xFFFFFFFF),
+                    enabledBackgroundColor: const Color(0xFFFFFFFF),
+                    enabledLabelColor: const Color(0xFF141818),
+                    child: Text(
+                      'Complete',
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: const Color(0xFF141818),
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        if (_review && widget.canLeave && widget.onClose != null)
+        if (widget.onClose != null &&
+            (_review ? widget.canLeave : sliderOut < 1))
           Positioned(
             left: 24,
             right: 24,
             top: layout.cancelCenter - 24,
-            child: Center(child: _cancel()),
+            child: Opacity(
+              opacity: 1 - sliderOut,
+              child: ExcludeSemantics(
+                excluding: !_review,
+                child: IgnorePointer(
+                  ignoring: !_review,
+                  child: Center(child: _cancel()),
+                ),
+              ),
+            ),
           ),
       ],
     );
@@ -659,6 +680,16 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       ),
     );
     Widget balance(BalanceArt art, {required bool result}) {
+      final textIn = result
+          ? ShieldTimeline.textIn.eased(a!, VMotion.ease)
+          : 1.0;
+      final paint = CustomPaint(
+        key: ValueKey(
+          result ? 'mobile_shield_result_amount' : 'mobile_shield_amount',
+        ),
+        size: art.size,
+        painter: _BalancePainter(art),
+      );
       final dy = result || _review || _reduce
           ? 0.0
           : ShieldTimeline.fallDy(t) * layout.artScale;
@@ -677,7 +708,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                       : ShieldTimeline.fallScale(t)),
               child: Opacity(
                 opacity: result
-                    ? ShieldTimeline.textIn.eased(a!)
+                    ? textIn
                     : _review || !_reduce
                     ? 1
                     : 1 - ShieldTimeline.dissolve(t),
@@ -685,15 +716,16 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                   progress: result || _review || _reduce
                       ? 0
                       : ShieldTimeline.dissolve(t),
-                  child: CustomPaint(
-                    key: ValueKey(
-                      result
-                          ? 'mobile_shield_result_amount'
-                          : 'mobile_shield_amount',
-                    ),
-                    size: art.size,
-                    painter: _BalancePainter(art),
-                  ),
+                  child: result && !_reduce
+                      ? ImageFiltered(
+                          enabled: textIn < 0.995,
+                          imageFilter: ui.ImageFilter.blur(
+                            sigmaX: 8 * (1 - textIn),
+                            sigmaY: 8 * (1 - textIn),
+                          ),
+                          child: paint,
+                        )
+                      : paint,
                 ),
               ),
             ),
