@@ -762,16 +762,16 @@ class _ShieldLayout {
   double get artScale => math.min(1.0, math.max(0.1, (size.width - 48) / 345));
   Offset get iconCenter => Offset(centerX, size.height * 0.215);
   double get titleTop => math.max(
-    size.height * 0.35 - headingHeight / 2,
+    size.height * 0.332 - headingHeight / 2,
     iconCenter.dy + 20 * artScale + 24,
   );
   double get amountTop =>
-      math.max(size.height * 0.418, titleTop + headingHeight + 12);
-  Offset get cloudCenter => Offset(centerX, size.height * 0.47);
+      math.max(size.height * 0.405, titleTop + headingHeight + 12);
+  Offset get cloudCenter => Offset(centerX, size.height * 0.43);
   double get actionTop =>
-      math.max(size.height * 0.67, amountTop + amountHeight * artScale + 32);
+      math.max(size.height * 0.666, amountTop + amountHeight * artScale + 32);
   double get cancelCenter =>
-      math.max(size.height * 0.91, actionTop + SlideToShield.height + 56);
+      math.max(size.height * 0.906, actionTop + SlideToShield.height + 56);
   double get contentHeight => math.max(size.height, cancelCenter + 40);
   Size get contentSize => Size(size.width, contentHeight);
   double get sliderWidth => math.min(284, math.max(61, size.width - 48));
