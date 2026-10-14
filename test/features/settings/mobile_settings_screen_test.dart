@@ -19,6 +19,7 @@ import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_tab_bar.dart';
 import 'package:zcash_wallet/src/core/profile_pictures.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
+import 'package:zcash_wallet/src/features/settings/widgets/near_swap_privacy_info.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/private_queries_turn_off.dart';
 import 'package:zcash_wallet/src/core/widgets/app_profile_picture.dart';
 import 'package:zcash_wallet/src/core/widgets/mobile/mobile_list_row.dart';
@@ -544,6 +545,40 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(calls, [true]);
+  });
+
+  testWidgets('NEAR swap privacy explains itself', (tester) async {
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+    final description = find.byKey(
+      const ValueKey('mobile_settings_near_swap_privacy_description'),
+    );
+    await tester.scrollUntilVisible(description, 200);
+    expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+
+    final info = find.byKey(
+      const ValueKey('mobile_settings_near_swap_privacy_info'),
+    );
+    await tester.ensureVisible(info);
+    await tester.pumpAndSettle();
+    await tester.tap(info);
+    await tester.pumpAndSettle();
+    final sheet = find.byKey(const ValueKey('near_swap_privacy_info_sheet'));
+    expect(sheet, findsOneWidget);
+    expect(find.text(kNearSwapPrivacyInfoTitle), findsOneWidget);
+    for (final paragraph in kNearSwapPrivacyInfoParagraphs) {
+      expect(find.text(paragraph), findsOneWidget);
+    }
+  });
+
+  testWidgets('NEAR swap privacy describes one-time addresses', (tester) async {
+    await tester.pumpWidget(_app(enhancePirEnabled: true));
+    await tester.pumpAndSettle();
+    final description = find.byKey(
+      const ValueKey('mobile_settings_near_swap_privacy_description'),
+    );
+    await tester.scrollUntilVisible(description, 200);
+    expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
   testWidgets('the Tor toggle matches the keep-awake toggle', (tester) async {

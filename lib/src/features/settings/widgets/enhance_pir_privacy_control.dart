@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../../../core/config/private_transparent_recovery_config.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
+import '../../../core/widgets/app_icon_hover_button.dart';
 import 'network_privacy_control.dart';
 
 class EnhancePirPrivacyControl extends StatelessWidget {
@@ -13,6 +14,7 @@ class EnhancePirPrivacyControl extends StatelessWidget {
     this.label = 'Private queries',
     this.keyPrefix = 'settings_enhance_pir',
     this.description = kPrivateQueriesSettingsCopy,
+    this.onInfo,
     super.key,
   });
 
@@ -21,6 +23,9 @@ class EnhancePirPrivacyControl extends StatelessWidget {
   final String description;
   final bool enabled;
   final VoidCallback? onToggle;
+
+  /// Shows an explanation of the setting from an info icon after the label.
+  final VoidCallback? onInfo;
 
   /// Feedback for the user's own toggle only. Recovery queue counts are
   /// deliberately not surfaced here: they are dominated by obligations that
@@ -60,13 +65,31 @@ class EnhancePirPrivacyControl extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTypography.labelLarge.copyWith(
-                          color: colors.text.accent,
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppTypography.labelLarge.copyWith(
+                                color: colors.text.accent,
+                              ),
+                            ),
+                          ),
+                          if (onInfo case final onInfo?) ...[
+                            const SizedBox(width: AppSpacing.xxs),
+                            AppIconHoverButton(
+                              key: ValueKey('${keyPrefix}_info'),
+                              icon: AppIcons.help,
+                              semanticLabel: "What's this?",
+                              size: 20,
+                              iconSize: 16,
+                              iconColor: colors.icon.muted,
+                              onTap: onInfo,
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: AppSpacing.xxs),
                       Text(

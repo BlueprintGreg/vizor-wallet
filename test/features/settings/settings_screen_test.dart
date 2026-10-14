@@ -19,6 +19,7 @@ import 'package:zcash_wallet/src/features/accounts/widgets/account_edit_modal.da
 import 'package:zcash_wallet/src/features/settings/screens/settings_screen.dart';
 import 'package:zcash_wallet/src/features/settings/settings_platform.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/enhance_pir_privacy_control.dart';
+import 'package:zcash_wallet/src/features/settings/widgets/near_swap_privacy_info.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/network_privacy_control.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/private_queries_turn_off.dart';
 import 'package:zcash_wallet/src/features/payment_links/providers/payment_link_cards_provider.dart';
@@ -610,6 +611,35 @@ void main() {
     );
     await tester.pump();
     expect(calls, isEmpty);
+  });
+
+  testWidgets('NEAR swap privacy explains itself', (tester) async {
+    await tester.pumpWidget(_settingsHarness());
+    await tester.pump();
+    expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+
+    final info = find.byKey(const ValueKey('settings_near_swap_privacy_info'));
+    await tester.ensureVisible(info);
+    await tester.pumpAndSettle();
+    await tester.tap(info);
+    await tester.pumpAndSettle();
+    final dialog = find.byKey(const ValueKey('near_swap_privacy_info_dialog'));
+    expect(dialog, findsOneWidget);
+    expect(find.text(kNearSwapPrivacyInfoTitle), findsOneWidget);
+    for (final paragraph in kNearSwapPrivacyInfoParagraphs) {
+      expect(find.text(paragraph), findsOneWidget);
+    }
+    await tester.tap(
+      find.byKey(const ValueKey('near_swap_privacy_info_close')),
+    );
+    await tester.pumpAndSettle();
+    expect(dialog, findsNothing);
+  });
+
+  testWidgets('NEAR swap privacy describes one-time addresses', (tester) async {
+    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pump();
+    expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
   testWidgets('connected Tor state describes Vizor and external app routes', (

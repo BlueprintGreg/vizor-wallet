@@ -7,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/config/private_transparent_recovery_config.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
+import '../../../../core/widgets/app_icon_hover_button.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../providers/enhance_pir_provider.dart';
+import '../near_swap_privacy_info.dart';
 import '../private_queries_turn_off.dart';
 import 'mobile_tor_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
@@ -100,12 +102,16 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                   : () => unawaited(
                       ref.read(nearSwapPrivacyProvider.notifier).toggle(),
                     ),
+              onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
               privateQueriesOn
-                  ? 'Uses a separate receiving key for each swap. Recovery always uses private queries.'
-                  : 'Turn on Private queries to create private swap addresses.',
+                  ? kNearSwapPrivacyOnCopy
+                  : kNearSwapPrivacyOffCopy,
+              key: const ValueKey(
+                'mobile_settings_near_swap_privacy_description',
+              ),
               style: AppTypography.bodyMedium.copyWith(
                 color: colors.text.secondary,
               ),
@@ -123,21 +129,26 @@ class _MobilePrivateQueriesControl extends StatelessWidget {
     required this.keyPrefix,
     required this.enabled,
     required this.onToggle,
+    this.onInfo,
   });
   final String label;
   final String keyPrefix;
   final bool enabled;
   final VoidCallback? onToggle;
+
+  /// Shows an explanation of the setting from an info icon after the label.
+  final VoidCallback? onInfo;
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    // Only the info icon keeps its own semantics; the rest reads as the toggle.
     return Semantics(
+      container: true,
       button: true,
       toggled: enabled,
       enabled: onToggle != null,
       label: label,
       onTap: onToggle,
-      excludeSemantics: true,
       child: GestureDetector(
         key: ValueKey('${keyPrefix}_row'),
         behavior: HitTestBehavior.opaque,
@@ -148,45 +159,74 @@ class _MobilePrivateQueriesControl extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
             child: Row(
               children: [
-                SizedBox.square(
-                  dimension: 32,
-                  child: Center(
-                    child: AppIcon(
-                      AppIcons.eye,
-                      size: 20,
-                      color: enabled
-                          ? colors.icon.brandCrimson
-                          : colors.icon.muted,
+                ExcludeSemantics(
+                  child: SizedBox.square(
+                    dimension: 32,
+                    child: Center(
+                      child: AppIcon(
+                        AppIcons.eye,
+                        size: 20,
+                        color: enabled
+                            ? colors.icon.brandCrimson
+                            : colors.icon.muted,
+                      ),
                     ),
                   ),
                 ),
                 const SizedBox(width: AppSpacing.s),
                 Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTypography.labelLarge.copyWith(
-                      color: colors.text.accent,
-                    ),
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: ExcludeSemantics(
+                          child: Text(
+                            label,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTypography.labelLarge.copyWith(
+                              color: colors.text.accent,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (onInfo case final onInfo?) ...[
+                        const SizedBox(width: AppSpacing.xxs),
+                        AppIconHoverButton(
+                          key: ValueKey('${keyPrefix}_info'),
+                          icon: AppIcons.help,
+                          semanticLabel: "What's this?",
+                          size: 32,
+                          iconSize: 16,
+                          iconColor: colors.icon.muted,
+                          onTap: onInfo,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xs),
-                Text(
-                  enabled ? 'On' : 'Off',
-                  key: ValueKey('${keyPrefix}_status'),
-                  style: AppTypography.labelLarge.copyWith(
-                    color: enabled
-                        ? colors.text.brandCrimson
-                        : colors.text.secondary,
+                ExcludeSemantics(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        enabled ? 'On' : 'Off',
+                        key: ValueKey('${keyPrefix}_status'),
+                        style: AppTypography.labelLarge.copyWith(
+                          color: enabled
+                              ? colors.text.brandCrimson
+                              : colors.text.secondary,
+                        ),
+                      ),
+                      const SizedBox(width: AppSpacing.s),
+                      MobilePrivacyToggle(
+                        key: ValueKey('${keyPrefix}_toggle'),
+                        enabled: enabled,
+                        interactive: onToggle != null,
+                        thumbKey: ValueKey('${keyPrefix}_toggle_thumb'),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(width: AppSpacing.s),
-                MobilePrivacyToggle(
-                  key: ValueKey('${keyPrefix}_toggle'),
-                  enabled: enabled,
-                  interactive: onToggle != null,
-                  thumbKey: ValueKey('${keyPrefix}_toggle_thumb'),
                 ),
               ],
             ),

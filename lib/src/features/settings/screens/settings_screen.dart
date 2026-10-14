@@ -32,6 +32,7 @@ import '../../accounts/widgets/account_profile_picture_modal.dart';
 import '../../payment_links/providers/payment_link_cards_provider.dart';
 import '../../donation/donation_config.dart';
 import '../settings_platform.dart';
+import '../widgets/near_swap_privacy_info.dart';
 import '../widgets/network_privacy_control.dart';
 import '../widgets/enhance_pir_privacy_control.dart';
 import '../widgets/private_queries_turn_off.dart';
@@ -639,8 +640,9 @@ class _SettingsList extends ConsumerWidget {
                 label: 'NEAR swap privacy',
                 keyPrefix: 'settings_near_swap_privacy',
                 description: privateQueriesOn
-                    ? 'Uses a separate receiving key for each swap. Recovery always uses private queries.'
-                    : 'Turn on Private queries to create private swap addresses.',
+                    ? kNearSwapPrivacyOnCopy
+                    : kNearSwapPrivacyOffCopy,
+                onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                 enabled: nearSwapPrivacy,
                 transition: null,
                 onToggle: changingRecovery || !privateQueriesOn
