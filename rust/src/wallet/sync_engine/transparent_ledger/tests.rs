@@ -1761,6 +1761,94 @@ async fn a_stale_commit_does_not_bypass_the_service_wait() {
     assert!(waiting_at(&wallet.path, wallet.account, now()));
 }
 
+/// Cancellation during settlement must preserve a new service delay, while
+/// an interrupted retry with no new delay stays eligible for the next sync.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_service_retry_preserves_its_new_wait() {
+    struct InterruptSettlement<'a> {
+        source: &'a FixtureSource,
+        exit: &'a AtomicBool,
+        outcome: Outcome,
+    }
+    impl RecoverySource for InterruptSettlement<'_> {
+        fn trusted(&self) -> bool {
+            self.source.trusted()
+        }
+        fn recover(
+            &self,
+            request: SourceRequest<'_>,
+        ) -> impl Future<Output = Result<PassReport, SourceError>> + Send {
+            self.source.recover(request)
+        }
+        fn apply(
+            &self,
+            _account: AccountUuid,
+            _db: &mut WalletDatabase,
+            _trust: Trust,
+            _should_exit: &(dyn Fn() -> bool + Sync),
+        ) -> impl Future<Output = Result<Option<Applied>, ApplyFailure>> + Send {
+            self.exit.store(true, Ordering::SeqCst);
+            std::future::ready(Err(ApplyFailure {
+                error: zakura_pir_transparent::ApplyError::Interrupted,
+                stats: zakura_pir_transparent::ApplyStats::default(),
+                progress: zakura_pir_transparent::Progress {
+                    covered_through: 0,
+                    outcome: self.outcome,
+                },
+            }))
+        }
+    }
+    for (outcome, delay) in [
+        (Outcome::Behind, Some(Retry::BEHIND)),
+        (Outcome::Overloaded, Some(Retry::OVERLOADED)),
+        (Outcome::Complete, None),
+    ] {
+        let mut wallet = private_wallet();
+        let source = FixtureSource::new(main_hash);
+        source.next(Some(outcome));
+        let exit = AtomicBool::new(false);
+        let interrupted = InterruptSettlement {
+            source: &source,
+            exit: &exit,
+            outcome,
+        };
+        recovery_ran(&wallet.path, u64::from(TIP));
+        set_not_before(&wallet.path, wallet.account, now(), Duration::ZERO);
+        let result = super::run(
+            &mut wallet.db,
+            &wallet.path,
+            NETWORK,
+            required(),
+            &interrupted,
+            Some(wallet.account),
+            RecoverySchedule::ServiceWait,
+            now,
+            &|| exit.load(Ordering::SeqCst),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, RunOutcome::Exited);
+        assert_eq!(source.calls(), 1);
+        assert_eq!(
+            waiting_at(&wallet.path, wallet.account, now()),
+            delay.is_some(),
+            "cancellation cannot erase a fresh service delay"
+        );
+        if let Some(delay) = delay {
+            tokio::time::advance(delay - Duration::from_secs(1)).await;
+            assert!(waiting_at(&wallet.path, wallet.account, now()));
+            recover_once(&mut wallet, &source).await;
+            assert_eq!(source.calls(), 1, "resume respects the remaining wait");
+            tokio::time::advance(Duration::from_secs(1)).await;
+            assert!(!waiting_at(&wallet.path, wallet.account, now()));
+        }
+        // At expiry (or with no new delay), the next sync may ask again.
+        source.next(Some(Outcome::Complete));
+        recover_once(&mut wallet, &source).await;
+        assert_eq!(source.calls(), 2);
+    }
+}
+
 /// A public wait for one account cannot unlock another account's pass at
 /// the same block, even if that account still has unfinished recovery.
 #[tokio::test]

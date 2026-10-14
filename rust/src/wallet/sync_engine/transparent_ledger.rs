@@ -473,10 +473,14 @@ pub(crate) async fn run<S: RecoverySource>(
             }
             AccountOutcome::Skipped => run.stats.accounts += 1,
             AccountOutcome::Stop(outcome) => {
-                // Cancellation must not spend a service retry before the
-                // next foreground sync can finish it.
+                // Restore a consumed retry when cancellation interrupted it,
+                // but keep any newer delay the source reported before settlement.
                 if service_retry && matches!(outcome, RunOutcome::Exited) {
-                    set_not_before(db_path, account, clock(), Duration::ZERO);
+                    holds()
+                        .entry((db_path.to_owned(), account))
+                        .or_default()
+                        .not_before
+                        .get_or_insert_with(clock);
                 }
                 return Ok(outcome);
             }
