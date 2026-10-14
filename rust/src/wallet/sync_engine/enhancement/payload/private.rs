@@ -445,21 +445,14 @@ fn report_unreadable(
     reported: &mut BTreeSet<(TxId, u64)>,
 ) -> Result<(), EnhancePirRunError> {
     let row = position / RECORDS_PER_ROW as u64;
-    let txids: BTreeSet<TxId> = work
-        .batches_by_tx_and_row()
-        .into_iter()
-        .filter(|((_, batch_row), requests)| {
-            *batch_row == row
-                && requests
-                    .iter()
-                    .any(|request| u64::from(request.position()) == position)
-        })
-        .map(|((txid, _), _)| txid)
-        .collect();
-    for txid in txids {
-        if reported.insert((txid, row)) {
+    for ((txid, batch_row), requests) in work.batches_by_tx_and_row() {
+        if batch_row == row
+            && requests
+                .iter()
+                .any(|request| u64::from(request.position()) == position)
+            && reported.insert((txid, row))
+        {
             log::warn!("sync: a private Ironwood enhancement record did not decode");
-            let requests = work.requests_in_row(txid, row);
             db.record_unreadable(&requests)?;
             content_failures::enhance(db_path, requests);
         }

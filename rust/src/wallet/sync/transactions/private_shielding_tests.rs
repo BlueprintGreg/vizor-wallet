@@ -332,6 +332,21 @@ pub(crate) fn wallet_with_a_private_memo_query() -> (tempfile::TempDir, String, 
         .conn()
         .execute("VACUUM INTO ?1", [&path])
         .unwrap();
+    // The app's handles on a wallet share one Enhance session, which holds
+    // each position's wait before its first query. Make the query due now,
+    // as the library's test database does.
+    {
+        use zcash_client_backend::data_api::{WalletRead as _, WalletWrite as _};
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            NETWORK,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        db.set_enhance_pir_max_delay(std::time::Duration::ZERO);
+        let tip = db.chain_height().unwrap().unwrap();
+        db.update_chain_tip(tip).unwrap();
+    }
     (dir, path, pending.request)
 }
 

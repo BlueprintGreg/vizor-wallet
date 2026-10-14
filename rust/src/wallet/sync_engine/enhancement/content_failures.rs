@@ -78,13 +78,13 @@ impl PrivateWork {
         work
     }
 
-    /// Whether `work` is part of this snapshot. Suspended work is never
-    /// asked, so it always is.
+    /// Whether `work` is part of this snapshot. Suspended and waiting work
+    /// is never asked, so it always is.
     pub(crate) fn contains(&self, work: &EnhancePirWork) -> bool {
         match work {
             EnhancePirWork::Query(request) => self.queries.contains(request),
             EnhancePirWork::Rediscover(request) => self.rediscovery.contains(request),
-            EnhancePirWork::Suspended(_) => true,
+            EnhancePirWork::Suspended(_) | EnhancePirWork::Waiting { .. } => true,
         }
     }
 
@@ -187,7 +187,7 @@ pub(crate) fn may_ask(db_path: &str, work: &EnhancePirWork) -> bool {
             !at_tip.failed.contains(request) && !at_tip.unlocked.contains(work)
         }
         EnhancePirWork::Rediscover(_) => !at_tip.unlocked.contains(work),
-        EnhancePirWork::Suspended(_) => true,
+        EnhancePirWork::Suspended(_) | EnhancePirWork::Waiting { .. } => true,
     }
 }
 
