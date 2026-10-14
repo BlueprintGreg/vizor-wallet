@@ -348,6 +348,23 @@ fn last_derived_external(wallet: &Wallet) -> u32 {
         .unwrap()
 }
 
+/// The highest external index the account watches. While it is restoring,
+/// that is the end of its fixed restore window, past its derived addresses.
+fn last_watched_external(wallet: &Wallet) -> u32 {
+    watched(wallet)
+        .iter()
+        .filter_map(|watched| match watched.origin {
+            WatchOrigin::Derived { scope, index } | WatchOrigin::CandidateWindow { scope, index }
+                if scope == TransparentKeyScope::EXTERNAL =>
+            {
+                Some(index.index())
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap()
+}
+
 /// The software account's external address at `index`, derived from the seed.
 fn external(wallet: &Wallet, index: u32) -> TransparentAddress {
     let encoded = keys::software_account_transparent_addresses(NETWORK, &wallet.seed, 0, index + 1)
@@ -2115,6 +2132,10 @@ async fn followup(
 /// which grows the wallet's window, sees the wallet ask exactly when an
 /// honest one does: one pass per block, and none for a second sync at the
 /// same block (a resume, or a retry of other private work).
+///
+/// A restoring account watches a fixed window of addresses whatever the
+/// replies show, so a receive inside it grows nothing. The forged receive
+/// sits at the window's last address, the only place a reply can grow it.
 #[tokio::test]
 async fn a_forged_receive_does_not_change_when_recovery_runs() {
     async fn calls_per_sync(forge: bool) -> (Vec<usize>, usize) {
@@ -2122,7 +2143,7 @@ async fn a_forged_receive_does_not_change_when_recovery_runs() {
         let window = watched(&wallet).len();
         let source = FixtureSource::new(main_hash);
         if forge {
-            let last = last_derived_external(&wallet);
+            let last = last_watched_external(&wallet);
             source.receive(receive(1, external(&wallet, last), 10_000, 150));
         }
         let progress = |_: SyncProgressEvent| {};
