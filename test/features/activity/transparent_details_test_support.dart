@@ -1322,6 +1322,7 @@ void transparentReceiptParityTests({
   for (final state in [
     rust_sync.TransparentDetailsState.pending,
     rust_sync.TransparentDetailsState.unavailable,
+    rust_sync.TransparentDetailsState.gaveUp,
     rust_sync.TransparentDetailsState.notCovered,
   ]) {
     testWidgets('private receive is whole while outputs are $state', (
@@ -1343,7 +1344,9 @@ void transparentReceiptParityTests({
       expect(find.text(kTransparentDetailsUnavailableText), findsNothing);
       expect(find.text(kTransparentDetailsNotCoveredText), findsNothing);
       // Awaited details are still asked for first and polled.
-      final awaited = state != rust_sync.TransparentDetailsState.notCovered;
+      final awaited =
+          state == rust_sync.TransparentDetailsState.pending ||
+          state == rust_sync.TransparentDetailsState.unavailable;
       expect(prioritized, awaited ? [transparentDetailsTxid] : isEmpty);
       final before = details.calls;
       await tester.pump(kTransparentDetailsPollInterval);

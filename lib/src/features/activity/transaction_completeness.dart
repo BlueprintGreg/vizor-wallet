@@ -186,7 +186,8 @@ const kTransparentDetailsPollInterval = Duration(seconds: 5);
 /// keeps re-reading it and asks for it to be looked up first. A failed
 /// lookup is worth waiting on only with Private queries on, where the
 /// private service may answer later; with it off the receipt stops there,
-/// as it always has.
+/// as it always has. A lookup the wallet gave up on is shown as unavailable
+/// but never awaited.
 bool transparentDetailsAwaited(
   rust_sync.TransactionDetail? detail, {
   required bool privateQueriesEnabled,
