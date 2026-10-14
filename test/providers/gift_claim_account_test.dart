@@ -98,6 +98,26 @@ void main() {
     requireUnlockedSession: true,
   );
 
+  test('a seed import counts for the post-import sync window', () async {
+    await container
+        .read(appSecurityProvider.notifier)
+        .preparePasswordSetup(_passcode);
+    await accounts().importAccount(mnemonic: _mnemonic, name: _name);
+    expect(container.read(seedImportProvider), 1);
+  });
+
+  test('creating a wallet does not count as a seed import', () async {
+    await container
+        .read(appSecurityProvider.notifier)
+        .preparePasswordSetup(_passcode);
+    await accounts().createAccountFromMnemonic(
+      mnemonic: _mnemonic,
+      name: _name,
+    );
+    expect(container.read(accountProvider).requireValue.hasAccounts, isTrue);
+    expect(container.read(seedImportProvider), 0);
+  });
+
   for (final key in ['zcash_account_mnemonic_uuid-1', 'zcash_accounts']) {
     test(
       'Wallet Link preserves its credential and recovers after $key fails',

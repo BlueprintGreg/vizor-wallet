@@ -842,6 +842,13 @@ bool shouldStartSyncForPolledTip(
 int recoveryRestartUnits(rust_sync.EnhanceRecoveryStatus recovery) =>
     recovery.queries + recovery.rediscovery + recovery.status;
 
+/// How often a quiet sync starts during the window after a seed import.
+const kSeedImportSyncInterval = Duration(seconds: 10);
+
+/// How long the [kSeedImportSyncInterval] syncs go on after the first sync
+/// that follows a seed import ends.
+const kSeedImportSyncWindow = Duration(minutes: 5);
+
 @visibleForTesting
 const kRecoveryRestartInitialBackoff = Duration(seconds: 30);
 @visibleForTesting
@@ -1109,6 +1116,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   StreamSubscription? _syncSub;
   AppLifecycleListener? _lifecycleListener;
   Timer? _pollTimer;
+  // The seed import window (see [_armSeedImportSyncWindow]): the account it
+  // belongs to, whether it waits for a sync to end, and its open timer.
+  String? _seedImportSyncAccountUuid;
+  bool _seedImportSyncArmed = false;
+  Timer? _seedImportSyncTimer;
   bool _pollCheckInFlight = false;
   bool _resumeTipCheckPending = false;
   int _sensitiveStateEpoch = 0;
@@ -1250,7 +1262,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       rust_sync.stopMempoolObserver();
       _lifecycleListener?.dispose();
       _pollTimer?.cancel();
+      _stopSeedImportSyncWindow();
     });
+
+    ref.listen(seedImportProvider, (_, _) => _armSeedImportSyncWindow());
 
     // Auto-start sync on account changes.
     // Uses ref.listen (not ref.watch) to avoid rebuilding SyncNotifier on every
@@ -1269,6 +1284,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       final nextAccountUuid = next.value?.activeAccountUuid;
       if (nextCount < prevCount) {
         ref.read(pendingActivityEvidenceProvider.notifier).clear();
+      }
+      if (nextCount < prevCount ||
+          nextAccountUuid != _seedImportSyncAccountUuid) {
+        _stopSeedImportSyncWindow();
       }
       if (prevAccountUuid != nextAccountUuid) {
         // This only changes the order of transparent refreshes that Rust has
@@ -1513,6 +1532,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _deferredSyncLatestTipHeight = null;
     _isSyncing = false;
     _stopPolling();
+    _stopSeedImportSyncWindow();
     rust_sync.cancelFullSync();
     _syncSub?.cancel();
     _syncSub = null;
@@ -1691,6 +1711,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             log('Sync: endpoint preflight failed: $e');
             _isSyncing = false;
             _recordSyncFailure(e);
+            _openSeedImportSyncWindowIfArmed();
             return;
           }
 
@@ -1812,6 +1833,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
                 }
               }
               _syncSub = null;
+              _openSeedImportSyncWindowIfArmed();
               // Rust released its guard before closing the stream.
               _startQueuedSync();
             },
@@ -1829,6 +1851,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
               // a lightwalletd stream that keeps firing
               // `_refreshBalance()` callbacks with no owning sync.
               _stopMempoolObserver();
+              _openSeedImportSyncWindowIfArmed();
               _trackForegroundSyncRecovery(
                 _recoverSyncOnFallbackOrRecordFailure(
                   e,
@@ -1851,6 +1874,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           // `_stopMempoolObserver()` here; it is idempotent when
           // nothing is running.
           _stopMempoolObserver();
+          _openSeedImportSyncWindowIfArmed();
           _trackForegroundSyncRecovery(
             _recoverSyncOnFallbackOrRecordFailure(e, gen),
           );
@@ -2401,6 +2425,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _queuedSyncStart = null;
     ref.read(pendingActivityEvidenceProvider.notifier).clear();
     _recoveryRestartGate.reset();
+    _stopSeedImportSyncWindow();
     _pendingMutationRestartSync = false;
     _pendingMutationRestartPolling = false;
     _syncStartDeferred = false;
@@ -2562,6 +2587,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   void _handleAppHide() {
     _isInForeground = false;
+    _stopSeedImportSyncWindow();
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(false);
     ++_foregroundEpoch;
     if (!canRunAppProcessWork(isInForeground: _isInForeground)) {
@@ -2598,6 +2624,121 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   void _stopPolling() {
     _pollTimer?.cancel();
     _pollTimer = null;
+  }
+
+  /// Arms the seed import window for the active account. The first sync to
+  /// end afterwards, however it ended, opens it: for [kSeedImportSyncWindow] a
+  /// quiet sync starts every [kSeedImportSyncInterval], so restore sweeps
+  /// finish without waiting for blocks. The schedule depends only on the
+  /// import; no sync result, recovery or reply state changes it. A lock,
+  /// hiding the app or another active account ends it.
+  void _armSeedImportSyncWindow() {
+    _stopSeedImportSyncWindow();
+    final accountUuid = _getActiveAccountUuid();
+    if (accountUuid == null) return;
+    _seedImportSyncAccountUuid = accountUuid;
+    _seedImportSyncArmed = true;
+  }
+
+  /// Opens an armed seed import window; called whenever a foreground sync ends.
+  void _openSeedImportSyncWindowIfArmed() {
+    if (!_seedImportSyncArmed) return;
+    _seedImportSyncArmed = false;
+    final accountUuid = _seedImportSyncAccountUuid;
+    bool mayRun() =>
+        !_isShuttingDown &&
+        !_requiresUnlock &&
+        _isInForeground &&
+        accountUuid != null &&
+        _getActiveAccountUuid() == accountUuid;
+    if (!mayRun()) {
+      _stopSeedImportSyncWindow();
+      return;
+    }
+    final ticks =
+        kSeedImportSyncWindow.inMicroseconds ~/
+        kSeedImportSyncInterval.inMicroseconds;
+    _seedImportSyncTimer = Timer.periodic(kSeedImportSyncInterval, (timer) {
+      if (!mayRun()) {
+        _stopSeedImportSyncWindow();
+        return;
+      }
+      if (timer.tick >= ticks) _stopSeedImportSyncWindow();
+      _startQuietSync();
+    });
+  }
+
+  /// Ends the seed import window, armed or open.
+  void _stopSeedImportSyncWindow() {
+    _seedImportSyncTimer?.cancel();
+    _seedImportSyncTimer = null;
+    _seedImportSyncArmed = false;
+    _seedImportSyncAccountUuid = null;
+  }
+
+  /// Starts a sync that leaves the syncing state and progress alone: like a
+  /// post-sync follow-up, its completion only refreshes balances, history and
+  /// receipts. It is skipped while another sync runs or [startSync] would
+  /// hold off, and a start requested meanwhile queues behind it.
+  void _startQuietSync() {
+    if (_syncSub != null ||
+        _isSyncing ||
+        _foregroundSyncRecovery != null ||
+        _walletMutationPauseCount > 0 ||
+        _recoverySettingTransition ||
+        _authoritativeSpendableOperationCount > 0 ||
+        _privateStatusCoverageNeedsSettings() ||
+        rust_sync.isSyncRunning()) {
+      return;
+    }
+    final gen = _syncGen;
+    final epoch = _sensitiveStateEpoch;
+    // A stop, a lock or a regular start since this one began cancels it.
+    bool current() =>
+        ref.mounted &&
+        gen == _syncGen &&
+        epoch == _sensitiveStateEpoch &&
+        !_requiresUnlock &&
+        !_isSyncing &&
+        _syncSub == null;
+    unawaited(
+      () async {
+        final dbPath = await _getDbPath();
+        if (!current()) return;
+        await _keepCompanionsOutOfBackups(dbPath);
+        if (!current() || rust_sync.isSyncRunning()) return;
+        final endpoint = _endpointConfig;
+        log('Sync: starting a quiet sync after a seed import');
+        rust_sync.setActiveSyncAccount(accountUuid: _getActiveAccountUuid());
+        void ended() {
+          if (!ref.mounted || gen != _syncGen) return;
+          _syncSub = null;
+          _startQueuedSync();
+        }
+
+        _syncSub = rust_sync
+            .startFullSync(
+              dbPath: dbPath,
+              lightwalletdUrl: endpoint.normalizedLightwalletdUrl,
+              network: endpoint.networkName,
+              mode: 1,
+            )
+            .listen(
+              (event) {
+                if (!ref.mounted || gen != _syncGen) return;
+                if (event.kind != rust_sync.ApiSyncEventKind.progress) {
+                  unawaited(_onSyncFollowupUpdated());
+                }
+              },
+              onDone: ended,
+              onError: (Object e) {
+                log('Sync: quiet sync failed: $e');
+                ended();
+              },
+              cancelOnError: true,
+            );
+      }().catchError((Object e) => log('Sync: quiet sync failed: $e')),
+    );
   }
 
   Future<void> _checkAndSync() async {
@@ -3958,6 +4099,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   @visibleForTesting
   void handleAppHideForTesting() => _handleAppHide();
+
+  @visibleForTesting
+  bool get seedImportSyncWindowArmedForTesting => _seedImportSyncArmed;
+
+  @visibleForTesting
+  bool get seedImportSyncWindowOpenForTesting => _seedImportSyncTimer != null;
 
   @visibleForTesting
   void stopTipChecksForTesting() => _stopPolling();

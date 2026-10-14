@@ -223,6 +223,20 @@ class AccountSetupRecoveryGeneration extends Notifier<int> {
   void completed() => state++;
 }
 
+/// Counts completed software seed imports; sync follows each one (see
+/// `kSeedImportSyncWindow`). Creating a wallet does not count.
+final seedImportProvider = NotifierProvider<SeedImportCounter, int>(
+  SeedImportCounter.new,
+);
+
+class SeedImportCounter extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// Records a completed seed import.
+  void imported() => state++;
+}
+
 class AccountNotifier extends AsyncNotifier<AccountState> {
   AccountNotifier() : _storage = AppSecureStore.instance;
 
@@ -945,6 +959,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       );
 
       if (isFirstWalletAccount) await _clearPendingAccountSetup();
+      ref.read(seedImportProvider.notifier).imported();
 
       log(
         'importAccount: success, active=$activeAccountUuid, '
