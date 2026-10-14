@@ -5011,6 +5011,11 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
     if !runs_transparent_followup(running_mode) {
         return;
     }
+    // Block cadence: one run after the first foreground sync that follows a
+    // new block. Leftover work waits for the next block.
+    if !transparent_ledger::recovery_due(db_data_path, completed.1) {
+        return;
+    }
     let private = policy.transparent_mode()
         != zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode::Public;
     if private {
@@ -5042,6 +5047,8 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             }
             return;
         }
+        // A cancelled run does not use up the block: the cancellation is the
+        // app's own, and the next sync at this tip runs again.
         Ok(transparent_ledger::RunOutcome::Exited) => {
             log::info!(
                 "[{}] sync: exiting during private transparent recovery",
@@ -5049,17 +5056,23 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             );
             return;
         }
-        Ok(outcome) => log::info!(
-            "[{}] sync: private transparent recovery: {:?}",
-            elapsed(),
-            outcome
-        ),
+        Ok(outcome) => {
+            transparent_ledger::recovery_ran(db_data_path, completed.1);
+            log::info!(
+                "[{}] sync: private transparent recovery: {:?}",
+                elapsed(),
+                outcome
+            )
+        }
         // Commits applied before the failure stay durable.
-        Err(error) => log::warn!(
-            "[{}] sync: private transparent recovery failed: {}",
-            elapsed(),
-            error
-        ),
+        Err(error) => {
+            transparent_ledger::recovery_ran(db_data_path, completed.1);
+            log::warn!(
+                "[{}] sync: private transparent recovery failed: {}",
+                elapsed(),
+                error
+            )
+        }
     }
     refresh_transparent_receive_cache(db_data_path, network, completed.0);
     progress_fn(followup_updated_event(completed));

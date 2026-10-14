@@ -40,6 +40,20 @@ struct Service {
     cancelled: Cell<bool>,
     cancel_on_refresh: Cell<bool>,
     fail_refresh: Cell<bool>,
+    /// Query replies (counted from zero, in the order they are asked) whose
+    /// row arrives and decodes, but whose every record carries reserved flag
+    /// bits, so none of them decodes as a record.
+    unreadable_posts: RefCell<std::collections::BTreeSet<usize>>,
+}
+
+/// A reply body after the binding header whose every plaintext coefficient
+/// decodes as `0xffff` under the fake's all-zero public material: a whole row
+/// of `0xff` bytes, which sets every record's reserved flag bits.
+fn unreadable_row(len: usize) -> Vec<u8> {
+    let words = (len * 8) / 22;
+    let mut body = ipir_sp::bits::u64s_to_contiguous_bytes(&vec![0xffff << 6; words], 22);
+    body.resize(len, 0);
+    body
 }
 
 impl Service {
@@ -96,6 +110,7 @@ impl Service {
             cancelled: Cell::new(false),
             cancel_on_refresh: Cell::new(false),
             fail_refresh: Cell::new(false),
+            unreadable_posts: RefCell::new(Default::default()),
         }
     }
 }
@@ -152,7 +167,16 @@ impl transport::Transport for Service {
                 "query did not rebind to refreshed routing"
             );
             let mut response = binding.encode();
-            response.resize(response_len(m.coverage.shards[0].logical_rows).unwrap(), 0);
+            let len = response_len(m.coverage.shards[0].logical_rows).unwrap();
+            if self
+                .unreadable_posts
+                .borrow()
+                .contains(&(self.posts.borrow().len() - 1))
+            {
+                let header = response.len();
+                response.extend(unreadable_row(len - header));
+            }
+            response.resize(len, 0);
             response
         };
         let mut body = request.response_body();
@@ -189,6 +213,24 @@ struct Wallet {
     cancel_on_apply: Option<Rc<Cell<bool>>>,
     /// Each batch of requests reported as unreadable, in order.
     unreadable: Vec<Vec<EnhancePirRequest>>,
+    /// Content failures per request; at three the request is suspended, as
+    /// the wallet's session does.
+    failures: std::collections::BTreeMap<EnhancePirRequest, u32>,
+    /// A record at this position fails wallet authentication.
+    reject_at: Option<u64>,
+}
+impl Wallet {
+    fn content_failure(&mut self, request: EnhancePirRequest) {
+        let count = self.failures.entry(request).or_default();
+        *count += 1;
+        if *count == 3 {
+            self.pending.retain(|r| *r != request);
+            self.other
+                .push(EnhancePirWork::Suspended(EnhancePirSuspension::Rejected(
+                    request,
+                )));
+        }
+    }
 }
 impl Wallet {
     fn new(positions: &[u64]) -> Self {
@@ -202,6 +244,8 @@ impl Wallet {
             transparent_at: None,
             cancel_on_apply: None,
             unreadable: vec![],
+            failures: Default::default(),
+            reject_at: None,
         }
     }
 }
@@ -261,6 +305,10 @@ impl RecoveryWallet for Wallet {
         if let Some(cancel) = &self.cancel_on_apply {
             cancel.set(true);
         }
+        if self.reject_at == Some(u64::from(request.position())) {
+            self.content_failure(request);
+            return Ok(EnhancePirStoreResult::Rejected);
+        }
         self.applied.push(u64::from(request.position()));
         if self.transparent_at == Some(u64::from(request.position())) {
             // The whole transaction atomically moves to ordinary enhancement.
@@ -277,6 +325,9 @@ impl RecoveryWallet for Wallet {
         requests: &[EnhancePirRequest],
     ) -> Result<(), EnhancePirRunError> {
         self.unreadable.push(requests.to_vec());
+        for request in requests {
+            self.content_failure(*request);
+        }
         Ok(())
     }
 }
@@ -297,6 +348,8 @@ struct Effects {
     complete_public: bool,
     /// Writing the rebuilt enhancement hits a local SQLite failure.
     fail_rediscovery_db: bool,
+    /// Public retrieval queues a private query at this position.
+    private_after_public: Option<u64>,
 }
 impl EnhancementEffects<Wallet> for Effects {
     async fn rediscover(
@@ -325,6 +378,8 @@ impl EnhancementEffects<Wallet> for Effects {
         if self.complete_public {
             db.public.clear();
         }
+        db.pending
+            .extend(self.private_after_public.take().map(request));
     }
 }
 
@@ -514,6 +569,121 @@ async fn cancellation_during_private_work_prevents_the_public_dispatch() {
         .await;
     assert!(matches!(result, Err(EnhancePirRunError::ExitRequested)));
     assert!(effects.public.is_empty());
+}
+
+/// One position in each of three rows.
+const THREE_ROWS: [u64; 3] = [0, 40, 70];
+
+/// A record that arrives in a decoded row but does not decode itself fails
+/// only its own requests: they are reported once, and the rest of the batch
+/// is asked exactly as an honest service's reply would have it.
+#[tokio::test]
+async fn an_unreadable_record_is_reported_and_the_rest_of_the_batch_is_asked() {
+    let honest = Service::new([]);
+    let mut wallet = Wallet::new(&THREE_ROWS);
+    let mut drain = sync();
+    drain
+        .run(&mut wallet, &honest, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, THREE_ROWS);
+
+    let corrupting = Service::new([]);
+    corrupting.unreadable_posts.borrow_mut().insert(0);
+    let mut wallet = Wallet::new(&THREE_ROWS);
+    let mut drain = sync();
+    drain
+        .run(&mut wallet, &corrupting, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [40, 70]);
+    assert_eq!(wallet.unreadable, [vec![request(0)]]);
+    assert_eq!(
+        wallet.pending,
+        [request(0)],
+        "the request waits for a later sync"
+    );
+    assert!(
+        !drain.private_failed_for_sync,
+        "a content failure is not an outage"
+    );
+    assert_eq!(
+        corrupting.posts.borrow().len(),
+        honest.posts.borrow().len(),
+        "the same queries as the honest run"
+    );
+    assert_eq!(corrupting.init_count.get(), honest.init_count.get());
+    assert_eq!(corrupting.session_count.get(), honest.session_count.get());
+}
+
+/// A position whose replies fail on content three times is suspended by the
+/// wallet and never asked again.
+#[tokio::test]
+async fn three_unreadable_replies_suspend_the_position_for_good() {
+    let service = Service::new([]);
+    service.unreadable_posts.borrow_mut().extend(0..10);
+    let mut wallet = Wallet::new(&[0]);
+    for sync_number in 1..=5 {
+        sync()
+            .run(&mut wallet, &service, &mut Effects::default(), &|| false)
+            .await
+            .unwrap();
+        assert_eq!(service.posts.borrow().len(), sync_number.min(3));
+    }
+    assert_eq!(wallet.unreadable.len(), 3);
+    assert!(wallet.pending.is_empty());
+    assert_eq!(
+        wallet.other,
+        [EnhancePirWork::Suspended(EnhancePirSuspension::Rejected(
+            request(0)
+        ))]
+    );
+}
+
+/// A record the wallet rejects is counted by the wallet and no longer stops
+/// the batch: the other rows are still asked and applied.
+#[tokio::test]
+async fn a_rejected_record_no_longer_stops_the_batch() {
+    let service = Service::new([]);
+    let mut wallet = Wallet::new(&THREE_ROWS);
+    wallet.reject_at = Some(0);
+    let mut drain = sync();
+    drain
+        .run(&mut wallet, &service, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [40, 70]);
+    assert_eq!(wallet.pending, [request(0)]);
+    assert!(!drain.private_failed_for_sync);
+    assert_eq!(service.posts.borrow().len(), 3);
+}
+
+/// Work one drain unlocks waits for the next drain point: whether another
+/// private round runs now never depends on what a reply said.
+#[tokio::test]
+async fn work_a_drain_unlocks_waits_for_the_next_drain() {
+    let service = Service::new([]);
+    let mut wallet = Wallet::new(&[0]);
+    wallet.public = vec![ORDINARY];
+    let mut effects = Effects {
+        complete_public: true,
+        private_after_public: Some(40),
+        ..Default::default()
+    };
+    let mut drain = sync();
+    drain
+        .run(&mut wallet, &service, &mut effects, &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [0]);
+    assert_eq!(service.posts.borrow().len(), 1);
+    assert_eq!(wallet.pending, [request(40)], "queued for the next drain");
+
+    drain
+        .run(&mut wallet, &service, &mut effects, &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.applied, [0, 40]);
 }
 
 #[tokio::test]

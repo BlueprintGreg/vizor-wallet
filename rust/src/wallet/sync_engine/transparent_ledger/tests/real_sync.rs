@@ -94,10 +94,13 @@ fn sync(path: &str, lwd: &CapturingLwd) -> Result<(), String> {
 const SYNCS: usize = 4;
 
 /// Runs [`SYNCS`] whole syncs of the wallet at `path` against `lwd`, as
-/// successive blocks would, and returns the last one's result.
+/// successive blocks would, and returns the last one's result. Recovery runs
+/// once per block, and `lwd`'s tip does not move, so each sync after the
+/// first stands in for a new block.
 fn syncs(path: &str, lwd: &CapturingLwd) -> Result<(), String> {
     let mut result = Ok(());
     for _ in 0..SYNCS {
+        super::super::clear_recovery_tip(path);
         result = sync(path, lwd);
     }
     result

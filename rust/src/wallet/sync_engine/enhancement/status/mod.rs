@@ -171,6 +171,16 @@ where
                     "transaction status: local wallet database read failed",
                 ));
             }
+            // A reply that did not decode is about this txid's row: a
+            // service could aim it at chosen rows. The work stays durable
+            // for a later sync, and the other txids are still asked, so
+            // nothing else in the sync changes.
+            Err(StatusError::Malformed) if is_private(&work) => {
+                log::warn!(
+                    "private status reply did not decode; the transaction waits for a later sync"
+                );
+                continue;
+            }
             Err(error) if is_private(&work) => {
                 // Inconclusive: keep the work and stop querying the private
                 // service for this session. Never a public fallback.

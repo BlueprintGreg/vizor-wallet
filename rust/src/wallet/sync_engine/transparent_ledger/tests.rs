@@ -1720,7 +1720,7 @@ async fn a_quarantined_or_held_account_is_skipped_without_a_source_call() {
     let (_, open) = add_account(&wallet);
     let _mode = activate(&mut wallet).await;
     quarantine(&wallet.path, wallet.account);
-    set_hold(&wallet.path, held, HoldCause::Stalled, now());
+    set_hold(&wallet.path, held, HoldCause::FailedEntries, now());
     let source = FixtureSource::new(main_hash);
     source.trust();
 
@@ -1731,61 +1731,22 @@ async fn a_quarantined_or_held_account_is_skipped_without_a_source_call() {
     assert_eq!(source.order(), [open]);
 }
 
-#[tokio::test(start_paused = true)]
-async fn three_stalled_runs_hold_the_account() {
+/// A run that stalls, however often, never holds the account: it is asked
+/// again at the next sync, so a reply that failed never changes when the
+/// account is asked next.
+#[tokio::test]
+async fn stalled_runs_never_hold_the_account() {
     let mut wallet = private_wallet();
     let source = FixtureSource::new(main_hash);
     source.next(Some(Outcome::Stalled));
-    for _ in 0..STALL_RUNS_BEFORE_HOLD {
+    for run in 1..=5 {
+        let RunOutcome::Finished(stats) = recover_once(&mut wallet, &source).await else {
+            panic!("recovery finishes");
+        };
+        assert_eq!(stats.held, 0);
         assert_eq!(recovery_hold(&wallet.path, wallet.account), None);
-        recover_once(&mut wallet, &source).await;
+        assert_eq!(source.calls(), run);
     }
-    assert_eq!(
-        recovery_hold(&wallet.path, wallet.account),
-        Some(HoldCause::Stalled)
-    );
-    assert_eq!(source.calls(), STALL_RUNS_BEFORE_HOLD);
-    let RunOutcome::Finished(stats) = recover_once(&mut wallet, &source).await else {
-        panic!("recovery finishes");
-    };
-    assert_eq!(stats.held, 1);
-    assert_eq!(source.calls(), STALL_RUNS_BEFORE_HOLD);
-
-    // A completed run restarts the count.
-    let mut other = private_wallet();
-    let source = FixtureSource::new(main_hash);
-    for next in [
-        Outcome::Stalled,
-        Outcome::Stalled,
-        Outcome::Complete,
-        Outcome::Stalled,
-        Outcome::Stalled,
-    ] {
-        source.next(Some(next));
-        recover_once(&mut other, &source).await;
-    }
-    assert_eq!(recovery_hold(&other.path, other.account), None);
-
-    // A run that ends waiting for the service, its waits spent, does not:
-    // the stall it interrupts is still held.
-    let mut lagging = private_wallet();
-    let source = FixtureSource::new(main_hash);
-    for next in [
-        Outcome::Stalled,
-        Outcome::Overloaded,
-        Outcome::Stalled,
-        Outcome::Overloaded,
-        Outcome::Stalled,
-    ] {
-        source.next(Some(next));
-        recover_once(&mut lagging, &source).await;
-        // The service's delay passes before the next sync.
-        tokio::time::advance(Duration::from_secs(31)).await;
-    }
-    assert_eq!(
-        recovery_hold(&lagging.path, lagging.account),
-        Some(HoldCause::Stalled)
-    );
 }
 
 #[tokio::test]
@@ -2112,29 +2073,117 @@ async fn ledger_public_records_before_the_birthday_still_block_private_activatio
     );
 }
 
-/// Runs the foreground recovery followup of [`SETTLE_RUNS`] syncs that all
-/// completed at `completed`, under `PrivateRequired` from `source`.
+/// Runs the foreground recovery followup of [`SETTLE_RUNS`] syncs, one after
+/// each of the blocks that follow `completed`'s chain tip, under
+/// `PrivateRequired` from `source`.
 async fn followups(
     wallet: &mut Wallet,
-    source: &FixtureSource,
+    source: &impl RecoverySource,
     progress: &(impl Fn(SyncProgressEvent) + Send + Sync),
     completed: (u64, u64),
 ) {
-    for _ in 0..SETTLE_RUNS {
-        crate::wallet::sync_engine::transparent_followup(
-            1,
-            &mut wallet.db,
-            &wallet.path,
-            NETWORK,
-            required(),
-            source,
-            Some(wallet.account),
-            &|| false,
-            progress,
-            completed,
-        )
-        .await;
+    for block in 1..=SETTLE_RUNS as u64 {
+        followup(wallet, source, progress, (completed.0, completed.1 + block)).await;
     }
+}
+
+/// Runs the foreground recovery followup of one sync that completed at
+/// `completed`, under `PrivateRequired` from `source`.
+async fn followup(
+    wallet: &mut Wallet,
+    source: &impl RecoverySource,
+    progress: &(impl Fn(SyncProgressEvent) + Send + Sync),
+    completed: (u64, u64),
+) {
+    crate::wallet::sync_engine::transparent_followup(
+        1,
+        &mut wallet.db,
+        &wallet.path,
+        NETWORK,
+        required(),
+        source,
+        Some(wallet.account),
+        &|| false,
+        progress,
+        completed,
+    )
+    .await;
+}
+
+/// Recovery runs on block cadence: once after the first sync that follows a
+/// new block. A service that forges a receive at the last watched address,
+/// which grows the wallet's window, sees the wallet ask exactly when an
+/// honest one does: one pass per block, and none for a second sync at the
+/// same block (a resume, or a retry of other private work).
+#[tokio::test]
+async fn a_forged_receive_does_not_change_when_recovery_runs() {
+    async fn calls_per_sync(forge: bool) -> (Vec<usize>, usize) {
+        let mut wallet = private_wallet();
+        let window = watched(&wallet).len();
+        let source = FixtureSource::new(main_hash);
+        if forge {
+            let last = last_derived_external(&wallet);
+            source.receive(receive(1, external(&wallet, last), 10_000, 150));
+        }
+        let progress = |_: SyncProgressEvent| {};
+        let mut calls = vec![];
+        for tip in TIP + 1..=TIP + 4 {
+            for _ in 0..2 {
+                let completed = (u64::from(TIP), u64::from(tip));
+                followup(&mut wallet, &Observed(&source), &progress, completed).await;
+                calls.push(source.calls());
+            }
+        }
+        (calls, watched(&wallet).len() - window)
+    }
+    let (honest, honest_growth) = calls_per_sync(false).await;
+    let (forged, forged_growth) = calls_per_sync(true).await;
+    assert_eq!(honest, [1, 1, 2, 2, 3, 3, 4, 4]);
+    assert_eq!(forged, honest, "the same requests at the same blocks");
+    assert_eq!(honest_growth, 0);
+    assert!(forged_growth > 0, "the forged receive grew the window");
+}
+
+/// A restore whose funds lie beyond the first window completes over the
+/// blocks that follow, with no user action.
+#[tokio::test]
+async fn a_restore_beyond_the_first_window_completes_over_blocks() {
+    let mut wallet = private_wallet();
+    let last = last_derived_external(&wallet);
+    let source = FixtureSource::new(main_hash);
+    source
+        .receive(receive(1, external(&wallet, last), 10_000, 150))
+        .receive(receive(2, external(&wallet, last + 1), 20_000, 160));
+    let progress = |_: SyncProgressEvent| {};
+    followups(
+        &mut wallet,
+        &Observed(&source),
+        &progress,
+        (u64::from(TIP), u64::from(TIP)),
+    )
+    .await;
+    assert_complete(&wallet, &source);
+}
+
+/// An app restart forgets the block the wallet last recovered at, so the
+/// first sync after it recovers at the current block, from what the library
+/// stored.
+#[tokio::test]
+async fn a_restart_recovers_once_at_the_current_block() {
+    let mut wallet = private_wallet();
+    let source = FixtureSource::new(main_hash);
+    let progress = |_: SyncProgressEvent| {};
+    let completed = (u64::from(TIP), u64::from(TIP) + 1);
+    followup(&mut wallet, &Observed(&source), &progress, completed).await;
+    followup(&mut wallet, &Observed(&source), &progress, completed).await;
+    assert_eq!(source.calls(), 1);
+
+    // The restart: the schedule lived in memory, and the wallet is reopened.
+    clear_recovery_tip(&wallet.path);
+    wallet.db = open_wallet_db_with_timeout(&wallet.path, NETWORK, SYNC_DB_BUSY_TIMEOUT).unwrap();
+    followup(&mut wallet, &Observed(&source), &progress, completed).await;
+    followup(&mut wallet, &Observed(&source), &progress, completed).await;
+    assert_eq!(source.calls(), 2);
 }
 
 #[tokio::test]
@@ -2178,7 +2227,9 @@ async fn the_followup_reports_an_update_after_recovery() {
         TransparentBalanceAuthority::Current
     );
 
-    // Nothing is re-reported when recovery is not enabled, or exited.
+    // Nothing is re-reported when recovery is not enabled, or exited, even
+    // at a new block.
+    let completed = (completed.0, completed.1 + 100);
     let reported = events.lock().unwrap().len();
     let calls = source.calls();
     for (policy, exit) in [
