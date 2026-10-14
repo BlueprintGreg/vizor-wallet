@@ -229,7 +229,7 @@ impl RoutedPayloadEnhancement {
     ) -> Result<(), EnhancePirRunError> {
         for request in work.prepared().rediscover {
             // Partial reconstruction can leave active jobs at the same height.
-            // Retry those on the next foreground poll, not every scan batch.
+            // Retry those on the next sync, not every scan batch.
             if self.rediscovery_attempts.contains(&request) {
                 continue;
             }

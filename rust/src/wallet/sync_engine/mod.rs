@@ -6897,8 +6897,7 @@ fn recovery_status_for(
     use zcash_client_backend::data_api::enhance_pir::TransactionEnhancementWork;
     use zcash_client_backend::data_api::status::{TransactionStatusRead, TransactionStatusWork};
     // `run_requests` defers private status failures for the session while the
-    // obligation stays durable. Without counting it here, a wallet with no
-    // payload work would never schedule the retry once Status PIR recovers.
+    // obligation stays durable, so it is outstanding work like a payload query.
     let status = db
         .transaction_status_work()
         .map_err(|e| e.to_string())?

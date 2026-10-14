@@ -825,100 +825,9 @@ class WalletMutationSyncPause {
 }
 
 @visibleForTesting
-bool shouldStartSyncForPolledTip(
-  SyncState? current,
-  int latestTipHeight, {
-  bool hasActiveRecovery = false,
-}) {
-  return hasActiveRecovery ||
-      !(current?.isSyncComplete ?? false) ||
+bool shouldStartSyncForPolledTip(SyncState? current, int latestTipHeight) {
+  return !(current?.isSyncComplete ?? false) ||
       latestTipHeight > (current?.chainTipHeight ?? 0);
-}
-
-/// Retryable recovery obligations: payload queries, rediscovery jobs, and
-/// private status lookups that a Status PIR failure deferred. Suspended work
-/// is not retryable and is excluded.
-@visibleForTesting
-int recoveryRestartUnits(rust_sync.EnhanceRecoveryStatus recovery) =>
-    recovery.queries + recovery.rediscovery + recovery.status;
-
-@visibleForTesting
-const kRecoveryRestartInitialBackoff = Duration(seconds: 30);
-@visibleForTesting
-const kRecoveryRestartMaxBackoff = Duration(minutes: 10);
-
-/// Rate-limits sync restarts that exist only to retry private recovery.
-///
-/// Durable PIR obligations stay pending for as long as the work cannot
-/// progress — the service has no usable snapshot, its anchor is not scanned
-/// yet, or a rediscovery job cannot be reconstructed. A bare "work remains"
-/// check therefore turns every 10-second poll into a full foreground sync at
-/// an unchanged tip, re-running tip validation, transparent-UTXO refresh, and
-/// the 100-block rediscovery cover download for work that will fail again.
-///
-/// The gate treats an attempt as actionable only once its deadline passes,
-/// and grows the wait only when the previous attempt left the outstanding
-/// count exactly where it was. Any movement — work completed, or new work
-/// discovered by fresh scanning — starts over at the base interval, so a
-/// service that recovers is picked up promptly.
-///
-/// Syncs driven by a new chain tip or an incomplete previous sync are
-/// unaffected: those run recovery anyway, and they coincide with the newly
-/// scanned blocks that can make a stuck job resolvable.
-@visibleForTesting
-class RecoveryRestartGate {
-  RecoveryRestartGate({DateTime Function()? now}) : _now = now ?? DateTime.now;
-
-  final DateTime Function() _now;
-
-  int? _lastUnits;
-  DateTime? _retryAt;
-  Duration _backoff = kRecoveryRestartInitialBackoff;
-
-  void reset() {
-    _lastUnits = null;
-    _retryAt = null;
-    _backoff = kRecoveryRestartInitialBackoff;
-  }
-
-  /// [outstanding] is the durable query + rediscovery obligation count.
-  /// Suspended work is excluded by the caller: it is not retryable, so it
-  /// must never schedule network work of its own.
-  bool shouldRestart(int outstanding) {
-    if (outstanding <= 0) {
-      reset();
-      return false;
-    }
-    final at = _now();
-    final previous = _lastUnits;
-    final deadline = _retryAt;
-    if (deadline != null && at.isBefore(deadline)) {
-      // A tip-driven sync moved the count inside the window. That sync already
-      // ran recovery, so don't restart now, but drop the stale backoff: the
-      // next restart comes no later than one base interval from here.
-      if (outstanding != previous) {
-        _lastUnits = outstanding;
-        _backoff = kRecoveryRestartInitialBackoff;
-        final rebased = at.add(kRecoveryRestartInitialBackoff);
-        if (rebased.isBefore(deadline)) _retryAt = rebased;
-      }
-      return false;
-    }
-    final stalled = previous != null && outstanding == previous;
-    _backoff = stalled
-        ? _doubledBackoff(_backoff)
-        : kRecoveryRestartInitialBackoff;
-    _lastUnits = outstanding;
-    _retryAt = at.add(_backoff);
-    return true;
-  }
-
-  static Duration _doubledBackoff(Duration current) {
-    final doubled = current * 2;
-    return doubled > kRecoveryRestartMaxBackoff
-        ? kRecoveryRestartMaxBackoff
-        : doubled;
-  }
 }
 
 /// Native resume retires the lease and prevents late callbacks from pausing
@@ -1101,7 +1010,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   final Future<String> Function() _walletDbPathResolver;
   bool _isSyncing = false;
   bool _recoverySettingTransition = false;
-  final RecoveryRestartGate _recoveryRestartGate = RecoveryRestartGate();
   int _walletMutationPauseCount = 0;
   bool _pendingMutationRestartSync = false;
   // Advanced by every opt-out pause exit (a wallet reset). Pauses taken before
@@ -2305,9 +2213,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           } catch (error) {
             log('Could not resume native preparation: $error');
           }
-          // The toggle changes which obligations are retryable at all, so
-          // the previous attempt's backoff no longer describes this wallet.
-          _recoveryRestartGate.reset();
           // Release only a pause this transition actually took. `quiesce()`
           // can fail before one exists, and a `pauseForWalletMutation` that
           // throws has already released its own. Decrementing the shared
@@ -2414,7 +2319,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _resumeTipCheckPending = false;
     _queuedSyncStart = null;
     ref.read(pendingActivityEvidenceProvider.notifier).clear();
-    _recoveryRestartGate.reset();
     _pendingMutationRestartSync = false;
     _pendingMutationRestartPolling = false;
     _syncStartDeferred = false;
@@ -2655,30 +2559,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
               allowBackground: canRunAppProcessWork(isInForeground: false),
             );
       }
-      // Skip the status read entirely when the tip or an incomplete previous
-      // sync already calls for a restart: that sync runs recovery anyway.
-      var recoveryRestart = false;
-      if (!shouldStartSyncForPolledTip(current, tip.toInt()) &&
-          ref.read(enhancePirProvider)) {
-        final recovery = await recoveryStatus();
-        if (_recoverySettingTransition ||
-            _requiresUnlock ||
-            gen != _syncGen ||
-            epoch != _sensitiveStateEpoch) {
-          return;
-        }
-        // A null status means the read bailed out — locked, no active
-        // account, or a wallet mutation pause — not that the queue drained.
-        // Leave the gate's deadline alone rather than clearing it.
-        recoveryRestart =
-            recovery != null &&
-            _recoveryRestartGate.shouldRestart(recoveryRestartUnits(recovery));
-      }
-      if (shouldStartSyncForPolledTip(
-        current,
-        tip.toInt(),
-        hasActiveRecovery: recoveryRestart,
-      )) {
+      if (shouldStartSyncForPolledTip(current, tip.toInt())) {
         log(
           'AutoSync: needs sync (tip=$tip, last=$lastSynced, complete=$syncComplete)',
         );

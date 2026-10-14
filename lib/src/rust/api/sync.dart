@@ -1730,7 +1730,7 @@ class EnhanceRecoveryStatus {
 
   /// Private transaction-status obligations still awaiting Status PIR. A
   /// deferred private status failure leaves these durable without payload
-  /// work, so they count toward a recovery-only sync restart.
+  /// work.
   final int status;
   final String serviceState;
 
