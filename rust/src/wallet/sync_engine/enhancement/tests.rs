@@ -773,6 +773,9 @@ mod tests {
                             .unwrap()
                     );
                     conn.execute("INSERT INTO blocks (height, hash, time, sapling_tree) VALUES (900000, ?1, 0, X'000000')", [[7u8; 32].as_slice()]).unwrap();
+                    // A private txid is asked once per block: the retry
+                    // comes with the next one.
+                    super::super::content_failures::at_tip(path, 900_001);
                 }
                 super::super::status::run_requests(
                     &mut reader,
@@ -1051,16 +1054,8 @@ mod tests {
         assert_eq!(requests.lock().unwrap().len(), 2, "the next item is asked");
     }
 
-    /// Work that failed on content at this chain tip is not counted towards a
-    /// recovery-only restart: an honest reply would have completed it, so a
-    /// bad one must not bring the next request sooner. A new block counts it
-    /// again.
-    #[test]
-    fn content_failures_at_this_tip_do_not_count_towards_a_restart() {
-        use super::super::content_failures;
-        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
-
-        // Private status work for one unmined transaction.
+    /// Private status work for one unmined transaction.
+    fn unmined_private_status_db() -> (tempfile::NamedTempFile, WalletDatabase, TxId) {
         let (file, mut db, tx) =
             scanned_transaction_missing_fee_test_db(BlockHeight::from_u32(100), false);
         let conn = rusqlite::Connection::open(file.path()).unwrap();
@@ -1073,7 +1068,85 @@ mod tests {
         )
         .unwrap();
         db.set_status_mode(TransactionStatusMode::Private);
-        let txid = tx.txid();
+        (file, db, tx.txid())
+    }
+
+    /// No private status txid is asked twice at one block, whatever its
+    /// reply. An honest "not found" for an unmined transaction leaves its work
+    /// in place, as a malformed reply does; neither counts towards a
+    /// recovery-only restart, and neither is asked again, until the next
+    /// block. An honest "mined" completes the work, so a forged reply must not
+    /// be asked again either. A request failure is not a reply: it still
+    /// counts.
+    #[tokio::test]
+    async fn private_status_is_asked_once_per_block_whatever_the_reply() {
+        use super::super::content_failures;
+        use zakura_transaction_status::{StatusError, StatusObservation};
+
+        for (reply, counted) in [
+            (Ok(StatusObservation::NotFound), false),
+            (Err(StatusError::Malformed), false),
+            (Err(StatusError::Unavailable), true),
+        ] {
+            let (file, mut db, _) = unmined_private_status_db();
+            let path = file.path().to_str().unwrap().to_owned();
+            content_failures::at_tip(&path, 100);
+            let restart_units = |db: &WalletDatabase| {
+                super::super::super::recovery_status_for(db, &path, String::new())
+                    .unwrap()
+                    .status
+            };
+            let private = status_source(reply);
+            let requests = private.requests.clone();
+            let mut reader = super::super::status::RoutedStatusReader::new(
+                status_source(Ok(StatusObservation::NotFound)),
+                private,
+            );
+            // One sync's status lookups.
+            let mut sync = async |db: &mut WalletDatabase| {
+                let work = db.transaction_status_work().unwrap();
+                super::super::status::run_requests(
+                    &mut reader,
+                    db,
+                    &work,
+                    &allowed_gate(),
+                    &mut std::collections::HashSet::new(),
+                    &mut false,
+                    &path,
+                    &mut std::collections::HashSet::new(),
+                    &|| false,
+                )
+                .await
+                .unwrap();
+            };
+            assert_eq!(restart_units(&db), 1);
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 1, "{reply:?}");
+            assert_eq!(restart_units(&db), u32::from(counted), "{reply:?}");
+            if counted {
+                continue;
+            }
+            // Another sync at the same block, as after a resume, asks nothing.
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 1, "{reply:?}");
+            // The next block asks again.
+            content_failures::at_tip(&path, 101);
+            assert_eq!(restart_units(&db), 1, "{reply:?}");
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 2, "{reply:?}");
+        }
+    }
+
+    /// Work that failed on content at this chain tip is not counted towards a
+    /// recovery-only restart: an honest reply would have completed it, so a
+    /// bad one must not bring the next request sooner. A new block counts it
+    /// again.
+    #[test]
+    fn content_failures_at_this_tip_do_not_count_towards_a_restart() {
+        use super::super::content_failures;
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+
+        let (file, db, txid) = unmined_private_status_db();
         let path = file.path().to_str().unwrap().to_owned();
         content_failures::at_tip(&path, 100);
         let status = |db: &WalletDatabase| {
@@ -1082,7 +1155,7 @@ mod tests {
                 .status
         };
         assert_eq!(status(&db), 1);
-        content_failures::status(&path, txid);
+        content_failures::status_answered(&path, txid);
         assert_eq!(
             status(&db),
             0,
