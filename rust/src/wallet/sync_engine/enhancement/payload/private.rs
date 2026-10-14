@@ -344,6 +344,10 @@ impl RoutedPayloadEnhancement {
                         futures::pin_mut!(results);
                         let mut stale = None;
                         let mut unreadable = BTreeSet::new();
+                        // A request outcome inside the batch defers the
+                        // rest of the sync once the batch has been asked to
+                        // its end, so the requests never depend on a reply.
+                        let mut refused = None;
                         while let Some(result) = results.next().await {
                             if should_exit() {
                                 return Err(EnhancePirRunError::ExitRequested);
@@ -356,16 +360,18 @@ impl RoutedPayloadEnhancement {
                                     stale = Some(status);
                                     break;
                                 }
-                                // The row reply arrived and decoded, but this
-                                // record in it did not: a content failure,
-                                // which a service could aim at chosen rows.
-                                // Count it against the requests of its
-                                // transaction in that row, once per row, and
-                                // keep going so the rest of the batch is asked
-                                // exactly as an honest reply would have it.
-                                // A failed row query (`ClientError::Row`) is a
-                                // request failure and stops below, as before.
-                                Err(ClientError::Response(_)) => {
+                                Err(ClientError::Cancelled) => {
+                                    return Err(EnhancePirRunError::ExitRequested)
+                                }
+                                // The reply arrived for this session, but its
+                                // row, or this record in it, did not decode: a
+                                // content failure, which a service could aim
+                                // at chosen rows. Count it against the
+                                // requests of its transaction in that row,
+                                // once per row, and keep going so the rest of
+                                // the batch is asked exactly as an honest
+                                // reply would have it.
+                                Err(error) if is_unreadable(&error) => {
                                     report_unreadable(
                                         db,
                                         &self.db_path,
@@ -375,7 +381,13 @@ impl RoutedPayloadEnhancement {
                                     )?;
                                     continue;
                                 }
-                                result => result?,
+                                // A request outcome: the service chose it
+                                // without knowing which row was asked.
+                                Err(error) => {
+                                    refused.get_or_insert(error);
+                                    continue;
+                                }
+                                Ok(record) => record,
                             };
                             for (request, record) in work.map_record(result.position, record) {
                                 match db.apply(request, &record)? {
@@ -401,6 +413,9 @@ impl RoutedPayloadEnhancement {
                                     _ => {}
                                 }
                             }
+                        }
+                        if let Some(error) = refused {
+                            return Err(error.into());
                         }
                         stale
                     }
@@ -432,6 +447,39 @@ impl RoutedPayloadEnhancement {
         Ok(())
     }
 }
+/// Whether a row result failed on content: the reply matched the session,
+/// but its row did not decrypt (`Pir`) or decode, or a record in it did not
+/// (`Response`). A body over the size limit, or a reply whose length or
+/// session binding does not match, is a request outcome like an HTTP
+/// refusal, a transport or JSON error, or a rotated generation: the service
+/// chooses those without knowing which row was asked.
+fn is_unreadable(error: &ClientError) -> bool {
+    match error {
+        ClientError::Row(error) => match error.as_ref() {
+            ClientError::Pir(_) => true,
+            ClientError::Response(message) => !is_envelope_failure(message),
+            _ => false,
+        },
+        // A record of a decoded row.
+        ClientError::Response(_) => true,
+        _ => false,
+    }
+}
+
+/// `ClientError::Response` messages the Enhance client gives a row reply
+/// before it reads the row: the body size, the framing and binding header,
+/// and the expected length. The client has no typed error for these.
+fn is_envelope_failure(message: &str) -> bool {
+    matches!(
+        message,
+        "HTTP body exceeds limit"
+            | "invalid query framing"
+            | "PIR response binding or length mismatch"
+            | "invalid PIR dimensions"
+            | "unqualified native column count"
+    )
+}
+
 /// Reports the requests whose record at `position` arrived but did not decode:
 /// for each transaction with a request there, every request of that
 /// transaction in the position's row, as the wallet counts content failures
@@ -512,6 +560,33 @@ mod tests {
         assert!(current_or_newer_routing_revision(current, current));
         assert!(!current_or_newer_routing_revision(current, (36, 0)));
         assert!(!current_or_newer_routing_revision((37, 1), (37, 0)));
+    }
+
+    #[test]
+    fn only_a_row_that_fails_to_decode_is_unreadable() {
+        let row = |error| ClientError::Row(Arc::new(error));
+        for unreadable in [
+            row(ClientError::Pir("decryption failed".into())),
+            row(ClientError::Response("short row".into())),
+            ClientError::Response("invalid record flags".into()),
+        ] {
+            assert!(is_unreadable(&unreadable), "{unreadable}");
+        }
+        for refused in [
+            row(ClientError::Response("HTTP body exceeds limit".into())),
+            row(ClientError::Response("invalid query framing".into())),
+            row(ClientError::Response(
+                "PIR response binding or length mismatch".into(),
+            )),
+            row(ClientError::Transport("connection reset".into())),
+            row(ClientError::HttpStatus(500)),
+            row(ClientError::Generation("session rotated".into())),
+            row(ClientError::Json(serde_json::from_str::<u8>("x").unwrap_err())),
+            ClientError::HttpStatus(503),
+            ClientError::Transport("connection reset".into()),
+        ] {
+            assert!(!is_unreadable(&refused), "{refused}");
+        }
     }
 
     #[test]
