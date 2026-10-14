@@ -158,6 +158,27 @@ impl Wallet {
         .unwrap_or_else(|e| panic!("{} syncs: {e}", self.name));
     }
 
+    /// Syncs until no queued range is waiting to rescan, as later polls would. A sync
+    /// that activates one-time keys queues their rescan for the next sync, and until it
+    /// runs the wallet treats its newest notes as unspendable.
+    pub fn sync_settled(&self, stack: &Stack) {
+        for _ in 0..4 {
+            self.sync(stack);
+            let pending: i64 = self
+                .read_only()
+                .query_row(
+                    "SELECT COUNT(*) FROM scan_queue WHERE priority > 10",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("the scan queue reads");
+            if pending == 0 {
+                return;
+            }
+        }
+        panic!("{} still has ranges to rescan after four syncs", self.name);
+    }
+
     /// Every zatoshi the wallet holds, spendable or not.
     pub fn total(&self) -> u64 {
         sync_api::get_balance(self.db.clone(), NETWORK.into(), self.account.clone())
@@ -518,10 +539,10 @@ impl Payer {
     }
 
     /// Builds one transaction paying `outputs` with `ovk`, from shielded notes with one
-    /// confirmation, after a sync. The wallet stores it as sent; nothing broadcasts it
-    /// until the payer's next sync resubmits it.
+    /// confirmation, after [`Wallet::sync_settled`]. The wallet stores it as sent; nothing
+    /// broadcasts it until the payer's next sync resubmits it.
     pub fn build(&self, stack: &Stack, outputs: &[(&str, u64)], ovk: OvkPolicy) -> Transaction {
-        self.wallet.sync(stack);
+        self.wallet.sync_settled(stack);
         self.build_unsynced(outputs, ovk)
     }
 
@@ -538,7 +559,7 @@ impl Payer {
         outputs: &[(&str, u64)],
         ovk: OvkPolicy,
     ) -> Transaction {
-        self.wallet.sync(stack);
+        self.wallet.sync_settled(stack);
         let dir = tempfile::tempdir().expect("a directory for the copy");
         let copy = dir.path().join("detached.db");
         rusqlite::Connection::open(&self.wallet.db)

@@ -161,14 +161,15 @@ impl World {
     fn spend_all(&mut self, wallet: &Wallet) {
         // Received notes need ten confirmations before they are spendable.
         self.stack.mine(10);
-        self.sync(wallet);
+        self.publish();
+        wallet.sync_settled(&self.stack);
         let held = wallet.unspent_one_time_value();
         assert!(
             held > 0,
             "{} holds one-time-key notes to spend",
             wallet.name
         );
-        self.payer.wallet.sync(&self.stack);
+        self.payer.wallet.sync_settled(&self.stack);
         let before = self.payer.wallet.total();
         let (sent, txid) = wallet.send_max(&self.stack, &self.payer.wallet.address);
         self.stack.mine(1);
