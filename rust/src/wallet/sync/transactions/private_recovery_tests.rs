@@ -84,12 +84,12 @@ fn output(
     }
 }
 
-/// The highest watched address the account derived in `scope`.
-fn last_derived(
+/// The highest watched address the account derived in `scope`, and its index.
+fn last_derived_entry(
     st: &State,
     account: AccountUuid,
     scope: TransparentKeyScope,
-) -> TransparentAddress {
+) -> (u32, TransparentAddress) {
     watch(st, account)
         .addresses
         .into_iter()
@@ -100,8 +100,16 @@ fn last_derived(
             _ => None,
         })
         .max_by_key(|(index, _)| *index)
-        .map(|(_, address)| address)
         .expect("the account derives addresses in this scope")
+}
+
+/// The highest watched address the account derived in `scope`.
+fn last_derived(
+    st: &State,
+    account: AccountUuid,
+    scope: TransparentKeyScope,
+) -> TransparentAddress {
+    last_derived_entry(st, account, scope).1
 }
 
 /// The Activity rows of the transaction `[tag; 32]`, read by Vizor's
@@ -150,23 +158,7 @@ fn an_unsettled_private_receive_never_shows_the_senders_fee() {
     assert!(!settled[0].provisional);
 
     // Activity at the end of the window grows it, and the run stops there.
-    let ws = watch(&st, account);
-    let mut grow = commit(&ws);
-    grow.receives = vec![output(
-        0x62,
-        0,
-        last_derived(&st, account, TransparentKeyScope::EXTERNAL),
-        30_000,
-        target - 2,
-        transparent_only(10_000, 1),
-    )];
-    assert!(
-        st.wallet_mut()
-            .db_mut()
-            .apply_transparent_ledger_commit(grow)
-            .unwrap()
-            .window_grew
-    );
+    unsettle_with(&mut st, account, 0x62);
 
     let unsettled = rows(&st, account, 0x61);
     assert_eq!(unsettled.len(), 1);
@@ -306,23 +298,7 @@ fn settled_mixed_activity_does_not_inherit_incomplete_payment_details() {
 
         // Growing the recovery window withdraws settled coverage, even though
         // the shielded residual is still available. The warning must return.
-        let ws = watch(&st, account);
-        let mut grow = commit(&ws);
-        grow.receives = vec![output(
-            0x72,
-            0,
-            last_derived(&st, account, TransparentKeyScope::EXTERNAL),
-            30_000,
-            target - 2,
-            transparent_only(10_000, 1),
-        )];
-        assert!(
-            st.wallet_mut()
-                .db_mut()
-                .apply_transparent_ledger_commit(grow)
-                .unwrap()
-                .window_grew
-        );
+        unsettle_with(&mut st, account, 0x72);
         assert!(rows(&st, account, 0x71).iter().all(|row| row.provisional));
     }
 }
@@ -595,24 +571,43 @@ fn detail(st: &State, account: AccountUuid, tag: u8, tx_kind: &str) -> Transacti
 /// Withdraws the account's settled coverage, as a later recovery run that
 /// grows the address window and stops before covering the new addresses does.
 fn unsettle(st: &mut State, account: AccountUuid) {
-    let ws = watch(st, account);
-    let target = ws.target.unwrap().height;
-    let mut grow = commit(&ws);
-    grow.receives = vec![output(
-        0x0f,
-        0,
-        last_derived(st, account, TransparentKeyScope::EXTERNAL),
-        30_000,
-        target - 2,
-        transparent_only(10_000, 1),
-    )];
-    assert!(
-        st.wallet_mut()
-            .db_mut()
-            .apply_transparent_ledger_commit(grow)
-            .unwrap()
-            .window_grew
-    );
+    unsettle_with(st, account, 0x0f);
+}
+
+/// [`unsettle`] with receives in the transaction `[tag; 32]`.
+///
+/// While the account was restoring, its recovery already checked a fixed
+/// window of addresses (every external index below 50), so growing the
+/// window into those addresses withdraws nothing: the wallet has already
+/// looked there. Activity at the last address grows the window by one gap at
+/// a time, so it is repeated, each run covering what the last one added,
+/// until the window reaches addresses the restore never checked.
+fn unsettle_with(st: &mut State, account: AccountUuid, tag: u8) {
+    const RESTORE_EXTERNAL_END: u32 = 50;
+    for index in 0.. {
+        let ws = watch(st, account);
+        let target = ws.target.unwrap().height;
+        let mut grow = commit(&ws);
+        grow.receives = vec![output(
+            tag,
+            index,
+            last_derived(st, account, TransparentKeyScope::EXTERNAL),
+            30_000,
+            target - 2,
+            transparent_only(10_000, 1),
+        )];
+        assert!(
+            st.wallet_mut()
+                .db_mut()
+                .apply_transparent_ledger_commit(grow)
+                .unwrap()
+                .window_grew
+        );
+        if last_derived_entry(st, account, TransparentKeyScope::EXTERNAL).0 >= RESTORE_EXTERNAL_END
+        {
+            break;
+        }
+    }
 }
 
 /// What a receipt shows of a row and its detail: the row's kind, amount,
