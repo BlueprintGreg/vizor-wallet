@@ -2056,11 +2056,11 @@ fn encode(address: &TransparentAddress) -> String {
     zcash_keys::encoding::encode_transparent_address_p(&NETWORK, address)
 }
 
-fn last_derived(
+fn last_derived_entry(
     st: &State,
     account: AccountUuid,
     scope: TransparentKeyScope,
-) -> TransparentAddress {
+) -> (u32, TransparentAddress) {
     watch(st, account)
         .addresses
         .into_iter()
@@ -2071,8 +2071,19 @@ fn last_derived(
             _ => None,
         })
         .max_by_key(|(index, _)| *index)
-        .map(|(_, address)| address)
         .unwrap()
+}
+
+fn last_derived(
+    st: &State,
+    account: AccountUuid,
+    scope: TransparentKeyScope,
+) -> TransparentAddress {
+    last_derived_entry(st, account, scope).1
+}
+
+fn last_derived_index(st: &State, account: AccountUuid, scope: TransparentKeyScope) -> u32 {
+    last_derived_entry(st, account, scope).0
 }
 
 fn event(
@@ -2317,31 +2328,46 @@ impl Recovered {
 
     /// Withdraws the account's settled coverage, as a later recovery run
     /// that grows the address window and stops before covering it does.
+    ///
+    /// While the account was restoring, its recovery already checked a fixed
+    /// window of addresses (every external index below 50), so growing the
+    /// window into those addresses withdraws nothing: the wallet has already
+    /// looked there. Activity at the last address grows the window by one gap
+    /// at a time, so it is repeated, each run covering what the last one
+    /// added, until the window reaches addresses the restore never checked.
     fn unsettle(&mut self) {
-        let ws = watch(&self.st, self.account);
-        let target = ws.target.unwrap().height;
-        let mut grow = commit(&ws);
-        grow.receives = vec![event(
-            0x0f,
-            0,
-            last_derived(&self.st, self.account, TransparentKeyScope::EXTERNAL),
-            30_000,
-            target - 2,
-            Some(TransactionMetadata {
-                fee: WholeTransactionFee::Exact(Zatoshis::const_from_u64(10_000)),
-                transparent_input_count: 1,
-                has_shielded_components: false,
-            }),
-            false,
-        )];
-        assert!(
-            self.st
-                .wallet_mut()
-                .db_mut()
-                .apply_transparent_ledger_commit(grow)
-                .unwrap()
-                .window_grew
-        );
+        const RESTORE_EXTERNAL_END: u32 = 50;
+        for output in 0.. {
+            let ws = watch(&self.st, self.account);
+            let target = ws.target.unwrap().height;
+            let mut grow = commit(&ws);
+            grow.receives = vec![event(
+                0x0f,
+                output,
+                last_derived(&self.st, self.account, TransparentKeyScope::EXTERNAL),
+                30_000,
+                target - 2,
+                Some(TransactionMetadata {
+                    fee: WholeTransactionFee::Exact(Zatoshis::const_from_u64(10_000)),
+                    transparent_input_count: 1,
+                    has_shielded_components: false,
+                }),
+                false,
+            )];
+            assert!(
+                self.st
+                    .wallet_mut()
+                    .db_mut()
+                    .apply_transparent_ledger_commit(grow)
+                    .unwrap()
+                    .window_grew
+            );
+            if last_derived_index(&self.st, self.account, TransparentKeyScope::EXTERNAL)
+                >= RESTORE_EXTERNAL_END
+            {
+                break;
+            }
+        }
     }
 }
 
