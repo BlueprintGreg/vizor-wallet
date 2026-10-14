@@ -648,6 +648,31 @@ void main() {
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
+  testWidgets('NEAR swap privacy names the hardware account exception', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _settingsHarness(
+        enhancePirEnabled: true,
+        accountState: const AccountState(
+          accounts: [
+            AccountInfo(
+              uuid: 'keystone-account',
+              name: 'Keystone account',
+              order: 0,
+              isHardware: true,
+            ),
+          ],
+          activeAccountUuid: 'keystone-account',
+          activeAddress: 'u1keystoneaddress',
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text(kNearSwapPrivacyHardwareCopy), findsOneWidget);
+    expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
+  });
+
   testWidgets('connected Tor state describes Vizor and external app routes', (
     tester,
   ) async {

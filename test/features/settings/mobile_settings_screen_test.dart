@@ -587,6 +587,26 @@ void main() {
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
+  for (final (name, accountState) in [
+    ('Keystone', _keystoneAccountState),
+    ('Ledger', _ledgerAccountState),
+  ]) {
+    testWidgets('NEAR swap privacy names the $name account exception', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _app(enhancePirEnabled: true, accountState: accountState),
+      );
+      await tester.pumpAndSettle();
+      final description = find.byKey(
+        const ValueKey('mobile_settings_near_swap_privacy_description'),
+      );
+      await tester.scrollUntilVisible(description, 200);
+      expect(find.text(kNearSwapPrivacyHardwareCopy), findsOneWidget);
+      expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
+    });
+  }
+
   testWidgets('the Tor toggle matches the keep-awake toggle', (tester) async {
     await tester.pumpWidget(
       _app(

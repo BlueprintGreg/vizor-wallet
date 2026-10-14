@@ -9,6 +9,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_icon_hover_button.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
+import '../../../../providers/account_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
 import '../private_queries_turn_off.dart';
@@ -35,6 +36,8 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
     final privateQueriesOn = ref.watch(enhancePirProvider);
     final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
     final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
+    final hardwareAccount =
+        ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
     final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
@@ -106,9 +109,10 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
-              privateQueriesOn
-                  ? kNearSwapPrivacyOnCopy
-                  : kNearSwapPrivacyOffCopy,
+              nearSwapPrivacyDescription(
+                hardwareAccount: hardwareAccount,
+                privateQueriesOn: privateQueriesOn,
+              ),
               key: const ValueKey(
                 'mobile_settings_near_swap_privacy_description',
               ),

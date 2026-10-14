@@ -520,6 +520,8 @@ class _SettingsList extends ConsumerWidget {
     final privateQueriesOn = ref.watch(enhancePirProvider);
     final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
     final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
+    final hardwareAccount =
+        ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
     final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
@@ -639,9 +641,10 @@ class _SettingsList extends ConsumerWidget {
               EnhancePirPrivacyControl(
                 label: 'NEAR swap privacy',
                 keyPrefix: 'settings_near_swap_privacy',
-                description: privateQueriesOn
-                    ? kNearSwapPrivacyOnCopy
-                    : kNearSwapPrivacyOffCopy,
+                description: nearSwapPrivacyDescription(
+                  hardwareAccount: hardwareAccount,
+                  privateQueriesOn: privateQueriesOn,
+                ),
                 onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                 enabled: nearSwapPrivacy,
                 transition: null,

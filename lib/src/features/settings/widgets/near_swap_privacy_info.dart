@@ -17,6 +17,22 @@ const kNearSwapPrivacyOffCopy =
     'Turn on Private queries to create private swap addresses. Each swap '
     'would get new one-time Zcash addresses.';
 
+/// NEAR swap privacy subtitle while a hardware wallet account is active, since
+/// only software accounts get one-time swap addresses.
+const kNearSwapPrivacyHardwareCopy =
+    'Not available for hardware wallet accounts. Their swaps use regular '
+    'Zcash addresses.';
+
+/// The NEAR swap privacy subtitle for the active account and Private queries.
+String nearSwapPrivacyDescription({
+  required bool hardwareAccount,
+  required bool privateQueriesOn,
+}) => hardwareAccount
+    ? kNearSwapPrivacyHardwareCopy
+    : privateQueriesOn
+    ? kNearSwapPrivacyOnCopy
+    : kNearSwapPrivacyOffCopy;
+
 /// Title of the NEAR swap privacy explanation.
 const kNearSwapPrivacyInfoTitle = "What's this?";
 
