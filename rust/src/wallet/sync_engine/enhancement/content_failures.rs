@@ -15,6 +15,15 @@
 //! is left out of the restart count and is not asked again until the next
 //! block. No status txid is asked twice at one tip, whatever the reply.
 //!
+//! Work a reply creates at this tip waits for the next block too. A status
+//! reply that makes a transaction mined, or an Enhance record that names more
+//! work, adds queries, rediscovery jobs or status lookups that an honest reply
+//! of another kind would not have added. Asking them now, or counting them
+//! towards a restart, would show the service what its reply said. So every
+//! drain point compares the private work before and after it runs, records
+//! what appeared as unlocked at this tip, and that work is neither asked nor
+//! counted until the next block.
+//!
 //! Request failures (a refusal, an overload, a transport error) are not
 //! recorded and may still bring a restart; the service already knows it
 //! refused.
@@ -25,65 +34,178 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
-use zcash_client_backend::data_api::enhance_pir::EnhancePirRequest;
+use zcash_client_backend::data_api::enhance_pir::{
+    EnhancePirRequest, EnhancePirWork, IronwoodEnhanceDiscoveryRequest, TransactionEnhancementWork,
+};
+use zcash_client_backend::data_api::status::TransactionStatusWork;
 use zcash_primitives::transaction::TxId;
 
-#[derive(Default)]
-struct Failed {
-    tip: u64,
-    requests: BTreeSet<EnhancePirRequest>,
+/// The private work that exists at one moment: Enhance queries, rediscovery
+/// jobs and status lookups.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PrivateWork {
+    queries: BTreeSet<EnhancePirRequest>,
+    rediscovery: Vec<IronwoodEnhanceDiscoveryRequest>,
     statuses: BTreeSet<TxId>,
 }
 
-static FAILED: LazyLock<Mutex<HashMap<String, Failed>>> = LazyLock::new(Default::default);
+impl PrivateWork {
+    pub(crate) fn new(
+        enhancement: impl IntoIterator<Item = TransactionEnhancementWork>,
+        status: impl IntoIterator<Item = TransactionStatusWork>,
+    ) -> Self {
+        let mut work = Self::default();
+        for item in enhancement {
+            match item {
+                TransactionEnhancementWork::Private(EnhancePirWork::Query(request)) => {
+                    work.queries.insert(request);
+                }
+                TransactionEnhancementWork::Private(EnhancePirWork::Rediscover(request)) => {
+                    if !work.rediscovery.contains(&request) {
+                        work.rediscovery.push(request);
+                    }
+                }
+                _ => {}
+            }
+        }
+        work.statuses = status
+            .into_iter()
+            .filter(|work| matches!(work, TransactionStatusWork::Private(_)))
+            .map(|work| work.txid())
+            .collect();
+        work
+    }
 
-fn failed() -> MutexGuard<'static, HashMap<String, Failed>> {
-    FAILED.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Whether `work` is part of this snapshot. Suspended work is never
+    /// asked, so it always is.
+    pub(crate) fn contains(&self, work: &EnhancePirWork) -> bool {
+        match work {
+            EnhancePirWork::Query(request) => self.queries.contains(request),
+            EnhancePirWork::Rediscover(request) => self.rediscovery.contains(request),
+            EnhancePirWork::Suspended(_) => true,
+        }
+    }
+
+    /// Adds to `self` the work in `after` that is not in `before`.
+    fn add_new(&mut self, before: &Self, after: &Self) {
+        self.queries
+            .extend(after.queries.difference(&before.queries).copied());
+        for request in &after.rediscovery {
+            if !before.rediscovery.contains(request) && !self.rediscovery.contains(request) {
+                self.rediscovery.push(*request);
+            }
+        }
+        self.statuses
+            .extend(after.statuses.difference(&before.statuses).copied());
+    }
 }
 
-/// Starts a sync of the wallet at `db_path` at chain tip `tip`: content
-/// failures recorded below it are forgotten, so their work counts again.
+#[derive(Default)]
+struct AtTip {
+    tip: u64,
+    /// Enhance requests whose reply failed on content.
+    failed: BTreeSet<EnhancePirRequest>,
+    /// Private status txids that got a reply.
+    answered: BTreeSet<TxId>,
+    /// Work that replies created.
+    unlocked: PrivateWork,
+}
+
+static AT_TIP: LazyLock<Mutex<HashMap<String, AtTip>>> = LazyLock::new(Default::default);
+
+fn at_tips() -> MutexGuard<'static, HashMap<String, AtTip>> {
+    AT_TIP.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The wallet at `db_path` has reached chain tip `tip`: what was recorded
+/// below it is forgotten, so that work is counted, and asked, again.
 pub(crate) fn at_tip(db_path: &str, tip: u64) {
-    let mut failed = failed();
-    let entry = failed.entry(db_path.to_owned()).or_default();
+    let mut at_tips = at_tips();
+    let entry = at_tips.entry(db_path.to_owned()).or_default();
     if tip > entry.tip {
-        *entry = Failed {
+        *entry = AtTip {
             tip,
-            ..Failed::default()
+            ..AtTip::default()
         };
     }
 }
 
 /// Records Enhance requests whose reply failed on content.
 pub(crate) fn enhance(db_path: &str, requests: impl IntoIterator<Item = EnhancePirRequest>) {
-    failed()
+    at_tips()
         .entry(db_path.to_owned())
         .or_default()
-        .requests
+        .failed
         .extend(requests);
 }
 
 /// Records a transaction whose private status lookup got a reply, of any
 /// content, at the current tip.
 pub(crate) fn status_answered(db_path: &str, txid: TxId) {
-    failed()
+    at_tips()
         .entry(db_path.to_owned())
         .or_default()
-        .statuses
+        .answered
         .insert(txid);
 }
 
-/// Whether the Enhance request failed on content at the current tip.
-pub(crate) fn enhance_failed(db_path: &str, request: &EnhancePirRequest) -> bool {
-    failed()
-        .get(db_path)
-        .is_some_and(|failed| failed.requests.contains(request))
+/// Records the work in `after` that was not in `before` as created by the
+/// replies of the drain point between them.
+pub(crate) fn unlocked(db_path: &str, before: &PrivateWork, after: &PrivateWork) {
+    at_tips()
+        .entry(db_path.to_owned())
+        .or_default()
+        .unlocked
+        .add_new(before, after);
 }
 
-/// Whether the transaction's private status lookup got a reply at the
-/// current tip.
-pub(crate) fn status_was_answered(db_path: &str, txid: &TxId) -> bool {
-    failed()
-        .get(db_path)
-        .is_some_and(|failed| failed.statuses.contains(txid))
+/// Whether private Enhance `work` may be asked, or counted towards a restart,
+/// at the current tip: it neither failed on content nor was created by a
+/// reply here.
+pub(crate) fn may_ask(db_path: &str, work: &EnhancePirWork) -> bool {
+    let at_tips = at_tips();
+    let Some(at_tip) = at_tips.get(db_path) else {
+        return true;
+    };
+    match work {
+        EnhancePirWork::Query(request) => {
+            !at_tip.failed.contains(request) && !at_tip.unlocked.contains(work)
+        }
+        EnhancePirWork::Rediscover(_) => !at_tip.unlocked.contains(work),
+        EnhancePirWork::Suspended(_) => true,
+    }
+}
+
+/// Whether the transaction's private status lookup may be asked, or counted
+/// towards a restart, at the current tip: it got no reply here and no reply
+/// here created it.
+pub(crate) fn may_ask_status(db_path: &str, txid: &TxId) -> bool {
+    at_tips().get(db_path).is_none_or(|at_tip| {
+        !at_tip.answered.contains(txid) && !at_tip.unlocked.statuses.contains(txid)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zcash_client_backend::data_api::status::PrivateTransactionStatusRequest;
+
+    /// A status lookup that a reply created at this tip is neither asked nor
+    /// counted until the next block, like an Enhance query.
+    #[test]
+    fn a_status_lookup_a_reply_created_waits_for_the_next_block() {
+        let path = "status-lookup-created-by-a-reply";
+        let txid = TxId::from_bytes([0x42; 32]);
+        at_tip(path, 10);
+        let after = PrivateWork::new(
+            [],
+            [TransactionStatusWork::Private(
+                PrivateTransactionStatusRequest::new(txid, None),
+            )],
+        );
+        unlocked(path, &PrivateWork::default(), &after);
+        assert!(!may_ask_status(path, &txid));
+        at_tip(path, 11);
+        assert!(may_ask_status(path, &txid));
+    }
 }

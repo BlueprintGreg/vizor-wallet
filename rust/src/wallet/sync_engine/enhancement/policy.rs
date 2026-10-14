@@ -175,6 +175,15 @@ impl EnhancementPolicy {
         }
     }
 
+    /// Test seam for private queries on a network that has no service.
+    #[cfg(test)]
+    pub(crate) fn with_private_queries(self) -> Self {
+        Self {
+            private: true,
+            ..self
+        }
+    }
+
     /// Test seam for a transparent mode the test's network and preference
     /// would not produce.
     #[cfg(test)]

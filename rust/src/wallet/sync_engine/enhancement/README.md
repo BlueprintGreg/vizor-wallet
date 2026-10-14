@@ -246,10 +246,12 @@ positive records; a missing record is then `CoverageIncomplete`. `Mempool` and
 `Forked` are distinct source observations but both persist as the wallet's
 not-in-main-chain state.
 
-`CoverageIncomplete` is an explicit, retryable feedback gate. `GetStatus` work
-is expected to be highly unlikely in private mode, so Vizor surfaces a clear
-Settings action and pauses automatic sync after bounded retry instead of
-silently weakening privacy. If production users encounter the gate, its
+`CoverageIncomplete` is an explicit feedback gate. `GetStatus` work is
+expected to be highly unlikely in private mode, so Vizor surfaces a clear
+Settings action and pauses automatic sync instead of silently weakening
+privacy. A missing record is a reply about its transaction, so the sync is not
+retried at the same tip and the transaction is not asked again until the next
+block. If production users encounter the gate, its
 complete negative-coverage recovery needs a dedicated design; there is no
 automatic public fallback.
 

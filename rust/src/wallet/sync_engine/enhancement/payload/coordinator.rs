@@ -60,22 +60,19 @@ impl RoutedWork {
         PreparedWork::new(self.private.iter().copied())
     }
 
-    /// The work this drain may ask. Private queries that failed on content
-    /// at the current chain tip at `db_path` are left out: an honest reply
-    /// would have completed them, so they wait for the next block. With a
-    /// `snapshot`, so are queries that did not exist when the checkpoint
-    /// began: whether more queries follow never depends on a reply.
+    /// The work this drain may ask. Private work that failed on content, or
+    /// that a reply created, at the current chain tip at `db_path` is left
+    /// out: it waits for the next block. With a `snapshot`, so is private
+    /// work that did not exist when the drain point began: whether more
+    /// work follows never depends on a reply.
     pub(super) fn askable(
         mut self,
         db_path: &str,
-        snapshot: Option<&std::collections::BTreeSet<EnhancePirRequest>>,
+        snapshot: Option<&super::super::content_failures::PrivateWork>,
     ) -> Self {
-        self.private.retain(|work| match work {
-            EnhancePirWork::Query(request) => {
-                !super::super::content_failures::enhance_failed(db_path, request)
-                    && snapshot.is_none_or(|snapshot| snapshot.contains(request))
-            }
-            _ => true,
+        self.private.retain(|work| {
+            super::super::content_failures::may_ask(db_path, work)
+                && snapshot.is_none_or(|snapshot| snapshot.contains(work))
         });
         self
     }
