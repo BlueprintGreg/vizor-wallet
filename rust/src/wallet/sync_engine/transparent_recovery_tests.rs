@@ -816,6 +816,40 @@ mod private_transparent_policy {
         }
     }
 
+    /// A checkpoint makes one pass over status and history. The address
+    /// history it reads names a transaction and moves the address on to its
+    /// next range; that next lookup waits for the next checkpoint instead of
+    /// starting another round now, so whether more requests follow never
+    /// depends on what a reply said.
+    #[tokio::test]
+    async fn a_checkpoint_does_not_follow_up_on_its_own_replies() {
+        let mut f = fixture();
+        let address =
+            address_history::plan(&f.db.transaction_data_requests().unwrap())[0][0].address();
+        let mut lwd = CapturingLwd::start(f.history_tx.clone()).await;
+        let mut session = enhancement::EnhancementSession::new(f.network, &f.path);
+
+        session
+            .run_checkpoint(&mut f.db, &mut lwd.client, None, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(lwd.count("/GetTaddressTxids"), 1);
+        let waiting = address_history::plan(&f.db.transaction_data_requests().unwrap());
+        assert!(
+            waiting.iter().any(|group| group[0].address() == address),
+            "the address's next range waits"
+        );
+
+        session
+            .run_checkpoint(&mut f.db, &mut lwd.client, None, &|| false)
+            .await
+            .unwrap();
+        assert!(
+            lwd.count("/GetTaddressTxids") > 1,
+            "the next checkpoint asks it"
+        );
+    }
+
     #[tokio::test]
     async fn checkpoint_withholds_work_queued_before_private_transition() {
         let mut f = fixture();
