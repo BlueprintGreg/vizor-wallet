@@ -40,6 +40,8 @@ struct Service {
     cancelled: Cell<bool>,
     cancel_on_refresh: Cell<bool>,
     fail_refresh: Cell<bool>,
+    /// Row queries, by index, answered with a payload whose records do not decode.
+    corrupt_queries: RefCell<Vec<usize>>,
 }
 
 impl Service {
@@ -96,6 +98,7 @@ impl Service {
             cancelled: Cell::new(false),
             cancel_on_refresh: Cell::new(false),
             fail_refresh: Cell::new(false),
+            corrupt_queries: RefCell::new(vec![]),
         }
     }
 }
@@ -142,6 +145,7 @@ impl transport::Transport for Service {
         } else {
             assert!(request.url.ends_with("/query"));
             let binding = QueryBinding::decode(&request.body).unwrap();
+            let index = self.posts.borrow().len();
             self.posts.borrow_mut().push(binding.clone());
             if let Some(Some(status)) = self.statuses.borrow_mut().pop_front() {
                 return Err(ClientError::HttpStatus(status));
@@ -152,7 +156,17 @@ impl transport::Transport for Service {
                 "query did not rebind to refreshed routing"
             );
             let mut response = binding.encode();
-            response.resize(response_len(m.coverage.shards[0].logical_rows).unwrap(), 0);
+            // Zero public material decodes a zero payload to zero records, which
+            // are valid; a nonzero payload decodes to reserved record bits.
+            let fill = if self.corrupt_queries.borrow().contains(&index) {
+                0x5a
+            } else {
+                0
+            };
+            response.resize(
+                response_len(m.coverage.shards[0].logical_rows).unwrap(),
+                fill,
+            );
             response
         };
         let mut body = request.response_body();
@@ -187,6 +201,10 @@ struct Wallet {
     transparent_at: Option<u64>,
     /// Cancellation requested while a record is being applied.
     cancel_on_apply: Option<Rc<Cell<bool>>>,
+    /// Records at this position fail wallet authentication.
+    reject_at: Option<u64>,
+    /// Positions reported through `record_unreadable`.
+    unreadable: Vec<u64>,
 }
 impl Wallet {
     fn new(positions: &[u64]) -> Self {
@@ -199,6 +217,8 @@ impl Wallet {
             refreshed_anchor: Anchor::Accepted,
             transparent_at: None,
             cancel_on_apply: None,
+            reject_at: None,
+            unreadable: vec![],
         }
     }
 }
@@ -258,6 +278,9 @@ impl RecoveryWallet for Wallet {
         if let Some(cancel) = &self.cancel_on_apply {
             cancel.set(true);
         }
+        if self.reject_at == Some(u64::from(request.position())) {
+            return Ok(EnhancePirStoreResult::Rejected);
+        }
         self.applied.push(u64::from(request.position()));
         if self.transparent_at == Some(u64::from(request.position())) {
             // The whole transaction atomically moves to ordinary enhancement.
@@ -269,8 +292,13 @@ impl RecoveryWallet for Wallet {
         self.pending.retain(|r| *r != request);
         Ok(EnhancePirStoreResult::Stored)
     }
-    fn record_unreadable(&mut self, _: &[EnhancePirRequest]) -> Result<(), EnhancePirRunError> {
-        unreachable!("the scripted service never returns an undecodable record")
+    fn record_unreadable(
+        &mut self,
+        requests: &[EnhancePirRequest],
+    ) -> Result<(), EnhancePirRunError> {
+        self.unreadable
+            .extend(requests.iter().map(|request| u64::from(request.position())));
+        Ok(())
     }
 }
 fn sync() -> RoutedPayloadEnhancement {
@@ -539,6 +567,48 @@ async fn stale_routing_refreshes_equal_coverage_and_retries_only_unfinished_work
         assert_ne!(
             posts[1].request_id, posts[2].request_id,
             "retry must have a fresh binding"
+        );
+    }
+}
+
+/// A bad record must not end the batch: where the requests stopped would show
+/// the service which record failed. The failed position then waits for the
+/// next sync instead of being queried again in this one.
+#[tokio::test]
+async fn a_bad_record_still_requests_the_rest_of_the_batch() {
+    for undecodable in [true, false] {
+        let service = Service::new([]);
+        let mut wallet = Wallet::new(&[0, 33, 66]);
+        if undecodable {
+            service.corrupt_queries.borrow_mut().push(0);
+        } else {
+            wallet.reject_at = Some(0);
+        }
+        let mut effects = Effects::default();
+        let mut sync = sync();
+        sync.run(&mut wallet, &service, &mut effects, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.posts.borrow().len(),
+            3,
+            "every planned row is requested, once"
+        );
+        assert_eq!(wallet.applied, [33, 66]);
+        assert_eq!(wallet.pending, [request(0)]);
+        assert_eq!(
+            wallet.unreadable,
+            if undecodable { vec![0] } else { vec![] }
+        );
+        assert!(!sync.private_failed_for_sync, "the drain finishes normally");
+
+        sync.run_queries(&mut wallet, &service, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.posts.borrow().len(),
+            3,
+            "the failed position waits for the next sync"
         );
     }
 }

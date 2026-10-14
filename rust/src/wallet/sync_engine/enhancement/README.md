@@ -183,14 +183,16 @@ recovering
     `-- authenticated result ------------------> persist partial progress
 ```
 
-Accepted routing, pending routing, rediscovery attempts, and
+Accepted routing, pending routing, rediscovery attempts, failed positions, and
 `private_failed_for_sync` are session-scoped. Successfully persisted records
 remain committed even if a later record fails. The next attempt rereads the
 database and processes only unfinished obligations.
 
 A record the wallet rejects, or one whose bytes fail to decode after its row
 reply arrived, counts against its position; the third suspends it
-(`EnhancePirSuspension::Rejected`). A failed row query never counts. The
+(`EnhancePirSuspension::Rejected`). Such a record does not end the batch:
+the remaining planned rows are still requested, and the failed position is not
+queried again until the next sync. A failed row query never counts. The
 counts, and each newly queued position's random first-query delay, live in
 the library's `EnhancePirSession`, which `db.rs` shares across every wallet
 handle for the process lifetime, so syncs keep them and an app restart

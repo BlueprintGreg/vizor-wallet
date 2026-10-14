@@ -15,11 +15,12 @@ use super::{
 };
 use crate::wallet::network::WalletNetwork;
 use futures::StreamExt;
+use std::collections::BTreeSet;
 use zakura_pir_enhance::transport::{self, PendingClient};
 use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
 use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
-    EnhancePirRequest, EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
+    EnhancePirRequest, EnhancePirStoreResult, EnhancePirWork, IronwoodEnhanceDiscoveryRequest,
 };
 use zcash_protocol::consensus::BlockHeight;
 /// Debug builds only: overrides the Enhance PIR endpoint. Release builds
@@ -92,6 +93,9 @@ pub(in crate::wallet::sync_engine) struct RoutedPayloadEnhancement {
     pub(super) accepted_routing: Option<transport::Client>,
     pub(super) private_failed_for_sync: bool,
     rediscovery_attempts: Vec<IronwoodEnhanceDiscoveryRequest>,
+    /// Positions whose record failed to decode or authenticate in this sync.
+    /// They are not queried again until the next sync.
+    failed_positions: BTreeSet<u64>,
 }
 #[derive(Debug)]
 pub(in crate::wallet::sync_engine) enum EnhancePirRunError {
@@ -135,6 +139,7 @@ impl RoutedPayloadEnhancement {
             accepted_routing: None,
             private_failed_for_sync: false,
             rediscovery_attempts: Vec::new(),
+            failed_positions: BTreeSet::new(),
         }
     }
     pub(in crate::wallet::sync_engine) fn enabled(&self) -> bool {
@@ -250,6 +255,18 @@ impl RoutedPayloadEnhancement {
         }
     }
 
+    /// The wallet's queryable work, without the positions that failed in this
+    /// sync.
+    fn queryable(&self, db: &impl RecoveryWallet) -> Result<PreparedWork, EnhancePirRunError> {
+        let failed = |request: &EnhancePirRequest| {
+            self.failed_positions
+                .contains(&u64::from(request.position()))
+        };
+        Ok(PreparedWork::new(db.work()?.private.into_iter().filter(
+            |work| !matches!(work, EnhancePirWork::Query(request) if failed(request)),
+        )))
+    }
+
     pub(super) async fn run_queries(
         &mut self,
         db: &mut impl RecoveryWallet,
@@ -259,7 +276,7 @@ impl RoutedPayloadEnhancement {
         if should_exit() {
             return Err(EnhancePirRunError::ExitRequested);
         }
-        let work = db.work()?.prepared();
+        let work = self.queryable(db)?;
         if work.query_count() == 0 {
             return Ok(());
         }
@@ -305,7 +322,7 @@ impl RoutedPayloadEnhancement {
         for attempt in 0..=1 {
             // Re-read after a partial batch: successfully stored rows are no
             // longer pending, and only the durable remainder is retried.
-            let work = db.work()?.prepared();
+            let work = self.queryable(db)?;
             if work.query_count() == 0 {
                 break;
             }
@@ -336,24 +353,31 @@ impl RoutedPayloadEnhancement {
                                 // The row reply arrived but this record did not
                                 // decode: a content failure the service could
                                 // aim at chosen rows, so it counts toward the
-                                // position's suspension. A failed row query
-                                // arrives as `ClientError::Row` and never counts.
-                                Err(error @ ClientError::Response(_)) => {
+                                // position's suspension. The rest of the batch
+                                // is still requested, so the service cannot tell
+                                // which record failed from where the requests
+                                // stop. A failed row query arrives as
+                                // `ClientError::Row` and never counts.
+                                Err(ClientError::Response(error)) => {
+                                    log::warn!("sync: Enhance PIR record did not decode: {error}");
                                     db.record_unreadable(&unreadable_batch(
                                         &work,
                                         result.position,
                                     ))?;
-                                    return Err(error.into());
+                                    self.failed_positions.insert(result.position);
+                                    continue;
                                 }
                                 result => result?,
                             };
                             for (request, record) in work.map_record(result.position, record) {
                                 match db.apply(request, &record)? {
+                                    // `apply` counts the rejection; the batch
+                                    // continues as for an undecodable record.
                                     EnhancePirStoreResult::Rejected => {
-                                        return Err(SyncError::parse(
-                                            "PIR record failed wallet authentication",
-                                        )
-                                        .into());
+                                        log::warn!(
+                                            "sync: Enhance PIR record failed wallet authentication"
+                                        );
+                                        self.failed_positions.insert(result.position);
                                     }
                                     // Mixed transaction under a private transparent
                                     // policy: financial facts are kept and the
