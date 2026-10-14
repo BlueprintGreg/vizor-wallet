@@ -251,7 +251,10 @@ class AppSecureStore {
   ///
   /// Every write rewrites the plugin's whole JSON item, so one legacy value
   /// with a quote keeps the item unreadable on a passwordless gnome-keyring
-  /// collection (see `encodeLinuxKeyringValue`). Does nothing on other
+  /// collection (see `encodeLinuxKeyringValue`). Such a collection can still
+  /// hold the legacy item in memory until a write makes it reload the file,
+  /// after which the next write rebuilds the item from nothing. Entries lost
+  /// that way are restored from the snapshot read here. Does nothing on other
   /// platforms.
   Future<void> encodeLegacyLinuxKeyringValues() {
     if (!encodesLinuxKeyringValues) return Future.value();
@@ -264,15 +267,30 @@ class AppSecureStore {
           'read legacy keyring values',
           storage.readAll,
         );
-        for (final entry in stored.entries) {
-          if (!linuxKeyringValueNeedsEncoding(entry.value)) continue;
-          await _runStorageOperation(
-            'write encoded keyring value "${entry.key}"',
-            () => storage.write(
-              key: entry.key,
-              value: encodeLinuxKeyringValue(entry.value),
-            ),
-          );
+        if (!stored.values.any(linuxKeyringValueNeedsEncoding)) continue;
+        final encoded = stored.map(
+          (key, value) => MapEntry(
+            key,
+            linuxKeyringValueNeedsEncoding(value)
+                ? encodeLinuxKeyringValue(value)
+                : value,
+          ),
+        );
+        Future<void> store(String key) => _runStorageOperation(
+          'write encoded keyring value "$key"',
+          () => storage.write(key: key, value: encoded[key]),
+        );
+        for (final key in encoded.keys) {
+          if (encoded[key] != stored[key]) await store(key);
+        }
+        // Every stored value is escape-free by now, so these restores cannot
+        // make the item unreadable again.
+        final migrated = await _runStorageOperation(
+          'read encoded keyring values',
+          storage.readAll,
+        );
+        for (final key in encoded.keys) {
+          if (migrated[key] != encoded[key]) await store(key);
         }
       }
     });
