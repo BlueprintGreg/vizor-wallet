@@ -147,8 +147,8 @@ pub(super) async fn run(
 }
 
 /// Runs recovery at `through`, the fully scanned block, if it is also the chain tip, and
-/// returns whether a sweep finished. The sync's enhancement checkpoint has already
-/// retrieved funding memos, and maintenance has registered their refund keys. Each
+/// returns whether a sweep finished. Refund keys from funding memos that this sync's
+/// enhancement retrieved are swept next sync (see `run_sync_impl`). Each
 /// software account gets one `sweep`, which sweeps at most one batch of its due keys;
 /// the rest wait for a later sync. An account whose run fails does not stop the others.
 async fn run_inner(
