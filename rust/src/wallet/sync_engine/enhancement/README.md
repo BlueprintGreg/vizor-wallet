@@ -197,7 +197,7 @@ JSON error, a rotated generation, a body over the size limit, or a reply whose
 length or binding does not match the session) counts nothing; the batch is
 still asked to its end, and then private Enhance waits for a later sync.
 
-A newly queued position waits a random time of up to two minutes before its
+A newly queued position waits a random time of up to 75 seconds before its
 first query (`EnhancePirWork::Waiting`). It is pending, not complete, and the
 checkpoint at each block asks it once it is due.
 
