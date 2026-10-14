@@ -8,7 +8,7 @@ use std::{
 };
 
 use voting_crypto_deps::rand::rngs::OsRng;
-use zcash_client_sqlite::{util::SystemClock, EnhancePirSession, WalletDb};
+use zcash_client_sqlite::{util::SystemClock, EnhancePirSession, StatusPollSession, WalletDb};
 
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::transparent_ledger_mode_for;
@@ -174,6 +174,7 @@ fn wallet_db(conn: rusqlite::Connection, db_path: &str, network: WalletNetwork) 
     WalletDb::from_connection(conn, network, SystemClock, OsRng)
         .with_transparent_ledger_mode(transparent_ledger_mode_for(db_path, network))
         .with_enhance_pir_session(enhance_pir_session(db_path))
+        .with_status_poll_session(status_poll_session(db_path))
 }
 
 /// The Enhance PIR session of the wallet at `db_path`, shared by every handle
@@ -188,6 +189,26 @@ fn wallet_db(conn: rusqlite::Connection, db_path: &str, network: WalletNetwork) 
 /// has at its first work read.
 pub(crate) fn enhance_pir_session(db_path: &str) -> EnhancePirSession {
     static SESSIONS: OnceLock<Mutex<HashMap<String, EnhancePirSession>>> = OnceLock::new();
+    SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(db_path.to_owned())
+        .or_default()
+        .clone()
+}
+
+/// The private status poll session of the wallet at `db_path`, shared by
+/// every handle this process opens on it, like [`enhance_pir_session`].
+///
+/// The session records, in memory, the tip each private status reply came
+/// back at, and the poll windows the database does not fix. The library lists
+/// a transaction as due once per tip; without one shared session, the next
+/// sync's handle, or the recovery status read, would see a poll recorded
+/// through another handle as due again at the same tip. An app restart starts
+/// a fresh session, which the library rebuilds from the database where it can.
+pub(crate) fn status_poll_session(db_path: &str) -> StatusPollSession {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, StatusPollSession>>> = OnceLock::new();
     SESSIONS
         .get_or_init(Default::default)
         .lock()
