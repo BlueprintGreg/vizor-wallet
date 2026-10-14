@@ -2852,7 +2852,7 @@ mod history_summary_tests;
 
 #[cfg(test)]
 #[path = "transactions/private_shielding_tests.rs"]
-mod private_shielding_tests;
+pub(crate) mod private_shielding_tests;
 
 #[cfg(test)]
 #[path = "transactions/private_recovery_tests.rs"]

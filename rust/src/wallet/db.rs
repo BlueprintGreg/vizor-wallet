@@ -458,6 +458,55 @@ mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
+    /// Every handle the app opens on one wallet counts Enhance content
+    /// failures in the same session: three unreadable replies recorded
+    /// through one handle suspend the request for every other handle on that
+    /// wallet, so opening a fresh handle for the next sync never restores the
+    /// allowance. A wallet at another path keeps its own.
+    #[test]
+    fn every_handle_on_a_wallet_shares_its_enhance_allowance() {
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+        use zcash_client_backend::data_api::enhance_pir::{
+            EnhancePirRead, EnhancePirSuspension, EnhancePirWork, EnhancePirWrite,
+            TransactionEnhancementWork,
+        };
+
+        let (dir, path, request) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let other_path = dir.path().join("other.db").to_str().unwrap().to_owned();
+        std::fs::copy(&path, &other_path).unwrap();
+        let network = WalletNetwork::Regtest;
+        let open = |path: &str| {
+            let mut db = open_wallet_db_with_timeout(path, network, SYNC_DB_BUSY_TIMEOUT).unwrap();
+            db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+            db
+        };
+        let query = TransactionEnhancementWork::Private(EnhancePirWork::Query(request));
+        let suspended = TransactionEnhancementWork::Private(EnhancePirWork::Suspended(
+            EnhancePirSuspension::Rejected(request),
+        ));
+        let mut first = open(&path);
+        assert!(first
+            .transaction_enhancement_work()
+            .unwrap()
+            .contains(&query));
+
+        for _ in 0..3 {
+            first
+                .record_ironwood_enhance_unreadable(&[request])
+                .unwrap();
+        }
+        let second = open(&path);
+        let work = second.transaction_enhancement_work().unwrap();
+        assert!(work.contains(&suspended), "{work:?}");
+        assert!(!work.contains(&query));
+
+        let other = open(&other_path);
+        let work = other.transaction_enhancement_work().unwrap();
+        assert!(work.contains(&query), "another wallet keeps its allowance");
+        assert!(!work.contains(&suspended));
+    }
+
     #[test]
     fn mined_history_is_atomic_and_removed_with_transaction() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();

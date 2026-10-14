@@ -1564,6 +1564,45 @@ fn logs_txid_free_private() {
     }
 }
 
+/// Three content failures at one mined height, without public authority,
+/// give the lookup up. The view says so, distinct from an unavailable lookup,
+/// and so does the receipt's detail state, so the receipt can stop waiting
+/// for it.
+#[tokio::test]
+async fn three_content_failures_give_the_lookup_up() {
+    let fixture = wallet();
+    let tx = utxo_receipt(&fixture, 0x86, TOP - 1).txid();
+    let _mode = require_private(&fixture.path);
+    let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::Protocol));
+    for failures in 1..=3 {
+        run_scripted(&fixture, &mut source).await;
+        assert_eq!(source.looked_up().len(), failures);
+        let view = view(&fixture, &tx);
+        if failures < 3 {
+            assert_eq!(view, Some(TransparentDisplayView::Unavailable));
+        } else {
+            assert_eq!(view, Some(TransparentDisplayView::GaveUp));
+        }
+        advance_wall(PAST_BACKOFF);
+    }
+    // Given up: no later run asks again.
+    run_scripted(&fixture, &mut source).await;
+    assert_eq!(source.looked_up().len(), 3);
+
+    let detail = crate::api::sync::get_transaction_detail(
+        fixture.path.clone(),
+        "main".to_owned(),
+        fixture.uuid.clone(),
+        hex::encode(tx.as_ref()),
+        "received".to_owned(),
+    )
+    .unwrap();
+    assert!(matches!(
+        detail.transparent_details_state,
+        Some(crate::api::sync::TransparentDetailsState::GaveUp)
+    ));
+}
+
 #[tokio::test]
 async fn detail_view_states() {
     let fixture = wallet();
