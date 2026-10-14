@@ -784,6 +784,87 @@ void main() {
     expect(await store.readAccountMnemonic(_accountUuid), _mnemonic);
   });
 
+  group('Linux keyring value codec', () {
+    const accountsJson =
+        '[{"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Account 1"}]';
+
+    /// Mirrors flutter_secure_storage_linux, which keeps every entry in one
+    /// JSON object that a passwordless gnome-keyring cannot reload once it
+    /// contains a backslash.
+    Future<bool> keyringItemHasEscapes(_MapStorage storage) async =>
+        jsonEncode(await storage.readAll()).contains(r'\');
+
+    test('stores JSON values and secrets without JSON escapes', () async {
+      final storage = _MapStorage('linux');
+      store = AppSecureStore.testing(
+        storage: storage,
+        encodeLinuxKeyringValues: true,
+      );
+
+      await store.writePlain(kWalletDbNameKey, 'zcash_wallet_abc.db');
+      await store.writeString('zcash_accounts', accountsJson);
+      await store.configurePassword(_oldPassword);
+      await store.writeAccountMnemonic(_accountUuid, _mnemonic);
+
+      expect(await keyringItemHasEscapes(storage), isFalse);
+      expect(storage.valueFor(kWalletDbNameKey), 'zcash_wallet_abc.db');
+      expect(await store.readPlain(kWalletDbNameKey), 'zcash_wallet_abc.db');
+      expect(await store.readString('zcash_accounts'), accountsJson);
+      expect(await store.readAccountMnemonic(_accountUuid), _mnemonic);
+    });
+
+    test('re-encodes legacy values and keeps them readable', () async {
+      final storage = _MapStorage('linux');
+      await storage.write(key: 'zcash_accounts', value: accountsJson);
+      await storage.write(key: kWalletDbNameKey, value: 'zcash_wallet_abc.db');
+      store = AppSecureStore.testing(
+        storage: storage,
+        encodeLinuxKeyringValues: true,
+      );
+      expect(await store.readString('zcash_accounts'), accountsJson);
+
+      await store.encodeLegacyLinuxKeyringValues();
+
+      expect(await keyringItemHasEscapes(storage), isFalse);
+      expect(storage.valueFor(kWalletDbNameKey), 'zcash_wallet_abc.db');
+      expect(await store.readString('zcash_accounts'), accountsJson);
+    });
+
+    test('password rotation keeps encoded secrets readable', () async {
+      final storage = _MapStorage('linux');
+      store = AppSecureStore.testing(
+        storage: storage,
+        encodeLinuxKeyringValues: true,
+      );
+      await store.configurePassword(_oldPassword);
+      await store.writeAccountMnemonic(_accountUuid, _mnemonic);
+
+      final didChange = await store.changePassword(
+        currentPassword: _oldPassword,
+        newPassword: _newPassword,
+      );
+
+      expect(didChange, isTrue);
+      expect(await keyringItemHasEscapes(storage), isFalse);
+      store.clearSessionPassword();
+      expect(await store.verifyPassword(_newPassword), isTrue);
+      expect(await store.readAccountMnemonic(_accountUuid), _mnemonic);
+    });
+
+    test('other platforms store values unchanged', () async {
+      final storage = _MapStorage('other');
+      store = AppSecureStore.testing(
+        storage: storage,
+        encodeLinuxKeyringValues: false,
+      );
+
+      await store.writeString('zcash_accounts', accountsJson);
+      await store.encodeLegacyLinuxKeyringValues();
+
+      expect(storage.valueFor('zcash_accounts'), accountsJson);
+    });
+  });
+
   test('deleteAll clears separate mnemonic storage', () async {
     final operations = <String>[];
     final regularStorage = _MapStorage('regular', operations: operations);
