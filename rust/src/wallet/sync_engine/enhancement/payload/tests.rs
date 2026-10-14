@@ -331,8 +331,20 @@ impl RecoveryWallet for Wallet {
         Ok(())
     }
 }
+/// The scripted wallet's path, one per test: content failures are recorded
+/// per wallet, and tests run in parallel.
+fn wallet_path() -> String {
+    format!("scripted-pir-wallet-{:?}", std::thread::current().id())
+}
+
+/// A new block for the scripted wallet: work that failed on content is asked
+/// again.
+fn next_block(tip: u64) {
+    super::super::content_failures::at_tip(&wallet_path(), tip);
+}
+
 fn sync() -> RoutedPayloadEnhancement {
-    let mut sync = RoutedPayloadEnhancement::new(WalletNetwork::Main, true, "scripted-pir-wallet");
+    let mut sync = RoutedPayloadEnhancement::new(WalletNetwork::Main, true, &wallet_path());
     sync.endpoint = Some("https://example.test".into());
     sync
 }
@@ -607,6 +619,13 @@ async fn an_unreadable_record_is_reported_and_the_rest_of_the_batch_is_asked() {
         !drain.private_failed_for_sync,
         "a content failure is not an outage"
     );
+    // The failed request waits for the next block: another sync at this tip
+    // asks nothing, as after the honest run.
+    drain
+        .run(&mut wallet, &corrupting, &mut Effects::default(), &|| false)
+        .await
+        .unwrap();
+    assert_eq!(wallet.unreadable.len(), 1);
     assert_eq!(
         corrupting.posts.borrow().len(),
         honest.posts.borrow().len(),
@@ -624,6 +643,7 @@ async fn three_unreadable_replies_suspend_the_position_for_good() {
     service.unreadable_posts.borrow_mut().extend(0..10);
     let mut wallet = Wallet::new(&[0]);
     for sync_number in 1..=5 {
+        next_block(sync_number as u64);
         sync()
             .run(&mut wallet, &service, &mut Effects::default(), &|| false)
             .await
@@ -684,6 +704,33 @@ async fn work_a_drain_unlocks_waits_for_the_next_drain() {
         .await
         .unwrap();
     assert_eq!(wallet.applied, [0, 40]);
+}
+
+/// A retry after stale routing asks only what an honest reply would have
+/// left: a row whose record failed on content is not asked again, and its
+/// failure counts once.
+#[tokio::test]
+async fn a_stale_routing_retry_skips_rows_that_failed_on_content() {
+    let run = |corrupt: bool| async move {
+        // The second row's query meets stale routing; the retry succeeds.
+        let service = Service::new([None, Some(409), None]);
+        if corrupt {
+            service.unreadable_posts.borrow_mut().insert(0);
+        }
+        let mut wallet = Wallet::new(&[0, 40]);
+        sync()
+            .run_queries(&mut wallet, &service, &|| false)
+            .await
+            .unwrap();
+        let posts = service.posts.borrow().len();
+        (posts, service.init_count.get(), wallet)
+    };
+    let (honest_posts, honest_inits, honest) = run(false).await;
+    assert_eq!(honest.applied, [0, 40]);
+    let (posts, inits, forged) = run(true).await;
+    assert_eq!(forged.applied, [40]);
+    assert_eq!((posts, inits), (honest_posts, honest_inits));
+    assert_eq!(forged.unreadable, [vec![request(0)]], "counted once");
 }
 
 #[tokio::test]

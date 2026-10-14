@@ -880,13 +880,13 @@ mod tests {
         .unwrap();
 
         db.set_status_mode(TransactionStatusMode::Private);
-        let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+        let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
         assert_eq!(status.status, 1, "the private obligation is recovery work");
 
         // A public status failure fails the sync instead of being deferred, so
         // public status work never needs a recovery-only restart.
         db.set_status_mode(TransactionStatusMode::Public);
-        let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+        let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
         assert_eq!(status.status, 0);
     }
 
@@ -926,7 +926,7 @@ mod tests {
                     }
                     TransactionEnhancementWork::Private(_) => false,
                 }));
-            let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+            let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
             assert_eq!(
                 (status.status, status.queries, status.rediscovery),
                 (0, 0, 0)
@@ -1049,6 +1049,76 @@ mod tests {
 
         assert!(!private_failed, "private status stays on");
         assert_eq!(requests.lock().unwrap().len(), 2, "the next item is asked");
+    }
+
+    /// Work that failed on content at this chain tip is not counted towards a
+    /// recovery-only restart: an honest reply would have completed it, so a
+    /// bad one must not bring the next request sooner. A new block counts it
+    /// again.
+    #[test]
+    fn content_failures_at_this_tip_do_not_count_towards_a_restart() {
+        use super::super::content_failures;
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+
+        // Private status work for one unmined transaction.
+        let (file, mut db, tx) =
+            scanned_transaction_missing_fee_test_db(BlockHeight::from_u32(100), false);
+        let conn = rusqlite::Connection::open(file.path()).unwrap();
+        conn.execute("UPDATE transactions SET mined_height = NULL", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 0)
+             ON CONFLICT (txid, query_type) DO NOTHING",
+            rusqlite::params![tx.txid().as_ref()],
+        )
+        .unwrap();
+        db.set_status_mode(TransactionStatusMode::Private);
+        let txid = tx.txid();
+        let path = file.path().to_str().unwrap().to_owned();
+        content_failures::at_tip(&path, 100);
+        let status = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .status
+        };
+        assert_eq!(status(&db), 1);
+        content_failures::status(&path, txid);
+        assert_eq!(
+            status(&db),
+            0,
+            "a malformed reply leaves nothing to restart for"
+        );
+        content_failures::at_tip(&path, 100);
+        assert_eq!(status(&db), 0, "the same block");
+        content_failures::at_tip(&path, 101);
+        assert_eq!(status(&db), 1, "the next block asks again");
+
+        // One private Enhance query.
+        let (_dir, path, request) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            crate::wallet::network::WalletNetwork::Regtest,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+        db.set_status_mode(TransactionStatusMode::Private);
+        content_failures::at_tip(&path, 100);
+        let queries = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .queries
+        };
+        assert_eq!(queries(&db), 1);
+        content_failures::enhance(&path, [request]);
+        assert_eq!(
+            queries(&db),
+            0,
+            "an unreadable reply leaves nothing to restart for"
+        );
+        content_failures::at_tip(&path, 101);
+        assert_eq!(queries(&db), 1, "the next block asks again");
     }
 
     #[tokio::test]

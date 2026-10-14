@@ -29,6 +29,7 @@
 //! migration reconciliation) resolve the same policy through this module.
 
 mod auxiliary;
+pub(crate) mod content_failures;
 mod payload;
 mod policy;
 pub(crate) mod status;

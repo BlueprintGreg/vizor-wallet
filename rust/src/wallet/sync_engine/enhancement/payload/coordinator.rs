@@ -60,6 +60,17 @@ impl RoutedWork {
         PreparedWork::new(self.private.iter().copied())
     }
 
+    /// The work without the private queries that failed on content at the
+    /// current chain tip at `db_path`: an honest reply would have completed
+    /// them, so they wait for the next block rather than being asked again.
+    pub(super) fn without_content_failures(mut self, db_path: &str) -> Self {
+        self.private.retain(|work| {
+            !matches!(work, EnhancePirWork::Query(request)
+                if super::super::content_failures::enhance_failed(db_path, request))
+        });
+        self
+    }
+
     fn is_empty(&self) -> bool {
         self.public.is_empty() && self.private.is_empty()
     }
@@ -279,7 +290,7 @@ impl RoutedPayloadEnhancement {
         if should_exit() {
             return Err(EnhancePirRunError::ExitRequested);
         }
-        let work = db.work()?;
+        let work = db.work()?.without_content_failures(&self.db_path);
         if work.is_empty() {
             return Ok(());
         }
