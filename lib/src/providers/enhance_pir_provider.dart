@@ -1,6 +1,6 @@
 import 'dart:developer';
 
-import 'package:flutter/foundation.dart' show immutable;
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app_bootstrap.dart';
@@ -8,9 +8,12 @@ import '../core/config/network_config.dart';
 import '../core/storage/enhance_pir_preference_store.dart';
 import '../core/storage/linux_keyring_coordinator.dart';
 import '../core/storage/wallet_paths.dart';
+import '../core/widgets/app_toast.dart';
 import '../features/migration/services/ironwood_migration_background_credential_store.dart';
+import '../rust/api/one_time_ivk.dart' as rust_swap;
 import '../rust/api/sync.dart' as rust_sync;
 import 'account_provider.dart';
+import 'rpc_endpoint_failover_provider.dart';
 import 'sync_provider.dart';
 
 /// Whether the configured chain has a matching private enhancement service.
@@ -281,6 +284,9 @@ class EnhancePirNotifier extends Notifier<bool> {
 
   /// Returns the feedback to show, or `null` when everything applied.
   Future<String?> _disable() async {
+    // New private swap addresses need private queries, so their opt-in goes
+    // first; if that fails, nothing has changed.
+    await ref.read(nearSwapPrivacyProvider.notifier).disableWithParent();
     final store = ref.read(enhancePirPreferenceStoreProvider);
     final optOut = ref.read(transparentOptOutStoreProvider);
     final reconcile = ref.read(transparentPolicyReconcilerProvider);
@@ -384,3 +390,114 @@ final enhancePirTransitionProvider =
     NotifierProvider<EnhancePirTransitionNotifier, String?>(
       EnhancePirTransitionNotifier.new,
     );
+
+final nearSwapPrivacyPreferenceStoreProvider =
+    Provider<EnhancePirPreferenceStore>(
+      (_) => const SharedPreferencesEnhancePirStore(
+        key: kNearSwapPrivacyPreferenceKey,
+      ),
+    );
+
+/// Queues one private sweep of every closed swap key for the next sync, which
+/// finds a refund or payout that arrived after its key stopped scanning.
+/// Overridable in tests.
+final swapHistoryRecheckProvider = Provider<Future<void> Function()>(
+  (ref) =>
+      () async => rust_swap.recheckSwapHistory(
+        dbPath: await getWalletDbPath(),
+        networkName: ref.read(rpcEndpointFailoverProvider).current.networkName,
+      ),
+);
+
+/// Install-scoped opt-in for new swap addresses. Recovery of existing keys is independent.
+class NearSwapPrivacyNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final bootstrap = ref.watch(appBootstrapProvider);
+    return ref.watch(enhancePirAvailableProvider) &&
+        (bootstrap.enhancePirEnabled ?? true) &&
+        bootstrap.nearSwapPrivacyEnabled;
+  }
+
+  Future<void> set(bool enabled) async {
+    if (ref.read(enhancePirTransitionProvider) == kEnhancePirChangingMessage) {
+      return;
+    }
+    if (enabled && !ref.read(enhancePirProvider)) return;
+    if (enabled == state) return;
+    final transition = ref.read(enhancePirTransitionProvider.notifier);
+    transition.update(kEnhancePirChangingMessage);
+    try {
+      await ref
+          .read(linuxKeyringCoordinatorProvider)
+          .runMutation(
+            () => ref.read(syncProvider.notifier).withRecoverySettingPaused(
+              () async {
+        // Recheck after draining work so a new address cannot race its parent setting.
+        if (enabled && !ref.read(enhancePirProvider)) return;
+        await ref
+            .read(nearSwapPrivacyPreferenceStoreProvider)
+            .writeEnabled(enabled);
+        rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
+        state = enabled;
+        if (enabled) {
+          // A failed recheck leaves the setting on; toggling again retries it.
+          try {
+            await ref.read(swapHistoryRecheckProvider)();
+          } catch (error) {
+            log('near swap privacy: history recheck not queued: $error');
+          }
+        }
+              },
+            ),
+          );
+      transition.update(null);
+    } catch (error) {
+      log('NEAR swap privacy setting unchanged: $error');
+      transition.update(kEnhancePirUnchangedMessage);
+    }
+  }
+
+  /// Called while the parent already holds the shared recovery pause.
+  Future<void> disableWithParent() async {
+    if (!state) return;
+    await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(false);
+    rust_sync.setNearSwapPrivacyEnabled(enabled: false);
+    state = false;
+  }
+
+  Future<void> toggle() => set(!state);
+
+  /// Sweeps every closed swap key once more and starts a sync to run it, so a refund
+  /// or payout that arrived after its key stopped scanning appears. Returns whether
+  /// the check was queued.
+  Future<bool> recheckHistory() async {
+    try {
+      await ref.read(swapHistoryRecheckProvider)();
+    } catch (error) {
+      log('near swap privacy: history recheck not queued: $error');
+      return false;
+    }
+    ref.read(syncProvider.notifier).startSync();
+    return true;
+  }
+}
+
+/// Shows whether a swap history check was queued (see
+/// [NearSwapPrivacyNotifier.recheckHistory]).
+Future<void> recheckSwapHistory(BuildContext context, WidgetRef ref) async {
+  final queued = await ref
+      .read(nearSwapPrivacyProvider.notifier)
+      .recheckHistory();
+  if (!context.mounted) return;
+  showAppToast(
+    context,
+    queued
+        ? 'Checking swap history. Late refunds and payouts appear after this sync.'
+        : "Swap history couldn't be checked. Try again.",
+  );
+}
+
+final nearSwapPrivacyProvider = NotifierProvider<NearSwapPrivacyNotifier, bool>(
+  NearSwapPrivacyNotifier.new,
+);

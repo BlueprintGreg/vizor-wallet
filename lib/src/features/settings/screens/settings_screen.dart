@@ -514,8 +514,12 @@ class _SettingsList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final enhancePirEnabled = ref.watch(privateQueriesControlEnabledProvider);
-    final enhancePirAvailable =
-        ref.watch(enhancePirAvailableProvider) || enhancePirEnabled;
+    // New swap addresses follow the private queries setting itself, which
+    // the NEAR swap privacy switch also checks.
+    final privateQueriesOn = ref.watch(enhancePirProvider);
+    final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
+    final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
+    final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
     return Column(
@@ -627,6 +631,32 @@ class _SettingsList extends ConsumerWidget {
                 onToggle: changingRecovery
                     ? null
                     : () => unawaited(togglePrivateQueries(context, ref)),
+              ),
+            ],
+            if (enhancePirServiceAvailable) ...[
+              const SizedBox(height: AppSpacing.sm),
+              EnhancePirPrivacyControl(
+                label: 'NEAR swap privacy',
+                keyPrefix: 'settings_near_swap_privacy',
+                description: privateQueriesOn
+                    ? 'Uses a separate receiving key for each swap. Recovery always uses private queries.'
+                    : 'Turn on Private queries to create private swap addresses.',
+                enabled: nearSwapPrivacy,
+                transition: null,
+                onToggle: changingRecovery || !privateQueriesOn
+                    ? null
+                    : () => unawaited(
+                        ref.read(nearSwapPrivacyProvider.notifier).toggle(),
+                      ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              _SettingsRow(
+                key: const ValueKey('settings_check_swap_history'),
+                iconName: AppIcons.history,
+                label: 'Check swap history',
+                onTap: changingRecovery
+                    ? null
+                    : () => unawaited(recheckSwapHistory(context, ref)),
               ),
             ],
           ],
