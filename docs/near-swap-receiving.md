@@ -21,8 +21,8 @@ queries back on does not re-enable it. Desktop and mobile share the preference.
 Turning NEAR swap privacy off only stops new addresses. Existing reservations,
 funding memos, keys, notes and status tracking remain, received notes stay
 spendable, and recovery runs for every software account with either setting off.
-Turning NEAR swap privacy on, or **Check swap history** in the privacy settings,
-sweeps every closed swap key once more (see [Closing](#closing)).
+Turning NEAR swap privacy on sweeps every closed swap key once more (see
+[Closing](#closing)).
 
 ## Issuing addresses
 
@@ -82,9 +82,9 @@ mined while the app was offline are checked first. Closing uses the earlier of t
 device clock and the tip's block time, so a clock that runs fast cannot close a key
 early.
 
-A payment after its key closed, such as a second refund, is found by **Check swap
-history** (or turning NEAR swap privacy off and on), which sweeps every closed key
-once through the receiver directory and starts a sync, or by a seed restore. Swap
+A payment after its key closed, such as a second refund, is found by turning NEAR
+swap privacy off and on, which sweeps every closed key once through the receiver
+directory and starts a sync, or by a seed restore. Swap
 addresses are not permanent receive addresses.
 
 ## Restore

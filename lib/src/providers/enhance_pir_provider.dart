@@ -1,6 +1,6 @@
 import 'dart:developer';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart' show immutable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app_bootstrap.dart';
@@ -8,7 +8,6 @@ import '../core/config/network_config.dart';
 import '../core/storage/enhance_pir_preference_store.dart';
 import '../core/storage/linux_keyring_coordinator.dart';
 import '../core/storage/wallet_paths.dart';
-import '../core/widgets/app_toast.dart';
 import '../features/migration/services/ironwood_migration_background_credential_store.dart';
 import '../rust/api/one_time_ivk.dart' as rust_swap;
 import '../rust/api/sync.dart' as rust_sync;
@@ -447,6 +446,8 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
           } catch (error) {
             log('near swap privacy: history recheck not queued: $error');
           }
+          // Runs the recheck once this pause releases.
+          ref.read(syncProvider.notifier).startSync();
         }
               },
             ),
@@ -467,35 +468,6 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
   }
 
   Future<void> toggle() => set(!state);
-
-  /// Sweeps every closed swap key once more and starts a sync to run it, so a refund
-  /// or payout that arrived after its key stopped scanning appears. Returns whether
-  /// the check was queued.
-  Future<bool> recheckHistory() async {
-    try {
-      await ref.read(swapHistoryRecheckProvider)();
-    } catch (error) {
-      log('near swap privacy: history recheck not queued: $error');
-      return false;
-    }
-    ref.read(syncProvider.notifier).startSync();
-    return true;
-  }
-}
-
-/// Shows whether a swap history check was queued (see
-/// [NearSwapPrivacyNotifier.recheckHistory]).
-Future<void> recheckSwapHistory(BuildContext context, WidgetRef ref) async {
-  final queued = await ref
-      .read(nearSwapPrivacyProvider.notifier)
-      .recheckHistory();
-  if (!context.mounted) return;
-  showAppToast(
-    context,
-    queued
-        ? 'Checking swap history. Late refunds and payouts appear after this sync.'
-        : "Swap history couldn't be checked. Try again.",
-  );
 }
 
 final nearSwapPrivacyProvider = NotifierProvider<NearSwapPrivacyNotifier, bool>(

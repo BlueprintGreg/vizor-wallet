@@ -30,11 +30,12 @@ class _Api extends RustLibApi {
 
 class _Sync extends SyncNotifier {
   final gate = Completer<void>();
+  int starts = 0;
   @override
   Future<SyncState> build() async => SyncState();
   // A changed transparent policy restarts sync; these tests have no wallet.
   @override
-  void startSync({int? latestTipHeight}) {}
+  void startSync({int? latestTipHeight}) => starts++;
   @override
   Future<void> withRecoverySettingPaused(Future<void> Function() action) async {
     await gate.future;
@@ -139,8 +140,9 @@ void main() {
     await pending;
     expect(store.value, isTrue);
     expect(c.read(nearSwapPrivacyProvider), isTrue);
-    // Turning the setting on rechecks closed swap keys once.
+    // Turning the setting on rechecks closed swap keys once and syncs to run it.
     expect(api.events, ['swap:true', 'recheck']);
+    expect(sync.starts, 1);
   });
   test('turning off Private queries durably clears the child first', () async {
     final store = _Store()..value = true;
@@ -168,6 +170,15 @@ void main() {
     await c.read(nearSwapPrivacyProvider.notifier).set(true);
     expect(c.read(nearSwapPrivacyProvider), isFalse);
     expect(api.events, isEmpty);
+  });
+  test('turning the setting off neither rechecks nor syncs', () async {
+    final store = _Store()..value = true;
+    final sync = _Sync()..gate.complete();
+    final c = setup(store, sync, private: true, swap: true);
+    await c.read(nearSwapPrivacyProvider.notifier).set(false);
+    expect(c.read(nearSwapPrivacyProvider), isFalse);
+    expect(api.events, ['swap:false']);
+    expect(sync.starts, 0);
   });
   test('saved opt-in requires its saved parent at bootstrap', () {
     final c = setup(_Store(), _Sync(), swap: true);
