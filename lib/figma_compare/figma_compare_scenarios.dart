@@ -91,6 +91,22 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'mobile-shield-reference-review',
+    description: 'Original video: Transparent Balance',
+    builder: buildMobileShieldReferenceReview,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-reference-result',
+    description: 'Original video: Shielded successfully',
+    builder: buildMobileShieldReferenceResult,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-shield-review',
     description: 'Mobile shielding: Review',
     builder: buildMobileShieldReview,

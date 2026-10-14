@@ -472,7 +472,7 @@ class _MobileKeystoneShieldScreenState
       amount: formatZecAmount(_amount),
       resultAmount: formatZecAmount(_shieldedAmount ?? _amount),
       title: !_started
-          ? 'Transparent balance'
+          ? 'Transparent Balance'
           : _done
           ? 'Shielded successfully'
           : scanning

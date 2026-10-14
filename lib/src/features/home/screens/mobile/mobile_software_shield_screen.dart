@@ -77,7 +77,7 @@ class _MobileSoftwareShieldScreenState
     amount: formatZecAmount(_amount),
     resultAmount: formatZecAmount(_resultAmount ?? _expected),
     title: switch (_phase) {
-      MobileShieldPhase.review => 'Transparent balance',
+      MobileShieldPhase.review => 'Transparent Balance',
       MobileShieldPhase.succeeded => 'Shielded successfully',
       MobileShieldPhase.pending => 'Shielding queued',
       MobileShieldPhase.failed => 'Shielding could not be completed',

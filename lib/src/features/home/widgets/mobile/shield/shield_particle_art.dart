@@ -7,7 +7,7 @@ import 'particles/sprite_atlas.dart';
 import 'shield_timeline.dart';
 
 final List<({Offset p, double size, double alpha})> shieldCloudDots = () {
-  const scale = 1.2;
+  const scale = 1.0;
   const center = Offset(196.0, 386.7);
   String at(int r, int c) => r < kCloudRows.length && c < kCloudRows[r].length
       ? kCloudRows[r][c]
@@ -38,18 +38,6 @@ final List<({Offset p, double size, double alpha})> shieldCloudDots = () {
     for (var r = 0; r < kCloudRows.length; r++)
       for (var c = 0; c < kCloudRows[r].length; c++)
         if (at(r, c) != ' ') dot(r.toDouble(), c.toDouble(), at(r, c)),
-    for (var r = 0; r < kCloudRows.length - 1; r++)
-      for (var c = 0; c < kCloudRows[r].length - 1; c++)
-        if (at(r, c) != ' ' &&
-            at(r, c + 1) != ' ' &&
-            at(r + 1, c) != ' ' &&
-            at(r + 1, c + 1) != ' ')
-          // Borrow a neighbor's size class, picked by a fixed hash.
-          dot(
-            r + 0.5,
-            c + 0.5,
-            at(r + (r * 7 + c * 3) % 2, c + (r * 5 + c * 11) % 2),
-          ),
   ];
 }();
 
@@ -85,18 +73,18 @@ class ShieldParticleArt {
     required double fontSize,
   }) async {
     final atlas = await SpriteAtlas.build();
-    // Solid stand-ins with each look's geometry: the dots crumble from the
-    // amount, the pill's outline and its letters, and pour back into them.
+    // Solid stand-ins with the same plain-text geometry: the dots crumble from the
+    // amount and its unit, and pour back into them.
     final before = BalanceArt(
       amount,
       look: BalanceLook.solid,
-      pillTop: BalanceArt.transparentPillTop,
+      unitTop: BalanceArt.unitOffset,
       fontSize: fontSize,
     );
     final after = BalanceArt(
       resultAmount,
       look: BalanceLook.solid,
-      pillTop: BalanceArt.shieldedPillTop,
+      unitTop: BalanceArt.unitOffset,
       fontSize: fontSize,
     );
     final textPoints = await ShapeSampler.picture(
@@ -118,11 +106,10 @@ class ShieldParticleArt {
       random: random,
     );
 
-    // Size the shield so it holds one particle per halftone cell. The grid
-    // tightens with the particle count so the shield grows only a little
-    // (about 15% over the 718-dot original) and stays inside the field.
-    final pitch = kCloudPitchX * 1.15 * math.sqrt(718 / count);
-    var height = 286.0 * 1.15;
+    // Keep the reference video's original density and shield scale, with
+    // one particle per halftone cell.
+    final pitch = kCloudPitchX * math.sqrt(718 / count);
+    var height = 286.0;
     var cells = <Offset>[];
     for (var i = 0; i < 4; i++) {
       cells = await ShapeSampler.svgCells(

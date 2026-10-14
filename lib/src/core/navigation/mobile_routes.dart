@@ -411,16 +411,24 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
     ),
     GoRoute(
       path: '/home/shield',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => CustomTransitionPage(
         key: state.pageKey,
+        transitionDuration: const Duration(milliseconds: 520),
+        reverseTransitionDuration: const Duration(milliseconds: 340),
         child: const MobileSoftwareShieldScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+            FadeTransition(opacity: animation, child: child),
       ),
     ),
     GoRoute(
       path: '/home/keystone-shield',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => CustomTransitionPage(
         key: state.pageKey,
+        transitionDuration: const Duration(milliseconds: 520),
+        reverseTransitionDuration: const Duration(milliseconds: 340),
         child: const MobileKeystoneShieldScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+            FadeTransition(opacity: animation, child: child),
       ),
     ),
     GoRoute(

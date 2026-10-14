@@ -3,12 +3,10 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart' show Scaffold;
 import 'package:flutter/widgets.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import '../../../../../core/theme/app_theme.dart';
 import '../../../../../core/widgets/app_button.dart';
-import '../../../../../core/widgets/app_icon.dart';
 import 'balance_art.dart';
 import 'particles/particle_field.dart';
 import 'shield_background.dart';
@@ -76,6 +74,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   bool _focusRevealed = false;
   int _preparation = 0;
   late double _fontSize;
+  _ShieldLayout? _layout;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
   double? get _a => _assemblyAt == null ? null : _clock.value - _assemblyAt!;
@@ -131,15 +130,15 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       text: TextSpan(
         text: text,
         style: VText.display.copyWith(
-          fontSize: 56,
+          fontSize: 84,
           fontWeight: FontWeight.w700,
           height: 1,
-          letterSpacing: -2.24,
+          letterSpacing: -3.36,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    final size = math.min(56.0, 56 * 345 / math.max(1, painter.width));
+    final size = math.min(84.0, 84 * 345 / math.max(1, painter.width));
     painter.dispose();
     return size;
   }
@@ -171,54 +170,59 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     }
   }
 
-  FieldGeometry _geometry(ShieldParticleArt art) {
+  FieldGeometry _geometry(ShieldParticleArt art, _ShieldLayout layout) {
     final before = _balance(widget.amount, false);
     final after = _balance(_result, true);
-    const center = Offset(196.5, 200);
+    final scale = layout.artScale;
+    final center = layout.cloudCenter;
     final textRect = Rect.fromLTWH(
-      196.5 - before.size.width / 2,
-      200,
-      before.size.width,
-      before.size.height,
+      layout.centerX - before.size.width * scale / 2,
+      layout.amountTop,
+      before.size.width * scale,
+      before.size.height * scale,
     );
     final resultRect = Rect.fromLTWH(
-      196.5 - after.size.width / 2,
-      200,
-      after.size.width,
-      after.size.height,
+      layout.centerX - after.size.width * scale / 2,
+      layout.amountTop,
+      after.size.width * scale,
+      after.size.height * scale,
     );
     final shieldRect = Rect.fromCenter(
       center: center,
-      width: art.shieldSize.width,
-      height: art.shieldSize.height,
+      width: art.shieldSize.width * scale,
+      height: art.shieldSize.height * scale,
     );
     return FieldGeometry(
       cloudCenter: center,
       cloudSlots: [
-        for (final dot in shieldCloudDots) dot.p + const Offset(0.5, -186.7),
+        for (final dot in shieldCloudDots)
+          center + (dot.p - const Offset(196, 386.7)) * scale,
       ],
-      cloudSizes: [for (final dot in shieldCloudDots) dot.size],
+      cloudSizes: [for (final dot in shieldCloudDots) dot.size * scale],
       cloudAlphas: [for (final dot in shieldCloudDots) dot.alpha],
       textRect: textRect,
-      textPoints: art.textPoints,
+      textPoints: [for (final point in art.textPoints) point * scale],
       shieldRect: shieldRect,
       shieldSlots: [
-        for (final slot in art.shieldCells) shieldRect.topLeft + slot,
+        for (final point in art.shieldCells) shieldRect.topLeft + point * scale,
       ],
       balancePoints: [
-        for (final p in art.balancePoints) resultRect.topLeft + p,
+        for (final point in art.balancePoints)
+          resultRect.topLeft + point * scale,
       ],
       iconPoints: [
-        for (final p in art.iconPoints)
-          p +
-              Offset(
-                196.5 - ShieldParticleArt.iconWidth / 2,
-                30 - ShieldParticleArt.iconHeight / 2,
-              ),
+        for (final point in art.iconPoints)
+          layout.iconCenter +
+              (point -
+                      Offset(
+                        ShieldParticleArt.iconWidth / 2,
+                        ShieldParticleArt.iconHeight / 2,
+                      )) *
+                  scale,
       ],
-      textDimFrom: BalanceArt.pillFrom,
-      balanceDimFrom: resultRect.top + BalanceArt.pillFrom,
-      screen: const Size(393, 450),
+      textDimFrom: before.unitFrom * scale,
+      balanceDimFrom: resultRect.top + after.unitFrom * scale,
+      screen: layout.size,
       emitter: center,
     );
   }
@@ -226,9 +230,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   BalanceArt _balance(String amount, bool shielded) => BalanceArt(
     amount,
     look: shielded ? BalanceLook.shielded : BalanceLook.transparent,
-    pillTop: shielded
-        ? BalanceArt.shieldedPillTop
-        : BalanceArt.transparentPillTop,
+    unitTop: BalanceArt.unitOffset,
     fontSize: _fontSize,
   );
 
@@ -237,9 +239,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     final step = (elapsed - _elapsed).inMicroseconds / 1e6;
     _elapsed = elapsed;
     final t = _clock.value + math.max(0.0, step);
-    if (_art != null && _field == null) {
+    if (_art != null && _field == null && _layout != null) {
       _field = ParticleField(
-        geometry: _geometry(_art!),
+        geometry: _geometry(_art!, _layout!),
         atlas: _art!.atlas,
         reduceMotion: _reduce,
       );
@@ -281,15 +283,22 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     super.dispose();
   }
 
+  bool get _ready =>
+      widget.phase == MobileShieldPhase.succeeded &&
+      (_a ?? 0) >= ShieldTimeline.completeIn.end;
+
   @override
-  Widget build(BuildContext context) => AppTheme(
-    data: AppThemeData.dark,
-    child: AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light.copyWith(
-        statusBarColor: const Color(0x00000000),
-        systemNavigationBarColor: const Color(0xFF000000),
-        systemNavigationBarIconBrightness: Brightness.light,
-      ),
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+    value: const SystemUiOverlayStyle(
+      statusBarColor: Color(0x00000000),
+      statusBarIconBrightness: Brightness.light,
+      statusBarBrightness: Brightness.dark,
+      systemNavigationBarColor: Color(0xFF000000),
+      systemNavigationBarIconBrightness: Brightness.light,
+      systemNavigationBarDividerColor: Color(0xFF000000),
+    ),
+    child: AppTheme(
+      data: AppThemeData.dark,
       child: PopScope(
         canPop: widget.onClose == null && widget.canLeave,
         onPopInvokedWithResult: (didPop, _) {
@@ -320,127 +329,35 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                   curve: VMotion.easeOut,
                 ),
                 child: SafeArea(
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        height: 56,
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 16),
-                            const Spacer(),
-                            if (widget.onClose != null)
-                              Semantics(
-                                button: true,
-                                label: 'Back to wallet',
-                                child: GestureDetector(
-                                  onTap: widget.canLeave
-                                      ? widget.onClose
-                                      : null,
-                                  child: const SizedBox(
-                                    width: 48,
-                                    height: 48,
-                                    child: Center(
-                                      child: AppIcon(
-                                        AppIcons.cross,
-                                        color: Color(0xFFFFFFFF),
-                                        size: 24,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(width: 8),
-                          ],
-                        ),
-                      ),
-                      Expanded(
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final requestedFocus =
-                                widget.focusBuilder?.call(
-                                  context,
-                                  BoxConstraints(
-                                    maxWidth: math.max(
-                                      0,
-                                      math.min(360, constraints.maxWidth - 48),
-                                    ),
-                                    maxHeight: constraints.maxHeight,
-                                  ),
-                                ) ??
-                                widget.focusChild;
-                            final focus = _focusRevealed
-                                ? requestedFocus
-                                : null;
-                            return Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                AnimatedBuilder(
-                                  animation: _clock,
-                                  builder: (_, _) => _visual(focus != null),
-                                ),
-                                if (focus != null)
-                                  Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 24,
-                                      ),
-                                      child: ConstrainedBox(
-                                        constraints: BoxConstraints(
-                                          maxWidth: 360,
-                                          maxHeight: constraints.maxHeight,
-                                        ),
-                                        child: SingleChildScrollView(
-                                          child: focus,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 8, 24, 8),
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxHeight: MediaQuery.sizeOf(context).height * 0.26,
-                          ),
-                          child: SingleChildScrollView(
-                            child: Semantics(
-                              liveRegion: true,
-                              child: Column(
-                                children: [
-                                  if (!_review)
-                                    Text(
-                                      widget.title,
-                                      textAlign: TextAlign.center,
-                                      style: AppTypography.bodyLarge.copyWith(
-                                        color: const Color(0xFFFFFFFF),
-                                      ),
-                                    ),
-                                  if (widget.body != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 8),
-                                      child: Text(
-                                        widget.body!,
-                                        textAlign: TextAlign.center,
-                                        style: AppTypography.bodySmall.copyWith(
-                                          color: const Color(0xCCFFFFFF),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
-                        child: _footer(),
-                      ),
-                    ],
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final layout = _ShieldLayout(constraints.biggest);
+                      if (_layout?.size != layout.size) {
+                        _layout = layout;
+                        _field?.dispose();
+                        _field = null;
+                      }
+                      return AnimatedBuilder(
+                        animation: _clock,
+                        builder: (_, _) {
+                          final auxiliary =
+                              widget.focusChild != null ||
+                              widget.focusBuilder != null ||
+                              widget.phase == MobileShieldPhase.failed ||
+                              widget.phase == MobileShieldPhase.pending;
+                          return Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              _visual(layout, auxiliary && _focusRevealed),
+                              if (auxiliary)
+                                _functionalContent(constraints)
+                              else
+                                _normalControls(layout),
+                            ],
+                          );
+                        },
+                      );
+                    },
                   ),
                 ),
               ),
@@ -451,188 +368,328 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     ),
   );
 
-  Widget _footer() {
-    if (widget.footer != null) return widget.footer!;
-    if (_review) {
-      return LayoutBuilder(
-        builder: (_, c) => Center(
-          child: SlideToShield(
-            key: const ValueKey('mobile_shield_slide'),
-            width: math.min(329, c.maxWidth),
-            progress: _drag,
-            onCommitted: () => widget.onCommit?.call(),
+  Widget _normalControls(_ShieldLayout layout) {
+    final a = _a;
+    final t = _clock.value;
+    final sliderOut = _review ? 0.0 : ShieldTimeline.sliderOut.eased(t);
+    final statusIn = !_review ? ShieldTimeline.statusIn.eased(t) : 0.0;
+    final statusOut = a == null ? 0.0 : ShieldTimeline.statusOut.eased(a);
+    return Stack(
+      children: [
+        if (sliderOut < 1)
+          Positioned(
+            left: layout.centerX - layout.sliderWidth / 2,
+            top: layout.actionTop,
+            child: Opacity(
+              opacity: 1 - sliderOut,
+              child: IgnorePointer(
+                ignoring: !_review,
+                child: SlideToShield(
+                  key: const ValueKey('mobile_shield_slide'),
+                  width: layout.sliderWidth,
+                  progress: _drag,
+                  onCommitted: () => widget.onCommit?.call(),
+                ),
+              ),
+            ),
           ),
-        ),
-      );
-    }
-    return AnimatedBuilder(
-      animation: _clock,
-      builder: (_, _) {
-        final ready =
-            widget.phase == MobileShieldPhase.succeeded &&
-            (_a ?? 0) >= ShieldTimeline.completeIn.end;
-        if (!ready) return const SizedBox(height: 50);
-        return SizedBox(
-          width: 230,
-          child: AppButton(
-            key: const ValueKey('mobile_shield_complete'),
-            onPressed: widget.onComplete,
-            expand: true,
-            constrainContent: true,
-            variant: AppButtonVariant.secondary,
-            enabledBackgroundColor: const Color(0xFFFFFFFF),
-            enabledLabelColor: const Color(0xFF141818),
-            child: const Text('Complete'),
+        if (!_review && statusIn > 0 && statusOut < 1)
+          Positioned(
+            left: 24,
+            right: 24,
+            top: layout.actionTop,
+            child: SizedBox(
+              height: SlideToShield.height,
+              child: Center(
+                child: Opacity(
+                  opacity: statusIn * (1 - statusOut),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      widget.phase == MobileShieldPhase.succeeded
+                          ? 'Shielding your balance…'
+                          : widget.title,
+                      textAlign: TextAlign.center,
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: const Color(0xB3FFFFFF),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ),
-        );
-      },
+        if (_ready)
+          Positioned(
+            left: layout.centerX - 176.5 / 2,
+            top: layout.actionTop,
+            child: SizedBox(
+              width: 176.5,
+              height: 50,
+              child: AppButton(
+                key: const ValueKey('mobile_shield_complete'),
+                onPressed: widget.onComplete,
+                expand: true,
+                constrainContent: true,
+                variant: AppButtonVariant.secondary,
+                enabledBackgroundColor: const Color(0xFFFFFFFF),
+                enabledLabelColor: const Color(0xFF141818),
+                child: Text(
+                  'Complete',
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: const Color(0xFF141818),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (_review && widget.canLeave && widget.onClose != null)
+          Positioned(
+            left: 24,
+            right: 24,
+            top: layout.cancelCenter - 24,
+            child: Center(child: _cancel()),
+          ),
+      ],
     );
   }
 
-  Widget _visual(bool hasFocus) {
+  Widget _cancel() => Semantics(
+    button: true,
+    label: 'Cancel',
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.canLeave ? widget.onClose : null,
+      child: SizedBox(
+        width: 100,
+        height: 48,
+        child: Center(
+          child: Text(
+            'Cancel',
+            style: AppTypography.bodyMedium.copyWith(
+              color: const Color(0x99FFFFFF),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _functionalContent(BoxConstraints constraints) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+      child: Column(
+        children: [
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, available) {
+                final child =
+                    widget.focusBuilder?.call(
+                      context,
+                      BoxConstraints(
+                        maxWidth: math.min(360, available.maxWidth),
+                        maxHeight: available.maxHeight,
+                      ),
+                    ) ??
+                    widget.focusChild;
+                if (!_focusRevealed) return const SizedBox.shrink();
+                return Center(
+                  child: SingleChildScrollView(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: 360),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          if (widget.focusChild == null)
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: constraints.maxHeight * 0.26,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    Text(
+                      widget.title,
+                      textAlign: TextAlign.center,
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: const Color(0xFFFFFFFF),
+                      ),
+                    ),
+                    if (widget.body != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          widget.body!,
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodySmall.copyWith(
+                            color: const Color(0xCCFFFFFF),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          if (widget.footer != null)
+            widget.footer!
+          else if (widget.focusChild == null &&
+              widget.canLeave &&
+              widget.onClose != null)
+            _cancel(),
+        ],
+      ),
+    );
+  }
+
+  Widget _visual(_ShieldLayout layout, bool auxiliary) {
     final a = _a;
     final t = _clock.value;
     final before = _balance(widget.amount, false);
     final after = _balance(_result, true);
-    return Semantics(
-      label: '${_review ? widget.amount : _result} ZEC',
-      child: ExcludeSemantics(
+    final header = _review ? 1.0 : 1 - ShieldTimeline.headerOut.eased(t);
+    Widget icon(String asset, double opacity) => Positioned(
+      left: layout.iconCenter.dx - 20 * layout.artScale,
+      top: layout.iconCenter.dy - 20 * layout.artScale,
+      child: Opacity(
+        opacity: opacity,
+        child: ShieldIcon(
+          asset,
+          box: Size.square(40 * layout.artScale),
+          width:
+              (asset == 'overlay_transparent' ? 36.6667 : 32) * layout.artScale,
+          height: 37 * layout.artScale,
+        ),
+      ),
+    );
+    Widget title(String text, double opacity) => Positioned(
+      left: 24,
+      right: 24,
+      top: layout.titleCenter - 24,
+      child: SizedBox(
+        height: 48,
         child: Center(
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox(
-              width: 393,
-              height: 450,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  if (a != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: ShieldBubblePainter(
-                          clock: _clockForAssembly,
-                          center: const Offset(196.5, 200),
-                          reduceMotion: _reduce,
-                        ),
-                      ),
-                    ),
-                  if (_field != null && !hasFocus)
-                    Positioned.fill(
-                      child: RepaintBoundary(
-                        child: CustomPaint(painter: ParticlePainter(_field!)),
-                      ),
-                    ),
-                  if (hasFocus && _field != null)
-                    Positioned.fill(
-                      child: Opacity(
-                        opacity: 0.25,
-                        child: CustomPaint(
-                          painter: _PeripheralParticles(_field!),
-                        ),
-                      ),
-                    ),
-                  if ((_review || t < ShieldTimeline.fall.end) &&
-                      !hasFocus) ...[
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 10,
-                      child: const Center(
-                        child: ShieldIcon(
-                          'overlay_transparent',
-                          box: Size.square(40),
-                          width: 36.6667,
-                          height: 36.6667,
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 145,
-                      child: Text(
-                        _review ? widget.title : 'Transparent balance',
-                        textAlign: TextAlign.center,
-                        style: AppTypography.headlineSmall.copyWith(
-                          color: const Color(0xFFFFFFFF),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      left: 196.5 - before.size.width / 2,
-                      top:
-                          200 +
-                          (_review || _reduce ? 0 : ShieldTimeline.fallDy(t)),
-                      child: Opacity(
-                        opacity: _review || !_reduce
-                            ? 1
-                            : 1 - ShieldTimeline.dissolve(t),
-                        child: Transform.scale(
-                          scale: _review || _reduce
-                              ? 1
-                              : ShieldTimeline.fallScale(t),
-                          child: _AmountDissolve(
-                            progress: _review || _reduce
-                                ? 0
-                                : ShieldTimeline.dissolve(t),
-                            child: CustomPaint(
-                              size: before.size,
-                              painter: _BalancePainter(before),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (a != null && a >= ShieldTimeline.textIn.start) ...[
-                    Positioned(
-                      left: 176.5,
-                      top: 10,
-                      child: Opacity(
-                        opacity: ShieldTimeline.iconIn.eased(a),
-                        child: const ShieldIcon(
-                          'success_shield_fill',
-                          box: Size.square(40),
-                          width: 32,
-                          height: 37,
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      left: 196.5 - after.size.width / 2,
-                      top: 200,
-                      child: Opacity(
-                        opacity: ShieldTimeline.textIn.eased(a),
-                        child: CustomPaint(
-                          size: after.size,
-                          painter: _BalancePainter(after),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
+          child: Opacity(
+            opacity: opacity,
+            child: Text(
+              text,
+              key: const ValueKey('mobile_shield_heading'),
+              textAlign: TextAlign.center,
+              style: AppTypography.bodyMedium.copyWith(
+                color: const Color(0xFFFFFFFF),
               ),
             ),
           ),
         ),
       ),
     );
-  }
+    Widget balance(BalanceArt art, {required bool result}) {
+      final dy = result || _review || _reduce
+          ? 0.0
+          : ShieldTimeline.fallDy(t) * layout.artScale;
+      return Positioned(
+        left: layout.centerX - art.size.width * layout.artScale / 2,
+        top: layout.amountTop + dy,
+        child: Semantics(
+          label: '${result ? _result : widget.amount} ZEC',
+          child: ExcludeSemantics(
+            child: Transform.scale(
+              alignment: Alignment.topLeft,
+              scale:
+                  layout.artScale *
+                  (result || _review || _reduce
+                      ? 1
+                      : ShieldTimeline.fallScale(t)),
+              child: Opacity(
+                opacity: result
+                    ? ShieldTimeline.textIn.eased(a!)
+                    : _review || !_reduce
+                    ? 1
+                    : 1 - ShieldTimeline.dissolve(t),
+                child: _AmountDissolve(
+                  progress: result || _review || _reduce
+                      ? 0
+                      : ShieldTimeline.dissolve(t),
+                  child: CustomPaint(
+                    key: ValueKey(
+                      result
+                          ? 'mobile_shield_result_amount'
+                          : 'mobile_shield_amount',
+                    ),
+                    size: art.size,
+                    painter: _BalancePainter(art),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
-  ValueListenable<double> get _clockForAssembly =>
-      _AssemblyClock(_clock, () => _assemblyAt);
+    return IgnorePointer(
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          if (_art != null && !_review && !auxiliary)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _CloudGlow(
+                  _art!,
+                  layout.cloudCenter,
+                  layout.artScale,
+                  ShieldTimeline.glowTextIn.eased(t) *
+                      (1 -
+                          (a == null
+                              ? 0.0
+                              : ShieldTimeline.glowTextOut.eased(a))),
+                ),
+              ),
+            ),
+          if (_field != null)
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  painter: auxiliary
+                      ? _FocusParticles(_field!, layout.cloudCenter)
+                      : ParticlePainter(_field!),
+                ),
+              ),
+            ),
+          if (!auxiliary && (_review || t < ShieldTimeline.fall.end)) ...[
+            icon('overlay_transparent', header * 0.6),
+            title(_review ? widget.title : 'Transparent Balance', header),
+            balance(before, result: false),
+          ],
+          if (!auxiliary && a != null && a >= ShieldTimeline.textIn.start) ...[
+            icon('success_shield_fill', ShieldTimeline.iconIn.eased(a)),
+            title(widget.title, ShieldTimeline.successLabelIn.eased(a)),
+            balance(after, result: true),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
-class _AssemblyClock extends ChangeNotifier implements ValueListenable<double> {
-  _AssemblyClock(this.clock, this.start);
-  final ValueNotifier<double> clock;
-  final double? Function() start;
-  @override
-  double get value => clock.value - (start() ?? clock.value);
-  @override
-  void addListener(VoidCallback listener) => clock.addListener(listener);
-  @override
-  void removeListener(VoidCallback listener) => clock.removeListener(listener);
+/// One vertical composition, using the original video's relative anchors.
+/// Only artwork shrinks on narrow screens; controls retain usable hit targets.
+class _ShieldLayout {
+  _ShieldLayout(this.size);
+  final Size size;
+  double get centerX => size.width / 2;
+  double get artScale => math.min(1.0, math.max(0.1, (size.width - 48) / 345));
+  Offset get iconCenter => Offset(centerX, size.height * 0.215);
+  double get titleCenter => size.height * 0.35;
+  double get amountTop => size.height * 0.418;
+  Offset get cloudCenter => Offset(centerX, size.height * 0.47);
+  double get actionTop => size.height * 0.67;
+  double get cancelCenter => size.height * 0.91;
+  double get sliderWidth => math.min(284, math.max(61, size.width - 48));
 }
 
 class _BalancePainter extends CustomPainter {
@@ -644,32 +701,70 @@ class _BalancePainter extends CustomPainter {
   bool shouldRepaint(_BalancePainter old) => true;
 }
 
-class _PeripheralParticles extends CustomPainter {
-  _PeripheralParticles(this.field) : super(repaint: field);
-  final ParticleField field;
+class _CloudGlow extends CustomPainter {
+  const _CloudGlow(this.art, this.center, this.scale, this.opacity);
+  final ShieldParticleArt art;
+  final Offset center;
+  final double scale;
+  final double opacity;
   @override
   void paint(Canvas canvas, Size size) {
+    final baked = art.glowText;
+    final origin =
+        center - Offset(art.glowSize.width, art.glowSize.height) * scale / 2;
+    canvas.drawImageRect(
+      baked.image,
+      Rect.fromLTWH(
+        0,
+        0,
+        baked.image.width.toDouble(),
+        baked.image.height.toDouble(),
+      ),
+      (origin + baked.rect.topLeft * scale) & (baked.rect.size * scale),
+      Paint()..color = Color.fromRGBO(255, 255, 255, opacity * 0.7),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_CloudGlow old) =>
+      old.art != art ||
+      old.center != center ||
+      old.scale != scale ||
+      old.opacity != opacity;
+}
+
+/// Fade particles out behind readable hardware content without carving a
+/// rectangular frame into the cloud. The QR itself keeps its white quiet zone.
+class _FocusParticles extends CustomPainter {
+  _FocusParticles(this.field, this.center) : super(repaint: field);
+  final ParticleField field;
+  final Offset center;
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.saveLayer(Offset.zero & size, Paint());
     canvas.save();
-    canvas.clipPath(
-      Path()
-        ..fillType = PathFillType.evenOdd
-        ..addRect(Offset.zero & size)
-        ..addRRect(
-          RRect.fromRectAndRadius(
-            const Rect.fromLTWH(8, 10, 377, 420),
-            const Radius.circular(24),
-          ),
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(1.35);
+    canvas.translate(-center.dx, -center.dy);
+    field.paint(canvas);
+    canvas.restore();
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..blendMode = ui.BlendMode.dstIn
+        ..shader = ui.Gradient.radial(
+          center,
+          math.min(size.width * 0.7, 260),
+          const [Color(0x00FFFFFF), Color(0x33FFFFFF), Color(0x88FFFFFF)],
+          const [0, 0.5, 1],
         ),
     );
-    canvas.translate(196.5, 200);
-    canvas.scale(2.0);
-    canvas.translate(-196.5, -200);
-    field.paint(canvas);
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_PeripheralParticles old) => old.field != field;
+  bool shouldRepaint(_FocusParticles old) =>
+      old.field != field || old.center != center;
 }
 
 class MobileShieldKeystoneQr extends StatelessWidget {
@@ -735,5 +830,3 @@ class _AmountDissolve extends StatelessWidget {
     );
   }
 }
-
-/// Status-text sheen: a brighter band gliding left to right on a loop.

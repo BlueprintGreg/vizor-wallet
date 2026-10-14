@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 
 void main() {
   Widget host(Widget child, {double textScale = 1}) => AppTheme(
@@ -51,9 +52,17 @@ void main() {
       expect(tester.getRect(slider).right, lessThanOrEqualTo(size.width));
       expect(tester.getCenter(slider).dx, closeTo(size.width / 2, 0.5));
       expect(tester.getRect(slider).bottom, lessThan(size.height - 48));
+      final heading = tester.getRect(
+        find.byKey(const ValueKey('mobile_shield_heading')),
+      );
+      final amount = tester.getRect(
+        find.byKey(const ValueKey('mobile_shield_amount')),
+      );
+      expect(heading.bottom, lessThanOrEqualTo(amount.top));
+      expect(amount.bottom, lessThan(tester.getRect(slider).top));
       final start = tester.getTopLeft(slider) + const Offset(35, 30);
       final gesture = await tester.startGesture(start);
-      await gesture.moveBy(Offset(tester.getSize(slider).width - 70, 0));
+      await gesture.moveBy(Offset(tester.getSize(slider).width - 60, 0));
       await gesture.up();
       await tester.pump(const Duration(milliseconds: 300));
       expect(calls, 1);
@@ -130,7 +139,7 @@ void main() {
     final qr = tester.getRect(
       find.byKey(const ValueKey('mobile_shield_keystone_qr')),
     );
-    expect(qr.top, greaterThanOrEqualTo(80));
+    expect(qr.top, greaterThanOrEqualTo(40));
     expect(
       qr.bottom,
       lessThanOrEqualTo(
@@ -163,6 +172,138 @@ void main() {
     expect(calls, 0);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets('review cancellation uses the owner and disappears during work', (
+    tester,
+  ) async {
+    var closes = 0;
+    await tester.pumpWidget(
+      host(
+        MobileShieldScene(
+          phase: MobileShieldPhase.review,
+          amount: '14.12',
+          title: 'Transparent Balance',
+          onClose: () => closes++,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.tap(find.text('Cancel'));
+    expect(closes, 1);
+    await tester.pumpWidget(
+      host(
+        MobileShieldScene(
+          phase: MobileShieldPhase.working,
+          amount: '14.12',
+          title: 'Shielding your balance…',
+          canLeave: false,
+          onClose: () => closes++,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Cancel'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+  testWidgets(
+    'success reuses the review action position and delays its heading',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(393, 852);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        host(
+          const MobileShieldScene(
+            phase: MobileShieldPhase.review,
+            amount: '14.12',
+            title: 'Transparent Balance',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      final actionTop = tester
+          .getTopLeft(find.byKey(const ValueKey('mobile_shield_slide')))
+          .dy;
+      await tester.pumpWidget(
+        host(
+          MobileShieldScene(
+            phase: MobileShieldPhase.succeeded,
+            amount: '14.12',
+            title: 'Shielded successfully',
+            onComplete: () {},
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.text('Shielded successfully'), findsNothing);
+      expect(find.text('Shielding your balance…'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      expect(
+        tester
+            .getTopLeft(find.byKey(const ValueKey('mobile_shield_complete')))
+            .dy,
+        actionTop,
+      );
+      final heading = tester.getRect(
+        find.byKey(const ValueKey('mobile_shield_heading')),
+      );
+      final amount = tester.getRect(
+        find.byKey(const ValueKey('mobile_shield_result_amount')),
+      );
+      expect(heading.bottom, lessThan(amount.top));
+      expect(amount.bottom, lessThan(actionTop));
+      expect(find.text('Cancel'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+  testWidgets(
+    'long Ledger recovery content scrolls without duplicate labels or actions',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(320, 568);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        host(
+          MobileShieldScene(
+            phase: MobileShieldPhase.hardware,
+            amount: '1',
+            title: 'Shield with Ledger',
+            focusChild: LedgerInlinePresentation(
+              child: MobileLedgerSheetContent(
+                title: 'Confirm on your Ledger',
+                onClose: () {},
+                children: [
+                  for (var i = 0; i < 15; i++)
+                    const MobileLedgerMessage(
+                      'Review and approve on your Ledger.',
+                    ),
+                ],
+              ),
+            ),
+            onClose: () {},
+          ),
+          textScale: 2,
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Confirm on your Ledger'), findsOneWidget);
+      expect(find.text('Shield with Ledger'), findsNothing);
+      expect(find.text('Cancel'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('Back to wallet'),
+        200,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pump();
+      expect(
+        tester.getRect(find.text('Back to wallet')).bottom,
+        lessThanOrEqualTo(568 - 48),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
   testWidgets('pending broadcast never exposes success or a new commit', (
     tester,
   ) async {

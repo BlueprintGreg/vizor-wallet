@@ -710,7 +710,7 @@ class _LedgerShieldSigningOverlayState
                   ? formatZecAmount(_shieldedTotal)
                   : '—',
               title: !_momentStarted
-                  ? 'Transparent balance'
+                  ? 'Transparent Balance'
                   : _momentComplete
                   ? 'Shielded successfully'
                   : _isBroadcasting

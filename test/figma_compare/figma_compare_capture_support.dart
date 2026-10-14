@@ -125,7 +125,8 @@ void runFigmaCompareCaptureTest({
       for (var i = 0; i < 180; i++) {
         await tester.pump(const Duration(milliseconds: 17));
       }
-      if (scenario.id == 'mobile-shield-result') {
+      if (scenario.id == 'mobile-shield-result' ||
+          scenario.id == 'mobile-shield-reference-result') {
         for (var i = 0; i < 240; i++) {
           await tester.pump(const Duration(milliseconds: 17));
         }

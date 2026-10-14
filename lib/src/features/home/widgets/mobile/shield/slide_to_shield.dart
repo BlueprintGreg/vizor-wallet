@@ -21,7 +21,7 @@ class SlideToShield extends StatefulWidget {
     super.key,
     required this.onCommitted,
     this.progress,
-    this.width = 329,
+    this.width = 284,
   });
 
   /// Fires on the frame the pin locks in.
@@ -32,7 +32,7 @@ class SlideToShield extends StatefulWidget {
   final ValueNotifier<double>? progress;
 
   final double width;
-  static const height = 60.0;
+  static const height = 50.0;
 
   @override
   State<SlideToShield> createState() => _SlideToShieldState();
@@ -40,7 +40,7 @@ class SlideToShield extends StatefulWidget {
 
 class _SlideToShieldState extends State<SlideToShield>
     with TickerProviderStateMixin {
-  static const _knob = Size(70, 60);
+  static const _knob = Size(60, 50);
   double get _maxX => widget.width - _knob.width;
   double get _armAt => _maxX * 0.9;
 
@@ -209,7 +209,7 @@ class _SlideToShieldState extends State<SlideToShield>
     final reduce = MediaQuery.disableAnimationsOf(context);
     return Semantics(
       button: true,
-      label: 'Slide to shield',
+      label: 'Drag to shield',
       enabled: !_committed,
       onTap: _committed ? null : () => _commit(1200),
       child: Listener(
@@ -311,7 +311,11 @@ class _Track extends StatelessWidget {
                   child: ColoredBox(
                     color: Color.alphaBlend(
                       _white.withValues(alpha: tint),
-                      const Color(0x66000000),
+                      Color.lerp(
+                        const Color(0x663B1729),
+                        const Color(0x994F1832),
+                        p,
+                      )!,
                     ),
                   ),
                 ),
@@ -372,7 +376,7 @@ class _Label extends StatelessWidget {
     // Clears by halfway and drifts a little with the pin.
     final opacity = (1 - progress / 0.5).clamp(0.0, 1.0);
     Widget text = Text(
-      'Slide to shield',
+      'Drag to shield',
       style: VText.labelL.copyWith(color: _white),
     );
     final phase = shimmer;

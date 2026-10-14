@@ -4,8 +4,10 @@ import '../../../../../core/theme/app_theme.dart';
 
 abstract final class VText {
   static const geist = 'Geist';
-  static final display = AppTypography.displayLarge;
-  static final labelL = AppTypography.bodyLarge.copyWith(
+  static final display = AppTypography.displayLarge.copyWith(
+    fontFamily: 'Shielding Serif',
+  );
+  static final labelL = AppTypography.bodyMedium.copyWith(
     color: const Color(0xFFFFFFFF),
   );
 }
