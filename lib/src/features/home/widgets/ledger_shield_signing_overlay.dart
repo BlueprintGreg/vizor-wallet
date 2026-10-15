@@ -30,6 +30,8 @@ import '../../send/services/sapling_params.dart';
 import '../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
 import '../../send/widgets/sapling_params_prompt.dart';
+import '../services/transparent_shielding_service.dart'
+    show observeShieldingBroadcast;
 
 typedef LedgerShieldingProgressReader =
     Future<rust_sync.LedgerShieldingProgress> Function({
@@ -398,6 +400,12 @@ class _LedgerShieldSigningOverlayState
                 ? saplingParams?.outputPath
                 : null,
           );
+      observeShieldingBroadcast(
+        ref: ref,
+        accountUuid: _accountUuid,
+        status: result.status,
+        txids: [result.txid],
+      );
       try {
         await ref.read(syncProvider.notifier).refreshAfterSend();
       } catch (e) {

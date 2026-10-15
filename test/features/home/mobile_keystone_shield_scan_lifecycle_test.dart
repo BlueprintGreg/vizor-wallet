@@ -21,6 +21,7 @@ import 'package:zcash_wallet/src/features/home/screens/mobile/mobile_keystone_sh
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/providers/pending_activity_evidence_provider.dart';
 import 'package:zcash_wallet/src/providers/wallet_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart' hide ScanResult;
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
@@ -129,6 +130,14 @@ void main() {
     await _flush(tester);
     expect(api.decodes, 1);
     expect(api.broadcasts, 1);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MobileKeystoneShieldScreen)),
+    );
+    expect(
+      container.read(pendingActivityEvidenceProvider).observedAt.keys,
+      contains(('account-1', 'ab')),
+    );
+    container.read(pendingActivityEvidenceProvider.notifier).clear();
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });

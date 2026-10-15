@@ -19,7 +19,10 @@ import '../../keystone/widgets/keystone_signing_modal.dart';
 import '../../send/services/sapling_params.dart';
 import '../../send/widgets/sapling_params_prompt.dart';
 import '../services/transparent_shielding_service.dart'
-    show isHardwareBroadcastRetryable, kShieldWaitingForPrivateRecoveryMessage;
+    show
+        isHardwareBroadcastRetryable,
+        kShieldWaitingForPrivateRecoveryMessage,
+        observeShieldingBroadcast;
 
 enum _KeystoneShieldPhase {
   preparing,
@@ -59,6 +62,7 @@ class _KeystoneShieldSigningOverlayState
   String? _statusMessage;
   List<String> _urParts = const [];
   List<int>? _pcztWithProofs;
+  String? _accountUuid;
   SaplingParamsStatus? _saplingParams;
   bool _needsSaplingParams = false;
 
@@ -119,6 +123,7 @@ class _KeystoneShieldSigningOverlayState
       if (accountUuid == null) {
         throw Exception('No active account.');
       }
+      _accountUuid = accountUuid;
 
       final dbPath = await getWalletDbPath();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
@@ -227,6 +232,12 @@ class _KeystoneShieldSigningOverlayState
       log(
         'KeystoneShieldConfirm: broadcast shield txid=${result.txid} '
         'status=${result.status}',
+      );
+      observeShieldingBroadcast(
+        ref: ref,
+        accountUuid: _accountUuid,
+        status: result.status,
+        txids: [result.txid],
       );
 
       if (result.status != 'broadcasted' && result.message != null) {

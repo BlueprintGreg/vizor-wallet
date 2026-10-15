@@ -366,6 +366,12 @@ class _MobileKeystoneShieldScreenState
         'MobileKeystoneShield: broadcast shield txid=${result.txid} '
         'status=${result.status}',
       );
+      observeShieldingBroadcast(
+        ref: ref,
+        accountUuid: _accountUuid,
+        status: result.status,
+        txids: [result.txid],
+      );
 
       if (result.status != 'broadcasted' && result.message != null) {
         await _maybeSwitchBroadcastEndpoint(result.message!, attemptedEndpoint);

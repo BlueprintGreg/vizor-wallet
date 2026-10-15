@@ -23,6 +23,7 @@ import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operatio
 import 'package:zcash_wallet/src/features/ledger/services/ledger_operation_lifecycle.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
+import 'package:zcash_wallet/src/providers/pending_activity_evidence_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/providers/wallet_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart';
@@ -181,6 +182,13 @@ void main() {
     expect(operationService.broadcasts, [checkpoint.operationId]);
     expect(operationService.acknowledged, isEmpty);
     expect(sync.refreshCount, 1);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(LedgerShieldSigningOverlay)),
+    );
+    expect(
+      container.read(pendingActivityEvidenceProvider).observedAt.keys,
+      contains(('account-1', 'txid-1')),
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
@@ -215,6 +223,16 @@ void main() {
       await _pumpUntil(tester, () => completed);
       expect(completed, isTrue);
       expect(operations.broadcasts.length, counts.length ~/ 2);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(LedgerShieldSigningOverlay)),
+      );
+      expect(
+        container.read(pendingActivityEvidenceProvider).observedAt.keys,
+        unorderedEquals([
+          for (var round = 1; round <= operations.broadcasts.length; round++)
+            ('account-1', 'txid-$round'),
+        ]),
+      );
       expect(
         operations.checkpoints.map((c) => c.operationId).toSet().length,
         counts.length ~/ 2,
@@ -687,7 +705,7 @@ class _FakeLedgerSignedOperationService
     }
     return LedgerSignedOperationBroadcastResult(
       operationId: operationId,
-      txid: 'txid-1',
+      txid: 'txid-${broadcasts.length}',
       status: 'broadcasted',
       requiresAck: false,
     );
