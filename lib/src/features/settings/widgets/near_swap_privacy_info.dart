@@ -8,14 +8,10 @@ import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_shape.dart';
 
 /// NEAR swap privacy subtitle while Private queries is on.
-const kNearSwapPrivacyOnCopy =
-    "Each swap uses new one-time Zcash addresses, so NEAR can't link your "
-    'swaps through your Zcash wallet.';
+const kNearSwapPrivacyOnCopy = 'Each swap uses new one-time Zcash addresses.';
 
 /// NEAR swap privacy subtitle while Private queries is off.
-const kNearSwapPrivacyOffCopy =
-    'Turn on Private queries to create private swap addresses. Each swap '
-    'would get new one-time Zcash addresses.';
+const kNearSwapPrivacyOffCopy = 'Needs Private queries.';
 
 /// NEAR swap privacy subtitle while a hardware wallet account is active, since
 /// only software accounts get one-time swap addresses.

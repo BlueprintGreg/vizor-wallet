@@ -13,6 +13,7 @@ import '../../../../providers/account_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
 import '../private_queries_turn_off.dart';
+import '../settings_sub_option.dart';
 import 'mobile_tor_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
 
@@ -96,28 +97,48 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
             ),
           if (enhancePirServiceAvailable) ...[
             const SizedBox(height: AppSpacing.md),
-            _MobilePrivateQueriesControl(
-              label: 'NEAR swap privacy',
-              keyPrefix: 'mobile_settings_near_swap_privacy',
-              enabled: nearSwapPrivacy,
-              onToggle: changingRecovery || !privateQueriesOn
-                  ? null
-                  : () => unawaited(
-                      ref.read(nearSwapPrivacyProvider.notifier).toggle(),
-                    ),
-              onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              nearSwapPrivacyDescription(
-                hardwareAccount: hardwareAccount,
-                privateQueriesOn: privateQueriesOn,
-              ),
+            // An option of Private queries: its icon sits under the label
+            // above, and the hook starts under that row's icon.
+            SettingsSubOption(
               key: const ValueKey(
-                'mobile_settings_near_swap_privacy_description',
+                'mobile_settings_near_swap_privacy_sub_option',
               ),
-              style: AppTypography.bodyMedium.copyWith(
-                color: colors.text.secondary,
+              indent: 32 + AppSpacing.s,
+              lineX: AppSpacing.xxs + 16,
+              rowCenter: _rowHeight / 2,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _MobilePrivateQueriesControl(
+                    label: 'NEAR swap privacy',
+                    keyPrefix: 'mobile_settings_near_swap_privacy',
+                    enabled: nearSwapPrivacy,
+                    onToggle: changingRecovery || !privateQueriesOn
+                        ? null
+                        : () => unawaited(
+                            ref.read(nearSwapPrivacyProvider.notifier).toggle(),
+                          ),
+                    onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.xxs,
+                    ),
+                    child: Text(
+                      nearSwapPrivacyDescription(
+                        hardwareAccount: hardwareAccount,
+                        privateQueriesOn: privateQueriesOn,
+                      ),
+                      key: const ValueKey(
+                        'mobile_settings_near_swap_privacy_description',
+                      ),
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: colors.text.secondary,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

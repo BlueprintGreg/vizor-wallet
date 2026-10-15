@@ -555,6 +555,18 @@ void main() {
     );
     await tester.scrollUntilVisible(description, 200);
     expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(
+          const ValueKey('mobile_settings_near_swap_privacy_sub_option'),
+        ),
+        matching: find.byKey(
+          const ValueKey('mobile_settings_near_swap_privacy_row'),
+        ),
+      ),
+      findsOneWidget,
+      reason: 'shown as an option of Private queries',
+    );
 
     final info = find.byKey(
       const ValueKey('mobile_settings_near_swap_privacy_info'),

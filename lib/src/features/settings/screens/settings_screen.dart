@@ -37,6 +37,7 @@ import '../widgets/network_privacy_control.dart';
 import '../widgets/enhance_pir_privacy_control.dart';
 import '../widgets/private_queries_turn_off.dart';
 import '../widgets/settings_new_badge.dart';
+import '../widgets/settings_sub_option.dart';
 import '../widgets/windows_update_download_flow.dart';
 
 const _settingsRowActivationShortcuts = <ShortcutActivator, Intent>{
@@ -638,21 +639,29 @@ class _SettingsList extends ConsumerWidget {
             ],
             if (enhancePirServiceAvailable) ...[
               const SizedBox(height: AppSpacing.sm),
-              EnhancePirPrivacyControl(
-                label: 'NEAR swap privacy',
-                keyPrefix: 'settings_near_swap_privacy',
-                description: nearSwapPrivacyDescription(
-                  hardwareAccount: hardwareAccount,
-                  privateQueriesOn: privateQueriesOn,
+              // An option of Private queries: its icon sits under the label
+              // above, and the hook starts under that row's icon.
+              SettingsSubOption(
+                key: const ValueKey('settings_near_swap_privacy_sub_option'),
+                indent: AppSpacing.xs + 20,
+                lineX: AppSpacing.xxs + 10,
+                rowCenter: 22,
+                child: EnhancePirPrivacyControl(
+                  label: 'NEAR swap privacy',
+                  keyPrefix: 'settings_near_swap_privacy',
+                  description: nearSwapPrivacyDescription(
+                    hardwareAccount: hardwareAccount,
+                    privateQueriesOn: privateQueriesOn,
+                  ),
+                  onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
+                  enabled: nearSwapPrivacy,
+                  transition: null,
+                  onToggle: changingRecovery || !privateQueriesOn
+                      ? null
+                      : () => unawaited(
+                          ref.read(nearSwapPrivacyProvider.notifier).toggle(),
+                        ),
                 ),
-                onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
-                enabled: nearSwapPrivacy,
-                transition: null,
-                onToggle: changingRecovery || !privateQueriesOn
-                    ? null
-                    : () => unawaited(
-                        ref.read(nearSwapPrivacyProvider.notifier).toggle(),
-                      ),
               ),
             ],
           ],

@@ -617,6 +617,16 @@ void main() {
     await tester.pumpWidget(_settingsHarness());
     await tester.pump();
     expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
+        matching: find.byKey(
+          const ValueKey('settings_near_swap_privacy_toggle'),
+        ),
+      ),
+      findsOneWidget,
+      reason: 'shown as an option of Private queries',
+    );
 
     final info = find.byKey(const ValueKey('settings_near_swap_privacy_info'));
     await tester.ensureVisible(info);
