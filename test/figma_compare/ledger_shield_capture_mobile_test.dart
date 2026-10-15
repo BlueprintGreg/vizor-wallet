@@ -82,7 +82,7 @@ void main() {
           }
           if (shot.name == 'approval' || shot.name == 'approval-small') {
             expect(find.text('Confirm on your Ledger'), findsOneWidget);
-            final rect = tester.getRect(find.text('Back to wallet'));
+            final rect = tester.getRect(find.text('Cancel shielding'));
             expect(rect.center.dy, greaterThan(shot.size.height * 0.8));
           }
           if (shot.name == 'leaving') {

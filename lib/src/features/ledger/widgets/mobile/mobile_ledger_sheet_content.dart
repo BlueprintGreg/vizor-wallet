@@ -24,10 +24,9 @@ class MobileLedgerSheetContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final inline =
-        context
-            .dependOnInheritedWidgetOfExactType<LedgerInlinePresentation>() !=
-        null;
+    final presentation = context
+        .dependOnInheritedWidgetOfExactType<LedgerInlinePresentation>();
+    final inline = presentation != null;
     final motion = inline ? ShieldHardwarePresentation.maybeOf(context) : null;
     final heading = Text(
       title,
@@ -48,7 +47,7 @@ class MobileLedgerSheetContent extends StatelessWidget {
       ...actions,
       if (inline && onClose != null) ...[
         const SizedBox(height: AppSpacing.md),
-        MobileLedgerAction('Back to wallet', onPressed: onClose),
+        MobileLedgerAction(presentation.closeLabel, onPressed: onClose),
       ],
     ];
     if (motion != null) {
@@ -113,7 +112,7 @@ class MobileLedgerSheetContent extends StatelessWidget {
         ...actions,
         if (inline && onClose != null) ...[
           const SizedBox(height: AppSpacing.md),
-          MobileLedgerAction('Back to wallet', onPressed: onClose),
+          MobileLedgerAction(presentation.closeLabel, onPressed: onClose),
         ],
       ],
     );
@@ -235,7 +234,15 @@ class MobileLedgerAction extends StatelessWidget {
 /// Keeps existing connection and recovery owners mounted while their content
 /// is presented inside the shielding scene instead of a separate sheet.
 class LedgerInlinePresentation extends InheritedWidget {
-  const LedgerInlinePresentation({required super.child, super.key});
+  const LedgerInlinePresentation({
+    required super.child,
+    this.closeLabel = 'Cancel shielding',
+    super.key,
+  });
+
+  final String closeLabel;
+
   @override
-  bool updateShouldNotify(LedgerInlinePresentation oldWidget) => false;
+  bool updateShouldNotify(LedgerInlinePresentation oldWidget) =>
+      closeLabel != oldWidget.closeLabel;
 }

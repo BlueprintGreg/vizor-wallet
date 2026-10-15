@@ -722,7 +722,12 @@ class _LedgerShieldSigningOverlayState
                   ? 'Shielding your balance…'
                   : 'Shield with Ledger',
               focusChild: _momentStarted && !_momentComplete && !_isBroadcasting
-                  ? LedgerInlinePresentation(child: modal)
+                  ? LedgerInlinePresentation(
+                      closeLabel: _phase == LedgerSigningModalPhase.failed
+                          ? 'Close'
+                          : 'Cancel shielding',
+                      child: modal,
+                    )
                   : null,
               canLeave: canLeave,
               onCommit: () {

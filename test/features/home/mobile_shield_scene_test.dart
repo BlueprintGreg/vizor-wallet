@@ -440,13 +440,13 @@ void main() {
       expect(find.text('Shield with Ledger'), findsNothing);
       expect(find.text('Cancel'), findsNothing);
       await tester.scrollUntilVisible(
-        find.text('Back to wallet'),
+        find.text('Cancel shielding'),
         200,
         scrollable: find.byType(Scrollable),
       );
       await tester.pump();
       expect(
-        tester.getRect(find.text('Back to wallet')).bottom,
+        tester.getRect(find.text('Cancel shielding')).bottom,
         lessThanOrEqualTo(568 - 48),
       );
       expect(tester.takeException(), isNull);

@@ -207,7 +207,7 @@ void main() {
               ),
             ),
           );
-          final button = find.text('Back to wallet');
+          final button = find.text('Cancel shielding');
           final rect = tester.getRect(button);
           for (final value in [
             LedgerSigningStage.sending,
@@ -269,7 +269,7 @@ void main() {
       visible.value = false;
       await tester.pump();
       expect(motion().interactive, isFalse);
-      await tester.tap(find.text('Back to wallet'), warnIfMissed: false);
+      await tester.tap(find.text('Cancel shielding'), warnIfMissed: false);
       expect(closes, 0);
       await tester.pump(const Duration(milliseconds: 125));
       expect(motion().footerOpacity, inExclusiveRange(0.0, 1.0));

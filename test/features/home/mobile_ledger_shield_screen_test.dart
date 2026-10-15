@@ -84,6 +84,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(find.text('Shielding paused'), findsOneWidget);
+      expect(find.text('Close'), findsOneWidget);
+      expect(find.text('Cancel shielding'), findsNothing);
       expect(
         find.textContaining('No spendable transparent funds remain'),
         findsOneWidget,
