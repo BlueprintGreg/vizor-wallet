@@ -830,7 +830,7 @@ mod tests {
     }
 
     fn signed_pczt(target_height: u32) -> (Vec<u8>, Vec<u8>, u32) {
-        let sk = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let sk = secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
         signed_pczt_with_input(target_height, sk, OutPoint::new([1; 32], 0), 1_000_000)
     }
 
@@ -840,8 +840,7 @@ mod tests {
         prevout: OutPoint,
         value: u64,
     ) -> (Vec<u8>, Vec<u8>, u32) {
-        let secp = secp256k1::Secp256k1::new();
-        let pubkey = sk.public_key(&secp);
+        let pubkey = sk.public_key();
         let pubkey_bytes = pubkey.serialize();
         let address = TransparentAddress::from_pubkey(&pubkey);
 
@@ -893,7 +892,7 @@ mod tests {
             .unwrap()
             .transparent_sighash(0)
             .unwrap();
-        let signature = secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash), &sk);
+        let signature = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(sighash), &sk);
         let mut ledger_der = signature.serialize_der().to_vec();
         ledger_der[0] |= 1;
         let signature_bytes = super::super::apply_signatures(
@@ -1426,7 +1425,7 @@ mod tests {
         .unwrap()
         .derive_external_secret_key(NonHardenedChildIndex::from_index(0).unwrap())
         .unwrap();
-        let address = TransparentAddress::from_pubkey(&sk.public_key(&secp256k1::Secp256k1::new()));
+        let address = TransparentAddress::from_pubkey(&sk.public_key());
         let (proof, signature, _) =
             signed_pczt_with_input(200, sk, OutPoint::new([1; 32], 0), 1_000_000);
         let mut db =

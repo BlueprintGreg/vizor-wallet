@@ -39,10 +39,11 @@
 //! retry from a fresh watch set at most [`LIMITS`] times) within
 //! [`ACCOUNT_BUDGET`], and the run at most [`RUN_BUDGET`]. Whatever a pass
 //! found, more work waits for the next run, which the app starts after a sync
-//! that follows a new block: when recovery runs never depends on what a
-//! private reply said. A lagging publication or an overloaded service names a
-//! delay, the service's own wait request; the account is skipped without
-//! traffic until it passes. An account that cannot progress is held in memory
+//! that follows a new block. A lagging publication or an overloaded service
+//! names a delay; the account is skipped without traffic until it passes,
+//! then may retry at the same block. Such a retry visits only accounts whose
+//! service waits expired, so private content cannot unlock another pass.
+//! An account that cannot progress is held in memory
 //! for [`HOLD`] and skipped without traffic, as is a quarantined account.
 //! Software and hardware accounts recover from their stored birthday.
 //!
@@ -298,17 +299,54 @@ fn recovery_tips() -> MutexGuard<'static, HashMap<String, u64>> {
     RECOVERY_TIPS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Whether a sync that completed at chain tip `tip` runs recovery for the
-/// wallet at `db_path`: only after a new block since its last run, or at the
-/// first sync since the app started. A successful reorg rewind also clears
-/// the old height through
-/// `reset_private_recovery_after_reorg`, allowing one run on the replacement
-/// chain. A lagging endpoint does not clear it. Recovery runs on a schedule
-/// the service sees anyway; a sync started for any other reason
-/// (a resume, a retry of other private work) adds no run, so whether a run
-/// happens never depends on what an earlier reply said.
+/// A new block permits every account to run. At the same block, only an
+/// expired service wait permits another pass; private content never creates
+/// that deadline.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoverySchedule {
+    Block,
+    ServiceWait,
+}
+
+pub(crate) fn recovery_schedule(db_path: &str, tip: u64) -> Option<RecoverySchedule> {
+    if recovery_tips().get(db_path).is_none_or(|&last| tip > last) {
+        Some(RecoverySchedule::Block)
+    } else if service_retry_due(db_path) {
+        Some(RecoverySchedule::ServiceWait)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn recovery_due(db_path: &str, tip: u64) -> bool {
-    recovery_tips().get(db_path).is_none_or(|&last| tip > last)
+    recovery_schedule(db_path, tip).is_some()
+}
+
+/// Whether a service deadline has expired for an account that is not held.
+/// Read by the app's tip poll so catch-up does not need another block.
+pub(crate) fn service_retry_due(db_path: &str) -> bool {
+    let now = Instant::now();
+    holds().iter().any(|((path, _), hold)| {
+        path == db_path
+            && hold.not_before.is_some_and(|until| now >= until)
+            && hold.held.is_none_or(|(_, until)| now >= until)
+    })
+}
+
+/// Takes an account's expired service deadline exactly once. Accounts with
+/// no deadline must not gain a pass from another account's service retry.
+fn take_service_retry(db_path: &str, account: AccountUuid, now: Instant) -> bool {
+    let mut holds = holds();
+    let Some(hold) = holds.get_mut(&(db_path.to_owned(), account)) else {
+        return false;
+    };
+    if hold.not_before.is_some_and(|until| now >= until) {
+        hold.not_before = None;
+        true
+    } else {
+        false
+    }
 }
 
 /// Records that the wallet at `db_path` ran recovery at chain tip `tip`.
@@ -347,10 +385,9 @@ fn visiting_order(
 }
 
 enum AccountOutcome {
-    /// The account's pass ended. Carries its retry, absent when no pass
-    /// answered: the chain is unknown, the account is gone, or its budget ran
-    /// out.
-    Done(Option<Retry>),
+    /// The account's pass ended. Public service waits are recorded as soon
+    /// as the source answers, independently of the content-aware plan.
+    Done,
     /// A failure, a rejection, or a withdrawal ended the account's passes for
     /// this run; it is not offered for promotion.
     Skipped,
@@ -376,6 +413,7 @@ pub(crate) async fn run<S: RecoverySource>(
     policy: EnhancementPolicy,
     source: &S,
     first: Option<AccountUuid>,
+    schedule: RecoverySchedule,
     clock: fn() -> Instant,
     should_exit: &(dyn Fn() -> bool + Sync),
 ) -> Result<RunOutcome, SyncError> {
@@ -393,7 +431,10 @@ pub(crate) async fn run<S: RecoverySource>(
         return Ok(RunOutcome::NotEnabled);
     }
     let deadline = clock() + RUN_BUDGET;
-    let accounts = visiting_order(db_path, db.get_account_ids().map_err(db_error)?, first);
+    let accounts = db.get_account_ids().map_err(db_error)?;
+    // Deleted accounts must not leave a deadline that restarts every poll.
+    holds().retain(|(path, account), _| path != db_path || accounts.contains(account));
+    let accounts = visiting_order(db_path, accounts, first);
     let mut run = Run {
         db,
         db_path,
@@ -413,26 +454,36 @@ pub(crate) async fn run<S: RecoverySource>(
             log::info!("transparent ledger: run budget spent; other accounts wait for a later run");
             break;
         }
+        let service_retry = take_service_retry(db_path, account, now);
         if run.skip(account, now)? {
+            continue;
+        }
+        if schedule == RecoverySchedule::ServiceWait && !service_retry {
             continue;
         }
         match run
             .recover_account(account, (now + ACCOUNT_BUDGET).min(deadline))
             .await?
         {
-            AccountOutcome::Done(last) => {
+            AccountOutcome::Done => {
                 run.stats.accounts += 1;
-                // The service's own wait request: no pass before it. Every
-                // other retry waits for the next block.
-                if let Some(Retry::After(delay)) = last {
-                    set_not_before(db_path, account, clock(), delay);
-                }
                 if run.promote(account)? {
                     run.stats.promoted += 1;
                 }
             }
             AccountOutcome::Skipped => run.stats.accounts += 1,
-            AccountOutcome::Stop(outcome) => return Ok(outcome),
+            AccountOutcome::Stop(outcome) => {
+                // Restore a consumed retry when cancellation interrupted it,
+                // but keep any newer delay the source reported before settlement.
+                if service_retry && matches!(outcome, RunOutcome::Exited) {
+                    holds()
+                        .entry((db_path.to_owned(), account))
+                        .or_default()
+                        .not_before
+                        .get_or_insert_with(clock);
+                }
+                return Ok(outcome);
+            }
         }
     }
     Ok(RunOutcome::Finished(run.stats))
@@ -482,13 +533,13 @@ impl<S: RecoverySource> Run<'_, S> {
         deadline: Instant,
     ) -> Result<AccountOutcome, SyncError> {
         let Some(watch) = watch_set(self.db, account)? else {
-            return Ok(AccountOutcome::Done(None));
+            return Ok(AccountOutcome::Done);
         };
         let (clock, should_exit) = (self.clock, self.should_exit);
         let pass_exit = move || should_exit() || clock() >= deadline;
         let mut plan = PassPlan::new(watch, LIMITS);
-        if let Step::Done(retry) = plan.first() {
-            return Ok(AccountOutcome::Done(retry));
+        if let Step::Done(_) = plan.first() {
+            return Ok(AccountOutcome::Done);
         }
         loop {
             if should_exit() {
@@ -515,13 +566,19 @@ impl<S: RecoverySource> Run<'_, S> {
                 }
                 Ok(Err(SourceError::Cancelled)) => {
                     log::info!("transparent ledger: account budget spent");
-                    return Ok(AccountOutcome::Done(None));
+                    return Ok(AccountOutcome::Done);
                 }
                 Err(_) => {
                     log::warn!("transparent ledger: source call passed its backstop");
                     return Ok(AccountOutcome::Skipped);
                 }
             };
+            // Content-aware `report.retry()` deliberately stalls failed
+            // entries. It must not remove the publication/capacity wait the
+            // service requested, including when settlement holds the account.
+            if let Retry::After(delay) = report.progress.retry() {
+                set_not_before(self.db_path, account, clock(), delay);
+            }
             if report.state == BatchState::Pending {
                 log::info!(
                     "transparent ledger: source batch pending ({:?})",
@@ -548,12 +605,16 @@ impl<S: RecoverySource> Run<'_, S> {
                 _ => {}
             }
             let Some(fresh) = watch_set(self.db, account)? else {
-                return Ok(AccountOutcome::Done(None));
+                return Ok(AccountOutcome::Done);
             };
             match plan.next(&report, &settled, fresh) {
-                Step::Pass => {}
-                // Stale commits: the next pass runs from the fresh watch set.
-                Step::Refresh => {}
+                // Even a stale commit cannot bypass a public service wait.
+                // A later run starts from the fresh watch set.
+                Step::Pass | Step::Refresh => {
+                    if matches!(report.progress.retry(), Retry::After(_)) {
+                        return Ok(AccountOutcome::Done);
+                    }
+                }
                 Step::Hold(cause) => {
                     let cause = match cause {
                         PlanHold::Withdrawn(cause) => {
@@ -627,7 +688,7 @@ impl<S: RecoverySource> Run<'_, S> {
                         Ok(_) => "transparent ledger: settlement failed".to_owned(),
                     }))
                 }
-                Step::Done(retry) => return Ok(AccountOutcome::Done(retry)),
+                Step::Done(_) => return Ok(AccountOutcome::Done),
             }
         }
     }

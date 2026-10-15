@@ -11696,12 +11696,14 @@ impl SseDecode for crate::api::sync::EnhanceRecoveryStatus {
         let mut var_rediscovery = <u32>::sse_decode(deserializer);
         let mut var_suspended = <u32>::sse_decode(deserializer);
         let mut var_status = <u32>::sse_decode(deserializer);
+        let mut var_transparentRetryDue = <bool>::sse_decode(deserializer);
         let mut var_serviceState = <String>::sse_decode(deserializer);
         return crate::api::sync::EnhanceRecoveryStatus {
             queries: var_queries,
             rediscovery: var_rediscovery,
             suspended: var_suspended,
             status: var_status,
+            transparent_retry_due: var_transparentRetryDue,
             service_state: var_serviceState,
         };
     }
@@ -17499,6 +17501,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::EnhanceRecoveryStatus {
             self.rediscovery.into_into_dart().into_dart(),
             self.suspended.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
+            self.transparent_retry_due.into_into_dart().into_dart(),
             self.service_state.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -21688,6 +21691,7 @@ impl SseEncode for crate::api::sync::EnhanceRecoveryStatus {
         <u32>::sse_encode(self.rediscovery, serializer);
         <u32>::sse_encode(self.suspended, serializer);
         <u32>::sse_encode(self.status, serializer);
+        <bool>::sse_encode(self.transparent_retry_due, serializer);
         <String>::sse_encode(self.service_state, serializer);
     }
 }
