@@ -5082,11 +5082,9 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
     if !runs_transparent_followup(running_mode) {
         return;
     }
-    // Block cadence: one run after the first foreground sync that follows a
-    // new block. Leftover work waits for the next block.
-    if !transparent_ledger::recovery_due(db_data_path, completed.1) {
+    let Some(schedule) = transparent_ledger::recovery_schedule(db_data_path, completed.1) else {
         return;
-    }
+    };
     let private = policy.transparent_mode()
         != zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode::Public;
     if private {
@@ -5105,6 +5103,7 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
         policy,
         source,
         first,
+        schedule,
         std::time::Instant::now,
         should_exit,
     )
@@ -6982,7 +6981,9 @@ pub(crate) fn enhance_recovery_status(
 /// Work that failed on content, got a reply, or was created by a reply at the
 /// current chain tip is left out: it waits for the next block (see
 /// [`enhancement::content_failures`]), so whether a recovery-only restart
-/// happens never depends on what a reply said.
+/// happens never depends on what a reply said. Expired transparent-service
+/// waits are reported separately: their public schedule permits only the
+/// accounts whose waits expired to retry at the same tip.
 fn recovery_status_for(
     db: &WalletDatabase,
     db_path: &str,
@@ -7020,12 +7021,9 @@ fn recovery_status_for(
     Ok(crate::api::sync::EnhanceRecoveryStatus {
         queries: work.query_count() as u32,
         rediscovery: work.rediscover.len() as u32,
-        // A position waiting for its first query is pending, not complete,
-        // but not a restart reason while waiting. Once due, block processing
-        // or recovery retries pick it up, unless a reply created it at this
-        // tip. It is listed with the work that cannot be retried now.
-        suspended: (work.suspended + work.waiting) as u32,
+        suspended: work.suspended as u32,
         status: status as u32,
+        transparent_retry_due: transparent_ledger::service_retry_due(db_path),
         service_state,
     })
 }

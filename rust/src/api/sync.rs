@@ -3732,6 +3732,9 @@ pub struct EnhanceRecoveryStatus {
     /// deferred private status failure leaves these durable without payload
     /// work, so they count toward a recovery-only sync restart.
     pub status: u32,
+    /// A public transparent-service wait expired. Retry only its accounts,
+    /// independently of the payload/status backoff and without a new block.
+    pub transparent_retry_due: bool,
     pub service_state: String,
 }
 pub fn get_enhance_recovery_status(

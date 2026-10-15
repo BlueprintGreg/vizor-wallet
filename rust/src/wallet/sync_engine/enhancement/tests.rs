@@ -1109,8 +1109,9 @@ mod tests {
             db.transaction_status_work()
                 .unwrap()
                 .iter()
-                .any(|work| matches!(work, TransactionStatusWork::Private(_))
-                    && work.txid() == txid),
+                .any(
+                    |work| matches!(work, TransactionStatusWork::Private(_)) && work.txid() == txid
+                ),
             "the refused work stays in the queue"
         );
     }
@@ -1443,16 +1444,13 @@ mod tests {
         );
     }
 
-    /// A position that waits for its first query is pending, not complete,
-    /// and not a reason for a recovery-only restart: the checkpoint at each
-    /// block asks it once due.
+    /// Newly queued payload work is eligible without an artificial first-query delay.
     #[test]
-    fn a_waiting_enhance_position_is_pending_without_a_restart() {
+    fn a_new_enhance_position_is_eligible_without_a_first_query_delay() {
         use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
         let (dir, due, _) =
             crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
-        // A wallet first opened in this app session, read before any write:
-        // its query waits the full delay.
+        // Read a fresh wallet handle before any write.
         let path = dir.path().join("fresh.db").to_str().unwrap().to_owned();
         std::fs::copy(&due, &path).unwrap();
         let mut db = crate::wallet::db::open_wallet_db_with_timeout(
@@ -1464,8 +1462,8 @@ mod tests {
         db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
         db.set_status_mode(TransactionStatusMode::Private);
         let status = super::super::super::recovery_status_for(&db, &path, String::new()).unwrap();
-        assert_eq!(status.queries, 0, "a waiting position is not asked yet");
-        assert_eq!(status.suspended, 1, "a waiting position is still pending");
+        assert_eq!(status.queries, 1, "new work is eligible immediately");
+        assert_eq!(status.suspended, 0, "no artificial wait is suspended");
     }
 
     #[tokio::test]
