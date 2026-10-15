@@ -11,10 +11,6 @@ import 'shield_motion.dart';
 /// the moment loading completes and the particles start to assemble. Visuals
 /// and particles read the same numbers, so nothing can drift out of sync.
 abstract final class ShieldTimeline {
-  // ── Overlay entrance (driven by the route animation, 0..1) ──
-  static const entrance = Duration(milliseconds: 520);
-  static const exit = Duration(milliseconds: 340);
-
   // ── After commit (t) ──
   static const headerOut = Window(0.00, 0.26);
   static const sliderOut = Window(0.08, 0.28);

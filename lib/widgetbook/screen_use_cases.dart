@@ -1,3 +1,4 @@
+import '../src/core/navigation/mobile_shield_page.dart';
 import '../figma_compare/ledger_shield_capture.dart';
 import '../figma_compare/keystone_shield_capture.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
@@ -4269,13 +4270,8 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
                         route.path == '/home/ledger-shield')))
               GoRoute(
                 path: route.path,
-                pageBuilder: (context, state) => CustomTransitionPage(
+                pageBuilder: (context, state) => MobileShieldPage(
                   key: state.pageKey,
-                  opaque: false,
-                  transitionDuration: const Duration(milliseconds: 520),
-                  reverseTransitionDuration: const Duration(milliseconds: 340),
-                  transitionsBuilder: (_, animation, _, child) =>
-                      FadeTransition(opacity: animation, child: child),
                   child: _shieldPreview(context, state),
                 ),
               )

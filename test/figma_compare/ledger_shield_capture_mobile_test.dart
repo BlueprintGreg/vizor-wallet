@@ -25,7 +25,7 @@ void main() {
     (name: 'approval', seconds: 10.0, size: const Size(393, 852)),
     (name: 'approval-small', seconds: 10.0, size: const Size(320, 568)),
     (name: 'leaving', seconds: 14.13, size: const Size(393, 852)),
-    (name: 'returning', seconds: 14.4, size: const Size(393, 852)),
+    (name: 'returning', seconds: 14.21, size: const Size(393, 852)),
     (name: 'cloud', seconds: 15.0, size: const Size(393, 852)),
     (name: 'result-retarget', seconds: 17.15, size: const Size(393, 852)),
     (name: 'success', seconds: 22.0, size: const Size(393, 852)),
@@ -84,6 +84,12 @@ void main() {
             expect(find.text('Confirm on your Ledger'), findsOneWidget);
             final rect = tester.getRect(find.text('Cancel shielding'));
             expect(rect.center.dy, greaterThan(shot.size.height * 0.8));
+          }
+          if (shot.name == 'entering' || shot.name == 'returning') {
+            final motion = tester.widget<ShieldHardwarePresentation>(
+              find.byType(ShieldHardwarePresentation),
+            );
+            expect(motion.mix, inExclusiveRange(0.0, 1.0));
           }
           if (shot.name == 'leaving') {
             final motion = tester.widget<ShieldHardwarePresentation>(

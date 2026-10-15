@@ -63,6 +63,7 @@ import '../layout/mobile/app_mobile_shell.dart';
 import '../layout/mobile/app_mobile_tab_bar.dart';
 import '../widgets/app_icon.dart';
 import 'payload_page_key.dart';
+import 'mobile_shield_page.dart';
 
 /// The mobile route tree: the shared entry/onboarding routes, a
 /// stateful tab shell (home / swap / activity / settings), and
@@ -414,34 +415,24 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
     ),
     GoRoute(
       path: '/home/shield',
-      pageBuilder: (context, state) => CustomTransitionPage(
+      pageBuilder: (context, state) => MobileShieldPage(
         key: state.pageKey,
-        opaque: false,
-        transitionDuration: const Duration(milliseconds: 520),
-        reverseTransitionDuration: const Duration(milliseconds: 340),
         child: MobileSoftwareShieldScreen(
           backdrop: state.extra is MobileShieldBackdrop
               ? state.extra as MobileShieldBackdrop
               : null,
         ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
       ),
     ),
     GoRoute(
       path: '/home/keystone-shield',
-      pageBuilder: (context, state) => CustomTransitionPage(
+      pageBuilder: (context, state) => MobileShieldPage(
         key: state.pageKey,
-        opaque: false,
-        transitionDuration: const Duration(milliseconds: 520),
-        reverseTransitionDuration: const Duration(milliseconds: 340),
         child: MobileKeystoneShieldScreen(
           backdrop: state.extra is MobileShieldBackdrop
               ? state.extra as MobileShieldBackdrop
               : null,
         ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
       ),
     ),
     GoRoute(
@@ -510,13 +501,8 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
     ),
     GoRoute(
       path: '/home/ledger-shield',
-      pageBuilder: (context, state) => CustomTransitionPage(
+      pageBuilder: (context, state) => MobileShieldPage(
         key: state.pageKey,
-        opaque: false,
-        transitionDuration: const Duration(milliseconds: 520),
-        reverseTransitionDuration: const Duration(milliseconds: 340),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
         child: MobileLedgerShieldScreen(
           backdrop: state.extra is MobileShieldBackdrop
               ? state.extra as MobileShieldBackdrop

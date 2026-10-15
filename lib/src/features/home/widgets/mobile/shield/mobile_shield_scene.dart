@@ -66,10 +66,6 @@ class MobileShieldScene extends StatefulWidget {
 class _MobileShieldSceneState extends State<MobileShieldScene>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   late final Ticker _ticker = createTicker(_tick);
-  late final AnimationController _entrance = AnimationController(
-    vsync: this,
-    duration: ShieldTimeline.entrance,
-  )..forward();
   final _clock = ValueNotifier<double>(0);
   final _drag = ValueNotifier<double>(0);
   ShieldParticleArt? _art;
@@ -341,7 +337,6 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
-    _entrance.dispose();
     _clock.dispose();
     _drag.dispose();
     _field?.dispose();
@@ -438,80 +433,74 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                     ),
                   ),
                 ),
-              FadeTransition(
-                opacity: CurvedAnimation(
-                  parent: _entrance,
-                  curve: VMotion.easeOut,
-                ),
-                child: SafeArea(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final layout = _ShieldLayout(
-                        constraints.biggest,
-                        headingHeight: _headingHeight(constraints.maxWidth),
-                        amountHeight: math.max(
-                          _balance(widget.amount, false).size.height,
-                          _balance(_result, true).size.height,
-                        ),
-                      );
-                      if (_layout?.size != layout.size ||
-                          _layout?.headingHeight != layout.headingHeight ||
-                          _layout?.amountHeight != layout.amountHeight) {
-                        _layout = layout;
-                        if (_art != null) {
-                          _field?.updateTargets(
-                            _geometry(_art!, layout),
-                            _art!.atlas,
-                          );
-                        }
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final layout = _ShieldLayout(
+                      constraints.biggest,
+                      headingHeight: _headingHeight(constraints.maxWidth),
+                      amountHeight: math.max(
+                        _balance(widget.amount, false).size.height,
+                        _balance(_result, true).size.height,
+                      ),
+                    );
+                    if (_layout?.size != layout.size ||
+                        _layout?.headingHeight != layout.headingHeight ||
+                        _layout?.amountHeight != layout.amountHeight) {
+                      _layout = layout;
+                      if (_art != null) {
+                        _field?.updateTargets(
+                          _geometry(_art!, layout),
+                          _art!.atlas,
+                        );
                       }
-                      return AnimatedBuilder(
-                        animation: _clock,
-                        builder: (_, _) {
-                          final auxiliary =
-                              (widget.animateHardware && _hardware.active) ||
-                              (_keystone?.active ?? false) ||
-                              widget.focusChild != null ||
-                              widget.focusBuilder != null ||
-                              widget.phase == MobileShieldPhase.failed ||
-                              widget.phase == MobileShieldPhase.pending;
-                          final content = Stack(
-                            key: _keystone?.spaceKey,
-                            fit: StackFit.expand,
-                            children: [
-                              _visual(layout, auxiliary && _focusRevealed),
-                              if (auxiliary)
-                                _functionalContent(constraints)
-                              else
-                                _normalControls(layout),
-                              if (_keystone != null && _focusRevealed)
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: CustomPaint(
-                                      painter: _KeystoneMorphPainter(
-                                        _keystone!,
-                                        _clock,
-                                      ),
+                    }
+                    return AnimatedBuilder(
+                      animation: _clock,
+                      builder: (_, _) {
+                        final auxiliary =
+                            (widget.animateHardware && _hardware.active) ||
+                            (_keystone?.active ?? false) ||
+                            widget.focusChild != null ||
+                            widget.focusBuilder != null ||
+                            widget.phase == MobileShieldPhase.failed ||
+                            widget.phase == MobileShieldPhase.pending;
+                        final content = Stack(
+                          key: _keystone?.spaceKey,
+                          fit: StackFit.expand,
+                          children: [
+                            _visual(layout, auxiliary && _focusRevealed),
+                            if (auxiliary)
+                              _functionalContent(constraints)
+                            else
+                              _normalControls(layout),
+                            if (_keystone != null && _focusRevealed)
+                              Positioned.fill(
+                                child: IgnorePointer(
+                                  child: CustomPaint(
+                                    painter: _KeystoneMorphPainter(
+                                      _keystone!,
+                                      _clock,
                                     ),
                                   ),
                                 ),
-                            ],
-                          );
-                          if (!auxiliary &&
-                              layout.contentHeight > constraints.maxHeight) {
-                            return SingleChildScrollView(
-                              child: SizedBox(
-                                width: constraints.maxWidth,
-                                height: layout.contentHeight,
-                                child: content,
                               ),
-                            );
-                          }
-                          return content;
-                        },
-                      );
-                    },
-                  ),
+                          ],
+                        );
+                        if (!auxiliary &&
+                            layout.contentHeight > constraints.maxHeight) {
+                          return SingleChildScrollView(
+                            child: SizedBox(
+                              width: constraints.maxWidth,
+                              height: layout.contentHeight,
+                              child: content,
+                            ),
+                          );
+                        }
+                        return content;
+                      },
+                    );
+                  },
                 ),
               ),
             ],

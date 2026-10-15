@@ -111,7 +111,7 @@ class KeystoneShieldMorph {
   double? _footerAt;
   double _footerFrom = 0;
   double _footerTo = 0;
-  double _footerDuration = 0.3;
+  double _footerDuration = 0.18;
 
   double get footerDy =>
       reduceMotion || _footerTo == 0 ? 0 : 6 * (1 - footerOpacity);
@@ -125,12 +125,12 @@ class KeystoneShieldMorph {
     _footerDuration = reduceMotion
         ? 0.12
         : target == 1
-        ? 0.3
-        : 0.25;
+        ? 0.18
+        : 0.14;
   }
 
   void _updateFooter() {
-    final entranceDuration = reduceMotion ? 0.12 : 0.3;
+    final entranceDuration = reduceMotion ? 0.12 : 0.18;
     if (_goal != KeystoneShieldFocusStage.cloud &&
         _footerTo != 1 &&
         !_pending &&
@@ -382,8 +382,8 @@ class KeystoneShieldMorph {
       _duration = reduceMotion
           ? 0.18
           : _goal == KeystoneShieldFocusStage.qr
-          ? 1.05
-          : 0.85;
+          ? 0.6
+          : 0.45;
       _start = time;
       _progress = 0;
       _pending = false;

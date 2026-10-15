@@ -8,6 +8,7 @@ import 'package:zcash_wallet/src/core/layout/app_form_factor.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
 import 'figma_compare_capture_support.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
+import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/keystone_shield_scanner_surface.dart';
 
 Future<void> _advance(WidgetTester tester, double seconds) async {
   for (var i = 0; i < (seconds * 60).round(); i++) {
@@ -21,14 +22,14 @@ void main() {
     (
       name: 'qr-forming',
       camera: null,
-      seconds: 2.5,
+      seconds: 2.3,
       size: const Size(393, 852),
     ),
     (name: 'qr-hold', camera: null, seconds: 3.5, size: const Size(393, 852)),
     (
       name: 'qr-buttons-entering',
       camera: null,
-      seconds: 2.9,
+      seconds: 2.5,
       size: const Size(393, 852),
     ),
     (name: 'qr-small', camera: null, seconds: 3.5, size: const Size(320, 568)),
@@ -40,7 +41,7 @@ void main() {
     ),
     (
       name: 'camera-forming',
-      camera: 0.4,
+      camera: 0.225,
       seconds: 3.5,
       size: const Size(393, 852),
     ),
@@ -50,10 +51,15 @@ void main() {
       seconds: 3.5,
       size: const Size(393, 852),
     ),
-    (name: 'returning', camera: 8.45, seconds: 3.5, size: const Size(393, 852)),
+    (
+      name: 'returning',
+      camera: 8.225,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
     (
       name: 'buttons-leaving',
-      camera: 8.13,
+      camera: 8.07,
       seconds: 3.5,
       size: const Size(393, 852),
     ),
@@ -102,6 +108,22 @@ void main() {
             await tester.tap(find.text('Next step'));
             await tester.pump();
             await _advance(tester, shot.camera!);
+          }
+          if (shot.name == 'qr-buttons-entering' ||
+              shot.name == 'buttons-leaving') {
+            final footer = tester.widget<Opacity>(
+              find.byKey(const ValueKey('mobile_keystone_footer_visibility')),
+            );
+            expect(footer.opacity, inExclusiveRange(0.0, 1.0));
+          }
+          if (shot.name == 'camera-forming' || shot.name == 'returning') {
+            final morph = tester
+                .widget<KeystoneShieldScannerSurface>(
+                  find.byType(KeystoneShieldScannerSurface),
+                )
+                .morph;
+            expect(morph.scannerOpacity, inExclusiveRange(0.0, 1.0));
+            expect(morph.cloudReady, isFalse);
           }
           if (shot.name == 'qr-hold' || shot.name == 'qr-small') {
             final black = tester.widget<ColoredBox>(

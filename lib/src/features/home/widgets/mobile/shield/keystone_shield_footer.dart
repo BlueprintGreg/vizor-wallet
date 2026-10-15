@@ -22,8 +22,8 @@ class KeystoneShieldFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final reduced = MediaQuery.disableAnimationsOf(context);
-    final colorDuration = Duration(milliseconds: reduced ? 120 : 240);
-    final contentDuration = Duration(milliseconds: reduced ? 120 : 180);
+    final colorDuration = Duration(milliseconds: reduced ? 120 : 180);
+    final contentDuration = Duration(milliseconds: reduced ? 120 : 140);
     final enabled = (showQr ? onNext : onShowQr) != null;
     final colors = context.colors.button;
     final labelColor = !enabled
@@ -102,7 +102,7 @@ class KeystoneShieldFooter extends StatelessWidget {
                   onPressed: showQr ? onNext : onShowQr,
                   child: TweenAnimationBuilder<Color?>(
                     tween: ColorTween(end: labelColor),
-                    duration: Duration(milliseconds: reduced ? 120 : 200),
+                    duration: Duration(milliseconds: reduced ? 120 : 160),
                     builder: (context, color, child) => DefaultTextStyle.merge(
                       style: TextStyle(color: color),
                       child: IconTheme.merge(

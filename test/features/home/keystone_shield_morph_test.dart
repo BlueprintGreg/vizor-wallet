@@ -83,7 +83,7 @@ void main() {
       stage.value = KeystoneShieldFocusStage.scanner;
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 20));
-      await tester.pump(const Duration(milliseconds: 450));
+      await tester.pump(const Duration(milliseconds: 225));
       expect(background().a, inExclusiveRange(0.0, 1.0));
       await tester.pump(const Duration(seconds: 1));
       expect(background().a, 0);
@@ -177,14 +177,14 @@ void main() {
       const Rect.fromLTWH(40, 160, 280, 280),
     );
     morph.update(0, _cloud);
-    morph.update(0.6, _cloud);
+    morph.update(0.3, _cloud);
     expect(morph.blackMix, inExclusiveRange(0.0, 1.0));
     expect(morph.qrReady, isFalse);
     expect(morph.qrIndex, 0);
-    morph.update(1.1, _cloud);
+    morph.update(0.61, _cloud);
     expect(morph.blackMix, 1);
     expect(morph.qrReady, isTrue);
-    morph.update(1.31, _cloud);
+    morph.update(0.82, _cloud);
     expect(morph.qrIndex, 1);
     expect(morph.blackMix, 1);
     expect(morph.particles.every((p) => p.square == 1 && p.alpha == 1), isTrue);

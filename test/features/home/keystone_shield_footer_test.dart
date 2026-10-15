@@ -175,19 +175,19 @@ void main() {
         const Rect.fromLTWH(20, 120, 280, 280),
       );
       morph.update(0, cloud);
-      morph.update(0.7, cloud);
+      morph.update(0.4, cloud);
       expect(morph.footerOpacity, 0);
       expect(morph.footerInteractive, isFalse);
-      morph.update(0.9, cloud);
+      morph.update(0.5, cloud);
       expect(morph.footerOpacity, inExclusiveRange(0.0, 1.0));
       expect(morph.footerDy, inExclusiveRange(0.0, 6.0));
-      morph.update(1.1, cloud);
+      morph.update(0.61, cloud);
       expect(morph.footerOpacity, 1);
       expect(morph.footerInteractive, isTrue);
       morph.configure(focus(KeystoneShieldFocusStage.cloud));
       expect(morph.footerInteractive, isFalse);
-      morph.update(1.11, cloud);
-      morph.update(1.4, cloud);
+      morph.update(0.62, cloud);
+      morph.update(0.8, cloud);
       expect(morph.footerOpacity, 0);
       expect(morph.cloudReady, isFalse);
     },

@@ -1,6 +1,8 @@
 @Tags(['mobile'])
 library;
 
+import 'package:zcash_wallet/src/core/navigation/mobile_shield_page.dart';
+
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
 import 'dart:io';
@@ -193,13 +195,8 @@ Future<void> _startScanner(WidgetTester tester) async {
       ),
       GoRoute(
         path: '/shield',
-        pageBuilder: (_, state) => CustomTransitionPage(
+        pageBuilder: (_, state) => MobileShieldPage(
           key: state.pageKey,
-          opaque: false,
-          transitionDuration: const Duration(milliseconds: 520),
-          reverseTransitionDuration: const Duration(milliseconds: 340),
-          transitionsBuilder: (_, animation, _, child) =>
-              FadeTransition(opacity: animation, child: child),
           child: const MobileKeystoneShieldScreen(),
         ),
       ),

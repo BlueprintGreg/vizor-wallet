@@ -7,7 +7,7 @@ class ShieldHardwareMotion {
   double footer = 0;
   bool _shown = false;
   double _from = 0, _footerFrom = 0, _at = 0;
-  double _duration = 0.3;
+  double _duration = 0.18;
   bool reduceMotion = false;
 
   bool get active => _shown || mix > 0;
@@ -23,8 +23,8 @@ class ShieldHardwareMotion {
     _duration = reduceMotion
         ? 0.12
         : shown
-        ? 0.3
-        : 0.7;
+        ? 0.18
+        : 0.28;
   }
 
   void update(double time) {
@@ -33,9 +33,9 @@ class ShieldHardwareMotion {
     final footerDuration = reduceMotion
         ? 0.12
         : _shown
-        ? 0.22
-        : 0.25;
-    final delay = !reduceMotion && _shown ? 0.08 : 0.0;
+        ? 0.16
+        : 0.14;
+    final delay = !reduceMotion && _shown ? 0.02 : 0.0;
     final f = ((time - _at - delay) / footerDuration).clamp(0.0, 1.0);
     footer = ui.lerpDouble(
       _footerFrom,
@@ -82,7 +82,7 @@ class ShieldStageTransition extends StatelessWidget {
   @override
   Widget build(BuildContext context) => AnimatedSwitcher(
     duration: Duration(
-      milliseconds: MediaQuery.disableAnimationsOf(context) ? 120 : 200,
+      milliseconds: MediaQuery.disableAnimationsOf(context) ? 120 : 140,
     ),
     layoutBuilder: (current, previous) => Stack(
       alignment: Alignment.center,

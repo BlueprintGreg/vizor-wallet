@@ -131,7 +131,25 @@ void main() {
       find.byKey(const ValueKey('mobile_home_shield_balance_button')),
     );
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump(const Duration(milliseconds: 120));
+    final fade = find
+        .ancestor(
+          of: find.byType(MobileShieldScene),
+          matching: find.byType(FadeTransition),
+        )
+        .first;
+    expect(
+      tester.widget<FadeTransition>(fade).opacity.value,
+      closeTo(0.5, 0.01),
+    );
+    expect(
+      find.descendant(
+        of: find.byType(MobileShieldScene),
+        matching: find.byType(FadeTransition),
+      ),
+      findsNothing,
+    );
+    await tester.pump(const Duration(milliseconds: 120));
     final scene = tester.widget<MobileShieldScene>(
       find.byType(MobileShieldScene),
     );
@@ -140,10 +158,19 @@ void main() {
     expect(scene.backdrop!.image.height, tester.view.physicalSize.height);
     final route = ModalRoute.of(tester.element(find.byType(MobileShieldScene)));
     expect(route!.opaque, isFalse);
+    expect(route.transitionDuration, const Duration(milliseconds: 240));
+    expect(route.reverseTransitionDuration, const Duration(milliseconds: 180));
     expect(find.byType(ImageFiltered), findsWidgets);
     await tester.tap(find.text('Cancel'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(
+      tester.widget<FadeTransition>(fade).opacity.value,
+      closeTo(0.5, 0.01),
+    );
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(tester.widget<FadeTransition>(fade).opacity.value, closeTo(0, 0.01));
+    await tester.pump(const Duration(milliseconds: 16));
     expect(find.byType(MobileShieldScene), findsNothing);
     expect(find.byType(MobileHomeScreen), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -161,6 +188,11 @@ void main() {
         tester.element(find.byType(MobileShieldScene)),
       );
       expect(route!.opaque, isFalse);
+      expect(route.transitionDuration, const Duration(milliseconds: 240));
+      expect(
+        route.reverseTransitionDuration,
+        const Duration(milliseconds: 180),
+      );
       expect(find.text('Transparent Balance'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
