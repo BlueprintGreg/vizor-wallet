@@ -673,6 +673,7 @@ void main() {
       jsonDecode(_rust.pendingAtImport!),
       containsPair('mnemonic', _mnemonic),
     );
+    expect(_rust.freshImports.last, isTrue);
     expect(await store.readAccountMnemonic(uuid), _mnemonic);
     await accounts().clearPendingGiftAccountSetup(accountUuid: 'uuid-1');
     expect(await pending(), isNull);
@@ -1659,6 +1660,7 @@ class _GiftAccountRustApi implements RustLibApi {
   bool importedAdditionalAccount = false;
   String? importedDbPath;
   int importCalls = 0;
+  final freshImports = <bool>[];
   int addCalls = 0;
   int hardwareImportCalls = 0;
   final hardwareUfvks = <String, String>{};
@@ -1778,8 +1780,10 @@ class _GiftAccountRustApi implements RustLibApi {
     required String network,
     required String dbPath,
     String? accountName,
+    required bool fresh,
   }) async {
     importCalls++;
+    freshImports.add(fresh);
     importedDbPath = dbPath;
     pendingAtImport = await store.readSecretStringWithOptions(
       kPendingAccountMnemonicStorageKey,
@@ -1856,6 +1860,7 @@ class _GiftAccountRustApi implements RustLibApi {
       network: network,
       dbPath: dbPath,
       accountName: firstAccountName,
+      fresh: false,
     );
     importedBip39Passphrase = bip39Passphrase;
     importedAdditionalAccount = additionalAccountIndices.contains(1);
