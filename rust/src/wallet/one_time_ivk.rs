@@ -162,6 +162,20 @@ pub(crate) fn with_db<T, E: From<String>>(
     })
 }
 
+/// Declares `uuid`'s account newly created from a seed generated for it, so it has no
+/// one-time payments to restore (see `WalletDb::mark_one_time_account_fresh`). Account
+/// creation calls it before returning, so before any sync sees the account. A failure
+/// leaves the account treated as restored, which costs only lookups.
+pub(crate) fn mark_fresh(path: &str, network: WalletNetwork, uuid: &str) {
+    let marked = with_db(path, network, uuid, |db, account| {
+        db.mark_one_time_account_fresh(account)
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = marked {
+        log::warn!("one-time IVKs: could not mark a new account fresh: {e}");
+    }
+}
+
 /// Keeps every software account's one-time key recovery current, under the wallet write
 /// lock. Sync calls it only at its start (see `run_sync_impl`), and only where
 /// [`supported`]; it runs with both privacy switches off, since only new address
@@ -387,6 +401,55 @@ mod tests {
         )
         .unwrap();
         assert!(!scanning(&db, &address));
+    }
+
+    /// Accounts the app creates from a seed it generated start fresh, so no early restore
+    /// or restore sweep runs for them. A payment-link claim imports the link's seed, which
+    /// is not fresh.
+    #[test]
+    fn created_accounts_are_fresh_but_a_claimed_seed_is_not() {
+        use super::super::keys::generate_mnemonic;
+        use crate::api::wallet as api;
+
+        let dir = tempfile::tempdir().unwrap();
+        super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
+        let fresh = |path: &str, uuid: &str| -> bool {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM ironwood_one_time_fresh_accounts f
+                     JOIN accounts a ON a.id = f.account_id WHERE a.uuid = ?1)",
+                    [parse_account_uuid(uuid).unwrap().expose_uuid()],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
+        let created = api::create_wallet("regtest".into(), path.clone(), Some(100), None).unwrap();
+        let added = api::add_account(
+            path.clone(),
+            "regtest".into(),
+            "Added".into(),
+            generate_mnemonic(),
+            String::new(),
+            Some(100),
+        )
+        .unwrap();
+        assert!(fresh(&path, &created.account_uuid));
+        assert!(fresh(&path, &added.account_uuid));
+
+        let claim = dir.path().join("claim.db").to_str().unwrap().to_owned();
+        let claimed = api::import_wallet(
+            generate_mnemonic(),
+            String::new(),
+            Some(100),
+            "regtest".into(),
+            claim.clone(),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!fresh(&claim, &claimed.account_uuid));
     }
 
     /// One-time IVKs cover the first account and accounts added from another seed,

@@ -14,13 +14,17 @@ import 'api/sync.dart';
 import 'api/voting.dart';
 import 'api/voting_session.dart';
 import 'api/wallet.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'network_privacy.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'third_party/zcash_voting/config.dart';
 import 'third_party/zcash_voting/delegate.dart';
 import 'third_party/zcash_voting/share_policy.dart';
@@ -854,6 +858,7 @@ abstract class RustLibApi extends BaseApi {
     required String network,
     required String dbPath,
     String? accountName,
+    required bool fresh,
   });
 
   Future<void> crateApiSimpleInitApp();
@@ -6712,6 +6717,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String network,
     required String dbPath,
     String? accountName,
+    required bool fresh,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -6723,6 +6729,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(network, serializer);
           sse_encode_String(dbPath, serializer);
           sse_encode_opt_String(accountName, serializer);
+          sse_encode_bool(fresh, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -6742,6 +6749,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           network,
           dbPath,
           accountName,
+          fresh,
         ],
         apiImpl: this,
       ),
@@ -6757,6 +6765,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       "network",
       "dbPath",
       "accountName",
+      "fresh",
     ],
   );
 
