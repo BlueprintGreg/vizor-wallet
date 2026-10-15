@@ -139,8 +139,8 @@ void main() {
     final primary = defaultRpcEndpointConfig('main');
     final container = _container(
       primary: primary,
-      chainNameByUrl: {'https://eu2.zec.stardust.rest:443': 'main'},
-      heightByUrl: {'https://eu2.zec.stardust.rest:443': BigInt.from(12)},
+      chainNameByUrl: {'https://zec.rocks:443': 'main'},
+      heightByUrl: {'https://zec.rocks:443': BigInt.from(12)},
     );
     addTearDown(container.dispose);
 
@@ -158,8 +158,8 @@ void main() {
         );
 
     final state = container.read(rpcEndpointFailoverProvider);
-    expect(result, 'eu2.zec.stardust.rest:443');
-    expect(state.current.presetId, 'eu2-zec-stardust');
+    expect(result, 'zec.rocks:443');
+    expect(state.current.presetId, 'zec-rocks');
   });
 
   test('rotates from a failed fallback to the next healthy preset', () async {
@@ -168,11 +168,11 @@ void main() {
       primary: primary,
       chainNameByUrl: {
         'https://eu.zec.stardust.rest:443': 'main',
-        'https://eu2.zec.stardust.rest:443': 'main',
+        'https://zec.rocks:443': 'main',
       },
       heightByUrl: {
         'https://eu.zec.stardust.rest:443': BigInt.from(10),
-        'https://eu2.zec.stardust.rest:443': BigInt.from(11),
+        'https://zec.rocks:443': BigInt.from(11),
       },
     );
     addTearDown(container.dispose);
@@ -196,7 +196,7 @@ void main() {
 
     state = container.read(rpcEndpointFailoverProvider);
     expect(switched, isTrue);
-    expect(state.current.presetId, 'eu2-zec-stardust');
+    expect(state.current.presetId, 'zec-rocks');
     expect(
       state.lastEvent?.kind,
       RpcEndpointFailoverEventKind.switchedToFallback,
@@ -211,11 +211,11 @@ void main() {
         primary: primary,
         chainNameByUrl: {
           'https://eu.zec.stardust.rest:443': 'main',
-          'https://eu2.zec.stardust.rest:443': 'main',
+          'https://zec.rocks:443': 'main',
         },
         heightByUrl: {
           'https://eu.zec.stardust.rest:443': BigInt.from(10),
-          'https://eu2.zec.stardust.rest:443': BigInt.from(11),
+          'https://zec.rocks:443': BigInt.from(11),
         },
       );
       addTearDown(container.dispose);
@@ -240,10 +240,10 @@ void main() {
         },
       );
 
-      expect(result, 'eu2-zec-stardust');
+      expect(result, 'zec-rocks');
       expect(
         container.read(rpcEndpointFailoverProvider).current.presetId,
-        'eu2-zec-stardust',
+        'zec-rocks',
       );
     },
   );
@@ -466,14 +466,14 @@ void main() {
     final heightByUrl = <String, BigInt>{
       primaryUrl: BigInt.from(100),
       'https://eu.zec.stardust.rest:443': BigInt.from(102),
-      'https://eu2.zec.stardust.rest:443': BigInt.from(104),
+      'https://zec.rocks:443': BigInt.from(104),
     };
     final container = _container(
       primary: primary,
       clock: () => now,
       chainNameByUrl: {
         'https://eu.zec.stardust.rest:443': 'main',
-        'https://eu2.zec.stardust.rest:443': 'main',
+        'https://zec.rocks:443': 'main',
       },
       heightByUrl: heightByUrl,
     );
@@ -488,7 +488,7 @@ void main() {
     expect(await notifier.getLatestBlockHeight(), BigInt.from(104));
 
     final state = container.read(rpcEndpointFailoverProvider);
-    expect(state.current.presetId, 'eu2-zec-stardust');
+    expect(state.current.presetId, 'zec-rocks');
   });
 
   test(
