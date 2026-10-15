@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/shield_hardware_motion.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/particles/particle_field.dart';
@@ -41,6 +42,74 @@ Widget _content(LedgerSigningStage stage, VoidCallback close) =>
     );
 
 void main() {
+  for (final inline in [false, true]) {
+    for (final scale in [1.0, 2.5]) {
+      testWidgets('Ledger status has a trailing loader with no inactive slot '
+          '(shield: $inline, text scale: $scale)', (tester) async {
+        const boundsKey = ValueKey('status-bounds');
+        Future<void> show(String label, {required bool active}) async {
+          Widget child = MobileLedgerStatus(label, active: active);
+          if (inline) {
+            child = ShieldHardwarePresentation(
+              mix: 1,
+              footerOpacity: 1,
+              footerDy: 0,
+              interactive: true,
+              child: child,
+            );
+          }
+          await tester.pumpWidget(
+            MaterialApp(
+              home: AppTheme(
+                data: AppThemeData.dark,
+                child: MediaQuery(
+                  data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+                  child: Center(
+                    child: SizedBox(key: boundsKey, width: 264, child: child),
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 250));
+        }
+
+        final loader = find.byWidgetPredicate(
+          (widget) => widget is AppIcon && widget.name == AppIcons.loader,
+        );
+        await show('Preparing to sign', active: true);
+        final text = tester.getRect(find.text('Preparing to sign'));
+        final icon = tester.getRect(loader);
+        final bounds = tester.getRect(find.byKey(boundsKey));
+        expect(icon.left - text.right, closeTo(8, 0.01));
+        expect(icon.center.dy, closeTo(text.center.dy, 0.01));
+        expect((text.left + icon.right) / 2, closeTo(bounds.center.dx, 0.01));
+
+        const prompt = 'Follow the prompts on your Ledger';
+        await show(prompt, active: false);
+        expect(loader, findsNothing);
+        final inactiveText = tester.getRect(find.text(prompt));
+        final row = tester.getRect(
+          find.descendant(
+            of: find.byType(MobileLedgerStatus),
+            matching: find.byType(Row),
+          ),
+        );
+        expect(row.width, closeTo(inactiveText.width, 0.01));
+        expect(inactiveText.center.dx, closeTo(bounds.center.dx, 0.01));
+        expect(inactiveText.left, greaterThanOrEqualTo(bounds.left));
+        expect(inactiveText.right, lessThanOrEqualTo(bounds.right));
+
+        await show('Checking Bluetooth access…', active: true);
+        final wrapped = tester.getRect(find.text('Checking Bluetooth access…'));
+        expect(tester.getRect(loader).right, lessThanOrEqualTo(bounds.right));
+        expect(wrapped.left, greaterThanOrEqualTo(bounds.left));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+  }
+
   testWidgets(
     'late result amounts retarget the same live cloud after a long signing wait',
     (tester) async {

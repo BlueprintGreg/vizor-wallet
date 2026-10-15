@@ -150,6 +150,7 @@ class MobileLedgerStatus extends StatelessWidget {
     final motion = ShieldHardwarePresentation.maybeOf(context);
     final labelWidget = Text(
       label,
+      textAlign: TextAlign.center,
       style: AppTypography.bodySmall.copyWith(
         color: context.colors.text.accent,
       ),
@@ -160,29 +161,29 @@ class MobileLedgerStatus extends StatelessWidget {
       child: ExcludeSemantics(
         child: Padding(
           padding: const EdgeInsets.only(top: AppSpacing.md),
-          child: Row(
-            children: [
-              if (active || motion != null) ...[
-                Opacity(
-                  opacity: active ? 1 : 0,
-                  child: AppIcon(
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: motion == null
+                      ? labelWidget
+                      : ShieldStageTransition(
+                          identity: label,
+                          child: labelWidget,
+                        ),
+                ),
+                if (active) ...[
+                  const SizedBox(width: AppSpacing.xs),
+                  AppIcon(
                     AppIcons.loader,
                     animated: true,
                     size: 20,
                     color: context.colors.icon.regular,
                   ),
-                ),
-                const SizedBox(width: AppSpacing.xs),
+                ],
               ],
-              Expanded(
-                child: motion == null
-                    ? labelWidget
-                    : ShieldStageTransition(
-                        identity: label,
-                        child: labelWidget,
-                      ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

@@ -652,8 +652,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   Widget _functionalContent(BoxConstraints constraints) {
     if (widget.animateHardware) {
       final interactive = _hardware.interactive && widget.focusChild != null;
+      final horizontal = constraints.maxWidth < 360 ? 28.0 : 32.0;
       return Padding(
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+        padding: EdgeInsets.fromLTRB(horizontal, 16, horizontal, 20),
         child: ShieldHardwarePresentation(
           mix: _hardware.mix,
           footerOpacity: _hardware.footer,
@@ -667,7 +668,10 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                 ignoring: !interactive,
                 child: Center(
                   child: SizedBox(
-                    width: math.min(360, constraints.maxWidth),
+                    width: math.min(
+                      360,
+                      math.max(0, constraints.maxWidth - horizontal * 2),
+                    ),
                     height: double.infinity,
                     child: widget.focusChild ?? _hardwareChild,
                   ),
