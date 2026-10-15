@@ -42,8 +42,7 @@ const kNearSwapPrivacyInfoParagraphs = [
       'several swaps, are still shared with NEAR and can link those swaps. '
       "Hardware wallet accounts don't use one-time addresses.",
   'Your recovery phrase still recovers everything. When you restore your '
-      'wallet, it finds these payments using private queries, which is why '
-      'Private queries needs to be on.',
+      'wallet, it finds these payments privately, even with these settings off.',
   "Turning this off doesn't affect swaps you've already made. Their refunds "
       'and payouts still arrive.',
 ];
