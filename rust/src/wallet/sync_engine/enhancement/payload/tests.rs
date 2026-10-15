@@ -322,9 +322,13 @@ impl RecoveryWallet for Wallet {
         _: &EnhanceRecord,
     ) -> Result<EnhancePirStoreResult, EnhancePirRunError> {
         assert!(
-            self.pending.contains(&request),
+            !self.applied.contains(&u64::from(request.position())),
             "replayed an already committed request"
         );
+        // Like the wallet, a request another record resolved changes nothing.
+        if !self.pending.contains(&request) {
+            return Ok(EnhancePirStoreResult::AlreadyResolved);
+        }
         if let Some(cancel) = &self.cancel_on_apply {
             cancel.set(true);
         }
@@ -815,6 +819,36 @@ async fn a_stale_routing_retry_skips_rows_that_failed_on_content() {
     assert_eq!(forged.applied, [40]);
     assert_eq!((posts, inits), (honest_posts, honest_inits));
     assert_eq!(forged.unreadable, [vec![request(0)]], "counted once");
+}
+
+/// A retry after stale routing asks the batch's rows that were not asked
+/// before the refusal, whatever the replies before it said. A record that
+/// moves its whole transaction to public enhancement clears the requests of
+/// the rows not yet asked; a retry read afresh from the wallet would then ask
+/// fewer rows than after an honest reply, showing the service what its reply
+/// said.
+#[tokio::test]
+async fn a_stale_routing_retry_asks_the_same_rows_whatever_a_reply_cleared() {
+    let run = |clears: bool| async move {
+        // The second row's query meets stale routing; the retry succeeds.
+        let service = Service::new([None, Some(409)]);
+        let mut wallet = Wallet::new(&THREE_ROWS);
+        if clears {
+            wallet.transparent_at = Some(0);
+        }
+        sync()
+            .run_queries(&mut wallet, &service, &|| false)
+            .await
+            .unwrap();
+        let transcript = service.transcript.borrow().clone();
+        (transcript, wallet)
+    };
+    let (honest, honest_wallet) = run(false).await;
+    assert_eq!(honest_wallet.applied, THREE_ROWS);
+    let (forged, forged_wallet) = run(true).await;
+    assert_eq!(forged_wallet.applied, [0]);
+    assert_eq!(forged_wallet.public, [PROTECTED]);
+    assert_eq!(forged, honest, "the retry asks the same rows");
 }
 
 #[tokio::test]
