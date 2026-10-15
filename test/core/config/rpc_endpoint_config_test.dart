@@ -243,45 +243,48 @@ void main() {
       expect(config.presetId, kCustomRpcEndpointPresetId);
     });
 
-    test('resolves a removed built-in preset to the active network default', () {
-      final mainnet = resolveStoredRpcEndpointConfig(
-        networkName: 'main',
-        storedUrl: 'https://eu2.zec.stardust.rest:443',
-        storedPresetId: 'eu2-zec-stardust',
-      );
-      expect(mainnet.networkName, 'main');
-      expect(mainnet.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
-      expect(mainnet.presetId, kDefaultRpcEndpointPresetId);
-      expect(fallbackRpcEndpointCandidatesFor(mainnet), isNotEmpty);
+    test(
+      'resolves a removed built-in preset to the active network default',
+      () {
+        final mainnet = resolveStoredRpcEndpointConfig(
+          networkName: 'main',
+          storedUrl: 'https://eu2.zec.stardust.rest:443',
+          storedPresetId: 'eu2-zec-stardust',
+        );
+        expect(mainnet.networkName, 'main');
+        expect(mainnet.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
+        expect(mainnet.presetId, kDefaultRpcEndpointPresetId);
+        expect(fallbackRpcEndpointCandidatesFor(mainnet), isNotEmpty);
 
-      final japan = resolveStoredRpcEndpointConfig(
-        networkName: 'main',
-        storedUrl: 'jp.zec.stardust.rest:443',
-        storedPresetId: 'jp-zec-stardust',
-      );
-      expect(japan.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
-      expect(japan.presetId, kDefaultRpcEndpointPresetId);
+        final japan = resolveStoredRpcEndpointConfig(
+          networkName: 'main',
+          storedUrl: 'jp.zec.stardust.rest:443',
+          storedPresetId: 'jp-zec-stardust',
+        );
+        expect(japan.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
+        expect(japan.presetId, kDefaultRpcEndpointPresetId);
 
-      final testnet = resolveStoredRpcEndpointConfig(
-        networkName: 'test',
-        storedUrl: 'https://jp.zec.stardust.rest:443',
-        storedPresetId: 'jp-zec-stardust',
-      );
-      expect(testnet.networkName, 'test');
-      expect(testnet.presetId, 'default-testnet');
-      expect(testnet.lightwalletdUrl, 'https://testnet.zec.rocks:443');
+        final testnet = resolveStoredRpcEndpointConfig(
+          networkName: 'test',
+          storedUrl: 'https://jp.zec.stardust.rest:443',
+          storedPresetId: 'jp-zec-stardust',
+        );
+        expect(testnet.networkName, 'test');
+        expect(testnet.presetId, 'default-testnet');
+        expect(testnet.lightwalletdUrl, 'https://testnet.zec.rocks:443');
 
-      final presetIdWinsOverUrl = resolveStoredRpcEndpointConfig(
-        networkName: 'main',
-        storedUrl: 'https://example.com:443',
-        storedPresetId: 'eu2-zec-stardust',
-      );
-      expect(presetIdWinsOverUrl.presetId, kDefaultRpcEndpointPresetId);
-      expect(
-        presetIdWinsOverUrl.lightwalletdUrl,
-        'https://us.zec.stardust.rest:443',
-      );
-    });
+        final presetIdWinsOverUrl = resolveStoredRpcEndpointConfig(
+          networkName: 'main',
+          storedUrl: 'https://example.com:443',
+          storedPresetId: 'eu2-zec-stardust',
+        );
+        expect(presetIdWinsOverUrl.presetId, kDefaultRpcEndpointPresetId);
+        expect(
+          presetIdWinsOverUrl.lightwalletdUrl,
+          'https://us.zec.stardust.rest:443',
+        );
+      },
+    );
 
     test('keeps an unrecognized preset id with a live URL as custom', () {
       final config = resolveStoredRpcEndpointConfig(
@@ -294,28 +297,34 @@ void main() {
       expect(config.lightwalletdUrl, 'https://example.com:443');
     });
 
-    test('resolves a removed host saved as a custom endpoint to the default', () {
-      final config = resolveStoredRpcEndpointConfig(
-        networkName: 'main',
-        storedUrl: 'https://EU2.zec.stardust.rest:443',
-        storedPresetId: kCustomRpcEndpointPresetId,
-      );
+    test(
+      'resolves a removed host saved as a custom endpoint to the default',
+      () {
+        final config = resolveStoredRpcEndpointConfig(
+          networkName: 'main',
+          storedUrl: 'https://EU2.zec.stardust.rest:443',
+          storedPresetId: kCustomRpcEndpointPresetId,
+        );
 
-      expect(config.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
-      expect(config.presetId, kDefaultRpcEndpointPresetId);
-      expect(config.effectivePresetId, kDefaultRpcEndpointPresetId);
-    });
+        expect(config.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
+        expect(config.presetId, kDefaultRpcEndpointPresetId);
+        expect(config.effectivePresetId, kDefaultRpcEndpointPresetId);
+      },
+    );
 
-    test('resolves a removed host stored without a preset id to the default', () {
-      final config = resolveStoredRpcEndpointConfig(
-        networkName: 'main',
-        storedUrl: 'https://jp.zec.stardust.rest',
-        storedPresetId: null,
-      );
+    test(
+      'resolves a removed host stored without a preset id to the default',
+      () {
+        final config = resolveStoredRpcEndpointConfig(
+          networkName: 'main',
+          storedUrl: 'https://jp.zec.stardust.rest',
+          storedPresetId: null,
+        );
 
-      expect(config.presetId, kDefaultRpcEndpointPresetId);
-      expect(config.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
-    });
+        expect(config.presetId, kDefaultRpcEndpointPresetId);
+        expect(config.lightwalletdUrl, 'https://us.zec.stardust.rest:443');
+      },
+    );
   });
 
   group('RpcEndpointConfig', () {

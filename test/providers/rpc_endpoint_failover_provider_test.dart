@@ -36,9 +36,7 @@ void main() {
       isFalse,
     );
     expect(
-      shouldFallbackFromLightwalletdError(
-        'private status coverage incomplete',
-      ),
+      shouldFallbackFromLightwalletdError('private status coverage incomplete'),
       isFalse,
     );
   });
