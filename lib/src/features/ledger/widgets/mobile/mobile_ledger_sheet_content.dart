@@ -4,6 +4,7 @@ import '../../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_icon.dart';
+import '../../../home/widgets/mobile/shield/shield_hardware_motion.dart';
 
 /// Mobile-only content. The host owns the scrim and MobileModalCard.
 class MobileLedgerSheetContent extends StatelessWidget {
@@ -11,11 +12,15 @@ class MobileLedgerSheetContent extends StatelessWidget {
     required this.title,
     required this.onClose,
     required this.children,
+    this.actions = const [],
+    this.titleHeight,
     super.key,
   });
   final String title;
   final VoidCallback? onClose;
   final List<Widget> children;
+  final List<Widget> actions;
+  final double? titleHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -23,23 +28,89 @@ class MobileLedgerSheetContent extends StatelessWidget {
         context
             .dependOnInheritedWidgetOfExactType<LedgerInlinePresentation>() !=
         null;
+    final motion = inline ? ShieldHardwarePresentation.maybeOf(context) : null;
+    final heading = Text(
+      title,
+      textAlign: TextAlign.center,
+      style: AppTypography.headlineSmall.copyWith(
+        color: const Color(0xFFFFFFFF),
+      ),
+    );
+    final header = motion == null
+        ? heading
+        : SizedBox(
+            height: titleHeight,
+            child: Center(
+              child: ShieldStageTransition(identity: title, child: heading),
+            ),
+          );
+    final buttons = <Widget>[
+      ...actions,
+      if (inline && onClose != null) ...[
+        const SizedBox(height: AppSpacing.md),
+        MobileLedgerAction('Back to wallet', onPressed: onClose),
+      ],
+    ];
+    if (motion != null) {
+      return Column(
+        children: [
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, bounds) => SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: bounds.maxWidth,
+                    minHeight: bounds.maxHeight,
+                  ),
+                  child: Center(
+                    child: Opacity(
+                      opacity: motion.mix,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          header,
+                          const SizedBox(height: AppSpacing.md),
+                          ...children,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          ExcludeSemantics(
+            excluding: !motion.interactive,
+            child: ExcludeFocus(
+              excluding: !motion.interactive,
+              child: IgnorePointer(
+                ignoring: !motion.interactive,
+                child: Opacity(
+                  opacity: motion.footerOpacity,
+                  child: Transform.translate(
+                    offset: Offset(0, motion.footerDy),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: buttons,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     final body = Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: inline
           ? CrossAxisAlignment.center
           : CrossAxisAlignment.stretch,
       children: [
-        if (inline) ...[
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: AppTypography.headlineSmall.copyWith(
-              color: const Color(0xFFFFFFFF),
-            ),
-          ),
-          const SizedBox(height: AppSpacing.md),
-        ],
+        if (inline) ...[header, const SizedBox(height: AppSpacing.md)],
         ...children,
+        ...actions,
         if (inline && onClose != null) ...[
           const SizedBox(height: AppSpacing.md),
           MobileLedgerAction('Back to wallet', onPressed: onClose),
@@ -75,36 +146,48 @@ class MobileLedgerStatus extends StatelessWidget {
   final String label;
   final bool active;
   @override
-  Widget build(BuildContext context) => Semantics(
-    liveRegion: true,
-    label: label,
-    child: ExcludeSemantics(
-      child: Padding(
-        padding: const EdgeInsets.only(top: AppSpacing.md),
-        child: Row(
-          children: [
-            if (active) ...[
-              AppIcon(
-                AppIcons.loader,
-                animated: true,
-                size: 20,
-                color: context.colors.icon.regular,
-              ),
-              const SizedBox(width: AppSpacing.xs),
-            ],
-            Expanded(
-              child: Text(
-                label,
-                style: AppTypography.bodySmall.copyWith(
-                  color: context.colors.text.accent,
+  Widget build(BuildContext context) {
+    final motion = ShieldHardwarePresentation.maybeOf(context);
+    final labelWidget = Text(
+      label,
+      style: AppTypography.bodySmall.copyWith(
+        color: context.colors.text.accent,
+      ),
+    );
+    return Semantics(
+      liveRegion: true,
+      label: label,
+      child: ExcludeSemantics(
+        child: Padding(
+          padding: const EdgeInsets.only(top: AppSpacing.md),
+          child: Row(
+            children: [
+              if (active || motion != null) ...[
+                Opacity(
+                  opacity: active ? 1 : 0,
+                  child: AppIcon(
+                    AppIcons.loader,
+                    animated: true,
+                    size: 20,
+                    color: context.colors.icon.regular,
+                  ),
                 ),
+                const SizedBox(width: AppSpacing.xs),
+              ],
+              Expanded(
+                child: motion == null
+                    ? labelWidget
+                    : ShieldStageTransition(
+                        identity: label,
+                        child: labelWidget,
+                      ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class MobileLedgerIdentity extends StatelessWidget {

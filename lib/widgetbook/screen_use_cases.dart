@@ -1,3 +1,4 @@
+import '../figma_compare/ledger_shield_capture.dart';
 import '../figma_compare/keystone_shield_capture.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../src/features/onboarding/import/desktop_import_method_selection_screen.dart';
@@ -1716,6 +1717,35 @@ Widget buildMobileKeystoneShieldHomeFlowUseCase(BuildContext context) =>
           ),
     );
 
+Widget buildMobileLedgerShieldHomeFlowUseCase(BuildContext context) =>
+    _buildMobileHomeUseCase(
+      accountState: _accountsDesignState.copyWith(
+        accounts: [
+          AccountInfo(
+            uuid: _accountsDesignState.activeAccountUuid!,
+            name: 'Ledger',
+            order: 0,
+            isHardware: true,
+            hardwareSignerKind: HardwareSignerKind.ledger,
+            profilePictureId: kDefaultProfilePictureId,
+          ),
+        ],
+      ),
+      votingVisible: false,
+      shieldFlow: true,
+      ledgerShieldPreview: true,
+      syncState:
+          _homeSyncedState(
+            orchardBalance: BigInt.from(1492000000),
+            transparentBalance: BigInt.from(1412000000),
+            canShieldTransparentBalance: true,
+            recentTransactions: [_homeTx(1), _homeTx(2)],
+          ).copyWith(
+            shieldTransparentAmount: BigInt.from(1411990000),
+            shieldTransparentFee: BigInt.from(10000),
+          ),
+    );
+
 Widget buildMobileHomeGiftCardsUseCase(BuildContext context) {
   final transactions = _previewGiftCardActivityTransactions();
   return _buildMobileHomeUseCase(
@@ -3368,6 +3398,7 @@ Widget _buildMobileHomeUseCase({
   bool inheritWalletState = false,
   bool shieldFlow = false,
   bool keystoneShieldPreview = false,
+  bool ledgerShieldPreview = false,
   bool votingVisible = true,
   required AccountState accountState,
   required SyncState syncState,
@@ -3392,6 +3423,7 @@ Widget _buildMobileHomeUseCase({
     showStaticIronwoodAnnouncement: showStaticIronwoodAnnouncement,
     shieldFlow: shieldFlow,
     keystoneShieldPreview: keystoneShieldPreview,
+    ledgerShieldPreview: ledgerShieldPreview,
   );
   return ProviderScope(
     overrides: [
@@ -4181,6 +4213,7 @@ class _MobileHomeHarness extends StatefulWidget {
     required this.showStaticIronwoodAnnouncement,
     this.shieldFlow = false,
     this.keystoneShieldPreview = false,
+    this.ledgerShieldPreview = false,
   });
 
   final String initialLocation;
@@ -4188,6 +4221,7 @@ class _MobileHomeHarness extends StatefulWidget {
   final bool showStaticIronwoodAnnouncement;
   final bool shieldFlow;
   final bool keystoneShieldPreview;
+  final bool ledgerShieldPreview;
 
   @override
   State<_MobileHomeHarness> createState() => _MobileHomeHarnessState();
@@ -4197,6 +4231,29 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
   late final GoRouter _router;
   final _privacyController = SensitivePrivacyOverlayController();
 
+  Widget _shieldPreview(BuildContext context, GoRouterState state) {
+    void submitted() =>
+        (ProviderScope.containerOf(
+                  context,
+                  listen: false,
+                ).read(syncProvider.notifier)
+                as _PreviewShieldSyncNotifier)
+            .finishShielding(BigInt.from(1411990000));
+    void close() => context.pop();
+    final backdrop = state.extra as MobileShieldBackdrop?;
+    return widget.ledgerShieldPreview
+        ? LedgerShieldMotionPreview(
+            backdrop: backdrop,
+            onSubmitted: submitted,
+            onClose: close,
+          )
+        : KeystoneShieldMotionPreview(
+            backdrop: backdrop,
+            onSubmitted: submitted,
+            onClose: close,
+          );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -4205,9 +4262,11 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
         initialLocation: widget.initialLocation,
         routes: [
           for (final route in buildMobileRoutes(entryRoutes: const []))
-            if (widget.keystoneShieldPreview &&
-                route is GoRoute &&
-                route.path == '/home/keystone-shield')
+            if (route is GoRoute &&
+                ((widget.keystoneShieldPreview &&
+                        route.path == '/home/keystone-shield') ||
+                    (widget.ledgerShieldPreview &&
+                        route.path == '/home/ledger-shield')))
               GoRoute(
                 path: route.path,
                 pageBuilder: (context, state) => CustomTransitionPage(
@@ -4217,17 +4276,7 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
                   reverseTransitionDuration: const Duration(milliseconds: 340),
                   transitionsBuilder: (_, animation, _, child) =>
                       FadeTransition(opacity: animation, child: child),
-                  child: KeystoneShieldMotionPreview(
-                    backdrop: state.extra as MobileShieldBackdrop?,
-                    onSubmitted: () =>
-                        (ProviderScope.containerOf(
-                                  context,
-                                  listen: false,
-                                ).read(syncProvider.notifier)
-                                as _PreviewShieldSyncNotifier)
-                            .finishShielding(BigInt.from(1411990000)),
-                    onClose: () => context.pop(),
-                  ),
+                  child: _shieldPreview(context, state),
                 ),
               )
             else

@@ -15,6 +15,7 @@ import 'shield_background.dart';
 import 'shield_haptics.dart';
 import 'shield_icon.dart';
 import 'shield_motion.dart';
+import 'shield_hardware_motion.dart';
 import 'shield_particle_art.dart';
 import 'shield_timeline.dart';
 import 'slide_to_shield.dart';
@@ -39,6 +40,7 @@ class MobileShieldScene extends StatefulWidget {
     this.onClose,
     this.onComplete,
     this.canLeave = true,
+    this.animateHardware = false,
     super.key,
   });
   final MobileShieldPhase phase;
@@ -55,6 +57,7 @@ class MobileShieldScene extends StatefulWidget {
   final VoidCallback? onClose;
   final VoidCallback? onComplete;
   final bool canLeave;
+  final bool animateHardware;
 
   @override
   State<MobileShieldScene> createState() => _MobileShieldSceneState();
@@ -85,6 +88,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   KeystoneShieldMorph? _keystone;
   String? _keystoneFocusTitle;
   Widget? _keystoneFooter;
+  bool _retargeting = false;
+  final _hardware = ShieldHardwareMotion();
+  Widget? _hardwareChild;
 
   bool get _review => widget.phase == MobileShieldPhase.review;
   double? get _a => _assemblyAt == null ? null : _clock.value - _assemblyAt!;
@@ -94,6 +100,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   void initState() {
     super.initState();
     _backdropImage = widget.backdrop?.image.clone();
+    _hardwareChild = widget.focusChild;
     if (widget.keystoneFocus != null) {
       _keystone = KeystoneShieldMorph()..configure(widget.keystoneFocus!);
       _keystoneFocusTitle = widget.title;
@@ -110,8 +117,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     final reduce = MediaQuery.disableAnimationsOf(context);
     if (reduce != _reduce) {
       _reduce = reduce;
-      _field?.dispose();
-      _field = null;
+      _field?.reduceMotion = reduce;
     }
     if (!_ticker.isActive && !_review) _ticker.start();
   }
@@ -119,6 +125,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   @override
   void didUpdateWidget(MobileShieldScene oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.focusChild != null) _hardwareChild = widget.focusChild;
     if (widget.keystoneFocus != null) {
       if (widget.keystoneFocus!.stage != KeystoneShieldFocusStage.cloud) {
         _keystoneFocusTitle = widget.title;
@@ -137,6 +144,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     }
     if (oldWidget.amount != widget.amount ||
         oldWidget.resultAmount != widget.resultAmount) {
+      _retargeting = _art != null;
       _prepare();
     }
     if (oldWidget.phase == MobileShieldPhase.review && !_review) {
@@ -193,12 +201,17 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
         art.dispose();
         return;
       }
-      _field?.dispose();
-      _field = null;
+      if (_layout != null) {
+        _field?.updateTargets(_geometry(art, _layout!), art.atlas);
+      }
       final old = _art;
-      setState(() => _art = art);
+      setState(() {
+        _art = art;
+        _retargeting = false;
+      });
       old?.dispose();
     } catch (error, stack) {
+      if (mounted && generation == _preparation) _retargeting = false;
       debugPrint('Shield artwork preparation failed: $error\n$stack');
       // Keep the readable amounts and real operation controls usable even if
       // decorative assets cannot be prepared.
@@ -274,6 +287,14 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     final step = (elapsed - _elapsed).inMicroseconds / 1e6;
     _elapsed = elapsed;
     final t = _clock.value + math.max(0.0, step);
+    if (widget.animateHardware) {
+      _hardware.reduceMotion = _reduce;
+      _hardware.configure(
+        widget.focusChild != null && t >= ShieldTimeline.fall.end,
+        _clock.value,
+      );
+      _hardware.update(t);
+    }
     if (_art != null && _field == null && _layout != null) {
       _field = ParticleField(
         geometry: _geometry(_art!, _layout!),
@@ -283,6 +304,8 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
     }
     if (widget.phase == MobileShieldPhase.succeeded &&
         _assemblyAt == null &&
+        !_retargeting &&
+        (!widget.animateHardware || !_hardware.active) &&
         (_keystone?.cloudReady ?? true) &&
         t >= 3) {
       _assemblyAt = t;
@@ -435,13 +458,18 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
                           _layout?.headingHeight != layout.headingHeight ||
                           _layout?.amountHeight != layout.amountHeight) {
                         _layout = layout;
-                        _field?.dispose();
-                        _field = null;
+                        if (_art != null) {
+                          _field?.updateTargets(
+                            _geometry(_art!, layout),
+                            _art!.atlas,
+                          );
+                        }
                       }
                       return AnimatedBuilder(
                         animation: _clock,
                         builder: (_, _) {
                           final auxiliary =
+                              (widget.animateHardware && _hardware.active) ||
                               (_keystone?.active ?? false) ||
                               widget.focusChild != null ||
                               widget.focusBuilder != null ||
@@ -622,6 +650,34 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
   );
 
   Widget _functionalContent(BoxConstraints constraints) {
+    if (widget.animateHardware) {
+      final interactive = _hardware.interactive && widget.focusChild != null;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+        child: ShieldHardwarePresentation(
+          mix: _hardware.mix,
+          footerOpacity: _hardware.footer,
+          footerDy: _hardware.footerDy,
+          interactive: interactive,
+          child: ExcludeSemantics(
+            excluding: !interactive,
+            child: ExcludeFocus(
+              excluding: !interactive,
+              child: IgnorePointer(
+                ignoring: !interactive,
+                child: Center(
+                  child: SizedBox(
+                    width: math.min(360, constraints.maxWidth),
+                    height: double.infinity,
+                    child: widget.focusChild ?? _hardwareChild,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     final morph = _keystone;
     final footer =
         widget.footer ?? (morph?.active == true ? _keystoneFooter : null);
@@ -860,14 +916,17 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       child: Stack(
         clipBehavior: Clip.hardEdge,
         children: [
-          if (_art != null && !_review && !auxiliary)
+          if (_art != null &&
+              !_review &&
+              (!auxiliary || widget.animateHardware))
             Positioned.fill(
               child: CustomPaint(
                 painter: _CloudGlow(
                   _art!,
                   layout.cloudCenter,
                   layout.artScale,
-                  ShieldTimeline.glowTextIn.eased(t) *
+                  (widget.animateHardware ? 1 - _hardware.mix : 1) *
+                      ShieldTimeline.glowTextIn.eased(t) *
                       (1 -
                           (a == null
                               ? 0.0
@@ -882,8 +941,14 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
             Positioned.fill(
               child: RepaintBoundary(
                 child: CustomPaint(
-                  painter: auxiliary && !(_keystone?.active ?? false)
-                      ? _FocusParticles(_field!, layout.cloudCenter)
+                  painter:
+                      widget.animateHardware ||
+                          (auxiliary && !(_keystone?.active ?? false))
+                      ? _FocusParticles(
+                          _field!,
+                          layout.cloudCenter,
+                          mix: widget.animateHardware ? _hardware.mix : 1,
+                        )
                       : ParticlePainter(_field!),
                 ),
               ),
@@ -978,7 +1043,9 @@ class _CloudGlow extends CustomPainter {
 /// Fade particles out behind readable hardware content without carving a
 /// rectangular frame into the cloud. The QR itself keeps its white quiet zone.
 class _FocusParticles extends CustomPainter {
-  _FocusParticles(this.field, this.center) : super(repaint: field);
+  _FocusParticles(this.field, this.center, {this.mix = 1})
+    : super(repaint: field);
+  final double mix;
   final ParticleField field;
   final Offset center;
   @override
@@ -986,7 +1053,7 @@ class _FocusParticles extends CustomPainter {
     canvas.saveLayer(Offset.zero & size, Paint());
     canvas.save();
     canvas.translate(center.dx, center.dy);
-    canvas.scale(1.35);
+    canvas.scale(1 + 0.35 * mix);
     canvas.translate(-center.dx, -center.dy);
     field.paint(canvas);
     canvas.restore();
@@ -997,7 +1064,11 @@ class _FocusParticles extends CustomPainter {
         ..shader = ui.Gradient.radial(
           center,
           math.min(size.width * 0.7, 260),
-          const [Color(0x00FFFFFF), Color(0x33FFFFFF), Color(0x88FFFFFF)],
+          [
+            Color.fromRGBO(255, 255, 255, 1 - mix),
+            Color.fromRGBO(255, 255, 255, 1 - 0.8 * mix),
+            Color.fromRGBO(255, 255, 255, 1 - (1 - 0x88 / 255) * mix),
+          ],
           const [0, 0.5, 1],
         ),
     );
@@ -1006,7 +1077,7 @@ class _FocusParticles extends CustomPainter {
 
   @override
   bool shouldRepaint(_FocusParticles old) =>
-      old.field != field || old.center != center;
+      old.field != field || old.center != center || old.mix != mix;
 }
 
 class _AmountDissolve extends StatelessWidget {

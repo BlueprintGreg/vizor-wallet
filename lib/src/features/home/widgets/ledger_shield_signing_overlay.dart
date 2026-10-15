@@ -700,6 +700,7 @@ class _LedgerShieldSigningOverlayState
           children: [
             MobileShieldScene(
               backdrop: widget.mobileBackdrop,
+              animateHardware: true,
               phase: !_momentStarted
                   ? MobileShieldPhase.review
                   : _momentComplete

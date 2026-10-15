@@ -91,6 +91,15 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'mobile-ledger-shield-home-flow',
+    description: 'Ledger shielding stages and continuous particle resolution',
+    allowPointer: true,
+    builder: buildMobileLedgerShieldHomeFlowUseCase,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-keystone-shield-home-flow',
     description: 'Keystone shielding: QR and camera particle transitions',
     allowPointer: true,

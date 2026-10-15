@@ -121,9 +121,61 @@ class ParticleField extends ChangeNotifier {
     _seed();
   }
 
-  final FieldGeometry geometry;
-  final SpriteAtlas atlas;
-  final bool reduceMotion;
+  FieldGeometry geometry;
+  SpriteAtlas atlas;
+  bool reduceMotion;
+
+  /// Replace artwork destinations without replaying the initial balance fall.
+  /// Live positions, velocities, fades, springs and event clocks stay intact.
+  void updateTargets(FieldGeometry next, SpriteAtlas nextAtlas) {
+    assert(next.count == n);
+    final old = geometry;
+    final targets = ParticleField(
+      geometry: next,
+      atlas: nextAtlas,
+      reduceMotion: reduceMotion,
+    );
+    void copy(Float64List to, Float64List from) => to.setAll(0, from);
+    for (final pair in [
+      (_homeX, targets._homeX),
+      (_homeY, targets._homeY),
+      (_homeZ, targets._homeZ),
+      (_cloudSize, targets._cloudSize),
+      (_cloudAlpha, targets._cloudAlpha),
+      (_aX, targets._aX),
+      (_aY, targets._aY),
+      (_release, targets._release),
+      (_shX, targets._shX),
+      (_shY, targets._shY),
+      (_shZ, targets._shZ),
+      (_shSize, targets._shSize),
+      (_shAlpha, targets._shAlpha),
+      (_bX, targets._bX),
+      (_bY, targets._bY),
+      (_delayB, targets._delayB),
+    ]) {
+      copy(pair.$1, pair.$2);
+    }
+    _icon.setAll(0, targets._icon);
+    _stray.setAll(0, targets._stray);
+    // A viewport change maps the current cloud into the new coordinate space.
+    final scale = next.shieldRect.width / old.shieldRect.width;
+    if (scale != 1 || next.cloudCenter != old.cloudCenter) {
+      for (var i = 0; i < n; i++) {
+        _x[i] = next.cloudCenter.dx + (_x[i] - old.cloudCenter.dx) * scale;
+        _y[i] = next.cloudCenter.dy + (_y[i] - old.cloudCenter.dy) * scale;
+        _vx[i] *= scale;
+        _vy[i] *= scale;
+        _eStartX[i] =
+            next.cloudCenter.dx + (_eStartX[i] - old.cloudCenter.dx) * scale;
+        _eStartY[i] =
+            next.cloudCenter.dy + (_eStartY[i] - old.cloudCenter.dy) * scale;
+      }
+    }
+    geometry = next;
+    atlas = nextAtlas;
+    targets.dispose();
+  }
 
   /// Human approval steps keep the visual ambience without repeated impacts.
   bool hapticsEnabled = true;
@@ -497,6 +549,26 @@ class ParticleField extends ChangeNotifier {
   /// loading completed (null while still loading).
   void update(double t, double? a) {
     final last = _lastUpdate;
+    // Late artwork availability must start in the current cloud, rather than
+    // applying many seconds of gravity to a newly attached particle.
+    if (last == null && t > ShieldTimeline.fall.end + 0.1) {
+      for (var i = 0; i < n; i++) {
+        _mode[i] = _Mode.cloud;
+        _x[i] = _homeX[i];
+        _y[i] = _homeY[i];
+        _z[i] = _homeZ[i];
+        _setSpring(i, 0.3, 0.92);
+        _fadeTo(
+          i,
+          t,
+          0.1,
+          size: _cloudSize[i],
+          alpha: _cloudAlpha[i],
+          white: 0,
+          from: (_cloudSize[i], _cloudAlpha[i], 0),
+        );
+      }
+    }
     final dt = last == null ? 0.0 : (t - last).clamp(0.0, 1 / 30);
     _lastUpdate = t;
     _t = t;
