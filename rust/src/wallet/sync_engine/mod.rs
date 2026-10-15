@@ -3164,6 +3164,12 @@ async fn run_sync_impl(
         }) {
             log::warn!("One-time IVK maintenance deferred: {e}");
         }
+        // Before the first scan batch, so a restored account's keys are registered while
+        // none of its history is scanned (see [`swap_private::start_early_restores`]).
+        // Background preparation syncs skip it, as they skip sweeps.
+        if running_mode != 2 && !should_exit() {
+            swap_private::start_early_restores(&db, db_data_path, network, cancel.clone()).await;
+        }
     }
     // The main-phase rewind budget also covers a reorg detected by the
     // initial tip response, before the scan queue has been created.
