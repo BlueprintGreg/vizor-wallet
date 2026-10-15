@@ -200,7 +200,10 @@ void main() {
     // update.
     final row = find.byKey(const ValueKey('transparent_details_unavailable'));
     expect(
-      find.descendant(of: row, matching: find.text('Details unavailable')),
+      find.descendant(
+        of: row,
+        matching: find.text(kTransparentDetailsGaveUpText),
+      ),
       findsOneWidget,
     );
     expect(find.text(kTransparentDetailsUnavailableText), findsNothing);

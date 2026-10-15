@@ -877,7 +877,9 @@ async fn stale_routing_refreshes_equal_coverage_and_retries_only_unfinished_work
                 .generation,
             2
         );
-        assert!(wallet.reads.get() >= 3);
+        // The retry asks the unasked rows of the batch it read, without
+        // reading the wallet afresh.
+        assert!(wallet.reads.get() >= 2);
         let posts = service.posts.borrow();
         assert_ne!(
             posts[1].request_id, posts[2].request_id,
@@ -1123,7 +1125,10 @@ async fn a_truncated_row_reply_leaves_the_request_transcript_unchanged() {
     let (wallet, deferred, transcript) = drain_once(&service, &THREE_ROWS).await;
     assert_eq!(transcript, honest_transcript, "the same requests, in order");
     assert_eq!(wallet.applied, [40, 70], "the later rows are still applied");
-    assert!(wallet.unreadable.is_empty(), "a request outcome counts nothing");
+    assert!(
+        wallet.unreadable.is_empty(),
+        "a request outcome counts nothing"
+    );
     assert!(deferred, "a request outcome defers private Enhance");
 }
 
@@ -1189,7 +1194,11 @@ impl RecoveryWallet for RealWallet {
     fn work(&self) -> Result<RoutedWork, EnhancePirRunError> {
         self.0.work()
     }
-    fn accept(&self, network: WalletNetwork, m: &Manifest) -> Result<Acceptance, EnhancePirRunError> {
+    fn accept(
+        &self,
+        network: WalletNetwork,
+        m: &Manifest,
+    ) -> Result<Acceptance, EnhancePirRunError> {
         // The scripted anchor is not in this wallet's chain.
         Wallet::new(&[]).accept(network, m)
     }
@@ -1234,7 +1243,9 @@ impl EnhancementEffects<RealWallet> for NoEffects {
 /// does not ask for it.
 #[tokio::test]
 async fn three_unreadable_rows_suspend_the_position_in_the_wallet() {
-    use zcash_client_backend::data_api::enhance_pir::{EnhancementMode, TransactionEnhancementWork};
+    use zcash_client_backend::data_api::enhance_pir::{
+        EnhancementMode, TransactionEnhancementWork,
+    };
     let (_dir, path, pending) =
         crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
     let mut db = crate::wallet::db::open_wallet_db_with_timeout(
