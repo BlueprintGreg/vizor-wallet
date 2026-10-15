@@ -842,6 +842,16 @@ bool shouldStartSyncForPolledTip(
 int recoveryRestartUnits(rust_sync.EnhanceRecoveryStatus recovery) =>
     recovery.queries + recovery.rediscovery + recovery.status;
 
+/// Public transparent-service deadlines have their own rate limit in Rust.
+/// They must not wait behind the unrelated payload/status backoff.
+@visibleForTesting
+bool shouldRestartRecovery(
+  rust_sync.EnhanceRecoveryStatus recovery,
+  RecoveryRestartGate gate,
+) =>
+    recovery.transparentRetryDue ||
+    gate.shouldRestart(recoveryRestartUnits(recovery));
+
 /// How often a quiet sync starts during the window after a seed import.
 const kSeedImportSyncInterval = Duration(seconds: 10);
 
@@ -2808,7 +2818,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         // Leave the gate's deadline alone rather than clearing it.
         recoveryRestart =
             recovery != null &&
-            _recoveryRestartGate.shouldRestart(recoveryRestartUnits(recovery));
+            shouldRestartRecovery(recovery, _recoveryRestartGate);
       }
       if (shouldStartSyncForPolledTip(
         current,

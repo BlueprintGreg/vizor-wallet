@@ -186,7 +186,8 @@ where
                     "transaction status: local wallet database read failed",
                 ));
             }
-            // A reply that did not decode is about this txid's row: a
+            // The private source reserves Malformed for a row decode error
+            // after accepting the manifest, setup and query envelope. Such a
             // service could aim it at chosen rows. The work stays durable
             // for a later sync, and the other txids are still asked, so
             // nothing else in the sync changes.

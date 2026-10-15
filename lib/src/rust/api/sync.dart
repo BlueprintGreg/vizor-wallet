@@ -1771,6 +1771,10 @@ class EnhanceRecoveryStatus {
   /// deferred private status failure leaves these durable without payload
   /// work, so they count toward a recovery-only sync restart.
   final int status;
+
+  /// A public transparent-service wait expired. Retry only its accounts,
+  /// independently of the payload/status backoff and without a new block.
+  final bool transparentRetryDue;
   final String serviceState;
 
   const EnhanceRecoveryStatus({
@@ -1778,6 +1782,7 @@ class EnhanceRecoveryStatus {
     required this.rediscovery,
     required this.suspended,
     required this.status,
+    required this.transparentRetryDue,
     required this.serviceState,
   });
 
@@ -1787,6 +1792,7 @@ class EnhanceRecoveryStatus {
       rediscovery.hashCode ^
       suspended.hashCode ^
       status.hashCode ^
+      transparentRetryDue.hashCode ^
       serviceState.hashCode;
 
   @override
@@ -1798,6 +1804,7 @@ class EnhanceRecoveryStatus {
           rediscovery == other.rediscovery &&
           suspended == other.suspended &&
           status == other.status &&
+          transparentRetryDue == other.transparentRetryDue &&
           serviceState == other.serviceState;
 }
 

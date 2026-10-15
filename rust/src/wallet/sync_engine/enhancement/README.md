@@ -212,14 +212,9 @@ does not send those requests. HTTP 409/410 instead refresh routing once and
 retry unfinished work. None of these request failures consumes the content
 failure allowance.
 
-A newly queued position waits a random time of up to 75 seconds before its
-first query (`EnhancePirWork::Waiting`). It is pending, not complete, and
-does not cause a recovery restart while waiting. Once due, ordinary pending
-work can be picked up by block processing or the existing recovery retry
-schedule, including at an unchanged tip. Work a reply created remains blocked
-until the next block even if its timer expires first: before/after snapshots
-keep waiting request identities as well as ready ones. The delay is therefore
-not a bound on when the recovered memo appears.
+Newly queued payload positions have no artificial first-query delay. Work a
+reply creates still waits for the next block and cannot trigger a same-block
+recovery restart. First-query timing protection is deferred for separate analysis.
 
 Accepted routing, pending routing, rediscovery attempts, and
 `private_failed_for_sync` are session-scoped. Successfully persisted records
@@ -283,6 +278,12 @@ snapshot anchor is below it, the lookup drops the bound and accepts only
 positive records; a missing record is then `CoverageIncomplete`. `Mempool` and
 `Forked` are distinct source observations but both persist as the wallet's
 not-in-main-chain state.
+
+Manifest/setup validation failures and oversized, truncated, or incorrectly
+bound query responses defer private status for the session and leave the
+transaction eligible for the ordinary recovery backoff. Only malformed
+contents of a row received in a valid query envelope suppress that transaction
+until the next block. Neither path permits a public fallback.
 
 `CoverageIncomplete` is an explicit feedback gate. `GetStatus` work is
 expected to be highly unlikely in private mode, so Vizor surfaces a clear

@@ -440,10 +440,9 @@ impl RoutedPayloadEnhancement {
         }
         let remaining = db.work()?.prepared();
         log::info!(
-            "sync: private recovery has {} active queries, {} rediscovery jobs, {} positions waiting for their first query, and {} suspended obligations",
+            "sync: private recovery has {} active queries, {} rediscovery jobs, {} suspended obligations",
             remaining.query_count(),
             remaining.rediscover.len(),
-            remaining.waiting,
             remaining.suspended
         );
         Ok(())
@@ -583,7 +582,9 @@ mod tests {
             row(ClientError::Transport("connection reset".into())),
             row(ClientError::HttpStatus(500)),
             row(ClientError::Generation("session rotated".into())),
-            row(ClientError::Json(serde_json::from_str::<u8>("x").unwrap_err())),
+            row(ClientError::Json(
+                serde_json::from_str::<u8>("x").unwrap_err(),
+            )),
             ClientError::HttpStatus(503),
             ClientError::Transport("connection reset".into()),
         ] {
