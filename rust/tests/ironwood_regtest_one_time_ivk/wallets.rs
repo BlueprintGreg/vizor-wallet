@@ -89,6 +89,8 @@ impl Wallet {
             NETWORK.into(),
             db.clone(),
             Some(name.to_owned()),
+            // Restored, as every wallet the scenarios import may hold swap history.
+            false,
         )
         .unwrap_or_else(|e| panic!("import {name}: {e}"));
         Self {
