@@ -40,8 +40,8 @@ const kNearSwapPrivacyInfoTitle = "What's this?";
 const kNearSwapPrivacyInfoParagraphs = [
   'When you swap with NEAR Intents, your wallet gives NEAR a Zcash address for '
       'the payout and another for any refund. With NEAR swap privacy on, each '
-      'swap gets new Zcash addresses made just for it, so NEAR and anyone '
-      "watching the chain can't tie them to your wallet or to your other swaps.",
+      'swap gets new Zcash addresses made just for it, so any future quantum '
+      "adversary can't tie them to your wallet or to your other swaps.",
   'Addresses you enter yourself, like an Ethereum address you reuse for '
       'several swaps, are still shared with NEAR and can link those swaps. '
       "Hardware wallet accounts don't use one-time addresses.",
