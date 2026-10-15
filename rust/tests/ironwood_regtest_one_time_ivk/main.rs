@@ -532,6 +532,7 @@ fn refund_is_found_live_and_by_a_later_restore() {
         b.total(),
         a.total()
     );
+    assert!(b.early_restore_accepted(), "B's restore scan looked for the refund");
     world.spend_all(&b);
 }
 

@@ -217,6 +217,18 @@ impl Wallet {
             .expect("the one-time-key note count")
     }
 
+    /// Whether the wallet's early restore accepted its publication, so the restore scan
+    /// itself looked for the account's one-time payments.
+    pub fn early_restore_accepted(&self) -> bool {
+        self.read_only()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM ironwood_one_time_restores WHERE state = 1)",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the early restore state")
+    }
+
     /// Whether the key behind one-time `receiver` stopped scanning.
     pub fn key_closed(&self, receiver: &[u8; 43]) -> bool {
         self.read_only()
