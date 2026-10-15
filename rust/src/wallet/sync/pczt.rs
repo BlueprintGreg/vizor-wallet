@@ -358,12 +358,9 @@ pub(crate) fn expiry_height_from_io_finalized_pczt(pczt_bytes: &[u8]) -> Result<
     Ok(u32::from(effects.expiry_height()))
 }
 
-fn legacy_orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
-    cached_orchard_proving_key(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2)
-}
-
 fn ironwood_orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
     cached_orchard_proving_key(ironwood_orchard_circuit_version())
+        .expect("the current Orchard circuit supports proving")
 }
 
 /// Starts process-lifetime post-NU6.3 Orchard proving-key warm-up.
@@ -445,8 +442,8 @@ fn prepare_ironwood_commitments() {
 /// the same branch-keyed mapping when parsing the bundle). In particular a
 /// post-NU6.3 legacy-V5 transaction still carries an `orchard_v3`-format
 /// bundle, so it needs the post-NU6.3 keys; branches at or before NU6.2 use
-/// the fixed post-NU6.2 circuit (never the insecure pre-NU6.2 one — the
-/// wallet only proves new transactions, never reconstructs historical keys).
+/// the fixed post-NU6.2 circuit for verification. Common v3 rejects proving
+/// with historical circuits; a request to add such a proof returns an error.
 fn orchard_circuit_version_for_consensus_branch(
     consensus_branch_id: u32,
 ) -> orchard::circuit::OrchardCircuitVersion {
@@ -463,14 +460,11 @@ fn orchard_circuit_version_for_consensus_branch(
 /// consensus branch (see [`orchard_circuit_version_for_consensus_branch`]).
 fn orchard_proving_key_for_consensus_branch(
     consensus_branch_id: u32,
-) -> &'static orchard::circuit::ProvingKey {
-    if orchard_circuit_version_for_consensus_branch(consensus_branch_id)
-        == orchard::circuit::OrchardCircuitVersion::PostNu6_3
-    {
-        ironwood_orchard_proving_key()
-    } else {
-        legacy_orchard_proving_key()
-    }
+) -> Result<&'static orchard::circuit::ProvingKey, String> {
+    cached_orchard_proving_key(orchard_circuit_version_for_consensus_branch(
+        consensus_branch_id,
+    ))
+    .map_err(|e| format!("Orchard proving circuit is unsupported: {e:?}"))
 }
 
 /// Builds the Orchard verifying key for the circuit implied by a PCZT's
@@ -908,7 +902,7 @@ pub fn add_proofs_to_pczt(
         prover = prover
             .create_orchard_proof(orchard_proving_key_for_consensus_branch(
                 consensus_branch_id,
-            ))
+            )?)
             .map_err(|e| format!("Orchard proof: {e:?}"))?;
     }
 
@@ -3009,7 +3003,7 @@ mod tests {
     fn orchard_circuit_version_follows_consensus_branch() {
         use zcash_protocol::consensus::BranchId;
 
-        // Branches at or before NU6.2 prove/verify the Orchard pool under the
+        // Branches at or before NU6.2 verify the Orchard pool under the
         // fixed post-NU6.2 circuit. NU6.2 matches the crate's own bundle-format
         // mapping; earlier branches deliberately do NOT (the crate maps them to
         // the insecure pre-NU6.2 format, which the wallet never proves with).
@@ -3063,16 +3057,18 @@ mod tests {
         });
         assert_eq!(spawn_calls.load(Ordering::Relaxed), 1);
 
-        let builder_key = cached_orchard_proving_key(ironwood_orchard_circuit_version());
+        let builder_key = cached_orchard_proving_key(ironwood_orchard_circuit_version()).unwrap();
         assert!(std::ptr::eq(ironwood_orchard_proving_key(), builder_key));
         assert!(builder_key.prepare_proving());
+    }
 
-        let legacy_builder_key =
-            cached_orchard_proving_key(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2);
-        assert!(std::ptr::eq(
-            legacy_orchard_proving_key(),
-            legacy_builder_key
-        ));
+    #[test]
+    fn historical_orchard_proving_returns_an_error() {
+        let error = orchard_proving_key_for_consensus_branch(u32::from(
+            zcash_protocol::consensus::BranchId::Nu6_2,
+        ))
+        .unwrap_err();
+        assert!(error.contains("Orchard proving circuit is unsupported"));
     }
 
     #[test]

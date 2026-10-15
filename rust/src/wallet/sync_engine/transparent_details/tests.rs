@@ -2128,7 +2128,7 @@ fn genuine_mixed(fixture: &Fixture, height: u32) -> Transaction {
         .unwrap()
         .address_at(0u32, orchard::keys::Scope::External);
     let mut keys = transparent::builder::TransparentSigningSet::new();
-    let pubkey = keys.add_key(secp256k1::SecretKey::from_slice(&[0x5a; 32]).unwrap());
+    let pubkey = keys.add_key(secp256k1::SecretKey::from_secret_bytes([0x5a; 32]).unwrap());
     let coin = transparent::bundle::TxOut::new(
         Zatoshis::const_from_u64(1_000_000),
         TransparentAddress::from_pubkey(&pubkey).script().into(),
