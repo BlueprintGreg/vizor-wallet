@@ -5151,6 +5151,7 @@ fn wire__crate__api__wallet__import_wallet_impl(
             let api_network = <String>::sse_decode(&mut deserializer);
             let api_db_path = <String>::sse_decode(&mut deserializer);
             let api_account_name = <Option<String>>::sse_decode(&mut deserializer);
+            let api_fresh = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
@@ -5161,6 +5162,7 @@ fn wire__crate__api__wallet__import_wallet_impl(
                         api_network,
                         api_db_path,
                         api_account_name,
+                        api_fresh,
                     )?;
                     Ok(output_ok)
                 })())
