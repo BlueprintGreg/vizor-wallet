@@ -109,6 +109,14 @@ final kMainnetRpcEndpointPresets = List<RpcEndpointPreset>.unmodifiable([
     label: 'Zec Rocks Europe',
     url: 'https://eu.zec.rocks:443',
   ),
+  // Failover follows list order. Keep this third Stardust host after the
+  // Global, Americas, and Europe Zec Rocks hosts.
+  const RpcEndpointPreset(
+    id: 'kr-zec-stardust',
+    region: 'Asia Pacific',
+    label: 'Stardust Korea',
+    url: 'https://kr.zec.stardust.rest:443',
+  ),
   const RpcEndpointPreset(
     id: 'ap-zec-rocks',
     region: 'Asia Pacific',
