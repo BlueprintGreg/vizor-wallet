@@ -15,9 +15,6 @@ abstract final class ShieldTimeline {
   static const headerOut = Window(0.00, 0.26);
   static const sliderOut = Window(0.08, 0.28);
 
-  /// Balance lifts slightly before it drops (anticipation).
-  static const lift = Window(0.10, 0.14);
-
   /// Gravity drop; the glyphs crumble bottom-up over the same window.
   static const fall = Window(0.24, 0.50);
 
@@ -79,18 +76,14 @@ abstract final class ShieldTimeline {
 
   // ── Balance fall transform (shared by the crisp text and its particles) ──
 
-  static const liftDistance = 5.0;
   static const fallDistance = 60.0;
 
   /// Vertical offset of the overlay balance at time [t] after commit.
   static double fallDy(double t) {
-    if (t <= lift.start) return 0;
-    if (t < fall.start) {
-      return -liftDistance * VMotion.easeOut.transform(lift.progress(t));
-    }
+    if (t <= fall.start) return 0;
     // Gravity: position grows with u², so velocity grows linearly.
     final u = (t - fall.start) / fall.duration;
-    return -liftDistance + fallDistance * u * u;
+    return fallDistance * u * u;
   }
 
   /// Downward speed (pt/s) of the balance at time [t]; handed to each
@@ -101,7 +94,7 @@ abstract final class ShieldTimeline {
     return 2 * fallDistance * u / fall.duration;
   }
 
-  /// Keep the balance at its review size on the lift, then recede into
+  /// Keep the balance at its review size before the fall, then recede into
   /// depth as it falls.
   static double fallScale(double t) {
     if (t < fall.start) return 1;
