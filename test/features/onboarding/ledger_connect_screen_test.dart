@@ -2,13 +2,18 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/theme/legacy_material_theme.dart';
+import 'package:zcash_wallet/src/core/layout/app_desktop_shell.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
+import 'package:zcash_wallet/src/core/widgets/app_pane_modal_overlay.dart';
 import 'package:zcash_wallet/src/core/widgets/app_text_field.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_account_service.dart';
 import 'package:zcash_wallet/src/features/ledger/ledger_capability.dart';
@@ -17,6 +22,7 @@ import 'package:zcash_wallet/src/features/ledger/services/ledger_failure_guidanc
 import 'package:zcash_wallet/src/features/ledger/services/ledger_mobile_ble_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_modal_content.dart';
 import 'package:zcash_wallet/src/features/onboarding/ledger/ledger_connect_screen.dart';
 import 'package:zcash_wallet/src/features/onboarding/ledger/ledger_setup_args.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
@@ -26,6 +32,105 @@ import 'package:zcash_wallet/src/rust/api/ledger.dart' as rust_ledger;
 import '../../figma_compare/figma_compare_font_loader.dart';
 
 void main() {
+  testWidgets(
+    'connection and failure stay centered inside the onboarding pane',
+    (tester) async {
+      await _setDesktopViewport(tester);
+      final pending = Completer<LedgerDeviceAccount>();
+      await tester.pumpWidget(
+        _harness(
+          connector: (_) => pending.future,
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      final pane = tester.getRect(find.byType(AppDesktopPane));
+      final connect = find.byKey(const ValueKey('ledger_connect_button'));
+      await tester.tap(connect);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final modal = find.byType(LedgerModalContent);
+      expect(tester.getCenter(modal).dx, closeTo(pane.center.dx, 0.1));
+      expect(tester.getRect(find.byType(AppPaneModalOverlay)), pane);
+
+      pending.completeError(StateError('USB device unavailable'));
+      await tester.pumpAndSettle();
+      expect(find.text('Could not connect Ledger'), findsOneWidget);
+      expect(tester.getCenter(modal).dx, closeTo(pane.center.dx, 0.1));
+      expect(tester.getRect(find.byType(AppPaneModalOverlay)), pane);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(modal, findsNothing);
+      expect(tester.widget<AppButton>(connect).onPressed, isNotNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('pane dismissal drains the request and ignores a late account', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    final pending = Completer<LedgerDeviceAccount>();
+    final stopped = Completer<void>();
+    var cancellations = 0;
+    await tester.pumpWidget(
+      _harness(
+        connector: (_) => pending.future,
+        canceller: () async {
+          cancellations++;
+          await stopped.future;
+        },
+        importer:
+            ({
+              required name,
+              required account,
+              required birthdayHeight,
+              required profilePictureId,
+            }) async {},
+      ),
+    );
+    await tester.pumpAndSettle();
+    final connect = find.byKey(const ValueKey('ledger_connect_button'));
+    await tester.tap(connect);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    final pane = tester.getRect(find.byType(AppDesktopPane));
+    await tester.tapAt(pane.topLeft + const Offset(12, 12));
+    await tester.pump();
+    expect(cancellations, 0);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.text('Cancelling request'), findsOneWidget);
+    expect(cancellations, 1);
+    expect(tester.widget<AppButton>(connect).onPressed, isNull);
+
+    pending.complete(
+      const LedgerDeviceAccount(
+        ufvk: 'late-account',
+        seedFingerprint: [1],
+        accountIndex: 0,
+        appVersion: '3.9.4',
+      ),
+    );
+    await tester.pump();
+    expect(find.text('birthday-late-account'), findsNothing);
+    stopped.complete();
+    await tester.pumpAndSettle();
+    expect(find.byType(LedgerModalContent), findsNothing);
+    expect(tester.widget<AppButton>(connect).onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
     testWidgets('$platform imports over USB without a Bluetooth option', (
       tester,
@@ -953,119 +1058,168 @@ void main() {
     await loadFigmaCompareFonts();
     await tester.binding.setSurfaceSize(const Size(1080, 720));
     addTearDown(() async => tester.binding.setSurfaceSize(null));
-    for (final scene in [
-      'start',
-      'advanced',
-      'devices',
-      'opening',
-      'opening-declined',
-      'opening-retry',
-      'approval',
-      'declined',
-    ]) {
-      final pending = Completer<LedgerDeviceAccount>();
-      var attempts = 0;
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump();
-      const boundary = ValueKey('ledger_capture');
-      await tester.pumpWidget(
-        RepaintBoundary(
-          key: boundary,
-          child: _harness(
-            connector: (_) {
-              attempts++;
-              if (scene == 'declined') {
-                return Future.error(StateError(_deviceRejected));
-              }
-              if ((scene == 'opening-declined' || scene == 'opening-retry') &&
-                  attempts == 1) {
-                return Future.error(
-                  const LedgerAppReadinessException(
-                    LedgerAppReadinessFailure.rejected,
-                    'App opening rejected',
-                    cause: LedgerMobileException(
-                      LedgerMobileFailure.rejected,
-                      'App opening rejected',
-                    ),
-                  ),
-                );
-              }
-              return pending.future;
-            },
-            bleService: _FakeLedgerBleService(),
-            readiness: scene == 'approval'
-                ? const LedgerAppReadinessState.ready('3.9.4')
-                : const LedgerAppReadinessState.inProgress(
-                    LedgerAppReadinessPhase.confirmOpening,
-                  ),
-            importer:
-                ({
-                  required name,
-                  required account,
-                  required birthdayHeight,
-                  required profilePictureId,
-                }) async {},
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      if (scene == 'advanced') {
-        await tester.tap(
-          find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
-        );
-        await tester.pumpAndSettle();
-      } else if (scene == 'devices') {
-        await tester.tap(
-          find.byKey(const ValueKey('ledger_transport_bluetooth')),
-        );
-        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
-        await tester.pumpAndSettle();
-      } else if (scene != 'start') {
-        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+    for (final theme in [AppThemeData.light, AppThemeData.dark]) {
+      for (final scene in [
+        'start',
+        'usb-hover',
+        'bluetooth-hover',
+        'advanced',
+        'advanced-hover',
+        'devices',
+        'opening',
+        'opening-declined',
+        'opening-retry',
+        'approval',
+        'declined',
+        'failed',
+        'large-text',
+        'advanced-large-text',
+      ]) {
+        final pending = Completer<LedgerDeviceAccount>();
+        var attempts = 0;
+        await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 400));
-        await tester.pump(const Duration(milliseconds: 400));
-        if (scene == 'opening-retry') {
-          await tester.tap(find.text('Try again'));
+        const boundary = ValueKey('ledger_capture');
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: boundary,
+            child: _harness(
+              theme: theme,
+              textScaler: scene.endsWith('large-text')
+                  ? const TextScaler.linear(2)
+                  : TextScaler.noScaling,
+              connector: (_) {
+                attempts++;
+                if (scene == 'failed') {
+                  return Future.error(StateError('USB device unavailable'));
+                }
+                if (scene == 'declined') {
+                  return Future.error(StateError(_deviceRejected));
+                }
+                if ((scene == 'opening-declined' || scene == 'opening-retry') &&
+                    attempts == 1) {
+                  return Future.error(
+                    const LedgerAppReadinessException(
+                      LedgerAppReadinessFailure.rejected,
+                      'App opening rejected',
+                      cause: LedgerMobileException(
+                        LedgerMobileFailure.rejected,
+                        'App opening rejected',
+                      ),
+                    ),
+                  );
+                }
+                return pending.future;
+              },
+              bleService: _FakeLedgerBleService(),
+              readiness: scene == 'approval'
+                  ? const LedgerAppReadinessState.ready('3.9.4')
+                  : const LedgerAppReadinessState.inProgress(
+                      LedgerAppReadinessPhase.confirmOpening,
+                    ),
+              importer:
+                  ({
+                    required name,
+                    required account,
+                    required birthdayHeight,
+                    required profilePictureId,
+                  }) async {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        if (scene.startsWith('advanced')) {
+          await tester.ensureVisible(
+            find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
+          );
+          await tester.tap(
+            find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
+          );
+          await tester.pumpAndSettle();
+        } else if (scene == 'devices') {
+          await tester.tap(
+            find.byKey(const ValueKey('ledger_transport_bluetooth')),
+          );
+          await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+          await tester.pumpAndSettle();
+        } else if (![
+          'start',
+          'usb-hover',
+          'bluetooth-hover',
+          'large-text',
+        ].contains(scene)) {
+          await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 400));
+          await tester.pump(const Duration(milliseconds: 400));
+          if (scene == 'opening-retry') {
+            await tester.tap(find.text('Try again'));
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 400));
+          }
+          if (scene == 'failed') {
+            expect(find.text('Could not connect Ledger'), findsOneWidget);
+          } else {
+            expect(find.byType(LedgerProcedure), findsOneWidget);
+            expect(
+              find.text(
+                scene == 'declined'
+                    ? 'Sharing was declined on Ledger. Try again when you’re ready.'
+                    : scene == 'opening-declined'
+                    ? 'Opening Zcash was declined on Ledger. Try again when you’re ready.'
+                    : scene == 'approval'
+                    ? 'Approve sharing your viewing key with Vizor.'
+                    : 'Confirm opening Zcash on Ledger.',
+              ),
+              findsOneWidget,
+            );
+          }
         }
-        expect(find.byType(LedgerProcedure), findsOneWidget);
-        expect(
-          find.text(
-            scene == 'declined'
-                ? 'Sharing was declined on Ledger. Try again when you’re ready.'
-                : scene == 'opening-declined'
-                ? 'Opening Zcash was declined on Ledger. Try again when you’re ready.'
-                : scene == 'approval'
-                ? 'Approve sharing your viewing key with Vizor.'
-                : 'Confirm opening Zcash on Ledger.',
-          ),
-          findsOneWidget,
-        );
-      }
-      expect(tester.takeException(), isNull);
-      await expectLater(
-        find.byKey(boundary),
-        matchesGoldenFile(File('$output/connection-$scene.png').uri),
-      );
-      if (!pending.isCompleted) {
-        if (scene == 'opening' ||
-            scene == 'opening-retry' ||
-            scene == 'approval') {
-          pending.completeError(StateError(_deviceRejected));
-        } else {
-          pending.complete(
-            const LedgerDeviceAccount(
-              ufvk: 'unused-capture',
-              seedFingerprint: [1],
-              accountIndex: 0,
-              appVersion: '3.9.4',
+        TestGesture? mouse;
+        if (scene.endsWith('-hover')) {
+          mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+          await mouse.addPointer(location: Offset.zero);
+          await mouse.moveTo(
+            tester.getCenter(
+              find.byKey(
+                ValueKey(switch (scene) {
+                  'usb-hover' => 'ledger_transport_usb',
+                  'bluetooth-hover' => 'ledger_transport_bluetooth',
+                  _ => 'ledger_advanced_options_disclosure',
+                }),
+              ),
             ),
           );
+          await tester.pumpAndSettle();
         }
+        expect(tester.takeException(), isNull);
+        await expectLater(
+          find.byKey(boundary),
+          matchesGoldenFile(
+            File(
+              '$output/connection-$scene${theme == AppThemeData.dark ? '-dark' : ''}.png',
+            ).uri,
+          ),
+        );
+        await mouse?.removePointer();
+        if (!pending.isCompleted) {
+          if (scene == 'opening' ||
+              scene == 'opening-retry' ||
+              scene == 'approval') {
+            pending.completeError(StateError(_deviceRejected));
+          } else {
+            pending.complete(
+              const LedgerDeviceAccount(
+                ufvk: 'unused-capture',
+                seedFingerprint: [1],
+                accountIndex: 0,
+                appVersion: '3.9.4',
+              ),
+            );
+          }
+        }
+        await tester.pump(const Duration(milliseconds: 400));
       }
-      await tester.pump(const Duration(milliseconds: 400));
     }
   }, tags: ['figma-capture']);
 
@@ -1180,6 +1334,8 @@ Widget _harness({
   LedgerMobileBleService? bleService,
   LedgerOperationCanceller? canceller,
   TargetPlatform platform = TargetPlatform.macOS,
+  AppThemeData theme = AppThemeData.light,
+  TextScaler textScaler = TextScaler.noScaling,
 }) {
   final router = GoRouter(
     initialLocation: '/onboarding/ledger',
@@ -1222,8 +1378,17 @@ Widget _harness({
     ],
     child: MaterialApp.router(
       debugShowCheckedModeBanner: false,
+      theme: buildLegacyLightTheme(),
+      darkTheme: buildLegacyDarkTheme(),
+      themeMode: theme == AppThemeData.dark ? ThemeMode.dark : ThemeMode.light,
       routerConfig: router,
-      builder: (_, child) => AppTheme(data: AppThemeData.light, child: child!),
+      builder: (context, child) => AppTheme(
+        data: theme,
+        child: MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+          child: child!,
+        ),
+      ),
     ),
   );
 }

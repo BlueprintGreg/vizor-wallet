@@ -770,6 +770,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'ledger-device-selection',
     description: 'Ledger select before Bluetooth interaction',
     builder: buildLedgerDeviceSelectionCapture,
+    allowPointer: true,
     desktop: true,
     mobile: true,
   ),

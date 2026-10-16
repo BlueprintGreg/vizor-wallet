@@ -102,12 +102,14 @@ class DesktopLedgerSigningContent extends StatelessWidget {
           child: Text(actionLabel!),
         );
       } else if (onCancel != null) {
-        footer = AppButton(
-          onPressed: onCancel,
-          size: AppButtonSize.mediumLarge,
-          variant: AppButtonVariant.ghost,
-          expand: true,
-          child: Text(cancelLabel),
+        footer = Center(
+          child: AppButton(
+            onPressed: onCancel,
+            size: AppButtonSize.mediumLarge,
+            variant: AppButtonVariant.ghost,
+            minWidth: kAppModalButtonMinWidth,
+            child: Text(cancelLabel),
+          ),
         );
       }
     }

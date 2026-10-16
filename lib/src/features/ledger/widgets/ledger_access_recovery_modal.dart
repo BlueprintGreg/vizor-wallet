@@ -186,13 +186,14 @@ class _LedgerAccessRecoveryModalState
         );
       }
       if (widget.onClose != null) {
-        return AppButton(
-          size: AppButtonSize.mediumLarge,
-          variant: AppButtonVariant.ghost,
-          expand: true,
-          constrainContent: true,
-          onPressed: close,
-          child: const Text('Cancel'),
+        return Center(
+          child: AppButton(
+            size: AppButtonSize.mediumLarge,
+            variant: AppButtonVariant.ghost,
+            minWidth: kAppModalButtonMinWidth,
+            onPressed: close,
+            child: const Text('Cancel'),
+          ),
         );
       }
       return const SizedBox.shrink();
@@ -363,6 +364,7 @@ class _LedgerAccessRecoveryModalState
                     padding: const EdgeInsets.only(top: AppSpacing.xs),
                     child: AppButton(
                       variant: AppButtonVariant.secondary,
+                      borderRadius: BorderRadius.circular(AppRadii.small),
                       expand: true,
                       constrainContent: true,
                       growWithContent: true,
@@ -435,54 +437,54 @@ class _LedgerAccessRecoveryModalState
     ),
   );
 
-  Widget _choice(
-    BuildContext context,
-    LedgerConnectionTransport transport,
-  ) => Container(
-    decoration: BoxDecoration(
-      border: Border(bottom: BorderSide(color: context.colors.border.subtle)),
-    ),
-    child: AppButton(
-      key: ValueKey('ledger_choose_${transport.name}'),
-      variant: AppButtonVariant.ghost,
-      borderRadius: BorderRadius.circular(AppRadii.small),
-      expand: true,
-      constrainContent: true,
-      height: 64,
-      onPressed: _changing
-          ? null
-          : () {
-              if (transport == LedgerConnectionTransport.usb) {
-                unawaited(_connectUsb());
-              } else {
-                widget.selectionRequest!.chooseTransport(transport);
-                setState(() {
-                  _transport = transport;
-                  _canChange = true;
-                });
-              }
-            },
-      child: Row(
-        children: [
-          Icon(
-            transport == LedgerConnectionTransport.usb
-                ? Icons.usb
-                : Icons.bluetooth,
-            size: 20,
-            color: context.colors.icon.regular,
+  Widget _choice(BuildContext context, LedgerConnectionTransport transport) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+        child: AppButton(
+          key: ValueKey('ledger_choose_${transport.name}'),
+          variant: AppButtonVariant.secondary,
+          borderRadius: BorderRadius.circular(AppRadii.small),
+          expand: true,
+          constrainContent: true,
+          growWithContent: true,
+          height: 52,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.s,
+            vertical: AppSpacing.xs,
           ),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: Text(
-              transport == LedgerConnectionTransport.usb ? 'USB' : 'Bluetooth',
-              style: AppTypography.bodyMediumStrong,
-            ),
+          onPressed: _changing
+              ? null
+              : () {
+                  if (transport == LedgerConnectionTransport.usb) {
+                    unawaited(_connectUsb());
+                  } else {
+                    widget.selectionRequest!.chooseTransport(transport);
+                    setState(() {
+                      _transport = transport;
+                      _canChange = true;
+                    });
+                  }
+                },
+          child: Row(
+            children: [
+              if (transport == LedgerConnectionTransport.usb)
+                const AppIcon(AppIcons.usb, size: 20)
+              else
+                const Icon(Icons.bluetooth, size: 20),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  transport == LedgerConnectionTransport.usb
+                      ? 'USB'
+                      : 'Bluetooth',
+                  style: AppTypography.bodyMediumStrong,
+                ),
+              ),
+              const AppIcon(AppIcons.chevronForward, size: 16),
+            ],
           ),
-          const AppIcon(AppIcons.chevronForward, size: 16),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 
   Widget _usbContent(BuildContext context) {
     final readiness = ref.watch(ledgerAppReadinessStateProvider);

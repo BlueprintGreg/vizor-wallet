@@ -1,13 +1,13 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_card.dart';
+import '../../../core/widgets/app_pane_modal_overlay.dart';
 import '../../ledger/ledger_device_label.dart';
 import '../../ledger/services/ledger_account_service.dart';
 import '../../ledger/services/ledger_app_readiness_service.dart';
@@ -20,29 +20,6 @@ import '../../ledger/widgets/ledger_bluetooth_session.dart';
 import '../../ledger/widgets/ledger_modal_content.dart';
 import '../../ledger/widgets/ledger_procedure.dart';
 
-Future<LedgerDeviceAccount?> showLedgerDesktopConnectDialog({
-  required BuildContext context,
-  required LedgerConnectionTransport transport,
-  required LedgerMobileBleService service,
-  required LedgerAccountConnector usbConnector,
-  required LedgerBluetoothAccountConnector bluetoothConnector,
-  required LedgerOperationCanceller cancelOperation,
-  required int accountIndex,
-}) => showDialog<LedgerDeviceAccount>(
-  context: context,
-  barrierDismissible: false,
-  builder: (dialogContext) => _LedgerDesktopConnectDialog(
-    transport: transport,
-    service: service,
-    usbConnector: usbConnector,
-    bluetoothConnector: bluetoothConnector,
-    cancelOperation: cancelOperation,
-    accountIndex: accountIndex,
-    onConnected: (account) => Navigator.of(dialogContext).pop(account),
-    onClose: () => Navigator.of(dialogContext).pop(),
-  ),
-);
-
 enum _Phase {
   preparing,
   scanning,
@@ -54,8 +31,8 @@ enum _Phase {
   cancelling,
 }
 
-class _LedgerDesktopConnectDialog extends ConsumerStatefulWidget {
-  const _LedgerDesktopConnectDialog({
+class LedgerDesktopConnectModal extends ConsumerStatefulWidget {
+  const LedgerDesktopConnectModal({
     required this.transport,
     required this.service,
     required this.usbConnector,
@@ -64,6 +41,7 @@ class _LedgerDesktopConnectDialog extends ConsumerStatefulWidget {
     required this.accountIndex,
     required this.onConnected,
     required this.onClose,
+    super.key,
   });
   final LedgerConnectionTransport transport;
   final LedgerMobileBleService service;
@@ -74,12 +52,12 @@ class _LedgerDesktopConnectDialog extends ConsumerStatefulWidget {
   final ValueChanged<LedgerDeviceAccount> onConnected;
   final VoidCallback onClose;
   @override
-  ConsumerState<_LedgerDesktopConnectDialog> createState() =>
-      _LedgerDesktopConnectDialogState();
+  ConsumerState<LedgerDesktopConnectModal> createState() =>
+      _LedgerDesktopConnectModalState();
 }
 
-class _LedgerDesktopConnectDialogState
-    extends ConsumerState<_LedgerDesktopConnectDialog> {
+class _LedgerDesktopConnectModalState
+    extends ConsumerState<LedgerDesktopConnectModal> {
   StreamSubscription<LedgerDiscoveryUpdate>? _subscription;
   Future<void>? _work;
   _Phase _phase = _Phase.preparing;
@@ -317,13 +295,14 @@ class _LedgerDesktopConnectDialogState
   }
 
   Widget _footer({String? label, VoidCallback? action}) => label == null
-      ? AppButton(
-          size: AppButtonSize.mediumLarge,
-          variant: AppButtonVariant.ghost,
-          expand: true,
-          constrainContent: true,
-          onPressed: () => unawaited(_finish()),
-          child: const Text('Cancel'),
+      ? Center(
+          child: AppButton(
+            size: AppButtonSize.mediumLarge,
+            variant: AppButtonVariant.ghost,
+            minWidth: kAppModalButtonMinWidth,
+            onPressed: () => unawaited(_finish()),
+            child: const Text('Cancel'),
+          ),
         )
       : AppModalActions(
           onCancel: () => unawaited(_finish()),
@@ -349,26 +328,10 @@ class _LedgerDesktopConnectDialogState
   @override
   Widget build(BuildContext context) {
     final readiness = ref.watch(ledgerAppReadinessStateProvider);
-    return PopScope<LedgerDeviceAccount>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) unawaited(_finish());
-      },
-      child: Focus(
-        autofocus: true,
-        onKeyEvent: (_, event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.escape) {
-            unawaited(_finish());
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: Dialog(
-          backgroundColor: Colors.transparent,
-          child: _content(readiness),
-        ),
-      ),
+    return AppPaneModalOverlay(
+      barrierDismissible: false,
+      onDismiss: () => unawaited(_finish()),
+      child: _content(readiness),
     );
   }
 
@@ -420,8 +383,10 @@ class _LedgerDesktopConnectDialogState
                   child: AppButton(
                     key: ValueKey('ledger_desktop_ble_device_${device.id}'),
                     variant: AppButtonVariant.secondary,
+                    borderRadius: BorderRadius.circular(AppRadii.small),
                     expand: true,
                     constrainContent: true,
+                    growWithContent: true,
                     height: 54,
                     onPressed: () => _read(device),
                     child: Row(
