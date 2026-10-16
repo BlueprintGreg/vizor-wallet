@@ -246,8 +246,8 @@ pub(crate) async fn fetch_seen(network: WalletNetwork) -> Option<zakura_pir_rece
 
 /// Starts the early restores of the software accounts that can have one (see
 /// `zakura_pir_receiver::begin_early_restore`) and waits up to [`EARLY_BEGIN_BUDGET`]
-/// for them to register their keys, so the scan that follows tries them. Call it before
-/// the sync's first scan batch. A worker thread with its own runtime and database
+/// for them to register their keys, so the scan that follows tries them. Call it after
+/// the sync updates the chain tip and before its first scan batch. A worker thread with its own runtime and database
 /// connection runs them, then looks up the paid keys while the scan goes on, stopping
 /// with `cancel`. Returns at once when no account needs one. Failures are logged, and
 /// what an early restore does not settle is left to restore sweeps.
@@ -335,13 +335,13 @@ async fn early_restore(
             now,
         );
         match begin.await {
-            Ok(Some(restore)) => restores.push((account, restore)),
+            Ok(Some(restore)) => restores.push(restore),
             Ok(None) => {}
             Err(e) => log::warn!("Early swap restore not begun: {e}"),
         }
     }
     let _ = begun.send(());
-    for (account, restore) in restores {
+    for restore in restores {
         if should_exit() {
             return;
         }

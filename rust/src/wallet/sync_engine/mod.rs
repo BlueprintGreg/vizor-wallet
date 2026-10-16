@@ -3164,12 +3164,6 @@ async fn run_sync_impl(
         }) {
             log::warn!("One-time IVK maintenance deferred: {e}");
         }
-        // Before the first scan batch, so a restored account's keys are registered while
-        // none of its history is scanned (see [`swap_private::start_early_restores`]).
-        // Background preparation syncs skip it, as they skip sweeps.
-        if running_mode != 2 && !should_exit() {
-            swap_private::start_early_restores(&db, db_data_path, network, cancel.clone()).await;
-        }
     }
     // The main-phase rewind budget also covers a reorg detected by the
     // initial tip response, before the scan queue has been created.
@@ -3257,6 +3251,13 @@ async fn run_sync_impl(
 
     let mut current_tip_height: u64 = tip.height;
     log::info!("[{}] sync: chain tip = {}", elapsed(), current_tip_height);
+    // After the tip update, since the wallet refuses a publication above its chain tip,
+    // and before the first scan batch, so a restored account's keys are registered while
+    // none of its history is scanned (see [`swap_private::start_early_restores`]).
+    // Background preparation syncs skip it, as they skip sweeps.
+    if one_time_ivks && running_mode != 2 && !should_exit() {
+        swap_private::start_early_restores(&db, db_data_path, network, cancel.clone()).await;
+    }
     // A new block lets work that failed on content count, and be asked, again.
     enhancement::content_failures::at_tip(db_data_path, current_tip_height);
 
