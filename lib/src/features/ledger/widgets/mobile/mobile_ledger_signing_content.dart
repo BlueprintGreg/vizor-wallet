@@ -6,7 +6,7 @@ import '../../ledger_device_label.dart';
 import '../../services/ledger_mobile_ble_service.dart';
 import '../../services/ledger_app_readiness_service.dart';
 import '../../services/ledger_signing_progress.dart';
-import 'mobile_ledger_procedure.dart';
+import '../ledger_procedure.dart';
 import 'mobile_ledger_sheet_content.dart';
 
 /// Mobile presentation of the shared operation status, independent of the
@@ -135,17 +135,17 @@ class MobileLedgerSigningContent extends StatelessWidget {
             topPadding: 0,
           ),
         if (procedure)
-          MobileLedgerProcedure(
+          LedgerProcedure(
             currentStep: current,
             steps: [
-              MobileLedgerStep(
+              LedgerStep(
                 'Prepare transaction',
                 message: current == 0 ? currentMessage : null,
                 note: current == 0 && opening ? 'Keep Zcash open.' : null,
                 busy: current == 0 && active,
                 requiresDeviceAction: opening && active,
               ),
-              MobileLedgerStep(
+              LedgerStep(
                 'Review on Ledger',
                 message: current == 1 ? currentMessage : null,
                 detail: roundCount > 1
@@ -160,7 +160,7 @@ class MobileLedgerSigningContent extends StatelessWidget {
                     !declined &&
                     active,
               ),
-              MobileLedgerStep(
+              LedgerStep(
                 'Finish transaction',
                 message: current == 2 ? currentMessage : null,
                 note: current == 2 ? 'Keep Vizor open.' : null,

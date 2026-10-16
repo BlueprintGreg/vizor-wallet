@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:zcash_wallet/src/features/ledger/services/ledger_failure_guidance.dart';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,18 +9,21 @@ import 'package:go_router/go_router.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
-import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/core/widgets/app_text_field.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_account_service.dart';
 import 'package:zcash_wallet/src/features/ledger/ledger_capability.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_app_readiness_service.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_failure_guidance.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_mobile_ble_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'package:zcash_wallet/src/features/onboarding/ledger/ledger_connect_screen.dart';
 import 'package:zcash_wallet/src/features/onboarding/ledger/ledger_setup_args.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/ledger.dart' as rust_ledger;
+
+import '../../figma_compare/figma_compare_font_loader.dart';
 
 void main() {
   for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
@@ -222,7 +225,6 @@ void main() {
     'keeps expanded advanced options stable and disabled while busy',
     (tester) async {
       await _setDesktopViewport(tester);
-      final semantics = tester.ensureSemantics();
       final pendingAccount = Completer<LedgerDeviceAccount>();
 
       await tester.pumpWidget(
@@ -250,26 +252,14 @@ void main() {
       final busyButton = tester.widget<AppButton>(
         find.byKey(const ValueKey('ledger_connect_button')),
       );
-      final spinner = find.byKey(const ValueKey('ledger_connect_spinner'));
-      expect(busyButton.leading, isNull);
-      expect(busyButton.trailing, isA<AppIcon>());
-      expect((busyButton.trailing! as AppIcon).name, AppIcons.loader);
-      expect(spinner, findsOneWidget);
-      expect(
-        tester.getCenter(spinner).dx,
-        greaterThan(tester.getCenter(find.text('Approve on Ledger')).dx),
+      expect(busyButton.onPressed, isNull);
+      expect(busyButton.trailing, isNull);
+      final procedure = tester.widget<LedgerProcedure>(
+        find.byType(LedgerProcedure),
       );
-
-      expect(
-        tester.getSemantics(disclosure),
-        isSemantics(
-          label: 'Advanced options',
-          isButton: true,
-          isEnabled: false,
-          isExpanded: true,
-          hasTapAction: false,
-        ),
-      );
+      expect(procedure.currentStep, 1);
+      expect(procedure.steps[procedure.currentStep].busy, isTrue);
+      expect(find.text('Vizor is checking the Zcash app.'), findsOneWidget);
       expect(
         tester
             .widget<AppTextField>(
@@ -281,7 +271,6 @@ void main() {
 
       pendingAccount.completeError(StateError(_deviceRejected));
       await tester.pumpAndSettle();
-      semantics.dispose();
     },
   );
 
@@ -310,7 +299,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('The viewing-key request was rejected on your Ledger.'),
+      find.text('Sharing was declined on Ledger. Try again when you’re ready.'),
       findsOneWidget,
     );
     expect(importCalls, 0);
@@ -375,7 +364,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
     await tester.pump();
 
-    expect(find.text('Checking device'), findsOneWidget);
+    expect(find.text('Vizor is checking the Zcash app.'), findsOneWidget);
     expect(find.text('Connect Ledger'), findsWidgets);
     expect(find.text('home-route'), findsNothing);
 
@@ -412,20 +401,673 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(const ValueKey('ledger_desktop_ble_connect_button')),
+        find.byKey(const ValueKey('ledger_transport_bluetooth')),
       );
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
       await tester.pumpAndSettle();
       await tester.tap(
         find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
       );
       await tester.pumpAndSettle();
       expect(find.text(ledgerFailureGuidance(error)!.message), findsOneWidget);
+      expect(find.text('Try again'), findsOneWidget);
+    },
+  );
+
+  for (final transport in LedgerConnectionTransport.values) {
+    testWidgets('auto-connect can publish readiness over ${transport.name}', (
+      tester,
+    ) async {
+      final account = Completer<LedgerDeviceAccount>();
+      late ProviderContainer container;
+      Object? readinessError;
+      var calls = 0;
+      const approved = LedgerDeviceAccount(
+        ufvk: 'auto-connect-ready',
+        seedFingerprint: [1],
+        accountIndex: 0,
+        appVersion: '3.9.4',
+      );
+      addTearDown(() {
+        if (!account.isCompleted) account.complete(approved);
+      });
+      Future<LedgerDeviceAccount> connect(int index) async {
+        calls++;
+        try {
+          // ensureReady publishes this state before its first native await.
+          container
+              .read(ledgerAppReadinessStateProvider.notifier)
+              .update(
+                const LedgerAppReadinessState.inProgress(
+                  LedgerAppReadinessPhase.checkingDevice,
+                ),
+              );
+        } catch (error) {
+          readinessError = error;
+          rethrow;
+        }
+        return account.future;
+      }
+
+      await _setDesktopViewport(tester);
+      await tester.pumpWidget(
+        _harness(
+          connector: connect,
+          bluetoothConnector: (index, _) => connect(index),
+          bleService: _FakeLedgerBleService(),
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      container = ProviderScope.containerOf(
+        tester.element(find.byType(LedgerConnectScreen)),
+      );
+      if (transport == LedgerConnectionTransport.bluetooth) {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_transport_bluetooth')),
+        );
+      }
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      if (transport == LedgerConnectionTransport.bluetooth) {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+      expect(calls, 1);
+      expect(readinessError, isNull);
+      final procedure = tester.widget<LedgerProcedure>(
+        find.byType(LedgerProcedure),
+      );
+      expect(procedure.currentStep, 1);
+      expect(procedure.steps[1].busy, isTrue);
+      expect(find.text('Could not connect Ledger'), findsNothing);
+      account.complete(approved);
+      await tester.pumpAndSettle();
+      expect(find.text('birthday-auto-connect-ready'), findsOneWidget);
+    });
+
+    testWidgets('app-opening rejection retries Open Zcash over ${transport.name}', (
+      tester,
+    ) async {
+      final approval = Completer<LedgerDeviceAccount>();
+      var calls = 0;
+      Future<LedgerDeviceAccount> connect(int index) {
+        calls++;
+        if (calls == 1) {
+          return Future.error(
+            const LedgerAppReadinessException(
+              LedgerAppReadinessFailure.rejected,
+              'The request was rejected on your Ledger. Try again when ready.',
+              cause: LedgerMobileException(
+                LedgerMobileFailure.rejected,
+                'App opening rejected',
+              ),
+            ),
+          );
+        }
+        return approval.future;
+      }
+
+      addTearDown(() {
+        if (!approval.isCompleted) {
+          approval.completeError(StateError(_deviceRejected));
+        }
+      });
+      await _setDesktopViewport(tester);
+      await tester.pumpWidget(
+        _harness(
+          connector: connect,
+          bluetoothConnector: (index, _) => connect(index),
+          bleService: _FakeLedgerBleService(),
+          readiness: const LedgerAppReadinessState.failed(
+            failure: LedgerAppReadinessFailure.rejected,
+            message:
+                'The request was rejected on your Ledger. Try again when ready.',
+          ),
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (transport == LedgerConnectionTransport.bluetooth) {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_transport_bluetooth')),
+        );
+      }
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+      await tester.pumpAndSettle();
+      if (transport == LedgerConnectionTransport.bluetooth) {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
+        );
+        await tester.pumpAndSettle();
+      }
+      var procedure = tester.widget<LedgerProcedure>(
+        find.byType(LedgerProcedure),
+      );
+      expect(procedure.currentStep, 1);
+      expect(procedure.steps[1].busy, isFalse);
       expect(
-        find.byKey(const ValueKey('ledger_desktop_ble_retry')),
+        find.text(
+          'Opening Zcash was declined on Ledger. Try again when you’re ready.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Sharing was declined on Ledger. Try again when you’re ready.',
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      procedure = tester.widget<LedgerProcedure>(find.byType(LedgerProcedure));
+      expect(procedure.currentStep, 1);
+      expect(procedure.steps[1].busy, isTrue);
+      final readiness =
+          ProviderScope.containerOf(
+                tester.element(find.byType(LedgerConnectScreen)),
+              ).read(ledgerAppReadinessStateProvider.notifier)
+              as _FakeReadinessController;
+      readiness.publish(
+        const LedgerAppReadinessState.inProgress(
+          LedgerAppReadinessPhase.confirmOpening,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Confirm opening Zcash on Ledger.'), findsOneWidget);
+      readiness.publish(const LedgerAppReadinessState.ready('3.9.4'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      procedure = tester.widget<LedgerProcedure>(find.byType(LedgerProcedure));
+      expect(procedure.currentStep, 2);
+      expect(
+        find.text('Approve sharing your viewing key with Vizor.'),
+        findsOneWidget,
+      );
+      expect(calls, 2);
+      approval.complete(
+        const LedgerDeviceAccount(
+          ufvk: 'app-open-retry',
+          seedFingerprint: [1],
+          accountIndex: 0,
+          appVersion: '3.9.4',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('birthday-app-open-retry'), findsOneWidget);
+    });
+  }
+
+  for (final cancelInstead in [false, true]) {
+    testWidgets(
+      'cleanup retry retains the requested destination (cancel: $cancelInstead)',
+      (tester) async {
+        final oldAccount = Completer<LedgerDeviceAccount>();
+        final ble = _FakeLedgerBleService()
+          ..devices = const [
+            LedgerBleDevice(id: 'ledger-1', name: 'Ledger Flex', model: 'Flex'),
+            LedgerBleDevice(id: 'ledger-2', name: 'Ledger Stax', model: 'Stax'),
+          ];
+        final requests = <String>[];
+        var cancels = 0;
+        addTearDown(() {
+          if (!oldAccount.isCompleted) {
+            oldAccount.completeError(StateError(_deviceRejected));
+          }
+        });
+        await _setDesktopViewport(tester);
+        await tester.pumpWidget(
+          _harness(
+            connector: (_) => Future.error(StateError('Unexpected USB')),
+            bluetoothConnector: (index, device) {
+              requests.add(device.id);
+              return device.id == 'ledger-1'
+                  ? oldAccount.future
+                  : Future.value(
+                      LedgerDeviceAccount(
+                        ufvk: 'other-ledger',
+                        seedFingerprint: const [2],
+                        accountIndex: index,
+                        appVersion: '3.9.4',
+                        transport: LedgerConnectionTransport.bluetooth,
+                        device: device,
+                      ),
+                    );
+            },
+            bleService: ble,
+            canceller: () async {
+              cancels++;
+              if (!oldAccount.isCompleted) {
+                oldAccount.completeError(StateError(_deviceRejected));
+              }
+            },
+            importer:
+                ({
+                  required name,
+                  required account,
+                  required birthdayHeight,
+                  required profilePictureId,
+                }) async {},
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_transport_bluetooth')),
+        );
+        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        ble.disconnectFailures = 1;
+        await tester.tap(find.bySemanticsLabel('Choose another Ledger'));
+        await tester.pumpAndSettle();
+        expect(cancels, 1);
+        expect(
+          find.text('Could not finish cleanup. Try again.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text(cancelInstead ? 'Cancel' : 'Try again'));
+        await tester.pumpAndSettle();
+        expect(cancels, 2);
+        if (cancelInstead) {
+          expect(find.text('Find Ledger'), findsNothing);
+          expect(
+            find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+            findsNothing,
+          );
+          expect(requests, ['ledger-1']);
+          return;
+        }
+        expect(
+          find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+          findsOneWidget,
+        );
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+        );
+        await tester.pumpAndSettle();
+        expect(requests, ['ledger-1', 'ledger-2']);
+        expect(find.text('birthday-other-ledger'), findsOneWidget);
+      },
+    );
+  }
+
+  testWidgets(
+    'viewing-key rejection retries the approval step without resetting completed steps',
+    (tester) async {
+      final approval = Completer<LedgerDeviceAccount>();
+      var attempts = 0;
+      addTearDown(() {
+        if (!approval.isCompleted) {
+          approval.completeError(StateError(_deviceRejected));
+        }
+      });
+      await _setDesktopViewport(tester);
+      await tester.pumpWidget(
+        _harness(
+          connector: (_) {
+            attempts++;
+            return attempts == 1
+                ? Future.error(StateError(_deviceRejected))
+                : approval.future;
+          },
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+      await tester.pumpAndSettle();
+      var procedure = tester.widget<LedgerProcedure>(
+        find.byType(LedgerProcedure),
+      );
+      expect(procedure.currentStep, 2);
+      expect(procedure.steps[2].busy, isFalse);
+      await tester.tap(find.text('Try again'));
+      await tester.pump(const Duration(milliseconds: 300));
+      procedure = tester.widget<LedgerProcedure>(find.byType(LedgerProcedure));
+      expect(procedure.currentStep, 2);
+      expect(procedure.steps[2].busy, isTrue);
+      final readiness =
+          ProviderScope.containerOf(
+                tester.element(find.byType(LedgerConnectScreen)),
+              ).read(ledgerAppReadinessStateProvider.notifier)
+              as _FakeReadinessController;
+      readiness.publish(
+        const LedgerAppReadinessState.inProgress(
+          LedgerAppReadinessPhase.confirmOpening,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      procedure = tester.widget<LedgerProcedure>(find.byType(LedgerProcedure));
+      expect(procedure.currentStep, 1);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Confirm opening Zcash on Ledger.'), findsOneWidget);
+      readiness.publish(const LedgerAppReadinessState.ready('3.9.4'));
+      await tester.pump(const Duration(milliseconds: 300));
+      procedure = tester.widget<LedgerProcedure>(find.byType(LedgerProcedure));
+      expect(procedure.currentStep, 2);
+      approval.complete(
+        const LedgerDeviceAccount(
+          ufvk: 'approved-retry',
+          seedFingerprint: [1],
+          accountIndex: 0,
+          appVersion: '3.9.4',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('birthday-approved-retry'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'choosing another Ledger drains the old request and ignores its late account',
+    (tester) async {
+      final oldAccount = Completer<LedgerDeviceAccount>();
+      final cancel = Completer<void>();
+      final ble = _FakeLedgerBleService()
+        ..devices = const [
+          LedgerBleDevice(
+            id: 'ledger-1',
+            name: 'Ledger Flex',
+            model: 'Ledger Flex',
+          ),
+          LedgerBleDevice(
+            id: 'ledger-2',
+            name: 'Ledger Stax',
+            model: 'Ledger Stax',
+          ),
+        ];
+      var cancelled = 0;
+      final requests = <String>[];
+      addTearDown(() {
+        if (!cancel.isCompleted) cancel.complete();
+        if (!oldAccount.isCompleted) {
+          oldAccount.completeError(StateError(_deviceRejected));
+        }
+      });
+      await _setDesktopViewport(tester);
+      await tester.pumpWidget(
+        _harness(
+          connector: (_) async => throw StateError('USB unexpected'),
+          bluetoothConnector: (index, device) {
+            requests.add(device.id);
+            return device.id == 'ledger-1'
+                ? oldAccount.future
+                : Future.error(StateError(_deviceRejected));
+          },
+          bleService: ble,
+          canceller: () async {
+            cancelled++;
+            await cancel.future;
+          },
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_transport_bluetooth')),
+      );
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
+      );
+      await tester.pump();
+      await tester.tap(find.bySemanticsLabel('Choose another Ledger'));
+      await tester.pump();
+      expect(cancelled, 1);
+      expect(find.text('Cancelling request'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+        findsNothing,
+      );
+      cancel.complete();
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+        findsNothing,
+      );
+      oldAccount.complete(
+        const LedgerDeviceAccount(
+          ufvk: 'late-account',
+          seedFingerprint: [1],
+          accountIndex: 0,
+          appVersion: '3.9.4',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('birthday-late-account'), findsNothing);
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-2')),
+      );
+      await tester.pumpAndSettle();
+      expect(requests, ['ledger-1', 'ledger-2']);
+      expect(
+        find.text(
+          'Sharing was declined on Ledger. Try again when you’re ready.',
+        ),
         findsOneWidget,
       );
     },
   );
+
+  testWidgets(
+    'back from discovery waits for scan stop and preserves account options',
+    (tester) async {
+      final stopped = Completer<void>();
+      final ble = _FakeLedgerBleService();
+      var cancelled = 0;
+      addTearDown(() {
+        if (!stopped.isCompleted) stopped.complete();
+      });
+      await _setDesktopViewport(tester);
+      await tester.pumpWidget(
+        _harness(
+          connector: (_) async => throw StateError('USB unexpected'),
+          bleService: ble,
+          canceller: () async => cancelled++,
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('ledger_account_index_field')),
+        '7',
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_transport_bluetooth')),
+      );
+      await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+      await tester.pumpAndSettle();
+      ble.stopGate = stopped.future;
+      await tester.tap(
+        find.bySemanticsLabel('Choose another Ledger').evaluate().isEmpty
+            ? find.bySemanticsLabel('Choose connection')
+            : find.bySemanticsLabel('Choose another Ledger'),
+      );
+      await tester.pump();
+      expect(find.text('Stopping search'), findsOneWidget);
+      expect(cancelled, 0);
+      stopped.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Find Ledger'), findsNothing);
+      expect(
+        tester
+            .widget<AppTextField>(
+              find.byKey(const ValueKey('ledger_account_index_field')),
+            )
+            .controller!
+            .text,
+        '7',
+      );
+    },
+  );
+
+  testWidgets('captures implemented desktop Ledger connection states', (
+    tester,
+  ) async {
+    const output = String.fromEnvironment('LEDGER_IMPL_CAPTURE_DIR');
+    if (output.isEmpty) return;
+    Directory(output).createSync(recursive: true);
+    await loadFigmaCompareFonts();
+    await tester.binding.setSurfaceSize(const Size(1080, 720));
+    addTearDown(() async => tester.binding.setSurfaceSize(null));
+    for (final scene in [
+      'start',
+      'advanced',
+      'devices',
+      'opening',
+      'opening-declined',
+      'opening-retry',
+      'approval',
+      'declined',
+    ]) {
+      final pending = Completer<LedgerDeviceAccount>();
+      var attempts = 0;
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      const boundary = ValueKey('ledger_capture');
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: boundary,
+          child: _harness(
+            connector: (_) {
+              attempts++;
+              if (scene == 'declined') {
+                return Future.error(StateError(_deviceRejected));
+              }
+              if ((scene == 'opening-declined' || scene == 'opening-retry') &&
+                  attempts == 1) {
+                return Future.error(
+                  const LedgerAppReadinessException(
+                    LedgerAppReadinessFailure.rejected,
+                    'App opening rejected',
+                    cause: LedgerMobileException(
+                      LedgerMobileFailure.rejected,
+                      'App opening rejected',
+                    ),
+                  ),
+                );
+              }
+              return pending.future;
+            },
+            bleService: _FakeLedgerBleService(),
+            readiness: scene == 'approval'
+                ? const LedgerAppReadinessState.ready('3.9.4')
+                : const LedgerAppReadinessState.inProgress(
+                    LedgerAppReadinessPhase.confirmOpening,
+                  ),
+            importer:
+                ({
+                  required name,
+                  required account,
+                  required birthdayHeight,
+                  required profilePictureId,
+                }) async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (scene == 'advanced') {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
+        );
+        await tester.pumpAndSettle();
+      } else if (scene == 'devices') {
+        await tester.tap(
+          find.byKey(const ValueKey('ledger_transport_bluetooth')),
+        );
+        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+        await tester.pumpAndSettle();
+      } else if (scene != 'start') {
+        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump(const Duration(milliseconds: 400));
+        if (scene == 'opening-retry') {
+          await tester.tap(find.text('Try again'));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+        }
+        expect(find.byType(LedgerProcedure), findsOneWidget);
+        expect(
+          find.text(
+            scene == 'declined'
+                ? 'Sharing was declined on Ledger. Try again when you’re ready.'
+                : scene == 'opening-declined'
+                ? 'Opening Zcash was declined on Ledger. Try again when you’re ready.'
+                : scene == 'approval'
+                ? 'Approve sharing your viewing key with Vizor.'
+                : 'Confirm opening Zcash on Ledger.',
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(tester.takeException(), isNull);
+      await expectLater(
+        find.byKey(boundary),
+        matchesGoldenFile(File('$output/connection-$scene.png').uri),
+      );
+      if (!pending.isCompleted) {
+        if (scene == 'opening' ||
+            scene == 'opening-retry' ||
+            scene == 'approval') {
+          pending.completeError(StateError(_deviceRejected));
+        } else {
+          pending.complete(
+            const LedgerDeviceAccount(
+              ufvk: 'unused-capture',
+              seedFingerprint: [1],
+              accountIndex: 0,
+              appVersion: '3.9.4',
+            ),
+          );
+        }
+      }
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+  }, tags: ['figma-capture']);
 
   testWidgets('imports the approved Ledger account over macOS Bluetooth', (
     tester,
@@ -461,9 +1103,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(
-      find.byKey(const ValueKey('ledger_desktop_ble_connect_button')),
-    );
+    await tester.tap(find.byKey(const ValueKey('ledger_transport_bluetooth')));
+    await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
     await tester.pumpAndSettle();
 
     expect(
@@ -475,22 +1116,17 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Ledger Flex is ready'), findsOneWidget);
-    expect(
-      find.text('Zcash 3.9.3 approved account 0 over Bluetooth.'),
-      findsOneWidget,
-    );
     expect(ble.connectedDeviceId, 'ledger-1');
     expect(ble.openAppCalls, 1);
     expect(requestedDevice?.model, 'Ledger Flex');
-
-    await tester.tap(find.byKey(const ValueKey('ledger_desktop_ble_continue')));
-    await tester.pumpAndSettle();
     expect(find.text('birthday-uview-bluetooth'), findsOneWidget);
   });
 
   for (final (error, message) in const [
-    (_deviceRejected, 'The viewing-key request was rejected on your Ledger.'),
+    (
+      _deviceRejected,
+      'Sharing was declined on Ledger. Try again when you’re ready.',
+    ),
     (
       'ledger_status_6a80: Ledger rejected the PCZT data or key path',
       kLedgerViewingKeyRequestRejectedMessage,
@@ -517,8 +1153,9 @@ void main() {
         );
         await tester.pumpAndSettle();
         await tester.tap(
-          find.byKey(const ValueKey('ledger_desktop_ble_connect_button')),
+          find.byKey(const ValueKey('ledger_transport_bluetooth')),
         );
+        await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
         await tester.pumpAndSettle();
         await tester.tap(
           find.byKey(const ValueKey('ledger_desktop_ble_device_ledger-1')),
@@ -541,6 +1178,7 @@ Widget _harness({
   LedgerBluetoothAccountConnector? bluetoothConnector,
   LedgerAppReadinessState readiness = const LedgerAppReadinessState.idle(),
   LedgerMobileBleService? bleService,
+  LedgerOperationCanceller? canceller,
   TargetPlatform platform = TargetPlatform.macOS,
 }) {
   final router = GoRouter(
@@ -573,7 +1211,9 @@ Widget _harness({
             (_, _) => Future.error(StateError('Bluetooth should not be used')),
       ),
       ledgerAccountImporterProvider.overrideWithValue(importer),
-      ledgerOperationCancellerProvider.overrideWithValue(() async {}),
+      ledgerOperationCancellerProvider.overrideWithValue(
+        canceller ?? () async {},
+      ),
       if (bleService != null)
         ledgerMobileBleServiceProvider.overrideWithValue(bleService),
       ledgerAppReadinessStateProvider.overrideWith(
@@ -581,6 +1221,7 @@ Widget _harness({
       ),
     ],
     child: MaterialApp.router(
+      debugShowCheckedModeBanner: false,
       routerConfig: router,
       builder: (_, child) => AppTheme(data: AppThemeData.light, child: child!),
     ),
@@ -604,6 +1245,8 @@ class _FakeReadinessController extends LedgerAppReadinessController {
 
   final LedgerAppReadinessState initialState;
 
+  void publish(LedgerAppReadinessState next) => state = next;
+
   @override
   LedgerAppReadinessState build() => initialState;
 }
@@ -612,7 +1255,13 @@ class _FakeLedgerBleService implements LedgerMobileBleService {
   @override
   String? connectedDeviceId;
   int disconnectCalls = 0;
+  int disconnectFailures = 0;
   int openAppCalls = 0;
+  int stopCalls = 0;
+  Future<void>? stopGate;
+  List<LedgerBleDevice> devices = const [
+    LedgerBleDevice(id: 'ledger-1', name: 'Ledger Flex', model: 'Ledger Flex'),
+  ];
 
   @override
   Future<void> cancelSigning() async {}
@@ -630,17 +1279,16 @@ class _FakeLedgerBleService implements LedgerMobileBleService {
   @override
   Future<void> disconnect() async {
     disconnectCalls++;
+    if (disconnectFailures > 0) {
+      disconnectFailures--;
+      throw StateError('Native disconnect failed');
+    }
+    connectedDeviceId = null;
   }
 
   @override
   Stream<LedgerDiscoveryUpdate> discoverDevices() async* {
-    yield const LedgerDevicesDiscovered([
-      LedgerBleDevice(
-        id: 'ledger-1',
-        name: 'Ledger Flex',
-        model: 'Ledger Flex',
-      ),
-    ]);
+    yield LedgerDevicesDiscovered(devices);
   }
 
   @override
@@ -663,5 +1311,8 @@ class _FakeLedgerBleService implements LedgerMobileBleService {
   }
 
   @override
-  Future<void> stopDiscovery() async {}
+  Future<void> stopDiscovery() async {
+    stopCalls++;
+    await stopGate;
+  }
 }

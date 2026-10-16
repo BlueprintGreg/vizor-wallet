@@ -1255,7 +1255,7 @@ void main() {
       find.byKey(const ValueKey('ledger_shield_signing_overlay_surface')),
       findsOneWidget,
     );
-    expect(find.text('Preparing transaction'), findsOneWidget);
+    expect(find.text('Prepare transaction'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();

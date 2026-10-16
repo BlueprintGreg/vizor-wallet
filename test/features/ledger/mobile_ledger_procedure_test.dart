@@ -5,21 +5,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
-import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile_ledger_signing_surface.dart';
 
 import '../../figma_compare/figma_compare_font_loader.dart';
 
 const _steps = [
-  MobileLedgerStep('Prepare transaction'),
-  MobileLedgerStep(
+  LedgerStep('Prepare transaction'),
+  LedgerStep(
     'Review on Ledger',
     message: 'When prompted, check the amount and recipient on Ledger.',
     detail: 'Transaction 1 of 2',
     note: 'You will approve the next transaction separately.',
   ),
-  MobileLedgerStep('Finish transaction'),
+  LedgerStep('Finish transaction'),
 ];
 const _boundaryKey = ValueKey('procedure_capture');
 const _output = String.fromEnvironment('LEDGER_CAPTURE_DIR');
@@ -41,15 +41,15 @@ Widget _motionHarness(
           alignment: Alignment.topLeft,
           child: SizedBox(
             width: 300,
-            child: MobileLedgerProcedure(
+            child: LedgerProcedure(
               currentStep: current,
               steps: [
-                MobileLedgerStep(
+                LedgerStep(
                   'Prepare transaction',
                   message: current == 0 ? _preparing : null,
                   busy: current == 0,
                 ),
-                MobileLedgerStep(
+                LedgerStep(
                   'Review on Ledger',
                   message: current == 1 ? _reviewing : null,
                   note: current == 1 && showNote
@@ -58,7 +58,7 @@ Widget _motionHarness(
                   requiresDeviceAction: true,
                   busy: current == 1,
                 ),
-                MobileLedgerStep(
+                LedgerStep(
                   'Finish transaction',
                   message: current == 2 ? _saving : null,
                   busy: current == 2,
@@ -106,14 +106,14 @@ Widget _harness({
                   : null,
               children: [
                 const MobileLedgerIdentity('Ledger Flex', topPadding: 0),
-                MobileLedgerProcedure(
+                LedgerProcedure(
                   currentStep: currentStep,
                   steps: [
-                    MobileLedgerStep(
+                    LedgerStep(
                       _steps[0].label,
                       message: currentStep == 0 ? _preparing : null,
                     ),
-                    MobileLedgerStep(
+                    LedgerStep(
                       _steps[1].label,
                       message: _steps[1].message,
                       detail: _steps[1].detail,

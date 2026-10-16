@@ -110,8 +110,8 @@ void main() {
         expect(
           tester
               .widget<AppButton>(find.widgetWithText(AppButton, 'Allow access'))
-              .expand,
-          isTrue,
+              .variant,
+          AppButtonVariant.primary,
         );
         expect(find.text('USB'), findsNothing);
         expect(find.text('Connection'), findsNothing);

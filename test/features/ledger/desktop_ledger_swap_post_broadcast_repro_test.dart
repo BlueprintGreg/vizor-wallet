@@ -76,9 +76,9 @@ void main() {
         () => find
             .text(
               ledgerFailureGuidance(error)?.pairingInvalid == true
-                  ? 'Find my Ledger'
+                  ? 'Find Ledger'
                   : accessRecovery
-                  ? 'Reconnect'
+                  ? 'Find Ledger'
                   : 'Try again',
             )
             .evaluate()

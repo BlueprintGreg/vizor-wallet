@@ -22,7 +22,7 @@ import '../../ledger/services/ledger_mobile_ble_service.dart';
 import '../../ledger/services/ledger_signing_service.dart';
 import '../../ledger/widgets/ledger_device_app_prompt.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_bluetooth_content.dart';
-import '../../ledger/widgets/mobile/mobile_ledger_procedure.dart';
+import '../../ledger/widgets/ledger_procedure.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import '../../ledger/widgets/mobile_ledger_signing_surface.dart';
 import '../ledger/ledger_setup_args.dart';
@@ -271,11 +271,11 @@ class _MobileLedgerConnectScreenState
           ledgerDeviceLabel(_selectedDevice!),
           topPadding: 0,
         ),
-        MobileLedgerProcedure(
+        LedgerProcedure(
           currentStep: current,
           steps: [
-            const MobileLedgerStep('Connect Ledger'),
-            MobileLedgerStep(
+            const LedgerStep('Connect Ledger'),
+            LedgerStep(
               'Open $appName',
               message: current == 1
                   ? _closing
@@ -291,7 +291,7 @@ class _MobileLedgerConnectScreenState
               busy: current == 1 && pending,
               requiresDeviceAction: opening && pending && !_closing,
             ),
-            MobileLedgerStep(
+            LedgerStep(
               'Add account',
               message: current == 2
                   ? _closing

@@ -1,6 +1,7 @@
 import 'package:zcash_wallet/src/features/ledger/services/ledger_device_selection.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
@@ -9,6 +10,9 @@ import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/ledger/ledger_capability.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_app_readiness_service.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_signing_modal.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_modal_content.dart';
+import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
 
 void main() {
@@ -100,13 +104,16 @@ void main() {
       ),
     );
 
-    expect(find.text('Check your Ledger'), findsOneWidget);
-    expect(find.text('Zcash · Ledger'), findsOneWidget);
-    expect(find.text('Open the Zcash app'), findsOneWidget);
-    expect(find.text('Review on device'), findsOneWidget);
+    expect(find.text('Sign transaction'), findsOneWidget);
+    expect(find.text('Ledger · USB'), findsOneWidget);
+    expect(find.text('Review on Ledger'), findsOneWidget);
+    expect(
+      find.text('When prompted, check the amount and recipient on Ledger.'),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const ValueKey('ledger_device_app_prompt_mainnet')),
-      findsOneWidget,
+      findsNothing,
     );
   });
 
@@ -126,8 +133,8 @@ void main() {
           account: account,
         ),
       );
-      expect(find.text('Preparing transaction'), findsOneWidget);
-      expect(find.text('Check your Ledger'), findsNothing);
+      expect(find.text('Prepare transaction'), findsOneWidget);
+      expect(find.text('Sign transaction'), findsOneWidget);
       final container = ProviderScope.containerOf(
         tester.element(find.byType(LedgerSigningModal)),
       );
@@ -137,17 +144,17 @@ void main() {
       for (final phase in ['sending', 'reviewing', 'finishing']) {
         report(phase);
         await tester.pump();
-        final expected = switch (phase) {
-          'sending' => 'Processing with Ledger',
-          'reviewing' => 'Check your Ledger',
-          _ => 'Finishing transaction',
-        };
-        expect(find.text(expected), findsOneWidget);
+        expect(find.text('Sign transaction'), findsOneWidget);
+        expect(
+          tester
+              .widget<LedgerProcedure>(find.byType(LedgerProcedure))
+              .currentStep,
+          1,
+        );
         if (phase == 'sending') {
-          expect(find.text('Preparing to sign'), findsOneWidget);
-          expect(find.text('Please wait'), findsNothing);
+          expect(find.text('It may take about 30 seconds.'), findsOneWidget);
         }
-        expect(find.text('Open the Zcash app'), findsOneWidget);
+        expect(find.text('Open the Zcash app'), findsNothing);
       }
     },
   );
@@ -169,7 +176,7 @@ void main() {
     );
 
     expect(find.text('Ledger signing failed'), findsOneWidget);
-    expect(find.text('Action needed'), findsOneWidget);
+    expect(find.text('Action needed'), findsNothing);
     expect(find.text('Reconnect your Ledger and try again.'), findsOneWidget);
     expect(find.text('Try again'), findsOneWidget);
 
@@ -205,14 +212,9 @@ void main() {
       ),
     );
 
-    expect(find.text('Confirm opening Zcash'), findsOneWidget);
-    expect(find.text('Opening Zcash'), findsOneWidget);
-    expect(
-      find.text(
-        'Confirm the request on your Ledger. Vizor will reconnect automatically.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('Sign transaction'), findsOneWidget);
+    expect(find.text('Confirm opening Zcash on Ledger.'), findsOneWidget);
+    expect(find.text('Keep Zcash open.'), findsOneWidget);
   });
 
   testWidgets('does not replace the current failure with stale readiness', (
@@ -251,8 +253,8 @@ void main() {
       _harness(phase: LedgerSigningModalPhase.saving, onCancel: null),
     );
 
-    expect(find.text('Finishing transaction'), findsOneWidget);
-    expect(find.text('Please wait'), findsOneWidget);
+    expect(find.text('Finish transaction'), findsOneWidget);
+    expect(find.text('Saving the signed transaction.'), findsOneWidget);
     expect(find.text('Finishing'), findsNothing);
     expect(find.text('Waiting'), findsNothing);
     expect(find.text('Cancel'), findsNothing);
@@ -282,6 +284,112 @@ void main() {
 
     await tester.tap(find.text('Retry saving'));
     expect(retrySavingCount, 1);
+  });
+
+  testWidgets(
+    'Ledger modal takes keyboard focus and returns it to its caller',
+    (tester) async {
+      final opener = FocusNode();
+      addTearDown(opener.dispose);
+      var visible = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppTheme(
+            data: AppThemeData.light,
+            child: StatefulBuilder(
+              builder: (context, update) => Stack(
+                children: [
+                  Center(
+                    child: TextButton(
+                      focusNode: opener,
+                      onPressed: () => update(() => visible = true),
+                      child: const Text('Open signing'),
+                    ),
+                  ),
+                  if (visible)
+                    Center(
+                      child: LedgerModalContent(
+                        title: 'Sign transaction',
+                        footer: AppButton(
+                          onPressed: () => update(() => visible = false),
+                          child: const Text('Cancel'),
+                        ),
+                        child: const Text('Keep Ledger connected.'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      opener.requestFocus();
+      await tester.pump();
+      await tester.tap(find.text('Open signing'));
+      await tester.pump();
+      expect(opener.hasFocus, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      final focus = FocusManager.instance.primaryFocus!;
+      expect(
+        focus.debugLabel == 'Ledger modal' ||
+            focus.ancestors.any((node) => node.debugLabel == 'Ledger modal'),
+        isTrue,
+      );
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      expect(opener.hasFocus, isTrue);
+    },
+  );
+
+  testWidgets('Ledger modal keeps actions reachable at 200 percent text scale', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppTheme(
+          data: AppThemeData.light,
+          child: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(800, 600),
+              textScaler: TextScaler.linear(2),
+            ),
+            child: Center(
+              child: SizedBox(
+                height: 500,
+                child: LedgerModalContent(
+                  title: 'Connect Ledger',
+                  footer: AppButton(
+                    onPressed: () {},
+                    child: const Text('Cancel'),
+                  ),
+                  child: Column(
+                    children: List.generate(
+                      12,
+                      (i) => Text(
+                        'Instruction $i: keep Ledger connected and review the request.',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getBottomRight(find.text('Cancel')).dy,
+      lessThanOrEqualTo(600),
+    );
+    final cancelPosition = tester.getCenter(find.text('Cancel'));
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -400),
+    );
+    await tester.pump();
+    expect(tester.getCenter(find.text('Cancel')), cancelPosition);
   });
 
   for (final platform in [
