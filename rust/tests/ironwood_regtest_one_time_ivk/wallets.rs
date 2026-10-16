@@ -229,6 +229,20 @@ impl Wallet {
             .expect("the early restore state")
     }
 
+    /// The wallet's early restore, if it began one: the publication's last height and its
+    /// state, 0 until the scan stores that block, then 1 if it matched or 2 if it did not.
+    pub fn early_restore(&self) -> Option<(u32, u8)> {
+        use rusqlite::OptionalExtension as _;
+        self.read_only()
+            .query_row(
+                "SELECT anchor_height, state FROM ironwood_one_time_restores",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .expect("the early restore")
+    }
+
     /// Whether the key behind one-time `receiver` stopped scanning.
     pub fn key_closed(&self, receiver: &[u8; 43]) -> bool {
         self.read_only()
