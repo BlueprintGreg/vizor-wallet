@@ -13,6 +13,7 @@ import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/theme/legacy_material_theme.dart';
 import 'package:zcash_wallet/src/core/layout/app_desktop_shell.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
+import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/core/widgets/app_pane_modal_overlay.dart';
 import 'package:zcash_wallet/src/core/widgets/app_text_field.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_account_service.dart';
@@ -131,8 +132,90 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Bluetooth compatibility opens from its own keyboard action', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    var connections = 0;
+    await tester.pumpWidget(
+      _harness(
+        connector: (_) async {
+          connections++;
+          throw StateError('Help must not start a connection');
+        },
+        importer:
+            ({
+              required name,
+              required account,
+              required birthdayHeight,
+              required profilePictureId,
+            }) async {},
+      ),
+    );
+    await tester.pumpAndSettle();
+    final usb = find.byKey(const ValueKey('ledger_transport_usb'));
+    final bluetooth = find.byKey(const ValueKey('ledger_transport_bluetooth'));
+    final help = find.byKey(const ValueKey('ledger_supported_devices'));
+    final models = find.text('Nano X · Flex · Stax · Nano Gen5');
+    final check = find.byWidgetPredicate(
+      (widget) => widget is AppIcon && widget.name == AppIcons.check,
+    );
+    final usbLabelPosition = tester.getTopLeft(find.text('USB'));
+    final bluetoothLabelPosition = tester.getTopLeft(find.text('Bluetooth'));
+    expect(help, findsNothing);
+    expect(models, findsNothing);
+    expect(tester.getSize(usb), tester.getSize(bluetooth));
+    expect(find.descendant(of: usb, matching: check), findsOneWidget);
+    expect(find.descendant(of: bluetooth, matching: check), findsNothing);
+
+    await tester.tap(bluetooth);
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: usb, matching: check), findsNothing);
+    expect(find.descendant(of: bluetooth, matching: check), findsOneWidget);
+    expect(tester.getTopLeft(find.text('USB')).dx, usbLabelPosition.dx);
+    expect(
+      tester.getTopLeft(find.text('Bluetooth')).dx,
+      bluetoothLabelPosition.dx,
+    );
+    expect(help, findsOneWidget);
+    expect(models, findsNothing);
+    await tester.tap(help);
+    await tester.pumpAndSettle();
+    expect(models, findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(models, findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(models, findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pumpAndSettle();
+    expect(models, findsNothing);
+
+    await tester.tap(help);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('On your Ledger'));
+    await tester.pumpAndSettle();
+    expect(models, findsNothing);
+    await tester.tap(help);
+    await tester.pumpAndSettle();
+    await tester.tap(usb);
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: usb, matching: check), findsOneWidget);
+    expect(find.descendant(of: bluetooth, matching: check), findsNothing);
+    expect(help, findsNothing);
+    expect(models, findsNothing);
+    await tester.tap(bluetooth);
+    await tester.pumpAndSettle();
+    expect(help, findsOneWidget);
+    expect(models, findsNothing);
+    expect(connections, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
-    testWidgets('$platform imports over USB without a Bluetooth option', (
+    testWidgets('$platform imports over USB without a transport picker', (
       tester,
     ) async {
       await _setDesktopViewport(tester);
@@ -155,9 +238,18 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('ledger_transport_usb')), findsNothing);
       expect(
-        find.byKey(const ValueKey('ledger_desktop_ble_connect_button')),
+        find.byKey(const ValueKey('ledger_transport_bluetooth')),
         findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('ledger_supported_devices')),
+        findsNothing,
+      );
+      expect(
+        find.text('1. Unlock with your PIN.\n\n2. Connect with a USB cable.'),
+        findsOneWidget,
       );
       await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
       await tester.pumpAndSettle();
@@ -272,6 +364,105 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets(
+    'invalid account index does not add scroll at the desktop minimum',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 720));
+      addTearDown(() async => tester.binding.setSurfaceSize(null));
+      await loadFigmaCompareFonts();
+      var connections = 0;
+      await tester.pumpWidget(
+        _harness(
+          connector: (_) async {
+            connections++;
+            throw StateError('Invalid index must not connect');
+          },
+          importer:
+              ({
+                required name,
+                required account,
+                required birthdayHeight,
+                required profilePictureId,
+              }) async {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_transport_bluetooth')),
+      );
+      final disclosure = find.byKey(
+        const ValueKey('ledger_advanced_options_disclosure'),
+      );
+      await tester.tap(disclosure);
+      await tester.pumpAndSettle();
+      final field = find.byKey(const ValueKey('ledger_account_index_field'));
+      final connect = find.byKey(const ValueKey('ledger_connect_button'));
+      final bodyPosition = tester
+          .state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byType(SingleChildScrollView),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          )
+          .position;
+      final fieldBefore = tester.getRect(field);
+      final buttonBefore = tester.getRect(connect);
+      expect(bodyPosition.maxScrollExtent, 0);
+
+      await tester.enterText(field, '101');
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsOneWidget,
+      );
+      await tester.tap(connect);
+      await tester.pumpAndSettle();
+      expect(bodyPosition.maxScrollExtent, 0);
+      expect(tester.getRect(field), fieldBefore);
+      expect(tester.getRect(connect), buttonBefore);
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<AppTextField>(field).tone,
+        AppTextFieldTone.destructive,
+      );
+
+      await tester.enterText(field, '100');
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsNothing,
+      );
+      expect(tester.widget<AppTextField>(field).tone, AppTextFieldTone.neutral);
+      expect(bodyPosition.maxScrollExtent, 0);
+
+      await tester.enterText(field, '101');
+      await tester.tap(connect);
+      await tester.pumpAndSettle();
+      await tester.tap(disclosure);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsNothing,
+      );
+      await tester.tap(connect);
+      await tester.pumpAndSettle();
+      expect(field, findsOneWidget);
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsOneWidget,
+      );
+      expect(bodyPosition.maxScrollExtent, 0);
+      expect(tester.getRect(connect), buttonBefore);
+      expect(connections, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('submits a custom revealed Ledger account index', (tester) async {
     await _setDesktopViewport(tester);
     int? requestedIndex;
@@ -302,11 +493,17 @@ void main() {
       find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
     );
     await tester.pumpAndSettle();
-    for (final invalid in ['101', '', '999999999999999999999999']) {
+    for (final invalid in ['101', '102', '', '999999999999999999999999']) {
       await tester.enterText(
         find.byKey(const ValueKey('ledger_account_index_field')),
         invalid,
       );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsOneWidget,
+      );
+      expect(requestedIndex, isNull);
       await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
       await tester.pumpAndSettle();
       expect(
@@ -315,10 +512,18 @@ void main() {
       );
       expect(requestedIndex, isNull);
     }
-    await tester.enterText(
-      find.byKey(const ValueKey('ledger_account_index_field')),
-      '100',
-    );
+    for (final valid in ['0', '100']) {
+      await tester.enterText(
+        find.byKey(const ValueKey('ledger_account_index_field')),
+        valid,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Account index must be between 0 and 100.'),
+        findsNothing,
+      );
+      expect(requestedIndex, isNull);
+    }
     await tester.tap(find.byKey(const ValueKey('ledger_connect_button')));
     await tester.pumpAndSettle();
 
@@ -1061,10 +1266,18 @@ void main() {
     for (final theme in [AppThemeData.light, AppThemeData.dark]) {
       for (final scene in [
         'start',
+        'usb-only-windows',
+        'usb-only-linux',
         'usb-hover',
         'bluetooth-hover',
+        'bluetooth',
+        'supported-devices',
+        'supported-devices-large-text',
         'advanced',
         'advanced-hover',
+        'advanced-invalid',
+        'advanced-corrected',
+        'advanced-invalid-large-text',
         'devices',
         'opening',
         'opening-declined',
@@ -1085,6 +1298,11 @@ void main() {
             key: boundary,
             child: _harness(
               theme: theme,
+              platform: switch (scene) {
+                'usb-only-windows' => TargetPlatform.windows,
+                'usb-only-linux' => TargetPlatform.linux,
+                _ => TargetPlatform.macOS,
+              },
               textScaler: scene.endsWith('large-text')
                   ? const TextScaler.linear(2)
                   : TextScaler.noScaling,
@@ -1128,7 +1346,39 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        if (scene.startsWith('advanced')) {
+        if (scene.startsWith('usb-only-')) {
+          expect(
+            find.byKey(const ValueKey('ledger_transport_usb')),
+            findsNothing,
+          );
+          expect(
+            find.byKey(const ValueKey('ledger_transport_bluetooth')),
+            findsNothing,
+          );
+        } else if (scene == 'bluetooth' ||
+            scene.startsWith('supported-devices')) {
+          await tester.tap(
+            find.byKey(const ValueKey('ledger_transport_bluetooth')),
+          );
+          await tester.pumpAndSettle();
+          if (scene.startsWith('supported-devices')) {
+            await tester.tap(
+              find.byKey(const ValueKey('ledger_supported_devices')),
+            );
+            await tester.pumpAndSettle();
+            expect(
+              find.text('Nano X · Flex · Stax · Nano Gen5'),
+              findsOneWidget,
+            );
+          }
+        } else if (scene.startsWith('advanced')) {
+          final invalidIndex =
+              scene.contains('invalid') || scene == 'advanced-corrected';
+          if (invalidIndex) {
+            await tester.tap(
+              find.byKey(const ValueKey('ledger_transport_bluetooth')),
+            );
+          }
           await tester.ensureVisible(
             find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
           );
@@ -1136,6 +1386,21 @@ void main() {
             find.byKey(const ValueKey('ledger_advanced_options_disclosure')),
           );
           await tester.pumpAndSettle();
+          if (invalidIndex) {
+            final field = find.byKey(
+              const ValueKey('ledger_account_index_field'),
+            );
+            await tester.enterText(field, '101');
+            await tester.pumpAndSettle();
+            expect(
+              find.text('Account index must be between 0 and 100.'),
+              findsOneWidget,
+            );
+            if (scene == 'advanced-corrected') {
+              await tester.enterText(field, '100');
+              await tester.pumpAndSettle();
+            }
+          }
         } else if (scene == 'devices') {
           await tester.tap(
             find.byKey(const ValueKey('ledger_transport_bluetooth')),

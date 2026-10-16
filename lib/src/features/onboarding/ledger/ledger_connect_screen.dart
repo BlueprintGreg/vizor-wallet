@@ -11,6 +11,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_text_field.dart';
+import '../../../core/widgets/app_tooltip.dart';
 import '../../../providers/app_security_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
@@ -108,10 +109,12 @@ class LedgerConnectScreen extends ConsumerStatefulWidget {
 
 class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
   late final TextEditingController _accountIndexController;
+  final _supportedDevicesFocusNode = FocusNode();
 
   Completer<LedgerDeviceAccount?>? _connection;
   int _connectionAccountIndex = 0;
   String? _error;
+  bool _invalidAccountIndex = false;
   bool _showAdvancedOptions = false;
   LedgerConnectionTransport _transport = LedgerConnectionTransport.usb;
   late final LedgerOperationCanceller _cancelLedgerOperation;
@@ -136,6 +139,7 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
       unawaited(_cancelLedgerOperation());
     }
     _accountIndexController.dispose();
+    _supportedDevicesFocusNode.dispose();
     super.dispose();
   }
 
@@ -148,6 +152,7 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
       _connection = connection;
       _connectionAccountIndex = accountIndex;
       _error = null;
+      _invalidAccountIndex = false;
     });
 
     try {
@@ -197,7 +202,8 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
       return accountIndex;
     }
     setState(() {
-      _error = kLedgerOnboardingAccountIndexError;
+      _invalidAccountIndex = true;
+      _error = null;
       _showAdvancedOptions = true;
     });
     return null;
@@ -230,13 +236,15 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
 
   Widget _transportChoice(LedgerConnectionTransport transport) {
     final bluetooth = transport == LedgerConnectionTransport.bluetooth;
+    final selected = _transport == transport;
     return Expanded(
       child: Semantics(
-        selected: _transport == transport,
+        button: true,
+        selected: selected,
         child: Container(
           decoration: BoxDecoration(
             border: Border.all(
-              color: _transport == transport
+              color: selected
                   ? context.colors.text.primary
                   : context.colors.border.subtle,
             ),
@@ -250,6 +258,7 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
             constrainContent: true,
             growWithContent: true,
             height: 72,
+            contentPadding: const EdgeInsets.all(AppSpacing.xs),
             onPressed: _busy
                 ? null
                 : () => setState(() => _transport = transport),
@@ -261,22 +270,31 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
                   const AppIcon(AppIcons.usb, size: 20),
                 const SizedBox(width: AppSpacing.xs),
                 Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        bluetooth ? 'Bluetooth' : 'USB',
-                        style: AppTypography.bodyMediumStrong,
-                      ),
-                      if (bluetooth)
-                        Text(
-                          'Nano X · Flex · Stax · Nano Gen5',
-                          style: AppTypography.bodySmall.copyWith(
-                            color: context.colors.text.secondary,
-                          ),
-                        ),
-                    ],
+                  child: Text(
+                    bluetooth ? 'Bluetooth' : 'USB',
+                    style: AppTypography.bodyMediumStrong,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                ExcludeSemantics(
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? context.colors.background.inverse
+                          : context.colors.background.neutralSubtleOpacity,
+                      shape: BoxShape.circle,
+                    ),
+                    child: selected
+                        ? Center(
+                            child: AppIcon(
+                              AppIcons.check,
+                              size: 12,
+                              color: context.colors.icon.inverse,
+                            ),
+                          )
+                        : null,
                   ),
                 ),
               ],
@@ -286,6 +304,77 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
       ),
     );
   }
+
+  Widget _supportedDevicesHelp() => Focus(
+    canRequestFocus: false,
+    onFocusChange: (focused) {
+      if (!focused) Tooltip.dismissAllToolTips();
+    },
+    onKeyEvent: (_, event) {
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.escape &&
+          Tooltip.dismissAllToolTips()) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: AppTooltip(
+      message: 'Nano X · Flex · Stax · Nano Gen5',
+      preferBelow: true,
+      tapToShow: true,
+      child: Builder(
+        builder: (context) => Semantics(
+          button: true,
+          child: AppButton(
+            key: const ValueKey('ledger_supported_devices'),
+            focusNode: _supportedDevicesFocusNode,
+            onPressed: _busy
+                ? null
+                : () {
+                    _supportedDevicesFocusNode.requestFocus();
+                    context
+                        .findAncestorStateOfType<TooltipState>()
+                        ?.ensureTooltipVisible();
+                  },
+            variant: AppButtonVariant.ghost,
+            size: AppButtonSize.small,
+            growWithContent: true,
+            child: const Text('Supported devices'),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _accountIndexMessage() => Stack(
+    children: [
+      // Preserve the helper's wrapping height when showing validation feedback.
+      Visibility(
+        visible: !_invalidAccountIndex,
+        maintainState: true,
+        maintainAnimation: true,
+        maintainSize: true,
+        child: Text(
+          'Keep 0 unless you used a different index for this Ledger account.',
+          style: AppTypography.bodySmall.copyWith(
+            color: context.colors.text.secondary,
+          ),
+        ),
+      ),
+      if (_invalidAccountIndex)
+        Positioned.fill(
+          child: Semantics(
+            liveRegion: true,
+            child: Text(
+              kLedgerOnboardingAccountIndexError,
+              style: AppTypography.bodySmall.copyWith(
+                color: context.colors.text.destructive,
+              ),
+            ),
+          ),
+        ),
+    ],
+  );
 
   Widget _advancedOptions() => Container(
     width: double.infinity,
@@ -344,18 +433,23 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Keep 0 unless you used a different index for this Ledger account.',
-                  style: AppTypography.bodySmall.copyWith(
-                    color: context.colors.text.secondary,
-                  ),
-                ),
+                _accountIndexMessage(),
                 const SizedBox(height: AppSpacing.s),
                 AppTextField(
                   key: const ValueKey('ledger_account_index_field'),
                   label: kLedgerOnboardingAccountIndexLabel,
                   controller: _accountIndexController,
                   enabled: !_busy,
+                  tone: _invalidAccountIndex
+                      ? AppTextFieldTone.destructive
+                      : AppTextFieldTone.neutral,
+                  onChanged: (value) {
+                    final invalid =
+                        parseLedgerOnboardingAccountIndex(value) == null;
+                    if (_invalidAccountIndex != invalid) {
+                      setState(() => _invalidAccountIndex = invalid);
+                    }
+                  },
                   keyboardType: TextInputType.number,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 ),
@@ -406,23 +500,23 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: AppSpacing.md),
-                      IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _transportChoice(LedgerConnectionTransport.usb),
-                            if (ledgerSupportsBluetooth(
-                              ref.watch(ledgerTargetPlatformProvider),
-                            )) ...[
+                      if (ledgerSupportsBluetooth(
+                        ref.watch(ledgerTargetPlatformProvider),
+                      )) ...[
+                        IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _transportChoice(LedgerConnectionTransport.usb),
                               const SizedBox(width: AppSpacing.xs),
                               _transportChoice(
                                 LedgerConnectionTransport.bluetooth,
                               ),
                             ],
-                          ],
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: AppSpacing.sm),
+                        const SizedBox(height: AppSpacing.sm),
+                      ],
                       Container(
                         padding: const EdgeInsets.all(AppSpacing.sm),
                         decoration: BoxDecoration(
@@ -433,11 +527,23 @@ class _LedgerConnectScreenState extends ConsumerState<LedgerConnectScreen> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              'On your Ledger',
-                              style: AppTypography.bodyMediumStrong.copyWith(
-                                color: context.colors.text.primary,
-                              ),
+                            Wrap(
+                              alignment: WrapAlignment.spaceBetween,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: AppSpacing.xs,
+                              runSpacing: AppSpacing.xxs,
+                              children: [
+                                Text(
+                                  'On your Ledger',
+                                  style: AppTypography.bodyMediumStrong
+                                      .copyWith(
+                                        color: context.colors.text.primary,
+                                      ),
+                                ),
+                                if (_transport ==
+                                    LedgerConnectionTransport.bluetooth)
+                                  _supportedDevicesHelp(),
+                              ],
                             ),
                             const SizedBox(height: AppSpacing.s),
                             Text(
