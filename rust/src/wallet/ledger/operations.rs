@@ -242,6 +242,86 @@ pub(crate) fn checkpoint_batch(
     })
 }
 
+/// Upgrade ownerless shielding checkpoints before the first balance snapshot.
+/// Wallet locks and outbox attribution share a transaction; no signed bytes change.
+pub(crate) fn recover_shield_reservations(
+    db_path: &str,
+    network: WalletNetwork,
+) -> Result<(), String> {
+    use voting_crypto_deps::rand::rngs::OsRng;
+    use zcash_client_backend::{
+        data_api::OutputLockStore,
+        wallet::{LockOwner, OutputRef},
+    };
+    use zcash_client_sqlite::util::SystemClock;
+    use zcash_client_sqlite::{SqlTransaction, WalletDb};
+    use zcash_primitives::transaction::TxId;
+    use zcash_protocol::{consensus::BlockHeight, PoolType};
+    with_wallet_db_write_lock("ledger.recover_shield_reservations", || {
+        let mut conn = open_wallet_raw_conn_with_timeout(db_path, WALLET_DB_BUSY_TIMEOUT)?;
+        ensure_table(&conn)?;
+        proposal_locks::ensure_schema(&conn)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let rows = {
+            let mut stmt = tx.prepare(&format!("SELECT operation_id, proof_pczt, expiry_height FROM {TABLE} op
+                WHERE network = ?1 AND kind = 'shield'
+                AND (state = 'signed_pending_broadcast' OR
+                    (state = 'result_pending_ack' AND status NOT IN ('broadcasted', 'expired')))
+                AND NOT EXISTS (SELECT 1 FROM vizor_send_proposal_locks l WHERE l.operation_id = op.operation_id)"))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([network_name(network)], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Option<u32>>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?
+        };
+        for (operation_id, bytes, expiry) in rows {
+            let mut inputs = std::collections::BTreeSet::new();
+            let mut owner = None;
+            for bytes in decode_pczt_batch(&bytes)? {
+                if let Some(bound) = proposal_locks::pczt_owner(&bytes)? {
+                    if owner.is_some_and(|old| old != bound) {
+                        return Err("Shield checkpoint has different reservation owners".into());
+                    }
+                    owner = Some(bound);
+                }
+                let pczt = pczt::Pczt::parse(&bytes)
+                    .map_err(|e| format!("Recover shield checkpoint: {e:?}"))?;
+                for input in pczt.transparent().inputs() {
+                    inputs.insert(OutputRef::new(
+                        TxId::from_bytes(*input.prevout_txid()),
+                        PoolType::TRANSPARENT,
+                        *input.prevout_index(),
+                    ));
+                }
+            }
+            let inputs = inputs.into_iter().collect::<Vec<_>>();
+            if inputs.is_empty() {
+                return Err("Shield checkpoint has no transparent inputs".into());
+            }
+            let owner = owner.unwrap_or_else(|| LockOwner::random(&mut OsRng));
+            let expiry = BlockHeight::from_u32(expiry.filter(|h| *h > 0).unwrap_or(u32::MAX));
+            {
+                let mut rng = OsRng;
+                let clock = SystemClock;
+                let mut db =
+                    WalletDb::from_connection(SqlTransaction::new(&tx), &network, &clock, &mut rng);
+                db.lock_outputs(&inputs, owner, expiry)
+                    .map_err(|e| format!("Restore shield checkpoint inputs: {e:?}"))?;
+            }
+            proposal_locks::restore_signed_owner(&tx, owner, &inputs, expiry, &operation_id)?;
+        }
+        tx.commit()
+            .map_err(|e| format!("Commit shield reservation recovery: {e}"))
+    })
+}
+
 pub(crate) fn list(
     db_path: &str,
     network: WalletNetwork,

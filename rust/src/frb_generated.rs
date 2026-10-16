@@ -1587,6 +1587,7 @@ fn wire__crate__api__sync__create_shield_transparent_pczt_impl(
             let api_lightwalletd_url = <String>::sse_decode(&mut deserializer);
             let api_network = <String>::sse_decode(&mut deserializer);
             let api_account_uuid = <String>::sse_decode(&mut deserializer);
+            let api_send_flow_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::sync::ApiWalletError>((move || {
@@ -1595,6 +1596,7 @@ fn wire__crate__api__sync__create_shield_transparent_pczt_impl(
                         api_lightwalletd_url,
                         api_network,
                         api_account_uuid,
+                        api_send_flow_id,
                     )?;
                     Ok(output_ok)
                 })())
@@ -14328,11 +14330,13 @@ impl SseDecode for zcash_voting::wire::ShareTrackingRunReportView {
 impl SseDecode for crate::api::sync::ShieldTransparentPcztResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_proposalId = <u64>::sse_decode(deserializer);
         let mut var_pcztBytes = <Vec<u8>>::sse_decode(deserializer);
         let mut var_feeZatoshi = <u64>::sse_decode(deserializer);
         let mut var_shieldedZatoshi = <u64>::sse_decode(deserializer);
         let mut var_needsSaplingParams = <bool>::sse_decode(deserializer);
         return crate::api::sync::ShieldTransparentPcztResult {
+            proposal_id: var_proposalId,
             pczt_bytes: var_pcztBytes,
             fee_zatoshi: var_feeZatoshi,
             shielded_zatoshi: var_shieldedZatoshi,
@@ -19151,6 +19155,7 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<zcash_voting::wire::ShareTrack
 impl flutter_rust_bridge::IntoDart for crate::api::sync::ShieldTransparentPcztResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.proposal_id.into_into_dart().into_dart(),
             self.pczt_bytes.into_into_dart().into_dart(),
             self.fee_zatoshi.into_into_dart().into_dart(),
             self.shielded_zatoshi.into_into_dart().into_dart(),
@@ -23394,6 +23399,7 @@ impl SseEncode for zcash_voting::wire::ShareTrackingRunReportView {
 impl SseEncode for crate::api::sync::ShieldTransparentPcztResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.proposal_id, serializer);
         <Vec<u8>>::sse_encode(self.pczt_bytes, serializer);
         <u64>::sse_encode(self.fee_zatoshi, serializer);
         <u64>::sse_encode(self.shielded_zatoshi, serializer);

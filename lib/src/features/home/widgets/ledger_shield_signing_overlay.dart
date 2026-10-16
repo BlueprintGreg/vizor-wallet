@@ -30,6 +30,7 @@ import '../../send/services/sapling_params.dart';
 import '../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
 import '../../send/widgets/sapling_params_prompt.dart';
+import '../services/hardware_shielding_session.dart';
 import '../services/transparent_shielding_service.dart'
     show observeShieldingBroadcast;
 
@@ -90,6 +91,7 @@ class _LedgerShieldSigningOverlayState
   bool _shieldedTotalKnown = true;
   int _sentRounds = 0;
   BigInt? _roundShielded;
+  HardwareShieldingSession? _shieldSession;
   int _round = 1;
   int _roundCount = 1;
   int? _pendingInputs;
@@ -127,6 +129,7 @@ class _LedgerShieldSigningOverlayState
   void dispose() {
     final shouldCancelDevice = !_cancelled && !_isBroadcasting;
     _cancelled = true;
+    unawaited(_shieldSession?.close());
     if (shouldCancelDevice) {
       unawaited(_cancelLedgerOperationSafely());
     }
@@ -176,6 +179,14 @@ class _LedgerShieldSigningOverlayState
         return;
       }
 
+      if (!await (_shieldSession?.close() ?? Future.value(true))) {
+        throw StateError('Could not finish cancelling. Please try again.');
+      }
+      if (!mounted || _cancelled) return;
+      final session = _shieldSession = HardwareShieldingSession.forRef(
+        ref,
+        accountUuid,
+      );
       final work = await _readProgress();
       if (!mounted || _cancelled) return;
       if (work.inputCount == 0) {
@@ -192,12 +203,12 @@ class _LedgerShieldSigningOverlayState
       final dbPath = await ref.read(ledgerWalletDbPathProvider)();
       _requireOriginalContext();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
-      final shieldPczt = await rust_sync.createShieldTransparentPczt(
+      final shieldPczt = await session.prepare(
         dbPath: dbPath,
         lightwalletdUrl: endpoint.normalizedLightwalletdUrl,
         network: endpoint.networkName,
-        accountUuid: accountUuid,
       );
+      if (!mounted || _cancelled) return;
 
       _roundShielded = shieldPczt.shieldedZatoshi;
       var saplingParams = await loadSaplingParamsStatus();
@@ -254,20 +265,23 @@ class _LedgerShieldSigningOverlayState
             accountUuid: accountUuid,
           );
       _operationId = operationId;
-      await ref
-          .read(ledgerSignedOperationServiceProvider)
-          .checkpoint(
-            operationId: operationId,
-            accountUuid: accountUuid,
-            kind: LedgerSignedOperationKind.shield,
-            pcztWithProofsBytes: pcztWithProofs,
-            pcztWithSignaturesBytes: signedPczt,
-          );
+      await _shieldSession!.checkpoint(
+        () => ref
+            .read(ledgerSignedOperationServiceProvider)
+            .checkpoint(
+              operationId: operationId,
+              accountUuid: accountUuid,
+              kind: LedgerSignedOperationKind.shield,
+              pcztWithProofsBytes: pcztWithProofs,
+              pcztWithSignaturesBytes: signedPczt,
+            ),
+      );
       _operationId = operationId;
       _operationCheckpointed = true;
       await _broadcastCheckpointed();
     } catch (e, st) {
       log('LedgerShieldConfirm._prepareAndSign: ERROR: $e\n$st');
+      if (_pcztBytes == null) await _shieldSession?.close();
       if (!mounted || _cancelled) return;
       setState(() {
         _phase = LedgerSigningModalPhase.failed;
@@ -350,15 +364,17 @@ class _LedgerShieldSigningOverlayState
             accountUuid: accountUuid,
           );
       _operationId = operationId;
-      await ref
-          .read(ledgerSignedOperationServiceProvider)
-          .checkpoint(
-            operationId: operationId,
-            accountUuid: accountUuid,
-            kind: LedgerSignedOperationKind.shield,
-            pcztWithProofsBytes: proofs,
-            pcztWithSignaturesBytes: signedPczt,
-          );
+      await _shieldSession!.checkpoint(
+        () => ref
+            .read(ledgerSignedOperationServiceProvider)
+            .checkpoint(
+              operationId: operationId,
+              accountUuid: accountUuid,
+              kind: LedgerSignedOperationKind.shield,
+              pcztWithProofsBytes: proofs,
+              pcztWithSignaturesBytes: signedPczt,
+            ),
+      );
       _operationId = operationId;
       _operationCheckpointed = true;
       await _broadcastCheckpointed();
@@ -671,7 +687,17 @@ class _LedgerShieldSigningOverlayState
     if (!mounted || _isBroadcasting || _cancelled) return;
     setState(() => _cancelled = true);
     await _cancelLedgerOperationSafely();
+    final released = await _shieldSession?.close() ?? true;
     if (!mounted) return;
+    if (!released) {
+      setState(() {
+        _cancelled = false;
+        _canRetry = false;
+        _phase = LedgerSigningModalPhase.failed;
+        _error = 'Could not finish cancelling. Please try again.';
+      });
+      return;
+    }
     widget.onCancel();
   }
 

@@ -629,6 +629,9 @@ class _FakeWalletNotifier extends WalletNotifier {
 }
 
 class _FakeSyncNotifier extends SyncNotifier {
+  @override
+  Future<void> refreshAfterProposalRelease(String accountUuid) async {}
+
   int refreshCount = 0;
 
   @override
@@ -729,6 +732,12 @@ class _FakePathProviderPlatform extends Fake
 }
 
 class _RustApiFake implements RustLibApi {
+  @override
+  Future<void> crateApiSyncDiscardProposal({
+    required BigInt proposalId,
+    required String sendFlowId,
+  }) async {}
+
   int createShieldCalls = 0;
   int addProofsCalls = 0;
 
@@ -754,9 +763,11 @@ class _RustApiFake implements RustLibApi {
     required String lightwalletdUrl,
     required String network,
     required String accountUuid,
+    required String sendFlowId,
   }) async {
     createShieldCalls++;
     return ShieldTransparentPcztResult(
+      proposalId: BigInt.from(77),
       pcztBytes: Uint8List.fromList([1, 2, 3]),
       feeZatoshi: BigInt.from(10_000),
       shieldedZatoshi: BigInt.from(99_990_000),

@@ -26,6 +26,7 @@ import '../../../send/screens/mobile/mobile_send_screen.dart'
     show MobileSaplingParamsSheet;
 import '../../../send/services/sapling_params.dart';
 import '../../services/transparent_shielding_service.dart';
+import '../../services/hardware_shielding_session.dart';
 import '../../../../core/formatting/zec_amount.dart';
 import '../../../../providers/wallet_provider.dart';
 import '../../widgets/mobile/shield/mobile_shield_scene.dart';
@@ -71,6 +72,7 @@ class _MobileKeystoneShieldScreenState
     with WidgetsBindingObserver, ExternalActionGuardHoldMixin {
   var _stage = _ShieldSignStage.preparing;
   bool _started = false;
+  late final HardwareShieldingSession _session;
   bool _qrVisualReady = false;
   bool _closed = false;
   int _scanGeneration = 0;
@@ -102,6 +104,7 @@ class _MobileKeystoneShieldScreenState
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _accountUuid = activeShieldingAccountUuid(ref);
+    _session = HardwareShieldingSession.forRef(ref, _accountUuid);
     _network = ref.read(rpcEndpointFailoverProvider).current.networkName;
     final sync = (ref.read(syncProvider).value ?? SyncState()).scopedToAccount(
       _accountUuid,
@@ -124,6 +127,7 @@ class _MobileKeystoneShieldScreenState
   void dispose() {
     _closed = true;
     _scanGeneration++;
+    unawaited(_session.close());
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_scanController?.dispose());
     super.dispose();
@@ -132,23 +136,23 @@ class _MobileKeystoneShieldScreenState
   Future<void> _preparePczt() async {
     try {
       _requireOriginalAccount();
-      final accountUuid = _accountUuid;
       final dbPath = await getWalletDbPath();
+      if (!mounted || _closed) return;
+      _requireOriginalAccount();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
-      final shieldPczt = await rust_sync.createShieldTransparentPczt(
+      final shieldPczt = await _session.prepare(
         dbPath: dbPath,
         lightwalletdUrl: endpoint.normalizedLightwalletdUrl,
         network: endpoint.networkName,
-        accountUuid: accountUuid,
       );
 
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       var saplingParams = await loadSaplingParamsStatus();
       if (shieldPczt.needsSaplingParams && !saplingParams.complete) {
         final confirmed = await _confirmSaplingParamsDownload();
         if (!confirmed) {
-          if (!mounted) return;
-          context.pop();
+          if (!mounted || _closed) return;
+          await _cancel();
           return;
         }
         await downloadMissingSaplingParams(
@@ -166,7 +170,7 @@ class _MobileKeystoneShieldScreenState
         maxFragmentLen: BigInt.from(140),
       );
 
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       setState(() {
         _stage = _ShieldSignStage.showQr;
         _saplingParams = saplingParams;
@@ -184,11 +188,12 @@ class _MobileKeystoneShieldScreenState
             ? saplingParams.outputPath
             : null,
       );
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       setState(() => _pcztWithProofs = pcztWithProofs);
     } catch (e, st) {
       log('MobileKeystoneShield._preparePczt: ERROR: $e\n$st');
-      if (!mounted) return;
+      await _session.close();
+      if (!mounted || _closed) return;
       setState(() {
         if (_stage == _ShieldSignStage.showQr) {
           _proofsFailed = true;
@@ -314,7 +319,7 @@ class _MobileKeystoneShieldScreenState
     } catch (e, st) {
       if (!_isActiveScan(generation)) return;
       log('MobileKeystoneShield: signed PCZT decode error: $e\n$st');
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       setState(() {
         _decoding = false;
         _scanHint =
@@ -352,16 +357,16 @@ class _MobileKeystoneShieldScreenState
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
       attemptedEndpoint = endpoint;
       _requireOriginalAccount();
-      final result = await rust_sync.extractAndBroadcastPczt(
+      final result = await _session.broadcast(
         dbPath: dbPath,
         lightwalletdUrl: endpoint.normalizedLightwalletdUrl,
         network: endpoint.networkName,
-        pcztWithProofsBytes: pcztWithProofs,
-        pcztWithSignaturesBytes: signatures,
+        proofs: pcztWithProofs,
+        signatures: signatures,
         spendParamsPath: _needsSaplingParams ? saplingParams.spendPath : null,
         outputParamsPath: _needsSaplingParams ? saplingParams.outputPath : null,
       );
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       log(
         'MobileKeystoneShield: broadcast shield txid=${result.txid} '
         'status=${result.status}',
@@ -382,7 +387,7 @@ class _MobileKeystoneShieldScreenState
       } catch (e) {
         log('MobileKeystoneShield: refreshAfterSend failed: $e');
       }
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       if (result.status != 'broadcasted') {
         setState(() {
           _stage = _ShieldSignStage.broadcastWarning;
@@ -393,9 +398,9 @@ class _MobileKeystoneShieldScreenState
       setState(() => _done = true);
     } catch (e, st) {
       log('MobileKeystoneShield._broadcast: ERROR: $e\n$st');
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       await _maybeSwitchBroadcastEndpoint(e, attemptedEndpoint);
-      if (!mounted) return;
+      if (!mounted || _closed) return;
       final postBroadcastMessage = postBroadcastShieldErrorMessage(e);
       if (postBroadcastMessage != null) {
         setState(() {
@@ -452,26 +457,33 @@ class _MobileKeystoneShieldScreenState
     }
   }
 
-  void _cancel() {
+  Future<void> _cancel() async {
     if (_closed || _stage == _ShieldSignStage.broadcasting) return;
-    _closed = true;
-    _scanGeneration++;
-    context.pop();
-  }
-
-  void _finishWarningOrFailure() {
-    if (_closed) return;
-    _closed = true;
-    _scanGeneration++;
-    final message = _statusMessage;
-    if (_stage == _ShieldSignStage.broadcastWarning &&
-        message != null &&
-        message.isNotEmpty) {
-      context.pop(MobileKeystoneShieldResult.warning(message));
+    setState(() {
+      _closed = true;
+      _scanGeneration++;
+    });
+    final released = await _session.close();
+    if (!mounted) return;
+    if (!released) {
+      setState(() {
+        _closed = false;
+        _stage = _ShieldSignStage.failed;
+        _error = 'Could not finish cancelling. Please try again.';
+      });
       return;
     }
-    context.pop();
+    final message = _statusMessage;
+    context.pop(
+      _stage == _ShieldSignStage.broadcastWarning &&
+              message != null &&
+              message.isNotEmpty
+          ? MobileKeystoneShieldResult.warning(message)
+          : null,
+    );
   }
+
+  void _finishWarningOrFailure() => unawaited(_cancel());
 
   void _requireOriginalAccount() {
     if (_network != ref.read(rpcEndpointFailoverProvider).current.networkName ||
@@ -494,56 +506,59 @@ class _MobileKeystoneShieldScreenState
     final terminal =
         _stage == _ShieldSignStage.failed ||
         _stage == _ShieldSignStage.broadcastWarning;
-    return MobileShieldScene(
-      backdrop: widget.backdrop,
-      phase: !_started
-          ? MobileShieldPhase.review
-          : _done
-          ? MobileShieldPhase.succeeded
-          : terminal
-          ? MobileShieldPhase.failed
-          : scanning || _stage == _ShieldSignStage.showQr
-          ? MobileShieldPhase.hardware
-          : MobileShieldPhase.working,
-      amount: formatZecAmount(_amount),
-      resultAmount: formatZecAmount(_shieldedAmount ?? _amount),
-      title: !_started
-          ? 'Transparent Balance'
-          : _done
-          ? 'Shielded successfully'
-          : scanning
-          ? 'Scan your Keystone signature'
-          : _stage == _ShieldSignStage.showQr
-          ? 'Approve with Keystone'
-          : terminal
-          ? 'Shielding needs attention'
-          : 'Shielding your balance…',
-      body: terminal ? _statusMessage ?? _error : null,
-      keystoneFocus: KeystoneShieldFocus(
-        stage: _started && !_done && !terminal
-            ? scanning
-                  ? KeystoneShieldFocusStage.scanner
-                  : _stage == _ShieldSignStage.showQr
-                  ? KeystoneShieldFocusStage.qr
-                  : KeystoneShieldFocusStage.cloud
-            : KeystoneShieldFocusStage.cloud,
-        urParts: _urParts,
-        scannerBuilder: (constraints, morph) =>
-            _buildScanner(constraints, morph),
-        onQrReadyChanged: (ready) {
-          if (mounted && _qrVisualReady != ready) {
-            setState(() => _qrVisualReady = ready);
-          }
-        },
+    return AbsorbPointer(
+      absorbing: _closed,
+      child: MobileShieldScene(
+        backdrop: widget.backdrop,
+        phase: !_started
+            ? MobileShieldPhase.review
+            : _done
+            ? MobileShieldPhase.succeeded
+            : terminal
+            ? MobileShieldPhase.failed
+            : scanning || _stage == _ShieldSignStage.showQr
+            ? MobileShieldPhase.hardware
+            : MobileShieldPhase.working,
+        amount: formatZecAmount(_amount),
+        resultAmount: formatZecAmount(_shieldedAmount ?? _amount),
+        title: !_started
+            ? 'Transparent Balance'
+            : _done
+            ? 'Shielded successfully'
+            : scanning
+            ? 'Scan your Keystone signature'
+            : _stage == _ShieldSignStage.showQr
+            ? 'Approve with Keystone'
+            : terminal
+            ? 'Shielding needs attention'
+            : 'Shielding your balance…',
+        body: terminal ? _statusMessage ?? _error : null,
+        keystoneFocus: KeystoneShieldFocus(
+          stage: _started && !_done && !terminal
+              ? scanning
+                    ? KeystoneShieldFocusStage.scanner
+                    : _stage == _ShieldSignStage.showQr
+                    ? KeystoneShieldFocusStage.qr
+                    : KeystoneShieldFocusStage.cloud
+              : KeystoneShieldFocusStage.cloud,
+          urParts: _urParts,
+          scannerBuilder: (constraints, morph) =>
+              _buildScanner(constraints, morph),
+          onQrReadyChanged: (ready) {
+            if (mounted && _qrVisualReady != ready) {
+              setState(() => _qrVisualReady = ready);
+            }
+          },
+        ),
+        canLeave: !_closed && _stage != _ShieldSignStage.broadcasting,
+        onCommit: _start,
+        onClose: _done
+            ? () => context.pop(const MobileKeystoneShieldResult.succeeded())
+            : _cancel,
+        onComplete: () =>
+            context.pop(const MobileKeystoneShieldResult.succeeded()),
+        footer: !_started || _done ? null : _buildBottomBar(),
       ),
-      canLeave: _stage != _ShieldSignStage.broadcasting,
-      onCommit: _start,
-      onClose: _done
-          ? () => context.pop(const MobileKeystoneShieldResult.succeeded())
-          : _cancel,
-      onComplete: () =>
-          context.pop(const MobileKeystoneShieldResult.succeeded()),
-      footer: !_started || _done ? null : _buildBottomBar(),
     );
   }
 
@@ -644,7 +659,9 @@ class _MobileKeystoneShieldScreenState
 
     return KeystoneShieldFooter(
       showQr: !scanning && _stage != _ShieldSignStage.broadcasting,
-      onCancel: _stage == _ShieldSignStage.broadcasting ? null : _cancel,
+      onCancel: _closed || _stage == _ShieldSignStage.broadcasting
+          ? null
+          : _cancel,
       onNext: _stage == _ShieldSignStage.showQr && _qrVisualReady
           ? _startScanning
           : null,

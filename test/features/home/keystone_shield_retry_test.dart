@@ -196,6 +196,12 @@ class _SignedScanState extends State<_SignedScan> {
 }
 
 class _ShieldApi extends RustLibApi {
+  @override
+  Future<void> crateApiSyncDiscardProposal({
+    required BigInt proposalId,
+    required String sendFlowId,
+  }) async {}
+
   _ShieldApi() {
     current = this;
   }
@@ -218,7 +224,9 @@ class _ShieldApi extends RustLibApi {
     required String lightwalletdUrl,
     required String network,
     required String accountUuid,
+    required String sendFlowId,
   }) async => ShieldTransparentPcztResult(
+    proposalId: BigInt.from(77),
     pcztBytes: Uint8List.fromList([1]),
     feeZatoshi: BigInt.from(10000),
     shieldedZatoshi: BigInt.from(90000),
@@ -246,19 +254,24 @@ class _ShieldApi extends RustLibApi {
   ];
 
   @override
-  Future<ExtractAndBroadcastPcztResult> crateApiSyncExtractAndBroadcastPczt({
+  Future<StoreAndBroadcastPcztsResult>
+  crateApiSyncStoreAndBroadcastSignedPcztsForProposal({
     required String dbPath,
     required String lightwalletdUrl,
     required String network,
-    required List<int> pcztWithProofsBytes,
-    required List<int> pcztWithSignaturesBytes,
+    required BigInt proposalId,
+    required String sendFlowId,
+    required List<Uint8List> pcztWithProofs,
+    required List<Uint8List> pcztWithSignatures,
     String? spendParamsPath,
     String? outputParamsPath,
   }) async {
-    broadcasts.add(List.of(pcztWithSignaturesBytes));
+    broadcasts.add(List.of(pcztWithSignatures.single));
     if (refusals.isNotEmpty) throw refusals.removeAt(0);
-    return const ExtractAndBroadcastPcztResult(
-      txid: 'ab',
+    return const StoreAndBroadcastPcztsResult(
+      broadcastedCount: 1,
+      totalCount: 1,
+      txids: 'ab',
       status: 'broadcasted',
     );
   }

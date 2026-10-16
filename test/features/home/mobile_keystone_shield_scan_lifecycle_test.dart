@@ -249,6 +249,12 @@ Future<void> _startScanner(WidgetTester tester) async {
 }
 
 class _Api extends RustLibApi {
+  @override
+  Future<void> crateApiSyncDiscardProposal({
+    required BigInt proposalId,
+    required String sendFlowId,
+  }) async {}
+
   int decodes = 0, broadcasts = 0;
   Completer<Uint8List>? pendingDecode;
   @override
@@ -259,7 +265,9 @@ class _Api extends RustLibApi {
     required String lightwalletdUrl,
     required String network,
     required String accountUuid,
+    required String sendFlowId,
   }) async => ShieldTransparentPcztResult(
+    proposalId: BigInt.from(77),
     pcztBytes: Uint8List.fromList([1]),
     feeZatoshi: BigInt.from(10000),
     shieldedZatoshi: BigInt.from(1411990000),
@@ -289,18 +297,23 @@ class _Api extends RustLibApi {
   }
 
   @override
-  Future<ExtractAndBroadcastPcztResult> crateApiSyncExtractAndBroadcastPczt({
+  Future<StoreAndBroadcastPcztsResult>
+  crateApiSyncStoreAndBroadcastSignedPcztsForProposal({
     required String dbPath,
     required String lightwalletdUrl,
     required String network,
-    required List<int> pcztWithProofsBytes,
-    required List<int> pcztWithSignaturesBytes,
+    required BigInt proposalId,
+    required String sendFlowId,
+    required List<Uint8List> pcztWithProofs,
+    required List<Uint8List> pcztWithSignatures,
     String? spendParamsPath,
     String? outputParamsPath,
   }) async {
     broadcasts++;
-    return const ExtractAndBroadcastPcztResult(
-      txid: 'ab',
+    return const StoreAndBroadcastPcztsResult(
+      broadcastedCount: 1,
+      totalCount: 1,
+      txids: 'ab',
       status: 'broadcasted',
     );
   }

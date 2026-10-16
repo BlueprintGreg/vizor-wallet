@@ -519,6 +519,11 @@ class _SigningOperations extends _Operations {
 }
 
 class _ShieldApi extends RustLibApi {
+  @override
+  Future<void> crateApiSyncDiscardProposal({
+    required BigInt proposalId,
+    required String sendFlowId,
+  }) async {}
   int creates = 0, proofs = 0;
   void reset() {
     creates = 0;
@@ -531,9 +536,11 @@ class _ShieldApi extends RustLibApi {
     required String lightwalletdUrl,
     required String network,
     required String accountUuid,
+    required String sendFlowId,
   }) async {
     creates++;
     return ShieldTransparentPcztResult(
+      proposalId: BigInt.from(77),
       pcztBytes: Uint8List.fromList([1, 2, 3]),
       feeZatoshi: BigInt.from(10000),
       shieldedZatoshi: BigInt.from(990000),
@@ -570,6 +577,8 @@ class _Paths extends Fake
 }
 
 class _Sync extends SyncNotifier {
+  @override
+  Future<void> refreshAfterProposalRelease(String accountUuid) async {}
   @override
   Future<void> refreshAfterSend() async {}
   @override
