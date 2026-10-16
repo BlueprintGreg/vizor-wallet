@@ -346,7 +346,7 @@ async fn early_restore(
             return;
         }
         // Keys identify the wallet's swaps, so only the reasons are logged.
-        match restore.look_up(&mut db, account, &WalletWriteLock).await {
+        match restore.look_up(&mut db, &WalletWriteLock).await {
             Ok(looked_up) => {
                 for (_, e) in &looked_up.failed {
                     log::warn!("Early swap restore lookup left to a sweep: {e}");
