@@ -22,7 +22,7 @@ import '../../ledger/services/ledger_mobile_ble_service.dart';
 import '../../ledger/services/ledger_signing_service.dart';
 import '../../ledger/widgets/ledger_device_app_prompt.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_bluetooth_content.dart';
-import '../../ledger/widgets/mobile/mobile_ledger_procedure.dart';
+import '../../ledger/widgets/ledger_procedure.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import '../../ledger/widgets/mobile_ledger_signing_surface.dart';
 import '../ledger/ledger_setup_args.dart';
@@ -47,6 +47,7 @@ class _MobileLedgerConnectScreenState
   late final LedgerOperationCanceller _cancelLedgerOperation;
   LedgerBleDevice? _selectedDevice;
   bool _showAdvancedOptions = false;
+  bool _invalidAccountIndex = false;
   bool _sessionOpen = false;
   bool _connectingAccount = false;
   bool _closing = false;
@@ -99,7 +100,7 @@ class _MobileLedgerConnectScreenState
     if (index == null) {
       setState(() {
         _showAdvancedOptions = true;
-        _error = kLedgerOnboardingAccountIndexError;
+        _invalidAccountIndex = true;
       });
       _revealContent(_errorKey);
       return;
@@ -107,6 +108,7 @@ class _MobileLedgerConnectScreenState
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _accountIndex = index;
+      _invalidAccountIndex = false;
       _sessionOpen = true;
       _selectedDevice = null;
       _error = null;
@@ -271,11 +273,11 @@ class _MobileLedgerConnectScreenState
           ledgerDeviceLabel(_selectedDevice!),
           topPadding: 0,
         ),
-        MobileLedgerProcedure(
+        LedgerProcedure(
           currentStep: current,
           steps: [
-            const MobileLedgerStep('Connect Ledger'),
-            MobileLedgerStep(
+            const LedgerStep('Connect Ledger'),
+            LedgerStep(
               'Open $appName',
               message: current == 1
                   ? _closing
@@ -291,7 +293,7 @@ class _MobileLedgerConnectScreenState
               busy: current == 1 && pending,
               requiresDeviceAction: opening && pending && !_closing,
             ),
-            MobileLedgerStep(
+            LedgerStep(
               'Add account',
               message: current == 2
                   ? _closing
@@ -310,6 +312,38 @@ class _MobileLedgerConnectScreenState
       ],
     );
   }
+
+  Widget _accountIndexMessage() => Stack(
+    key: _errorKey,
+    children: [
+      // Preserve the helper's wrapping height when showing validation feedback.
+      Visibility(
+        visible: !_invalidAccountIndex,
+        maintainState: true,
+        maintainAnimation: true,
+        maintainSize: true,
+        child: Text(
+          'Keep 0 unless you used a different index for this Ledger account.',
+          style: AppTypography.bodySmall.copyWith(
+            color: context.colors.text.secondary,
+          ),
+        ),
+      ),
+      if (_invalidAccountIndex)
+        Positioned.fill(
+          child: Semantics(
+            liveRegion: true,
+            child: Text(
+              kLedgerOnboardingAccountIndexError,
+              key: const ValueKey('mobile_ledger_connect_error'),
+              style: AppTypography.bodySmall.copyWith(
+                color: context.colors.text.destructive,
+              ),
+            ),
+          ),
+        ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -451,13 +485,7 @@ class _MobileLedgerConnectScreenState
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Text(
-                              'Keep 0 unless you used a different index for '
-                              'this Ledger account.',
-                              style: AppTypography.bodySmall.copyWith(
-                                color: colors.text.secondary,
-                              ),
-                            ),
+                            _accountIndexMessage(),
                             const SizedBox(height: AppSpacing.sm),
                             AppTextField(
                               key: const ValueKey(
@@ -466,7 +494,7 @@ class _MobileLedgerConnectScreenState
                               label: 'Account index (0–100)',
                               controller: _accountIndexController,
                               surface: AppTextFieldSurface.secondary,
-                              tone: _error != null && !_sessionOpen
+                              tone: _invalidAccountIndex
                                   ? AppTextFieldTone.destructive
                                   : AppTextFieldTone.neutral,
                               enabled: !_sessionOpen,
@@ -475,28 +503,18 @@ class _MobileLedgerConnectScreenState
                               inputFormatters: [
                                 FilteringTextInputFormatter.digitsOnly,
                               ],
-                              onChanged: (_) {
-                                if (_error != null) {
-                                  setState(() => _error = null);
+                              onChanged: (value) {
+                                final invalid =
+                                    parseLedgerOnboardingAccountIndex(value) ==
+                                    null;
+                                if (_invalidAccountIndex != invalid) {
+                                  setState(
+                                    () => _invalidAccountIndex = invalid,
+                                  );
+                                  if (invalid) _revealContent(_errorKey);
                                 }
                               },
                             ),
-                            if (_error != null && !_sessionOpen)
-                              Padding(
-                                key: _errorKey,
-                                padding: const EdgeInsets.only(
-                                  top: AppSpacing.xs,
-                                ),
-                                child: Text(
-                                  _error!,
-                                  key: const ValueKey(
-                                    'mobile_ledger_connect_error',
-                                  ),
-                                  style: AppTypography.bodySmall.copyWith(
-                                    color: colors.text.destructive,
-                                  ),
-                                ),
-                              ),
                           ],
                         ),
                       ),

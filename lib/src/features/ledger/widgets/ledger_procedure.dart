@@ -1,10 +1,10 @@
 import 'package:flutter/widgets.dart';
 
-import '../../../../core/theme/app_theme.dart';
-import '../../../../core/widgets/app_icon.dart';
+import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/app_icon.dart';
 
-class MobileLedgerStep {
-  const MobileLedgerStep(
+class LedgerStep {
+  const LedgerStep(
     this.label, {
     this.message,
     this.note,
@@ -22,20 +22,22 @@ class MobileLedgerStep {
 
 /// One procedure for account setup and transaction approval. Only the current
 /// step expands; its ordinal and first text baseline remain stable while busy.
-class MobileLedgerProcedure extends StatefulWidget {
-  const MobileLedgerProcedure({
+class LedgerProcedure extends StatefulWidget {
+  const LedgerProcedure({
     required this.steps,
     required this.currentStep,
+    this.topPadding = AppSpacing.md,
     super.key,
   });
-  final List<MobileLedgerStep> steps;
+  final List<LedgerStep> steps;
   final int currentStep;
+  final double topPadding;
 
   @override
-  State<MobileLedgerProcedure> createState() => _MobileLedgerProcedureState();
+  State<LedgerProcedure> createState() => _LedgerProcedureState();
 }
 
-class _MobileLedgerProcedureState extends State<MobileLedgerProcedure> {
+class _LedgerProcedureState extends State<LedgerProcedure> {
   final _stepKeys = <int, GlobalKey>{};
   String? _layout;
 
@@ -79,7 +81,7 @@ class _MobileLedgerProcedureState extends State<MobileLedgerProcedure> {
           '${constraints.maxWidth}:${MediaQuery.sizeOf(context).height}:$scale:$reducedMotion:${widget.currentStep}:${current.message}:${current.note}:${current.detail}:${current.requiresDeviceAction}';
       _reveal(layout);
       return Padding(
-        padding: const EdgeInsets.only(top: AppSpacing.md),
+        padding: EdgeInsets.only(top: widget.topPadding),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -168,7 +170,7 @@ class _MobileLedgerProcedureState extends State<MobileLedgerProcedure> {
                               ],
                             ],
                           ),
-                          _MobileLedgerStepBody(
+                          _LedgerStepBody(
                             step: widget.steps[index],
                             expanded: index == widget.currentStep,
                             onExpanded: () =>
@@ -190,22 +192,22 @@ class _MobileLedgerProcedureState extends State<MobileLedgerProcedure> {
 
 /// Retain the outgoing instruction only while it folds away. Keeping each row
 /// mounted lets a rapid stage change reverse from its current visible height.
-class _MobileLedgerStepBody extends StatefulWidget {
-  const _MobileLedgerStepBody({
+class _LedgerStepBody extends StatefulWidget {
+  const _LedgerStepBody({
     required this.step,
     required this.expanded,
     required this.onExpanded,
   });
-  final MobileLedgerStep step;
+  final LedgerStep step;
   final bool expanded;
   final VoidCallback onExpanded;
 
   @override
-  State<_MobileLedgerStepBody> createState() => _MobileLedgerStepBodyState();
+  State<_LedgerStepBody> createState() => _LedgerStepBodyState();
 }
 
-class _MobileLedgerStepBodyState extends State<_MobileLedgerStepBody> {
-  MobileLedgerStep? _content;
+class _LedgerStepBodyState extends State<_LedgerStepBody> {
+  LedgerStep? _content;
   bool _moving = false;
 
   @override
@@ -215,7 +217,7 @@ class _MobileLedgerStepBodyState extends State<_MobileLedgerStepBody> {
   }
 
   @override
-  void didUpdateWidget(covariant _MobileLedgerStepBody oldWidget) {
+  void didUpdateWidget(covariant _LedgerStepBody oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.expanded) _content = widget.step;
     if (oldWidget.expanded != widget.expanded) _moving = true;

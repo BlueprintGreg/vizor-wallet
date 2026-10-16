@@ -43,9 +43,10 @@ void main() {
       ),
     );
 
-    expect(find.text('Check your Ledger'), findsOne);
+    expect(find.text('Sign transaction'), findsOne);
+    expect(find.text('Review on Ledger'), findsOne);
     expect(find.text('Transaction 2 of 3'), findsOne);
-    expect(find.text('Zcash · Ledger'), findsOne);
+    expect(find.text('Ledger Flex · Bluetooth'), findsOne);
     expect(tester.takeException(), isNull);
   });
 
@@ -62,7 +63,7 @@ void main() {
     );
 
     expect(find.text('Ledger needs attention'), findsOne);
-    expect(find.text('Action needed'), findsOne);
+    expect(find.text('Reconnect'), findsOne);
     expect(
       find.text('Reconnect your Ledger and open the Zcash app.'),
       findsOne,

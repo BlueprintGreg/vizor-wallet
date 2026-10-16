@@ -58,76 +58,53 @@ void registerLedgerWaitGuidanceTests() {
             .begin('ledger');
         report('sending', deviceModel: model);
         await tester.pump();
-        if (kAppFormFactor == AppFormFactor.mobile) {
-          await tester.pump(const Duration(milliseconds: 300));
-        }
+        await tester.pump(const Duration(milliseconds: 300));
         final fast =
             model == 'stax' ||
             model == 'Ledger Flex' ||
             model == 'Ledger Flex / Stax';
-        final mobile = kAppFormFactor == AppFormFactor.mobile;
         expect(
-          find.text(
-            mobile
-                ? 'It may take about ${fast ? 10 : 30} seconds.'
-                : fast
-                ? 'Your Ledger is preparing to sign. It may seem unresponsive for about 10 seconds. Keep your Ledger connected.'
-                : 'Your Ledger is preparing to sign. It may seem unresponsive for about 30 seconds. Keep your Ledger connected.',
-          ),
+          find.text('It may take about ${fast ? 10 : 30} seconds.'),
           findsOneWidget,
         );
-        expect(
-          find.text(mobile ? 'Sign transaction' : 'Preparing to sign'),
-          findsOneWidget,
-        );
+        expect(find.text('Sign transaction'), findsOneWidget);
         expect(tester.takeException(), isNull);
 
         report('reviewing');
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(
-          find.text(
-            mobile
-                ? 'When prompted, check the amount and recipient on Ledger.'
-                : 'Review and approve when prompted on your Ledger.',
-          ),
+          find.text('When prompted, check the amount and recipient on Ledger.'),
           findsOneWidget,
         );
         expect(find.textContaining('seconds'), findsNothing);
-        if (mobile) {
-          expect(
-            find.byWidgetPredicate(
-              (w) => w is AppIcon && w.name == AppIcons.loader,
-            ),
-            findsOneWidget,
-          );
-          expect(
-            tester
-                .widget<Text>(
-                  find.text(
-                    'When prompted, check the amount and recipient on Ledger.',
-                  ),
-                )
-                .style
-                ?.fontWeight,
-            AppTypography.bodyMediumStrong.fontWeight,
-          );
-        }
-        report('finishing');
-        await tester.pump();
         expect(
-          find.text(
-            mobile ? 'Finishing the Ledger request.' : 'Keep Vizor open.',
+          find.byWidgetPredicate(
+            (w) => w is AppIcon && w.name == AppIcons.loader,
           ),
           findsOneWidget,
         );
-        if (mobile) {
-          expect(
-            find.byWidgetPredicate(
-              (w) => w is AppIcon && w.name == AppIcons.loader,
-            ),
-            findsOneWidget,
-          );
-        }
+        expect(
+          tester
+              .widget<Text>(
+                find.text(
+                  'When prompted, check the amount and recipient on Ledger.',
+                ),
+              )
+              .style
+              ?.fontWeight,
+          AppTypography.bodyMediumStrong.fontWeight,
+        );
+        report('finishing');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Finishing the Ledger request.'), findsOneWidget);
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is AppIcon && w.name == AppIcons.loader,
+          ),
+          findsOneWidget,
+        );
         expect(find.textContaining('seconds'), findsNothing);
 
         container.read(ledgerSigningProgressProvider.notifier).begin('other')(
@@ -135,10 +112,7 @@ void registerLedgerWaitGuidanceTests() {
           deviceModel: 'flex',
         );
         await tester.pump();
-        expect(
-          find.text(mobile ? 'Prepare transaction' : 'Preparing transaction'),
-          findsOneWidget,
-        );
+        expect(find.text('Prepare transaction'), findsOneWidget);
         expect(find.textContaining('seconds'), findsNothing);
       },
     );

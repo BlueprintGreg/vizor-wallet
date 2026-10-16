@@ -182,13 +182,17 @@ Widget buildLedgerSigningPreview({
   String mobileTitle = 'Ledger',
   LedgerMobileBleService? bluetoothService,
   String deviceModel = 'Ledger Flex',
+  bool? canLeaveOverride,
+  bool cancelling = false,
 }) {
   final canLeave =
-      phase != LedgerSigningModalPhase.finishing &&
-      phase != LedgerSigningModalPhase.saving &&
-      phase != LedgerSigningModalPhase.broadcasting;
+      canLeaveOverride ??
+      (phase != LedgerSigningModalPhase.finishing &&
+          phase != LedgerSigningModalPhase.saving &&
+          phase != LedgerSigningModalPhase.broadcasting);
   final modal = LedgerSigningModal(
     phase: phase,
+    cancelling: cancelling,
     signingStage: readiness == LedgerSigningPlaygroundReadiness.ready
         ? signingStage
         : LedgerSigningStage.preparing,

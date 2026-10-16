@@ -322,26 +322,54 @@ void main() {
       );
       await tester.pumpAndSettle();
       await _capture(tester, 'connect-advanced');
-      for (final invalid in ['101', '', '999999999999999999999999']) {
+      final field = find.byKey(
+        const ValueKey('mobile_ledger_account_index_field'),
+      );
+      final fieldBeforeError = tester.getRect(field);
+      final actionBeforeError = tester.getRect(submit);
+      for (final invalid in ['101', '102', '', '999999999999999999999999']) {
         await tester.enterText(
           find.byKey(const ValueKey('mobile_ledger_account_index_field')),
           invalid,
         );
-        await tester.tap(submit);
         await tester.pumpAndSettle();
         expect(
           find.text('Account index must be between 0 and 100.'),
           findsOneWidget,
         );
         expect(ble.permissionCalls, 0);
+        expect(connectorCalls, 0);
+        expect(tester.getRect(field), fieldBeforeError);
+        expect(tester.getRect(submit), actionBeforeError);
+        expect(
+          tester
+              .widget<AppTextField>(
+                find.byKey(const ValueKey('mobile_ledger_account_index_field')),
+              )
+              .tone,
+          AppTextFieldTone.destructive,
+        );
         if (invalid == '101') {
           await _capture(tester, 'connect-advanced-invalid');
         }
+        await tester.tap(submit);
+        await tester.pumpAndSettle();
+        expect(ble.permissionCalls, 0);
+        expect(tester.getRect(field), fieldBeforeError);
       }
-      await tester.enterText(
-        find.byKey(const ValueKey('mobile_ledger_account_index_field')),
-        '100',
-      );
+      for (final valid in ['0', '100']) {
+        await tester.enterText(
+          find.byKey(const ValueKey('mobile_ledger_account_index_field')),
+          valid,
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Account index must be between 0 and 100.'),
+          findsNothing,
+        );
+        expect(ble.permissionCalls, 0);
+      }
+      await _capture(tester, 'connect-advanced-corrected');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await _selectLedger(tester, ble);
       await _capture(tester, 'connect-approval');
@@ -769,6 +797,34 @@ void main() {
               .top,
         ),
       );
+      await tester.enterText(field, '101');
+      await tester.pumpAndSettle();
+      final error = find.text('Account index must be between 0 and 100.');
+      expect(error, findsOneWidget);
+      expect(error.hitTestable(), findsOneWidget);
+      expect(
+        tester.getRect(error).bottom,
+        lessThanOrEqualTo(
+          tester
+              .getRect(
+                find.byKey(const ValueKey('mobile_ledger_import_button')),
+              )
+              .top,
+        ),
+      );
+      expect(
+        tester.getRect(field).bottom,
+        lessThanOrEqualTo(
+          tester
+              .getRect(
+                find.byKey(const ValueKey('mobile_ledger_import_button')),
+              )
+              .top,
+        ),
+      );
+      await _capture(tester, 'connect-advanced-invalid-keyboard');
+      await tester.enterText(field, '7');
+      await tester.pumpAndSettle();
       await tester.ensureVisible(disclosure);
       await tester.tap(disclosure);
       tester.view.resetViewInsets();
@@ -831,10 +887,22 @@ void main() {
       expect(tester.takeException(), isNull);
       await _capture(tester, 'connect-advanced-320-2x');
       await tester.enterText(field, '101');
+      await tester.pumpAndSettle();
+      final error = find.text('Account index must be between 0 and 100.');
+      expect(error, findsOneWidget);
+      expect(error.hitTestable(), findsOneWidget);
+      expect(
+        tester.getRect(error).bottom,
+        lessThanOrEqualTo(tester.getRect(action).top),
+      );
+      expect(
+        tester.getRect(field).bottom,
+        lessThanOrEqualTo(tester.getRect(action).top),
+      );
+      await _capture(tester, 'connect-advanced-invalid-320-2x');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.tap(action);
       await tester.pumpAndSettle();
-      final error = find.text('Account index must be between 0 and 100.');
       expect(
         tester.getRect(error).bottom,
         lessThanOrEqualTo(tester.getRect(action).top),

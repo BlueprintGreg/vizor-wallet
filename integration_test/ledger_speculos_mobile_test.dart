@@ -30,7 +30,7 @@ import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operatio
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_signing_modal.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_access_content.dart';
-import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'package:zcash_wallet/src/features/onboarding/import/import_birthday_estimator.dart';
 import 'package:zcash_wallet/src/features/send/screens/mobile/mobile_ledger_send_sign_screen.dart';
 import 'package:zcash_wallet/src/features/send/screens/mobile/mobile_send_status_screen.dart';
@@ -552,9 +552,7 @@ Future<void> _runMobileSendScenario(WidgetTester tester) async {
     timeout: const Duration(seconds: 30),
   );
   expect(
-    tester
-        .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
-        .currentStep,
+    tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
     1,
   );
   expect(operationService.checkpointCount, 0);
@@ -562,9 +560,7 @@ Future<void> _runMobileSendScenario(WidgetTester tester) async {
   await tester.tap(find.text('Try again'));
   await tester.pump();
   expect(
-    tester
-        .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
-        .currentStep,
+    tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
     1,
     reason: 'Retry must retain the completed preparation step.',
   );
@@ -2095,7 +2091,7 @@ Finder _ledgerPendingApproval() => find.descendant(
   of: find.byType(LedgerSigningModal),
   matching: find.byWidgetPredicate(
     (widget) =>
-        widget is MobileLedgerProcedure &&
+        widget is LedgerProcedure &&
         widget.currentStep == 1 &&
         widget.steps[1].busy,
   ),
