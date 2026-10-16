@@ -54,6 +54,15 @@ enhancement/
 The filesystem matches the module graph. Implementations stay private behind
 their package or the parent session facade.
 
+Private query scheduling follows accepted chain changes. A new tip height
+starts another allowance; a successful reorg rewind also resets both the
+per-tip Enhance/status suppression and transparent recovery cadence. This
+lets recovery proceed on a replacement chain without waiting to exceed the
+old height. Failed rewinds and lagging endpoint replies preserve suppression.
+Replies at the replacement tip are suppressed again normally. This reset
+does not restore content-failure allowances, remove account holds, or shorten
+service-requested waits.
+
 ## The two wallet snapshots
 
 Three database snapshots serve different purposes and must not be mixed.
@@ -178,10 +187,34 @@ recovering
     |
     +-- HTTP 409/410 --> refresh once ---------> retry unfinished work
     |
-    +-- ordinary failure ----------------------> retrying later
+    +-- HTTP 429/503 --------------------------> stop dispatch; retrying later
+    |
+    +-- unreadable row or record, or a record
+    |   the wallet rejects --------------------> counted; rest of batch asked
+    |
+    +-- request failure -----------------------> rest of batch asked,
+    |                                             then retrying later
     |
     `-- authenticated result ------------------> persist partial progress
 ```
+
+A reply that arrived for the session but whose row does not decrypt or decode,
+a record in it that does not decode, and a record the wallet rejects are
+content outcomes: a service could aim them at chosen rows. Each is counted
+against the requests of its transaction in that row (three suspend the
+position for the wallet session), and the rest of the batch is asked as an
+honest reply would have it. Other request failures (an HTTP refusal, a transport
+or JSON error, a rotated generation, a body over the size limit, or a reply whose
+length or binding does not match the session) count nothing; the batch is
+still asked to its end, and then private Enhance waits for a later sync.
+HTTP 429/503 stop dispatch inside the client; consuming the remaining results
+does not send those requests. HTTP 409/410 instead refresh routing once and
+retry unfinished work. None of these request failures consumes the content
+failure allowance.
+
+Newly queued payload positions have no artificial first-query delay. Work a
+reply creates still waits for the next block and cannot trigger a same-block
+recovery restart. First-query timing protection is deferred for separate analysis.
 
 Accepted routing, pending routing, rediscovery attempts, and
 `private_failed_for_sync` are session-scoped. Successfully persisted records
@@ -246,10 +279,18 @@ positive records; a missing record is then `CoverageIncomplete`. `Mempool` and
 `Forked` are distinct source observations but both persist as the wallet's
 not-in-main-chain state.
 
-`CoverageIncomplete` is an explicit, retryable feedback gate. `GetStatus` work
-is expected to be highly unlikely in private mode, so Vizor surfaces a clear
-Settings action and pauses automatic sync after bounded retry instead of
-silently weakening privacy. If production users encounter the gate, its
+Manifest/setup validation failures and oversized, truncated, or incorrectly
+bound query responses defer private status for the session and leave the
+transaction eligible for the ordinary recovery backoff. Only malformed
+contents of a row received in a valid query envelope suppress that transaction
+until the next block. Neither path permits a public fallback.
+
+`CoverageIncomplete` is an explicit feedback gate. `GetStatus` work is
+expected to be highly unlikely in private mode, so Vizor surfaces a clear
+Settings action and pauses automatic sync instead of silently weakening
+privacy. A missing record is a reply about its transaction, so the sync is not
+retried at the same tip and the transaction is not asked again until the next
+block. If production users encounter the gate, its
 complete negative-coverage recovery needs a dedicated design; there is no
 automatic public fallback.
 

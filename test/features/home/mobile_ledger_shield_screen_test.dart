@@ -4,6 +4,7 @@ library;
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -18,10 +19,158 @@ import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operatio
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/providers/pending_activity_evidence_provider.dart';
 import 'package:zcash_wallet/src/providers/wallet_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart';
+import 'package:zcash_wallet/src/rust/frb_generated.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_mobile_ble_service.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
+import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/shield_hardware_motion.dart';
 
 void main() {
+  final api = _ShieldApi();
+  setUpAll(() => RustLib.initMock(api: api));
+  tearDownAll(RustLib.dispose);
+  setUp(api.reset);
+
+  testWidgets('saving stays in step 3 until the broadcast begins', (
+    tester,
+  ) async {
+    final operations = _SigningOperations();
+    final container = await _mountSigning(
+      tester,
+      operations,
+      (_) async => [7, 8, 9],
+    );
+    await _until(tester, () => operations.checkpointCalls == 1);
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+      tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
+      2,
+    );
+    expect(find.text('Saving the signed transaction.'), findsOneWidget);
+    expect(find.text('Cancel shielding'), findsNothing);
+    expect(
+      tester.widget<MobileShieldScene>(find.byType(MobileShieldScene)).phase,
+      MobileShieldPhase.hardware,
+    );
+    operations.checkpointed.complete();
+    await _until(tester, () => operations.broadcastCalls == 1);
+    expect(
+      tester.widget<MobileShieldScene>(find.byType(MobileShieldScene)).phase,
+      MobileShieldPhase.working,
+    );
+    expect(
+      tester
+          .widget<ShieldHardwarePresentation>(
+            find.byType(ShieldHardwarePresentation),
+          )
+          .interactive,
+      isFalse,
+    );
+    operations.broadcasted.complete();
+    await _until(
+      tester,
+      () =>
+          tester
+              .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+              .phase ==
+          MobileShieldPhase.succeeded,
+    );
+    container.read(pendingActivityEvidenceProvider.notifier).clear();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('declined approval retries step 2 with the existing proofs', (
+    tester,
+  ) async {
+    final operations = _SigningOperations();
+    var attempts = 0;
+    final signed = Completer<List<int>>();
+    await _mountSigning(tester, operations, (ref) {
+      ref.read(ledgerSigningProgressProvider.notifier).begin('account-1');
+      if (++attempts == 1) {
+        throw const LedgerMobileException(
+          LedgerMobileFailure.rejected,
+          'Rejected',
+        );
+      }
+      return signed.future;
+    });
+    await _until(
+      tester,
+      () => find.text('Request declined').evaluate().isNotEmpty,
+    );
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+      tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
+      1,
+    );
+    await tester.tap(find.text('Try again'));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(attempts, 2);
+    expect(
+      tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
+      1,
+    );
+    expect(api.creates, 1);
+    expect(api.proofs, 1);
+    expect(operations.checkpointCalls, 0);
+    expect(operations.broadcastCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+    signed.complete([7, 8, 9]);
+    await tester.pump();
+    expect(operations.checkpointCalls, 0);
+  });
+
+  testWidgets('cancellation shows progress and drains exactly once', (
+    tester,
+  ) async {
+    final operations = _SigningOperations();
+    final signed = Completer<List<int>>();
+    final drained = Completer<void>();
+    var cancelCalls = 0, closed = 0, started = false;
+    await _mountSigning(
+      tester,
+      operations,
+      (_) {
+        started = true;
+        return signed.future;
+      },
+      cancel: () {
+        cancelCalls++;
+        return drained.future;
+      },
+      onClose: () => closed++,
+    );
+    await _until(tester, () => started);
+    await tester.pump(const Duration(seconds: 2));
+    final close = tester
+        .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+        .onClose!;
+    await tester.tap(find.text('Cancel shielding'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    close();
+    expect(cancelCalls, 1);
+    expect(closed, 0);
+    expect(find.text('Cancelling request'), findsOneWidget);
+    expect(find.text('Cancel shielding'), findsNothing);
+    expect(
+      tester.widget<MobileShieldScene>(find.byType(MobileShieldScene)).canLeave,
+      isFalse,
+    );
+    signed.complete([7, 8, 9]);
+    await tester.pump();
+    expect(operations.checkpointCalls, 0);
+    drained.complete();
+    await tester.pump();
+    expect(closed, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'an empty Ledger round never celebrates an unsubmitted transaction',
     (tester) async {
@@ -100,6 +249,149 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+}
+
+Future<void> _until(WidgetTester tester, bool Function() done) async {
+  for (var i = 0; i < 150 && !done(); i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump(const Duration(milliseconds: 30));
+  }
+  expect(done(), isTrue);
+}
+
+Future<ProviderContainer> _mountSigning(
+  WidgetTester tester,
+  _SigningOperations operations,
+  Future<List<int>> Function(Ref) signer, {
+  Future<void> Function()? cancel,
+  VoidCallback? onClose,
+}) async {
+  FlutterSecureStorage.setMockInitialValues({});
+  final dir = (await tester.runAsync(
+    () => Directory.systemTemp.createTemp('shield-procedure-'),
+  ))!;
+  final original = PathProviderPlatform.instance;
+  PathProviderPlatform.instance = _Paths(dir.path);
+  addTearDown(() async {
+    PathProviderPlatform.instance = original;
+    await dir.delete(recursive: true);
+  });
+  final container = ProviderContainer(
+    overrides: [
+      appBootstrapProvider.overrideWithValue(_bootstrap()),
+      syncProvider.overrideWith(_Sync.new),
+      walletProvider.overrideWith(_Wallet.new),
+      ledgerOperationCancellerProvider.overrideWithValue(cancel ?? () async {}),
+      ledgerSignedOperationServiceProvider.overrideWithValue(operations),
+      ledgerPcztSignerProvider.overrideWith(
+        (ref) =>
+            (_, _) => signer(ref),
+      ),
+      ledgerShieldingProgressReaderProvider.overrideWithValue(
+        ({required dbPath, required network, required accountUuid}) async =>
+            LedgerShieldingProgress(
+              inputCount: operations.broadcastCalls == 0 ? 1 : 0,
+              inputLimit: 32,
+              belowThreshold: false,
+            ),
+      ),
+    ],
+  );
+  addTearDown(container.dispose);
+  await container.read(syncProvider.future);
+  await container.read(walletProvider.future);
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp(
+        home: LedgerShieldSigningOverlay(
+          mobile: true,
+          onCancel: onClose ?? () {},
+          onComplete: () {},
+        ),
+      ),
+    ),
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  final slide = find.byKey(const ValueKey('mobile_shield_slide'));
+  await tester.dragFrom(
+    tester.getTopLeft(slide) + const Offset(35, 30),
+    const Offset(280, 0),
+  );
+  return container;
+}
+
+class _SigningOperations extends _Operations {
+  final checkpointed = Completer<void>();
+  final broadcasted = Completer<void>();
+  int checkpointCalls = 0, broadcastCalls = 0;
+  @override
+  Future<void> checkpoint({
+    required String operationId,
+    required String accountUuid,
+    required LedgerSignedOperationKind kind,
+    required List<int> pcztWithProofsBytes,
+    required List<int> pcztWithSignaturesBytes,
+    String? externalRef,
+  }) {
+    checkpointCalls++;
+    return checkpointed.future;
+  }
+
+  @override
+  Future<LedgerSignedOperationBroadcastResult> broadcast({
+    required String operationId,
+    String? spendParamsPath,
+    String? outputParamsPath,
+  }) async {
+    broadcastCalls++;
+    await broadcasted.future;
+    return LedgerSignedOperationBroadcastResult(
+      operationId: operationId,
+      txid: 'preview-shield',
+      status: 'broadcasted',
+      requiresAck: false,
+    );
+  }
+}
+
+class _ShieldApi extends RustLibApi {
+  int creates = 0, proofs = 0;
+  void reset() {
+    creates = 0;
+    proofs = 0;
+  }
+
+  @override
+  Future<ShieldTransparentPcztResult> crateApiSyncCreateShieldTransparentPczt({
+    required String dbPath,
+    required String lightwalletdUrl,
+    required String network,
+    required String accountUuid,
+  }) async {
+    creates++;
+    return ShieldTransparentPcztResult(
+      pcztBytes: Uint8List.fromList([1, 2, 3]),
+      feeZatoshi: BigInt.from(10000),
+      shieldedZatoshi: BigInt.from(990000),
+      needsSaplingParams: false,
+    );
+  }
+
+  @override
+  Future<Uint8List> crateApiSyncAddProofsToPczt({
+    required List<int> pcztBytes,
+    String? spendParamsPath,
+    String? outputParamsPath,
+  }) async {
+    proofs++;
+    return Uint8List.fromList([4, 5, 6]);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _Operations extends Fake implements LedgerSignedOperationService {

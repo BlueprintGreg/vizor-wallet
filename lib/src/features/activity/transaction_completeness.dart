@@ -186,14 +186,20 @@ const kTransparentDetailsPollInterval = Duration(seconds: 5);
 /// keeps re-reading it and asks for it to be looked up first. A failed
 /// lookup is worth waiting on only with Private queries on, where the
 /// private service may answer later; with it off the receipt stops there,
-/// as it always has.
+/// as it always has. A lookup the wallet gave up on reads as unavailable
+/// but is never waited on: no sync asks for it again.
 bool transparentDetailsAwaited(
   rust_sync.TransactionDetail? detail, {
   required bool privateQueriesEnabled,
 }) => switch (detail?.transparentDetailsState) {
   rust_sync.TransparentDetailsState.pending => true,
   rust_sync.TransparentDetailsState.unavailable => privateQueriesEnabled,
-  _ => false,
+  // Listed, not defaulted, so a new state has to decide whether it is
+  // waited on.
+  rust_sync.TransparentDetailsState.gaveUp => false,
+  rust_sync.TransparentDetailsState.available => false,
+  rust_sync.TransparentDetailsState.notCovered => false,
+  null => false,
 };
 
 /// Names the recipient of a send the account recorded no recipient for.

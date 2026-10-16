@@ -6,9 +6,18 @@ import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import '../src/features/ledger/widgets/mobile/mobile_ledger_signing_content.dart';
 import '../src/features/ledger/services/ledger_signing_progress.dart';
+import '../src/features/ledger/services/ledger_app_readiness_service.dart';
 import '../src/providers/account_models.dart';
 
-enum _Stage { review, preparing, sending, reviewing, broadcasting, succeeded }
+enum _Stage {
+  review,
+  preparing,
+  sending,
+  reviewing,
+  saving,
+  broadcasting,
+  succeeded,
+}
 
 class LedgerShieldMotionPreview extends StatefulWidget {
   const LedgerShieldMotionPreview({
@@ -36,7 +45,9 @@ class _LedgerShieldMotionPreviewState extends State<LedgerShieldMotionPreview> {
         case _Stage.sending:
           _after(5, _Stage.reviewing);
         case _Stage.reviewing:
-          _after(6, _Stage.broadcasting);
+          _after(4, _Stage.saving);
+        case _Stage.saving:
+          _after(2, _Stage.broadcasting);
         case _Stage.broadcasting:
           _after(3, _Stage.succeeded);
         case _Stage.succeeded:
@@ -58,7 +69,8 @@ class _LedgerShieldMotionPreviewState extends State<LedgerShieldMotionPreview> {
     final hardware =
         _stage == _Stage.preparing ||
         _stage == _Stage.sending ||
-        _stage == _Stage.reviewing;
+        _stage == _Stage.reviewing ||
+        _stage == _Stage.saving;
     final stage = _stage == _Stage.sending
         ? LedgerSigningStage.sending
         : _stage == _Stage.reviewing
@@ -94,8 +106,17 @@ class _LedgerShieldMotionPreviewState extends State<LedgerShieldMotionPreview> {
                 status: stage == LedgerSigningStage.reviewing
                     ? 'Waiting for your approval'
                     : stage.status,
-                active: stage != LedgerSigningStage.reviewing,
+                active: true,
                 failed: false,
+                stage: stage,
+                readiness: LedgerAppReadinessPhase.ready,
+                deviceModel: 'stax',
+                saving: _stage == _Stage.saving,
+                finishing: false,
+                broadcasting: false,
+                declined: false,
+                roundNumber: 1,
+                roundCount: 1,
                 account: const AccountInfo(
                   uuid: 'ledger-motion-preview',
                   name: 'Ledger',
@@ -106,7 +127,7 @@ class _LedgerShieldMotionPreviewState extends State<LedgerShieldMotionPreview> {
                   ledgerDeviceName: 'Ledger Stax',
                   ledgerDeviceModel: 'stax',
                 ),
-                onClose: widget.onClose,
+                onClose: _stage == _Stage.saving ? null : widget.onClose,
                 onAction: null,
               ),
             )
@@ -115,7 +136,7 @@ class _LedgerShieldMotionPreviewState extends State<LedgerShieldMotionPreview> {
         setState(() => _stage = _Stage.preparing);
         _after(3, _Stage.sending);
       },
-      canLeave: _stage != _Stage.broadcasting,
+      canLeave: _stage != _Stage.broadcasting && _stage != _Stage.saving,
       onClose: widget.onClose,
       onComplete: widget.onClose,
     );

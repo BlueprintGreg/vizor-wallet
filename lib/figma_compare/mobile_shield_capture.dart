@@ -3,6 +3,9 @@ import 'keystone_shield_capture.dart';
 import 'package:flutter/widgets.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import '../src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
+import '../src/features/ledger/widgets/mobile/mobile_ledger_signing_content.dart';
+import '../src/features/ledger/services/ledger_signing_progress.dart';
+import '../src/features/ledger/services/ledger_app_readiness_service.dart';
 
 Widget buildMobileShieldReview(BuildContext context) => const MobileShieldScene(
   phase: MobileShieldPhase.review,
@@ -42,13 +45,23 @@ Widget buildMobileShieldLedger(BuildContext context) => const MobileShieldScene(
   amount: '0.9912331',
   title: 'Shield with Ledger',
   focusChild: LedgerInlinePresentation(
-    child: MobileLedgerSheetContent(
-      title: 'Confirm on your Ledger',
+    child: MobileLedgerSigningContent(
+      title: 'Check your Ledger',
+      message: 'Review and approve when prompted on your Ledger.',
+      status: 'Review on device',
+      active: true,
+      failed: false,
+      stage: LedgerSigningStage.reviewing,
+      readiness: LedgerAppReadinessPhase.ready,
+      deviceModel: 'stax',
+      saving: false,
+      finishing: false,
+      broadcasting: false,
+      declined: false,
+      roundNumber: 1,
+      roundCount: 3,
       onClose: _noop,
-      children: [
-        MobileLedgerMessage('Review and approve when prompted on your Ledger.'),
-        MobileLedgerStatus('Transaction 1 of 3', active: false),
-      ],
+      onAction: null,
     ),
   ),
   onClose: _noop,

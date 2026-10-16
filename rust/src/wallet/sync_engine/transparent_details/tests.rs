@@ -1243,8 +1243,10 @@ async fn stage_failure_protocol_sync_ok_balances_unchanged() {
     let lwd = CapturingLwd::start_with(Vec::new(), 0, |_| {}).await;
     let before = balance(&fixture);
     let outcome = followup_with(&fixture, required(), &lwd).await;
+    // A malformed display map is chosen without knowing any txid, so it is
+    // an outage, not a content failure against this transaction.
     assert!(
-        matches!(outcome, Some(RunOutcome::Finished(stats)) if stats.deferred == 1),
+        matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.deferred == 1),
         "{outcome:?}"
     );
     assert_eq!(paths(&service), ["/v2/txid/init"]);
@@ -1562,6 +1564,45 @@ fn logs_txid_free_private() {
             }
         }
     }
+}
+
+/// Three content failures at one mined height, without public authority,
+/// give the lookup up. The view says so, distinct from an unavailable lookup,
+/// and so does the receipt's detail state, so the receipt can stop waiting
+/// for it.
+#[tokio::test]
+async fn three_content_failures_give_the_lookup_up() {
+    let fixture = wallet();
+    let tx = utxo_receipt(&fixture, 0x86, TOP - 1).txid();
+    let _mode = require_private(&fixture.path);
+    let mut source = Scripted::new(|_| deferred(TransparentDetailOutcome::Protocol));
+    for failures in 1..=3 {
+        run_scripted(&fixture, &mut source).await;
+        assert_eq!(source.looked_up().len(), failures);
+        let view = view(&fixture, &tx);
+        if failures < 3 {
+            assert_eq!(view, Some(TransparentDisplayView::Unavailable));
+        } else {
+            assert_eq!(view, Some(TransparentDisplayView::GaveUp));
+        }
+        advance_wall(PAST_BACKOFF);
+    }
+    // Given up: no later run asks again.
+    run_scripted(&fixture, &mut source).await;
+    assert_eq!(source.looked_up().len(), 3);
+
+    let detail = crate::api::sync::get_transaction_detail(
+        fixture.path.clone(),
+        "main".to_owned(),
+        fixture.uuid.clone(),
+        hex::encode(tx.as_ref()),
+        "received".to_owned(),
+    )
+    .unwrap();
+    assert!(matches!(
+        detail.transparent_details_state,
+        Some(crate::api::sync::TransparentDetailsState::GaveUp)
+    ));
 }
 
 #[tokio::test]
@@ -2087,7 +2128,7 @@ fn genuine_mixed(fixture: &Fixture, height: u32) -> Transaction {
         .unwrap()
         .address_at(0u32, orchard::keys::Scope::External);
     let mut keys = transparent::builder::TransparentSigningSet::new();
-    let pubkey = keys.add_key(secp256k1::SecretKey::from_slice(&[0x5a; 32]).unwrap());
+    let pubkey = keys.add_key(secp256k1::SecretKey::from_secret_bytes([0x5a; 32]).unwrap());
     let coin = transparent::bundle::TxOut::new(
         Zatoshis::const_from_u64(1_000_000),
         TransparentAddress::from_pubkey(&pubkey).script().into(),

@@ -333,6 +333,29 @@ Widget buildMobileUnlockFaceIdUseCase(BuildContext context) {
   );
 }
 
+Widget buildMobileUnlockFaceIdOptInUseCase(BuildContext context) =>
+    _buildMobileUnlockOptInUseCase(BiometricKind.face);
+
+Widget buildMobileUnlockTouchIdOptInUseCase(BuildContext context) =>
+    _buildMobileUnlockOptInUseCase(BiometricKind.touchId);
+
+Widget buildMobileUnlockFingerprintOptInUseCase(BuildContext context) =>
+    _buildMobileUnlockOptInUseCase(BiometricKind.fingerprint);
+
+Widget _buildMobileUnlockOptInUseCase(BiometricKind kind) {
+  return _buildMobileUnlockUseCase(
+    BiometricUnlockState(
+      availability: BiometricAvailability(
+        supported: true,
+        enrolled: true,
+        kind: kind,
+      ),
+      enabled: false,
+    ),
+    constrainToDesignSize: false,
+  );
+}
+
 Widget buildMobileUnlockBiometricBackdropUseCase(BuildContext context) {
   return const _MobilePreviewFrame(child: MobileBiometricSignInView());
 }
@@ -4989,7 +5012,10 @@ class _UnlockHarnessState extends State<_UnlockHarness> {
   }
 }
 
-Widget _buildMobileUnlockUseCase(BiometricUnlockState biometricState) {
+Widget _buildMobileUnlockUseCase(
+  BiometricUnlockState biometricState, {
+  bool constrainToDesignSize = true,
+}) {
   return ProviderScope(
     overrides: [
       biometricUnlockProvider.overrideWith(
@@ -4997,6 +5023,7 @@ Widget _buildMobileUnlockUseCase(BiometricUnlockState biometricState) {
       ),
     ],
     child: _MobilePreviewFrame(
+      constrainToDesignSize: constrainToDesignSize,
       child: IgnorePointer(
         child: MobileUnlockScreen(autoPromptBiometric: false),
       ),

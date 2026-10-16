@@ -57,6 +57,8 @@ pub(crate) mod gift_card_claim;
 pub(crate) mod ledger_discovery;
 mod lwd;
 pub(crate) mod mempool;
+#[cfg(test)]
+mod private_recovery_reorg_tests;
 mod retry_progress;
 #[cfg(test)]
 pub(crate) mod test_lwd;
@@ -2327,6 +2329,14 @@ fn invalidate_transparent_checks_before_rewind(db_data_path: &str) -> Result<(),
         .map_err(|error| SyncError::db(format!("invalidate UTXO checks before rewind: {error}")))
 }
 
+/// A successful reorg rewind permits one new private recovery allowance at
+/// the replacement tip. Endpoint lag and failed rewinds must not call this.
+/// Holds, service-requested waits and content-failure counters are unchanged.
+fn reset_private_recovery_after_reorg(db_data_path: &str, tip: u64) {
+    enhancement::content_failures::after_reorg(db_data_path, tip);
+    transparent_ledger::clear_recovery_tip(db_data_path);
+}
+
 fn truncate_wallet_to_height(
     db_data_path: &str,
     db: &mut WalletDatabase,
@@ -2336,18 +2346,19 @@ fn truncate_wallet_to_height(
 ) -> Result<BlockHeight, SyncError> {
     invalidate_transparent_checks_before_rewind(db_data_path)?;
     with_wallet_db_write_lock(operation, || {
-        truncate_wallet_with(requested_height, fresh_tip_height, |height| {
+        truncate_wallet_with(db_data_path, requested_height, fresh_tip_height, |height| {
             ledger_discovery::truncate(db_data_path, db, height)
         })
     })
 }
 
 fn truncate_wallet_with(
+    db_data_path: &str,
     requested_height: BlockHeight,
     fresh_tip_height: BlockHeight,
     mut truncate: impl FnMut(BlockHeight) -> Result<BlockHeight, SqliteClientError>,
 ) -> Result<BlockHeight, SyncError> {
-    match truncate(requested_height) {
+    let actual_height = match truncate(requested_height) {
         Ok(height) => validate_reorg_rewind_height(height, fresh_tip_height),
         Err(SqliteClientError::RequestedRewindInvalid {
             safe_rewind_height: Some(safe_height),
@@ -2385,7 +2396,9 @@ fn truncate_wallet_with(
         Err(e) => Err(SyncError::db(format!(
             "truncate_to_height({requested_height}): {e}"
         ))),
-    }
+    }?;
+    reset_private_recovery_after_reorg(db_data_path, u64::from(u32::from(fresh_tip_height)));
+    Ok(actual_height)
 }
 
 fn validate_reorg_rewind_height(
@@ -2963,7 +2976,7 @@ async fn run_payment_link_claim_sync_once(
                         block_height_from_u64(fresh_tip.height, "payment-link reorg tip")?;
                     let requested = confirmed_reorg_rewind_target(fresh_height)?;
                     invalidate_transparent_checks_before_rewind(db_data_path)?;
-                    truncate_wallet_with(requested, fresh_height, |height| {
+                    truncate_wallet_with(db_data_path, requested, fresh_height, |height| {
                         ledger_discovery::truncate(db_data_path, &mut db, height)
                     })?;
                     db.update_chain_tip(fresh_height).map_err(|error| {
@@ -3068,7 +3081,7 @@ async fn run_payment_link_claim_sync_once(
                 let fresh_tip =
                     block_height_from_u64(current_tip_height, "payment-link scan rewind tip")?;
                 invalidate_transparent_checks_before_rewind(db_data_path)?;
-                truncate_wallet_with(requested, fresh_tip, |height| {
+                truncate_wallet_with(db_data_path, requested, fresh_tip, |height| {
                     ledger_discovery::truncate(db_data_path, &mut db, height)
                 })?;
             }
@@ -3224,6 +3237,8 @@ async fn run_sync_impl(
 
     let mut current_tip_height: u64 = tip.height;
     log::info!("[{}] sync: chain tip = {}", elapsed(), current_tip_height);
+    // A new block lets work that failed on content count, and be asked, again.
+    enhancement::content_failures::at_tip(db_data_path, current_tip_height);
 
     // Retained send-lock expiry requires a usable target height.
     crate::wallet::sync::recover_orphaned_send_locks(db_data_path, network)
@@ -3601,6 +3616,10 @@ async fn run_sync_impl(
                                     fresh_tip.height,
                                 );
                                 current_tip_height = fresh_tip.height;
+                                enhancement::content_failures::at_tip(
+                                    db_data_path,
+                                    current_tip_height,
+                                );
                                 completion_tip_validation_required = true;
                             }
                         }
@@ -3634,6 +3653,7 @@ async fn run_sync_impl(
                                 fresh_tip.height,
                             );
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             initial_total = pending_blocks;
                             prev_remaining = pending_blocks;
                             if checking_cycle > 0 && pending_blocks > 0 {
@@ -3728,6 +3748,7 @@ async fn run_sync_impl(
                                 ))
                             })?;
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             let promoted_ranges = db.suggest_scan_ranges().map_err(|e| {
                                 SyncError::db(format!(
                                     "suggest_scan_ranges after final tip advance: {e}"
@@ -3781,6 +3802,7 @@ async fn run_sync_impl(
                                 fresh_tip.height,
                             );
                             current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                             initial_total = repair_pending_blocks;
                             prev_remaining = repair_pending_blocks;
                             progress_fn(begin_checking(
@@ -3884,6 +3906,7 @@ async fn run_sync_impl(
                     .await?;
                     if let ReleasedResubmission::TipAdvanced(fresh_height) = outcome {
                         current_tip_height = fresh_height;
+                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                         let promoted_ranges = db.suggest_scan_ranges().map_err(|e| {
                             SyncError::db(format!("suggest_scan_ranges after tip promotion: {e}"))
                         })?;
@@ -4290,6 +4313,7 @@ async fn run_sync_impl(
                         current_tip_height,
                         "current lightwalletd chain tip",
                     )?;
+                    reset_private_recovery_after_reorg(db_data_path, current_tip_height);
                     let post_rewind_ranges = with_wallet_db_write_lock(
                         "sync_engine.update_chain_tip.after_rewind",
                         || -> Result<Vec<ScanRange>, SyncError> {
@@ -4504,6 +4528,10 @@ async fn run_sync_impl(
                         ) {
                             Ok(_) => {
                                 current_tip_height = fresh_tip.height;
+                                enhancement::content_failures::at_tip(
+                                    db_data_path,
+                                    current_tip_height,
+                                );
                                 completion_tip_validation_required = true;
                                 last_periodic_tip_refresh_attempt = std::time::Instant::now();
                             }
@@ -4548,6 +4576,7 @@ async fn run_sync_impl(
                             fresh_tip.height,
                         );
                         current_tip_height = fresh_tip.height;
+                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
                         initial_total = pending_blocks;
                         prev_remaining = pending_blocks;
                         if checking_cycle > 0 && pending_blocks > 0 {
@@ -5011,6 +5040,9 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
     if !runs_transparent_followup(running_mode) {
         return;
     }
+    let Some(schedule) = transparent_ledger::recovery_schedule(db_data_path, completed.1) else {
+        return;
+    };
     let private = policy.transparent_mode()
         != zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode::Public;
     if private {
@@ -5029,6 +5061,7 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
         policy,
         source,
         first,
+        schedule,
         std::time::Instant::now,
         should_exit,
     )
@@ -5042,6 +5075,8 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             }
             return;
         }
+        // A cancelled run does not use up the block: the cancellation is the
+        // app's own, and the next sync at this tip runs again.
         Ok(transparent_ledger::RunOutcome::Exited) => {
             log::info!(
                 "[{}] sync: exiting during private transparent recovery",
@@ -5049,17 +5084,23 @@ async fn transparent_followup<S: transparent_ledger::RecoverySource>(
             );
             return;
         }
-        Ok(outcome) => log::info!(
-            "[{}] sync: private transparent recovery: {:?}",
-            elapsed(),
-            outcome
-        ),
+        Ok(outcome) => {
+            transparent_ledger::recovery_ran(db_data_path, completed.1);
+            log::info!(
+                "[{}] sync: private transparent recovery: {:?}",
+                elapsed(),
+                outcome
+            )
+        }
         // Commits applied before the failure stay durable.
-        Err(error) => log::warn!(
-            "[{}] sync: private transparent recovery failed: {}",
-            elapsed(),
-            error
-        ),
+        Err(error) => {
+            transparent_ledger::recovery_ran(db_data_path, completed.1);
+            log::warn!(
+                "[{}] sync: private transparent recovery failed: {}",
+                elapsed(),
+                error
+            )
+        }
     }
     refresh_transparent_receive_cache(db_data_path, network, completed.0);
     progress_fn(followup_updated_event(completed));
@@ -6535,10 +6576,15 @@ mod tests {
 
         let requested = confirmed_reorg_rewind_target(BlockHeight::from_u32(100)).unwrap();
         let mut rewind_calls = Vec::new();
-        let actual = truncate_wallet_with(requested, BlockHeight::from_u32(100), |height| {
-            rewind_calls.push(height);
-            Ok(height)
-        })
+        let actual = truncate_wallet_with(
+            "same-height-fork-rewind",
+            requested,
+            BlockHeight::from_u32(100),
+            |height| {
+                rewind_calls.push(height);
+                Ok(height)
+            },
+        )
         .unwrap();
         assert_eq!(actual, BlockHeight::from_u32(99));
         assert_eq!(rewind_calls, vec![BlockHeight::from_u32(99)]);
@@ -6638,7 +6684,7 @@ mod tests {
         let unsafe_checkpoint = BlockHeight::from_u32(100);
         let mut calls = Vec::new();
 
-        let result = truncate_wallet_with(requested, fresh_tip, |height| {
+        let result = truncate_wallet_with("unsafe-reorg-rewind", requested, fresh_tip, |height| {
             calls.push(height);
             Err(SqliteClientError::RequestedRewindInvalid {
                 safe_rewind_height: Some(unsafe_checkpoint),
@@ -6673,7 +6719,7 @@ mod tests {
         let safe_checkpoint = BlockHeight::from_u32(99);
         let mut calls = Vec::new();
 
-        let result = truncate_wallet_with(requested, fresh_tip, |height| {
+        let result = truncate_wallet_with("safe-reorg-rewind", requested, fresh_tip, |height| {
             calls.push(height);
             if calls.len() == 1 {
                 Err(SqliteClientError::RequestedRewindInvalid {
@@ -6884,15 +6930,24 @@ pub(crate) fn enhance_recovery_status(
 ) -> Result<crate::api::sync::EnhanceRecoveryStatus, String> {
     let mut db = open_wallet_db_readonly_with_timeout(path, network, READ_DB_BUSY_TIMEOUT)?;
     EnhancementPolicy::current(network).configure_db(&mut db);
-    recovery_status_for(&db, enhancement::phase(path))
+    recovery_status_for(&db, path, enhancement::phase(path))
 }
 
 /// Counts recovery work in a database already configured with the current
 /// enhancement policy.
+///
+/// Work that failed on content, got a reply, or was created by a reply at the
+/// current chain tip is left out: it waits for the next block (see
+/// [`enhancement::content_failures`]), so whether a recovery-only restart
+/// happens never depends on what a reply said. Expired transparent-service
+/// waits are reported separately: their public schedule permits only the
+/// accounts whose waits expired to retry at the same tip.
 fn recovery_status_for(
     db: &WalletDatabase,
+    db_path: &str,
     service_state: String,
 ) -> Result<crate::api::sync::EnhanceRecoveryStatus, String> {
+    use enhancement::content_failures;
     use zcash_client_backend::data_api::enhance_pir::EnhancePirRead;
     use zcash_client_backend::data_api::enhance_pir::TransactionEnhancementWork;
     use zcash_client_backend::data_api::status::{TransactionStatusRead, TransactionStatusWork};
@@ -6904,14 +6959,21 @@ fn recovery_status_for(
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|work| matches!(work, TransactionStatusWork::Private(_)))
+        .filter(|work| content_failures::may_ask_status(db_path, &work.txid()))
         .count();
     let work = zakura_pir_enhance::wallet::PreparedWork::new(
         db.transaction_enhancement_work()
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter_map(|work| match work {
-                TransactionEnhancementWork::Private(work) => Some(work),
-                TransactionEnhancementWork::Public(_) => None,
+                TransactionEnhancementWork::Private(work)
+                    if content_failures::may_ask(db_path, &work) =>
+                {
+                    Some(work)
+                }
+                TransactionEnhancementWork::Private(_) | TransactionEnhancementWork::Public(_) => {
+                    None
+                }
             }),
     );
     Ok(crate::api::sync::EnhanceRecoveryStatus {
@@ -6919,6 +6981,7 @@ fn recovery_status_for(
         rediscovery: work.rediscover.len() as u32,
         suspended: work.suspended as u32,
         status: status as u32,
+        transparent_retry_due: transparent_ledger::service_retry_due(db_path),
         service_state,
     })
 }

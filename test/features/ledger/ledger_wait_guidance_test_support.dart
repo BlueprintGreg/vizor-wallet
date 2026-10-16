@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/layout/app_form_factor.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_signing_modal.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
@@ -57,31 +58,53 @@ void registerLedgerWaitGuidanceTests() {
             .begin('ledger');
         report('sending', deviceModel: model);
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
         final fast =
             model == 'stax' ||
             model == 'Ledger Flex' ||
             model == 'Ledger Flex / Stax';
         expect(
-          find.text(
-            fast
-                ? 'Your Ledger is preparing to sign. It may seem unresponsive for about 10 seconds. Keep your Ledger connected.'
-                : 'Your Ledger is preparing to sign. It may seem unresponsive for about 30 seconds. Keep your Ledger connected.',
-          ),
+          find.text('It may take about ${fast ? 10 : 30} seconds.'),
           findsOneWidget,
         );
-        expect(find.text('Preparing to sign'), findsOneWidget);
+        expect(find.text('Sign transaction'), findsOneWidget);
         expect(tester.takeException(), isNull);
 
         report('reviewing');
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(
-          find.text('Review and approve when prompted on your Ledger.'),
+          find.text('When prompted, check the amount and recipient on Ledger.'),
           findsOneWidget,
         );
         expect(find.textContaining('seconds'), findsNothing);
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is AppIcon && w.name == AppIcons.loader,
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.text(
+                  'When prompted, check the amount and recipient on Ledger.',
+                ),
+              )
+              .style
+              ?.fontWeight,
+          AppTypography.bodyMediumStrong.fontWeight,
+        );
         report('finishing');
         await tester.pump();
-        expect(find.text('Keep Vizor open.'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Finishing the Ledger request.'), findsOneWidget);
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is AppIcon && w.name == AppIcons.loader,
+          ),
+          findsOneWidget,
+        );
         expect(find.textContaining('seconds'), findsNothing);
 
         container.read(ledgerSigningProgressProvider.notifier).begin('other')(
@@ -89,7 +112,7 @@ void registerLedgerWaitGuidanceTests() {
           deviceModel: 'flex',
         );
         await tester.pump();
-        expect(find.text('Preparing transaction'), findsOneWidget);
+        expect(find.text('Prepare transaction'), findsOneWidget);
         expect(find.textContaining('seconds'), findsNothing);
       },
     );

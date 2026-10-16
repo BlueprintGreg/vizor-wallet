@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart' show Scaffold;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
@@ -58,6 +59,7 @@ class MobileUnlockScreen extends ConsumerStatefulWidget {
 class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
   var _entry = '';
   var _submitting = false;
+  var _enableBiometricOnUnlock = false;
   var _biometricPromptShown = false;
   var _biometricFallback = false;
   // True from a successful biometric read through unlock → navigation, so the
@@ -215,6 +217,7 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
   /// account address and sync state before entering the app.
   Future<void> _submit() async {
     final fromBiometric = _biometricUnlocking;
+    final enableBiometric = _enableBiometricOnUnlock && !fromBiometric;
     setState(() {
       _submitting = true;
       _error = null;
@@ -236,6 +239,17 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
         await syncNotifier.refreshAfterUnlock();
         await syncNotifier.startSyncAnyway();
         if (!mounted) return;
+        if (enableBiometric) await _enableBiometricForNextUnlock();
+        if (!mounted) return;
+        // A native enrollment prompt can outlive the unlocked session (for
+        // example, returning after the background auto-lock timeout).
+        if (!ref.read(appSecurityProvider).isUnlocked) {
+          setState(() {
+            _submitting = false;
+            _entry = '';
+          });
+          return;
+        }
         // Claim the payment-URI prefill (parked while locked) only now, after
         // the post-unlock work has succeeded. Claiming earlier would drop the
         // payment if any of the awaits above threw or this screen unmounted —
@@ -299,6 +313,36 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
     }
   }
 
+  Future<void> _enableBiometricForNextUnlock() async {
+    final biometric = ref.read(biometricUnlockProvider).value;
+    if (biometric == null ||
+        !biometric.availability.usable ||
+        biometric.enabled ||
+        !ref.read(appSecurityProvider).isUnlocked) {
+      return;
+    }
+    try {
+      final passcode = ref
+          .read(appSecurityProvider.notifier)
+          .requireSessionPasswordForNativeSecretUse();
+      await ref.read(biometricUnlockProvider.notifier).enable(passcode);
+    } catch (e) {
+      // Optional enrollment must not undo a successful wallet unlock or
+      // consume a parked payment before its original destination is ready.
+      if (e is BiometricUnlockException &&
+          e.kind == BiometricUnlockErrorKind.cancelled) {
+        return;
+      }
+      log('MobileUnlockScreen biometric enable failed: $e');
+      if (!mounted || !ref.read(appSecurityProvider).isUnlocked) return;
+      showAppToast(
+        context,
+        "Couldn't enable ${biometric.availability.kind.inlineLabel}. "
+        'You can try again in settings.',
+      );
+    }
+  }
+
   Future<void> _showForgotPasscodeSheet() async {
     final confirmed = await showAppMobileSheet<bool>(
       context: context,
@@ -358,6 +402,34 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
     router.go('/welcome');
   }
 
+  Widget _buildBiometricFooter(BiometricUnlockState biometric) {
+    if (biometric.availability.usable && !biometric.enabled) {
+      return PasscodeBiometricOptIn(
+        key: const ValueKey('mobile_unlock_biometric_opt_in'),
+        label: biometric.availability.kind.useNextTimeLabel,
+        selected: _enableBiometricOnUnlock,
+        onChanged: _submitting
+            ? null
+            : (selected) => setState(() => _enableBiometricOnUnlock = selected),
+      );
+    }
+    if (!biometric.usable) return const SizedBox.shrink();
+    return SizedBox(
+      height: 36,
+      child: PasscodeBiometricButton(
+        label: biometric.availability.kind.signInLabel,
+        icon: Center(
+          child: BiometricIcon(
+            kind: biometric.availability.kind,
+            size: 13.5,
+            fingerprintSize: 16,
+          ),
+        ),
+        onPressed: _submitting ? null : () => unawaited(_tryBiometricUnlock()),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
@@ -391,79 +463,93 @@ class _MobileUnlockScreenState extends ConsumerState<MobileUnlockScreen> {
                   horizontal: AppSpacing.sm,
                   vertical: AppSpacing.md,
                 ),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              'Welcome Back',
-                              textAlign: TextAlign.center,
-                              style: AppTypography.displayLarge.copyWith(
-                                color: colors.text.accent,
-                              ),
-                            ),
-                            const SizedBox(height: AppSpacing.s),
-                            Text(
-                              _submitting
-                                  ? 'Opening your wallet...'
-                                  : 'Enter your passcode to open Vizor',
-                              textAlign: TextAlign.center,
-                              style: AppTypography.bodyMediumStrong.copyWith(
-                                color: colors.text.primary,
-                              ),
-                            ),
-                            const SizedBox(height: AppSpacing.md),
-                            SizedBox(
-                              height: kPasscodePromptDigitsHeight,
-                              child: PasscodePromptField(
-                                length: kMobilePasscodeLength,
-                                filled: _entry.length,
-                                error: _error,
-                                minGap: 0,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    PasscodeNumpad(
-                      onDigit: _onDigit,
-                      onBackspace: _onBackspace,
-                      canDelete: _entry.isNotEmpty,
-                      onHelp: _submitting ? null : _showForgotPasscodeSheet,
-                      enabled: !_submitting,
-                    ),
-                    const SizedBox(height: AppSpacing.md),
-                    SizedBox(
-                      key: const ValueKey('mobile_unlock_biometric_footer'),
-                      height: 36,
-                      child: Center(
-                        child: Builder(
-                          builder: (context) {
-                            if (!biometric.usable) {
-                              return const SizedBox.shrink();
-                            }
-                            return PasscodeBiometricButton(
-                              label: biometric.availability.kind.signInLabel,
-                              icon: Center(
-                                child: BiometricIcon(
-                                  kind: biometric.availability.kind,
-                                  size: 13.5,
-                                  fingerprintSize: 16,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final keypadScale = math.min(
+                      1.0,
+                      constraints.maxWidth / kPasscodeKeypadWidth,
+                    );
+                    return CustomScrollView(
+                      slivers: [
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Column(
+                            children: [
+                              Expanded(
+                                child: Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        'Welcome Back',
+                                        textAlign: TextAlign.center,
+                                        style: AppTypography.displayLarge
+                                            .copyWith(
+                                              color: colors.text.accent,
+                                            ),
+                                      ),
+                                      const SizedBox(height: AppSpacing.s),
+                                      Text(
+                                        _submitting
+                                            ? 'Opening your wallet...'
+                                            : 'Enter your passcode to open Vizor',
+                                        textAlign: TextAlign.center,
+                                        style: AppTypography.bodyMediumStrong
+                                            .copyWith(
+                                              color: colors.text.primary,
+                                            ),
+                                      ),
+                                      const SizedBox(height: AppSpacing.md),
+                                      SizedBox(
+                                        height: kPasscodePromptDigitsHeight,
+                                        child: PasscodePromptField(
+                                          length: kMobilePasscodeLength,
+                                          filled: _entry.length,
+                                          error: _error,
+                                          minGap: 0,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                              onPressed: _submitting
-                                  ? null
-                                  : () => unawaited(_tryBiometricUnlock()),
-                            );
-                          },
+                              SizedBox(
+                                height: kPasscodeKeypadHeight * keypadScale,
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: SizedBox(
+                                    width: kPasscodeKeypadWidth,
+                                    height: kPasscodeKeypadHeight,
+                                    child: PasscodeNumpad(
+                                      onDigit: _onDigit,
+                                      onBackspace: _onBackspace,
+                                      canDelete: _entry.isNotEmpty,
+                                      onHelp: _submitting
+                                          ? null
+                                          : _showForgotPasscodeSheet,
+                                      enabled: !_submitting,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: AppSpacing.md),
+                              ConstrainedBox(
+                                key: const ValueKey(
+                                  'mobile_unlock_biometric_footer',
+                                ),
+                                constraints: const BoxConstraints(
+                                  minHeight: 44,
+                                ),
+                                child: Center(
+                                  child: _buildBiometricFooter(biometric),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
+                      ],
+                    );
+                  },
                 ),
               ),
             ),

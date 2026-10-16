@@ -70,11 +70,13 @@ class _LedgerShieldSigningOverlayState
   LedgerSigningModalPhase _phase = LedgerSigningModalPhase.preparing;
   bool _showSaplingParamsPrompt = false;
   bool _cancelled = false;
+  bool _resumingApproval = false;
   bool _canRetry = false;
   bool _needsSaplingParams = false;
   Completer<bool>? _saplingParamsPromptCompleter;
   String? _error;
   LedgerFailureGuidance? _deviceGuidance;
+  LedgerRequestFailure? _requestFailure;
   List<int>? _pcztBytes;
   List<int>? _pcztWithProofs;
   SaplingParamsStatus? _saplingParams;
@@ -274,7 +276,9 @@ class _LedgerShieldSigningOverlayState
   }
 
   Future<void> _retry() async {
-    if (_phase != LedgerSigningModalPhase.failed || !_canRetry) return;
+    if (_cancelled || _phase != LedgerSigningModalPhase.failed || !_canRetry) {
+      return;
+    }
     if (_network != ref.read(rpcEndpointProvider).networkName ||
         _accountUuid != ref.read(walletProvider).value?.activeAccountUuid) {
       _pauseEarly(
@@ -288,6 +292,7 @@ class _LedgerShieldSigningOverlayState
         _canRetry = false;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       try {
         await _broadcastCheckpointed();
@@ -308,6 +313,7 @@ class _LedgerShieldSigningOverlayState
         _phase = LedgerSigningModalPhase.preparing;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       await _prepareAndSign();
       return;
@@ -315,8 +321,10 @@ class _LedgerShieldSigningOverlayState
 
     setState(() {
       _phase = LedgerSigningModalPhase.awaitingDevice;
+      _resumingApproval = true;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
     try {
       final accountUuid = _accountUuid;
@@ -385,6 +393,7 @@ class _LedgerShieldSigningOverlayState
       _canRetry = false;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
 
     try {
@@ -528,9 +537,11 @@ class _LedgerShieldSigningOverlayState
       _round++;
       _roundCount = _round - 1 + _roundsFor(work);
       _phase = LedgerSigningModalPhase.preparing;
+      _resumingApproval = false;
       _canRetry = false;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
       _pcztBytes = null;
       _pcztWithProofs = null;
       _signedPczt = null;
@@ -610,6 +621,7 @@ class _LedgerShieldSigningOverlayState
   }
 
   String _friendlyError(Object error) {
+    _requestFailure = LedgerRequestFailure.fromError(error);
     final guidance = ledgerFailureGuidance(
       error,
       requestKind: LedgerRequestKind.shield,
@@ -651,9 +663,10 @@ class _LedgerShieldSigningOverlayState
   }
 
   Future<void> _cancelToHome() async {
-    if (_isBroadcasting) return;
-    _cancelled = true;
+    if (!mounted || _isBroadcasting || _cancelled) return;
+    setState(() => _cancelled = true);
     await _cancelLedgerOperationSafely();
+    if (!mounted) return;
     widget.onCancel();
   }
 
@@ -667,8 +680,11 @@ class _LedgerShieldSigningOverlayState
 
   @override
   Widget build(BuildContext context) {
-    final canLeave = _momentComplete || !_isBroadcasting;
+    final canLeave = !_cancelled && (_momentComplete || !_isBroadcasting);
+    final broadcasting = _phase == LedgerSigningModalPhase.broadcasting;
     final modal = LedgerSigningModal(
+      cancelling: _cancelled,
+      resumingApproval: _resumingApproval,
       connectionScope: _connectionScope,
       accountUuid: _accountUuid,
       roundNumber: _round,
@@ -679,6 +695,7 @@ class _LedgerShieldSigningOverlayState
       phase: _phase,
       failure: _phase == LedgerSigningModalPhase.failed
           ? LedgerSigningFailurePresentation(
+              requestFailure: _requestFailure,
               pairingInvalid: _deviceGuidance?.pairingInvalid ?? false,
               bluetoothRecovery: _deviceGuidance?.bluetoothRecovery ?? false,
               pairingRecovery: _deviceGuidance?.pairingRecovery ?? false,
@@ -696,7 +713,8 @@ class _LedgerShieldSigningOverlayState
           : null,
       onCancel: canLeave ? () => unawaited(_cancelToHome()) : null,
       cancelLabel: 'Back to wallet',
-      onFailureAction: _phase == LedgerSigningModalPhase.failed && _canRetry
+      onFailureAction:
+          !_cancelled && _phase == LedgerSigningModalPhase.failed && _canRetry
           ? () => unawaited(_retry())
           : null,
     );
@@ -715,7 +733,7 @@ class _LedgerShieldSigningOverlayState
                   ? MobileShieldPhase.succeeded
                   : _phase == LedgerSigningModalPhase.failed
                   ? MobileShieldPhase.failed
-                  : _isBroadcasting
+                  : broadcasting
                   ? MobileShieldPhase.working
                   : MobileShieldPhase.hardware,
               amount: formatZecAmount(_initialAmount),
@@ -726,10 +744,10 @@ class _LedgerShieldSigningOverlayState
                   ? 'Transparent Balance'
                   : _momentComplete
                   ? 'Shielded successfully'
-                  : _isBroadcasting
+                  : broadcasting
                   ? 'Shielding your balance…'
                   : 'Shield with Ledger',
-              focusChild: _momentStarted && !_momentComplete && !_isBroadcasting
+              focusChild: _momentStarted && !_momentComplete && !broadcasting
                   ? LedgerInlinePresentation(
                       closeLabel: _phase == LedgerSigningModalPhase.failed
                           ? 'Close'

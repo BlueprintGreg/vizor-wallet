@@ -11,6 +11,8 @@ import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/particles/p
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_signing_content.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_app_readiness_service.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 
 Future<void> _artFrames(WidgetTester tester) async {
   for (var i = 0; i < 20; i++) {
@@ -34,14 +36,81 @@ Widget _content(LedgerSigningStage stage, VoidCallback close) =>
         title: stage.title,
         message: stage.message,
         status: stage.status,
-        active: stage != LedgerSigningStage.reviewing,
+        active: true,
         failed: false,
+        stage: stage,
+        readiness: LedgerAppReadinessPhase.ready,
+        deviceModel: 'stax',
+        saving: false,
+        finishing: false,
+        broadcasting: false,
+        declined: false,
+        roundNumber: 1,
+        roundCount: 1,
         onClose: close,
         onAction: null,
       ),
     );
 
 void main() {
+  testWidgets(
+    'removing the inline action fades it while blocking input immediately',
+    (tester) async {
+      final enabled = ValueNotifier(true);
+      addTearDown(enabled.dispose);
+      var closed = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppTheme(
+            data: AppThemeData.dark,
+            child: Center(
+              child: SizedBox(
+                width: 300,
+                height: 480,
+                child: ShieldHardwarePresentation(
+                  mix: 1,
+                  footerOpacity: 1,
+                  footerDy: 0,
+                  interactive: true,
+                  child: ValueListenableBuilder(
+                    valueListenable: enabled,
+                    builder: (_, value, _) => LedgerInlinePresentation(
+                      child: MobileLedgerSheetContent(
+                        title: 'Sign transaction',
+                        onClose: value ? () => closed++ : null,
+                        children: const [],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final before = tester.getRect(find.text('Sign transaction'));
+      enabled.value = false;
+      await tester.pump();
+      expect(
+        tester.getRect(find.text('Sign transaction')).center.dy,
+        closeTo(before.center.dy, 0.01),
+      );
+      await tester.tap(find.text('Cancel shielding'), warnIfMissed: false);
+      expect(closed, 0);
+      await tester.pump(const Duration(milliseconds: 70));
+      expect(
+        tester
+            .widgetList<FadeTransition>(find.byType(FadeTransition))
+            .any((fade) => fade.opacity.value > 0 && fade.opacity.value < 1),
+        isTrue,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.text('Cancel shielding'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final inline in [false, true]) {
     for (final scale in [1.0, 2.5]) {
       testWidgets('Ledger status has a trailing loader with no inactive slot '
@@ -174,63 +243,65 @@ void main() {
   );
 
   for (final scale in [1.0, 2.5]) {
-    testWidgets(
-      'Ledger stage text and footer stay in their slots at scale $scale',
-      (tester) async {
-        final stage = ValueNotifier(LedgerSigningStage.preparing);
-        addTearDown(stage.dispose);
-        final semantics = tester.ensureSemantics();
-        try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: AppTheme(
-                data: AppThemeData.dark,
-                child: MediaQuery(
-                  data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-                  child: Center(
-                    child: SizedBox(
-                      width: 272,
-                      height: 480,
-                      child: ShieldHardwarePresentation(
-                        mix: 1,
-                        footerOpacity: 1,
-                        footerDy: 0,
-                        interactive: true,
-                        child: ValueListenableBuilder(
-                          valueListenable: stage,
-                          builder: (_, value, _) => _content(value, () {}),
-                        ),
+    testWidgets('Ledger procedure keeps the footer fixed at scale $scale', (
+      tester,
+    ) async {
+      final stage = ValueNotifier(LedgerSigningStage.preparing);
+      addTearDown(stage.dispose);
+      final semantics = tester.ensureSemantics();
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AppTheme(
+              data: AppThemeData.dark,
+              child: MediaQuery(
+                data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+                child: Center(
+                  child: SizedBox(
+                    width: 272,
+                    height: 480,
+                    child: ShieldHardwarePresentation(
+                      mix: 1,
+                      footerOpacity: 1,
+                      footerDy: 0,
+                      interactive: true,
+                      child: ValueListenableBuilder(
+                        valueListenable: stage,
+                        builder: (_, value, _) => _content(value, () {}),
                       ),
                     ),
                   ),
                 ),
               ),
             ),
+          ),
+        );
+        final button = find.text('Cancel shielding');
+        final rect = tester.getRect(button);
+        for (final value in [
+          LedgerSigningStage.sending,
+          LedgerSigningStage.reviewing,
+          LedgerSigningStage.preparing,
+        ]) {
+          stage.value = value;
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+          expect(tester.getRect(button), rect);
+          expect(find.text('Sign transaction'), findsOneWidget);
+          expect(
+            tester
+                .widget<LedgerProcedure>(find.byType(LedgerProcedure))
+                .currentStep,
+            value == LedgerSigningStage.preparing ? 0 : 1,
           );
-          final button = find.text('Cancel shielding');
-          final rect = tester.getRect(button);
-          for (final value in [
-            LedgerSigningStage.sending,
-            LedgerSigningStage.reviewing,
-            LedgerSigningStage.preparing,
-          ]) {
-            final old = stage.value;
-            stage.value = value;
-            await tester.pump();
-            await tester.pump(const Duration(milliseconds: 100));
-            expect(tester.getRect(button), rect);
-            expect(find.semantics.byLabel(old.title), findsNothing);
-            expect(find.semantics.byLabel(value.title), findsOneWidget);
-            await tester.pump(const Duration(milliseconds: 150));
-            expect(find.text(old.title), findsNothing);
-            expect(tester.takeException(), isNull);
-          }
-          await tester.pumpWidget(const SizedBox.shrink());
-        } finally {
-          semantics.dispose();
+          await tester.pump(const Duration(milliseconds: 150));
+          expect(tester.takeException(), isNull);
         }
-      },
-    );
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        semantics.dispose();
+      }
+    });
   }
 
   testWidgets(

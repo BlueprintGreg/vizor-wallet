@@ -7,6 +7,7 @@ import 'package:zcash_wallet/figma_compare/figma_compare_configuration.dart';
 import 'package:zcash_wallet/src/core/layout/app_form_factor.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/slide_to_shield.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/shield_hardware_motion.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'figma_compare_capture_support.dart';
 
 Future<void> _advance(WidgetTester tester, double seconds) async {
@@ -24,6 +25,12 @@ void main() {
     (name: 'processing', seconds: 5.0, size: const Size(393, 852)),
     (name: 'approval', seconds: 10.0, size: const Size(393, 852)),
     (name: 'approval-small', seconds: 10.0, size: const Size(320, 568)),
+    for (final size in [const Size(375, 667), const Size(430, 932)]) ...[
+      (name: 'preparing-${size.width.toInt()}', seconds: 2.0, size: size),
+      (name: 'approval-${size.width.toInt()}', seconds: 10.0, size: size),
+      (name: 'saving-${size.width.toInt()}', seconds: 12.8, size: size),
+    ],
+    (name: 'saving-393', seconds: 12.8, size: const Size(393, 852)),
     (name: 'leaving', seconds: 14.13, size: const Size(393, 852)),
     (name: 'returning', seconds: 14.21, size: const Size(393, 852)),
     (name: 'cloud', seconds: 15.0, size: const Size(393, 852)),
@@ -45,8 +52,12 @@ void main() {
         ),
         beforeCapture: (tester) async {
           tester.view.padding = FakeViewPadding(
-            top: shot.size.width == 320 ? 24 : 59,
-            bottom: shot.size.width == 320 ? 0 : 34,
+            top: shot.size.width == 320
+                ? 24
+                : shot.size.width == 375
+                ? 20
+                : 59,
+            bottom: shot.size.width <= 375 ? 0 : 34,
           );
           addTearDown(tester.view.resetPadding);
           await tester.pump();
@@ -80,10 +91,26 @@ void main() {
               await _advance(tester, 5);
             }
           }
-          if (shot.name == 'approval' || shot.name == 'approval-small') {
-            expect(find.text('Confirm on your Ledger'), findsOneWidget);
+          if (shot.name.startsWith('approval')) {
+            expect(find.text('Review on Ledger'), findsOneWidget);
+            expect(
+              tester
+                  .widget<LedgerProcedure>(find.byType(LedgerProcedure))
+                  .currentStep,
+              1,
+            );
             final rect = tester.getRect(find.text('Cancel shielding'));
             expect(rect.center.dy, greaterThan(shot.size.height * 0.8));
+          }
+          if (shot.name.startsWith('saving')) {
+            expect(
+              tester
+                  .widget<LedgerProcedure>(find.byType(LedgerProcedure))
+                  .currentStep,
+              2,
+            );
+            expect(find.text('Saving the signed transaction.'), findsOneWidget);
+            expect(find.text('Cancel shielding'), findsNothing);
           }
           if (shot.name == 'entering' || shot.name == 'returning') {
             final motion = tester.widget<ShieldHardwarePresentation>(

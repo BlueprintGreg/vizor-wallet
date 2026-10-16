@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Scrollbar;
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/layout/mobile/app_mobile_sheet.dart';
@@ -7,71 +8,162 @@ import '../../../../core/widgets/app_icon.dart';
 import '../../../home/widgets/mobile/shield/shield_hardware_motion.dart';
 
 /// Mobile-only content. The host owns the scrim and MobileModalCard.
-class MobileLedgerSheetContent extends StatelessWidget {
+class MobileLedgerSheetContent extends StatefulWidget {
   const MobileLedgerSheetContent({
     required this.title,
     required this.onClose,
     required this.children,
-    this.actions = const [],
-    this.titleHeight,
+    this.action,
     super.key,
   });
   final String title;
   final VoidCallback? onClose;
   final List<Widget> children;
-  final List<Widget> actions;
-  final double? titleHeight;
+  final Widget? action;
+
+  @override
+  State<MobileLedgerSheetContent> createState() =>
+      _MobileLedgerSheetContentState();
+}
+
+class _MobileLedgerSheetContentState extends State<MobileLedgerSheetContent> {
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final presentation = context
+    final inline = context
         .dependOnInheritedWidgetOfExactType<LedgerInlinePresentation>();
-    final inline = presentation != null;
-    final motion = inline ? ShieldHardwarePresentation.maybeOf(context) : null;
-    final heading = Text(
-      title,
-      textAlign: TextAlign.center,
-      style: AppTypography.headlineSmall.copyWith(
-        color: const Color(0xFFFFFFFF),
+    if (inline != null) return _inlineContent(context, inline);
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      child: MobileModalScaffold(
+        title: widget.title,
+        titleMaxLines: 3,
+        showClose: widget.onClose != null,
+        onClose: widget.onClose ?? () {},
+        constrainBody: true,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Flexible(
+              child: Scrollbar(
+                controller: _scrollController,
+                thumbVisibility: true,
+                thickness: 3,
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: widget.children,
+                  ),
+                ),
+              ),
+            ),
+            if (widget.action != null) widget.action!,
+          ],
+        ),
       ),
     );
-    final header = motion == null
-        ? heading
-        : SizedBox(
-            height: titleHeight,
-            child: Center(
-              child: ShieldStageTransition(identity: title, child: heading),
-            ),
-          );
-    final buttons = <Widget>[
-      ...actions,
-      if (inline && onClose != null) ...[
+  }
+
+  Widget _inlineContent(BuildContext context, LedgerInlinePresentation inline) {
+    final motion = ShieldHardwarePresentation.maybeOf(context);
+    final heading = Text(
+      widget.title,
+      textAlign: TextAlign.center,
+      style: AppTypography.headlineSmall.copyWith(
+        color: context.colors.text.accent,
+      ),
+    );
+    final body = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (motion == null)
+          heading
+        else
+          ShieldStageTransition(identity: widget.title, child: heading),
         const SizedBox(height: AppSpacing.md),
-        MobileLedgerAction(presentation.closeLabel, onPressed: onClose),
+        ...widget.children,
       ],
-    ];
-    if (motion != null) {
-      return Column(
+    );
+    final actions = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.action != null) widget.action!,
+        if (widget.onClose != null)
+          MobileLedgerAction(inline.closeLabel, onPressed: widget.onClose),
+      ],
+    );
+    if (motion == null) return Column(children: [body, actions]);
+    final duration = Duration(
+      milliseconds: MediaQuery.disableAnimationsOf(context) ? 120 : 140,
+    );
+    final footer = SizedBox(
+      width: double.infinity,
+      child: AnimatedSize(
+        duration: duration,
+        curve: Curves.easeOut,
+        clipBehavior: Clip.none,
+        child: AnimatedSwitcher(
+          duration: duration,
+          layoutBuilder: (current, previous) => Stack(
+            clipBehavior: Clip.none,
+            children: [
+              for (final old in previous)
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: ExcludeFocus(
+                    child: ExcludeSemantics(child: IgnorePointer(child: old)),
+                  ),
+                ),
+              ?current,
+            ],
+          ),
+          child: SizedBox(
+            key: ValueKey((
+              widget.action != null,
+              widget.onClose != null,
+              inline.closeLabel,
+            )),
+            width: double.infinity,
+            child: actions,
+          ),
+        ),
+      ),
+    );
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      child: Column(
         children: [
           Expanded(
             child: LayoutBuilder(
-              builder: (context, bounds) => SingleChildScrollView(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minWidth: bounds.maxWidth,
-                    minHeight: bounds.maxHeight,
-                  ),
-                  child: Center(
-                    child: Opacity(
-                      opacity: motion.mix,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          header,
-                          const SizedBox(height: AppSpacing.md),
-                          ...children,
-                        ],
-                      ),
+              builder: (context, bounds) => Scrollbar(
+                controller: _scrollController,
+                thumbVisibility: true,
+                thickness: 3,
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minWidth: bounds.maxWidth,
+                      minHeight: bounds.maxHeight,
+                    ),
+                    child: Center(
+                      child: Opacity(opacity: motion.mix, child: body),
                     ),
                   ),
                 ),
@@ -88,42 +180,14 @@ class MobileLedgerSheetContent extends StatelessWidget {
                   opacity: motion.footerOpacity,
                   child: Transform.translate(
                     offset: Offset(0, motion.footerDy),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: buttons,
-                    ),
+                    child: footer,
                   ),
                 ),
               ),
             ),
           ),
         ],
-      );
-    }
-    final body = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: inline
-          ? CrossAxisAlignment.center
-          : CrossAxisAlignment.stretch,
-      children: [
-        if (inline) ...[header, const SizedBox(height: AppSpacing.md)],
-        ...children,
-        ...actions,
-        if (inline && onClose != null) ...[
-          const SizedBox(height: AppSpacing.md),
-          MobileLedgerAction(presentation.closeLabel, onPressed: onClose),
-        ],
-      ],
-    );
-    if (inline) return body;
-    return MobileModalScaffold(
-      title: title,
-      titleMaxLines: 3,
-      showClose: onClose != null,
-      onClose: onClose ?? () {},
-      constrainBody: true,
-      child: SingleChildScrollView(child: body),
+      ),
     );
   }
 }
@@ -191,11 +255,16 @@ class MobileLedgerStatus extends StatelessWidget {
 }
 
 class MobileLedgerIdentity extends StatelessWidget {
-  const MobileLedgerIdentity(this.label, {super.key});
+  const MobileLedgerIdentity(
+    this.label, {
+    this.topPadding = AppSpacing.md,
+    super.key,
+  });
   final String label;
+  final double topPadding;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: AppSpacing.md),
+    padding: EdgeInsets.only(top: topPadding),
     child: Row(
       children: [
         AppIcon(AppIcons.ledger, size: 20, color: context.colors.icon.regular),
@@ -231,17 +300,14 @@ class MobileLedgerAction extends StatelessWidget {
   );
 }
 
-/// Keeps existing connection and recovery owners mounted while their content
-/// is presented inside the shielding scene instead of a separate sheet.
+/// Reuse Ledger owners and guidance inside the shield scene's own layout.
 class LedgerInlinePresentation extends InheritedWidget {
   const LedgerInlinePresentation({
     required super.child,
     this.closeLabel = 'Cancel shielding',
     super.key,
   });
-
   final String closeLabel;
-
   @override
   bool updateShouldNotify(LedgerInlinePresentation oldWidget) =>
       closeLabel != oldWidget.closeLabel;
