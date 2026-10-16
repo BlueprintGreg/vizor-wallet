@@ -20,6 +20,19 @@ void main() {
   const output = String.fromEnvironment('KEYSTONE_CAPTURE_DIR');
   for (final shot in [
     (
+      name: 'qr-contour',
+      camera: null,
+      seconds: 2.2,
+      size: const Size(393, 852),
+    ),
+    (name: 'qr-fill', camera: null, seconds: 2.4, size: const Size(393, 852)),
+    (
+      name: 'qr-settling',
+      camera: null,
+      seconds: 2.55,
+      size: const Size(393, 852),
+    ),
+    (
       name: 'qr-forming',
       camera: null,
       seconds: 2.3,
@@ -46,7 +59,37 @@ void main() {
       size: const Size(393, 852),
     ),
     (
+      name: 'camera-clearing',
+      camera: 0.15,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
+    (
+      name: 'camera-brackets',
+      camera: 0.30,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
+    (
+      name: 'camera-settling',
+      camera: 0.375,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
+    (
       name: 'camera-ready',
+      camera: 1.1,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
+    (
+      name: 'qr-return-forming',
+      camera: 1.1,
+      seconds: 3.5,
+      size: const Size(393, 852),
+    ),
+    (
+      name: 'qr-return-ready',
       camera: 1.1,
       seconds: 3.5,
       size: const Size(393, 852),
@@ -108,6 +151,22 @@ void main() {
             await tester.tap(find.text('Next step'));
             await tester.pump();
             await _advance(tester, shot.camera!);
+          }
+          if (shot.name.startsWith('qr-return-')) {
+            await tester.tap(find.text('Show QR'));
+            await tester.pump();
+            await _advance(
+              tester,
+              shot.name == 'qr-return-forming' ? 0.3 : 0.9,
+            );
+            expect(find.text('Approve with Keystone'), findsOneWidget);
+            if (shot.name == 'qr-return-ready') {
+              final next = find.ancestor(
+                of: find.text('Next step'),
+                matching: find.byType(AppButton),
+              );
+              expect(tester.widget<AppButton>(next).onPressed, isNotNull);
+            }
           }
           if (shot.name == 'qr-buttons-entering' ||
               shot.name == 'buttons-leaving') {

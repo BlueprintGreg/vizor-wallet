@@ -394,6 +394,82 @@ void main() {
     }
   });
 
+  testWidgets('QR perimeter settles before its interior and readiness', (
+    tester,
+  ) async {
+    const bounds = Rect.fromLTWH(40, 160, 280, 280);
+    final morph = KeystoneShieldMorph()
+      ..configure(_focus(KeystoneShieldFocusStage.qr));
+    addTearDown(morph.dispose);
+    morph.setBounds(KeystoneShieldAnchorKind.qr, bounds);
+    morph.update(0, _cloud);
+    morph.update(0.45, _cloud);
+    expect(morph.qrReady, isFalse);
+    final frames = KeystoneShieldQrFrames(_parts);
+    final quiet = bounds.width * 4 / (frames.frame(0).moduleCount + 8);
+    final targets = frames.whiteCells(0, bounds, 1);
+    final settled = morph.particles
+        .where((p) => p.alpha == 1 && p.square == 1)
+        .map((p) => p.position)
+        .toSet();
+    final rim = targets.where(
+      (p) => !bounds.deflate(quiet).contains(p.position),
+    );
+    expect(rim.every((p) => settled.contains(p.position)), isTrue);
+    final middle = targets.where(
+      (p) => bounds.deflate(90).contains(p.position),
+    );
+    expect(middle.any((p) => !settled.contains(p.position)), isTrue);
+    morph.update(0.61, _cloud);
+    expect(morph.qrReady, isTrue);
+  });
+
+  testWidgets('QR interior clears locally before the camera dominates', (
+    tester,
+  ) async {
+    const qr = Rect.fromLTWH(40, 160, 280, 280);
+    const frame = Rect.fromLTWH(50, 140, 260, 260);
+    final morph = KeystoneShieldMorph()
+      ..configure(_focus(KeystoneShieldFocusStage.qr));
+    addTearDown(morph.dispose);
+    await tester.runAsync(morph.prepare);
+    morph.setBounds(KeystoneShieldAnchorKind.qr, qr);
+    morph.setBounds(KeystoneShieldAnchorKind.frame, frame);
+    morph.setBounds(
+      KeystoneShieldAnchorKind.torch,
+      const Rect.fromLTWH(168, 450, 24, 24),
+    );
+    morph.update(0, _cloud);
+    morph.update(0.61, _cloud);
+    morph.update(0.62, _cloud);
+    final origin = List.of(morph.particles);
+    morph.configure(_focus(KeystoneShieldFocusStage.scanner));
+    morph.update(0.63, _cloud);
+    morph.update(0.72, _cloud);
+    expect(morph.scannerOpacity, 0);
+    morph.update(0.855, _cloud);
+    expect(morph.scannerOpacity, inExclusiveRange(0.0, 0.5));
+    final middle = frame.deflate(45);
+    expect(
+      morph.particles.where(
+        (p) => p.alpha > 0.02 && middle.contains(p.position),
+      ),
+      isEmpty,
+    );
+    for (var i = 0; i < origin.length; i++) {
+      if (!middle.deflate(10).contains(origin[i].position)) continue;
+      expect(
+        (morph.particles[i].position - origin[i].position).distance,
+        lessThanOrEqualTo(10.01),
+      );
+      expect(morph.particles[i].alpha, lessThan(0.02));
+    }
+    morph.update(1.09, _cloud);
+    expect(morph.scannerOpacity, 1);
+    expect(morph.scannerGlyphOpacity, 1);
+    expect(morph.blackMix, 0);
+  });
+
   testWidgets('QR remains usable without decorative cloud samples', (
     tester,
   ) async {
@@ -409,6 +485,51 @@ void main() {
     expect(morph.qrReady, isTrue);
     expect(morph.blackMix, 1);
   });
+
+  testWidgets(
+    'immediate reversals retain visible scanner glyphs and particles',
+    (tester) async {
+      final morph = KeystoneShieldMorph()
+        ..configure(_focus(KeystoneShieldFocusStage.qr));
+      addTearDown(morph.dispose);
+      await tester.runAsync(morph.prepare);
+      morph.setBounds(
+        KeystoneShieldAnchorKind.qr,
+        const Rect.fromLTWH(40, 160, 280, 280),
+      );
+      morph.setBounds(
+        KeystoneShieldAnchorKind.frame,
+        const Rect.fromLTWH(50, 140, 260, 260),
+      );
+      morph.setBounds(
+        KeystoneShieldAnchorKind.torch,
+        const Rect.fromLTWH(168, 450, 24, 24),
+      );
+      morph.update(0, _cloud);
+      morph.update(0.61, _cloud);
+      morph.configure(_focus(KeystoneShieldFocusStage.scanner));
+      morph.update(0.62, _cloud);
+      morph.update(1.08, _cloud);
+      morph.configure(_focus(KeystoneShieldFocusStage.qr));
+      morph.update(1.09, _cloud);
+      morph.update(1.12, _cloud);
+      final glyph = morph.scannerGlyphOpacity;
+      final camera = morph.scannerOpacity;
+      final black = morph.blackMix;
+      final particles = List.of(morph.particles);
+      expect(glyph, inExclusiveRange(0.0, 1.0));
+      morph.configure(_focus(KeystoneShieldFocusStage.scanner));
+      morph.update(1.12, _cloud);
+      expect(morph.scannerGlyphOpacity, glyph);
+      expect(morph.scannerOpacity, camera);
+      expect(morph.blackMix, black);
+      for (var i = 0; i < particles.length; i++) {
+        expect(morph.particles[i].position, particles[i].position);
+        expect(morph.particles[i].alpha, particles[i].alpha);
+        expect(morph.particles[i].extent, particles[i].extent);
+      }
+    },
+  );
 
   testWidgets('Reduce Motion preserves QR readiness and the restored blur', (
     tester,

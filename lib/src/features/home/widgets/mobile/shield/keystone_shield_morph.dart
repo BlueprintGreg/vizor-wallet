@@ -58,16 +58,7 @@ class KeystoneShieldQrFrames {
             alpha: 1,
             square: 1,
             extent: rect.size,
-            arrival:
-                x < 0 ||
-                    y < 0 ||
-                    x >= grid.count ||
-                    y >= grid.count ||
-                    (x < 7 && y < 7) ||
-                    (x >= grid.count - 7 && y < 7) ||
-                    (x < 7 && y >= grid.count - 7)
-                ? 0.82
-                : 1,
+            arrival: grid.arrival(x, y),
           ),
         );
       }
@@ -102,6 +93,21 @@ class _KeystoneQrGrid {
   double _edge(double value) => (value * dpr).round() / dpr;
   bool isDark(int x, int y) =>
       x >= 0 && y >= 0 && x < count && y < count && image.isDark(y, x);
+  double arrival(int x, int y) {
+    final sweep = (x + y + quiet * 2) / (2 * (count + quiet * 2 - 1));
+    if (x < 0 || y < 0 || x >= count || y >= count) {
+      return 0.62 + 0.10 * sweep;
+    }
+    if ((x < 7 && y < 7) ||
+        (x >= count - 7 && y < 7) ||
+        (x < 7 && y >= count - 7)) {
+      return 0.70 + 0.08 * sweep;
+    }
+    final center = (count - 1) / 2;
+    final radius = math.max((x - center).abs(), (y - center).abs()) / center;
+    return 0.80 + 0.16 * (1 - radius) + 0.04 * sweep;
+  }
+
   Rect cell(int x, int y) => Rect.fromLTRB(
     _edge(bounds.left + (x + quiet) * pitch),
     _edge(bounds.top + (y + quiet) * pitch),
@@ -125,6 +131,7 @@ class KeystoneShieldMorph {
   List<ShieldParticleSample> _to = [];
   List<ShieldParticleSample> _particles = [];
   List<int> _targetIndices = [];
+  int _scannerFrameCount = 0;
   KeystoneShieldFocusStage _goal = KeystoneShieldFocusStage.cloud;
   KeystoneShieldFocusStage _settled = KeystoneShieldFocusStage.cloud;
   double? _start;
@@ -227,7 +234,7 @@ class KeystoneShieldMorph {
           );
           painter.dispose();
         },
-        count: 100,
+        count: 32,
         random: math.Random(17),
       );
       if (!_disposed) _torch = points;
@@ -317,11 +324,17 @@ class KeystoneShieldMorph {
                 frame.topLeft + metric.getTangentForOffset(d)!.position;
             if (frame.inflate(1.5).contains(position)) {
               points.add(
-                ShieldParticleSample(position: position, size: 3, alpha: 1),
+                ShieldParticleSample(
+                  position: position,
+                  size: 3,
+                  alpha: 1,
+                  arrival: 0.82,
+                ),
               );
             }
           }
         }
+        _scannerFrameCount = points.length;
         points.addAll(
           _torch!.map(
             (p) => ShieldParticleSample(
@@ -330,6 +343,7 @@ class KeystoneShieldMorph {
                   Offset(p.dx * torch.width / 24, p.dy * torch.height / 24),
               size: 1.7 * torch.width / 24,
               alpha: 1,
+              arrival: 0.96,
             ),
           ),
         );
@@ -355,6 +369,57 @@ class KeystoneShieldMorph {
         arrival: p.arrival,
       );
 
+  Rect _visibleBounds(List<ShieldParticleSample> particles) {
+    final visible = particles.where((p) => p.alpha > 0.01).toList();
+    final points = visible.isEmpty ? particles : visible;
+    var left = double.infinity, top = double.infinity;
+    var right = double.negativeInfinity, bottom = double.negativeInfinity;
+    for (final p in points) {
+      left = math.min(left, p.position.dx);
+      top = math.min(top, p.position.dy);
+      right = math.max(right, p.position.dx);
+      bottom = math.max(bottom, p.position.dy);
+    }
+    return Rect.fromLTWH(
+      left,
+      top,
+      math.max(1, right - left),
+      math.max(1, bottom - top),
+    );
+  }
+
+  Offset _project(Offset point, Rect from, Rect to) => Offset(
+    to.left + (point.dx - from.left) / from.width * to.width,
+    to.top + (point.dy - from.top) / from.height * to.height,
+  );
+
+  bool _onRim(Offset point, Rect rect) =>
+      !rect.deflate(rect.shortestSide * 0.12).contains(point);
+
+  int _corner(Offset point, Rect rect) =>
+      (point.dx >= rect.center.dx ? 1 : 0) +
+      (point.dy >= rect.center.dy ? 2 : 0);
+
+  ShieldParticleSample _clearScannerInterior(
+    ShieldParticleSample source,
+    Rect qr,
+  ) {
+    final relative = source.position - qr.center;
+    final radius =
+        (math.max(relative.dx.abs(), relative.dy.abs()) / (qr.shortestSide / 2))
+            .clamp(0.0, 1.0);
+    final outward = relative.distance < 0.001
+        ? Offset.zero
+        : relative / relative.distance * 10;
+    return ShieldParticleSample(
+      position: source.position + outward,
+      size: source.size * 0.45,
+      alpha: 0,
+      square: 0,
+      arrival: 0.32 + 0.28 * radius,
+    );
+  }
+
   void _pairTargets(
     List<ShieldParticleSample> origin,
     List<ShieldParticleSample> target,
@@ -366,12 +431,19 @@ class KeystoneShieldMorph {
       for (var i = origin.length; i < count; i++)
         _faded(origin[i % origin.length], 0),
     ];
+    final originBounds = _visibleBounds(origin);
+    final qr = _bounds[KeystoneShieldAnchorKind.qr] ?? originBounds;
+    final frame = _bounds[KeystoneShieldAnchorKind.frame];
+    final scanner = _goal == KeystoneShieldFocusStage.scanner;
     _to = [
       for (var i = 0; i < count; i++)
-        _faded(
-          cloud.isNotEmpty ? cloud[(i * 73 + 17) % cloud.length] : _from[i],
-          0,
-        ),
+        if (scanner)
+          _clearScannerInterior(_from[i], qr)
+        else
+          _faded(
+            cloud.isNotEmpty ? cloud[(i * 73 + 17) % cloud.length] : _from[i],
+            0,
+          ),
     ];
     _targetIndices = List.filled(count, -1);
     final used = List.filled(count, false);
@@ -380,9 +452,30 @@ class KeystoneShieldMorph {
     for (final j in order) {
       var nearest = -1;
       var distance = double.infinity;
+      final frameTarget = scanner && j < _scannerFrameCount && frame != null;
+      final aim = frameTarget
+          ? _project(target[j].position, frame, qr)
+          : _goal == KeystoneShieldFocusStage.qr
+          ? _project(target[j].position, qr, originBounds)
+          : target[j].position;
       for (var i = 0; i < count; i++) {
         if (used[i]) continue;
-        final d = (_from[i].position - target[j].position).distanceSquared;
+        var d = (_from[i].position - aim).distanceSquared;
+        if (frameTarget &&
+            (!_onRim(_from[i].position, qr) ||
+                _corner(_from[i].position, qr) !=
+                    _corner(target[j].position, frame))) {
+          d += qr.longestSide * qr.longestSide * 16;
+        }
+        // Lower central cells feed the torch; the rest of the surface clears
+        // locally instead of draining into a central particle cloud.
+        if (scanner && !frameTarget) {
+          final torchAim = Offset(qr.center.dx, qr.bottom);
+          d = (_from[i].position - torchAim).distanceSquared;
+        }
+        if (scanner && _from[i].alpha < 0.01) {
+          d += qr.longestSide * qr.longestSide * 32;
+        }
         if (d < distance) {
           nearest = i;
           distance = d;
@@ -449,10 +542,12 @@ class KeystoneShieldMorph {
     _cameraMix = ui.lerpDouble(
       _fromCamera,
       _goal == KeystoneShieldFocusStage.scanner ? 1 : 0,
-      ease,
+      !reduceMotion && _goal == KeystoneShieldFocusStage.scanner
+          ? _segment(_progress, 0.28, 0.94)
+          : ease,
     )!;
     _glyphMix = _goal == KeystoneShieldFocusStage.scanner
-        ? ((_progress - 0.8) / 0.2).clamp(0.0, 1.0)
+        ? ui.lerpDouble(_fromGlyph, 1, _segment(_progress, 0.72, 1))!
         : _fromGlyph * (1 - (_progress / 0.2).clamp(0.0, 1.0));
     final count = math.max(_from.length, _to.length);
     final next = <ShieldParticleSample>[];
@@ -473,6 +568,21 @@ class KeystoneShieldMorph {
       final span = _duration * destination.arrival;
       final p = (_progress / destination.arrival).clamp(0.0, 1.0);
       final localEase = Curves.easeInOutCubic.transform(p);
+      final formingQr = _goal == KeystoneShieldFocusStage.qr;
+      final torchTarget =
+          _goal == KeystoneShieldFocusStage.scanner &&
+          _targetIndices[i] >= _scannerFrameCount;
+      final sizeEase = formingQr
+          ? _segment(p, 0.45, 1)
+          : torchTarget
+          ? Curves.easeOutCubic.transform(p)
+          : localEase;
+      final alphaEase =
+          _goal == KeystoneShieldFocusStage.scanner && toAlpha == 0
+          ? Curves.easeOutCubic.transform(p)
+          : formingQr && fromAlpha == 0
+          ? _segment(p, 0.20, 0.85)
+          : localEase;
       final p2 = p * p, p3 = p2 * p;
       final position =
           source.position * (2 * p3 - 3 * p2 + 1) +
@@ -488,14 +598,14 @@ class KeystoneShieldMorph {
         ShieldParticleSample(
           position: position,
           velocity: velocity,
-          size: ui.lerpDouble(source.size, destination.size, localEase)!,
-          alpha: ui.lerpDouble(fromAlpha, toAlpha, localEase)!,
+          size: ui.lerpDouble(source.size, destination.size, sizeEase)!,
+          alpha: ui.lerpDouble(fromAlpha, toAlpha, alphaEase)!,
           color: Color.lerp(source.color, destination.color, localEase)!,
-          square: ui.lerpDouble(source.square, destination.square, localEase)!,
+          square: ui.lerpDouble(source.square, destination.square, sizeEase)!,
           extent: Size.lerp(
             source.extent ?? Size.square(source.size),
             destination.extent ?? Size.square(destination.size),
-            localEase,
+            sizeEase,
           ),
         ),
       );
@@ -524,6 +634,10 @@ class KeystoneShieldMorph {
       _reportReady(qrReady);
     }
   }
+
+  double _segment(double progress, double start, double end) => Curves
+      .easeInOutCubic
+      .transform(((progress - start) / (end - start)).clamp(0.0, 1.0));
 
   void paint(Canvas canvas) {
     if (!active) return;
