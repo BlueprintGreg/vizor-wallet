@@ -55,6 +55,13 @@ typedef MobileLedgerSendProofAdder =
       String? outputParamsPath,
     });
 
+class _LedgerProofFailure {
+  const _LedgerProofFailure(this.cause);
+  final Object cause;
+  @override
+  String toString() => cause.toString();
+}
+
 /// Mobile-native Ledger signing surface for a standard Send proposal.
 ///
 /// The proof-bearing PCZT and signer-redacted PCZT deliberately remain
@@ -110,6 +117,7 @@ class _MobileLedgerSendSignScreenState
   Future<List<List<int>>>? _basePcztsFuture;
   List<List<int>>? _redactedPczts;
   List<List<int>>? _pcztsWithProofs;
+  Future<void>? _proofsFuture;
   final List<List<int>> _signedPczts = [];
   var _round = 0;
   var _attemptGeneration = 0;
@@ -117,6 +125,8 @@ class _MobileLedgerSendSignScreenState
   Future<bool>? _discardFuture;
   var _releasing = false;
   var _cancelled = false;
+  var _drainingFailure = false;
+  var _resumingApproval = false;
   late final SyncNotifier? _syncNotifier;
   late final String _operationId;
   late final LedgerOperationCanceller _cancelOperation;
@@ -156,10 +166,17 @@ class _MobileLedgerSendSignScreenState
       _signedPczts.length == _basePczts!.length;
 
   void _startSigning() {
-    if (_signingComplete || _cancelled) return;
+    if ((_signingComplete && _pcztsWithProofs != null) ||
+        _cancelled ||
+        _drainingFailure) {
+      return;
+    }
     final generation = ++_attemptGeneration;
     setState(() {
-      _phase = LedgerSigningModalPhase.preparing;
+      _resumingApproval = _redactedPczts != null;
+      _phase = _signingComplete
+          ? LedgerSigningModalPhase.finishing
+          : LedgerSigningModalPhase.preparing;
       _failure = null;
       _recoveryAction = null;
     });
@@ -167,6 +184,7 @@ class _MobileLedgerSendSignScreenState
   }
 
   Future<void> _prepareAndSign(int generation) async {
+    Future<void>? signing;
     try {
       final dbPath = await (widget.loadWalletDbPath ?? getWalletDbPath)();
       if (!_isCurrent(generation)) return;
@@ -218,43 +236,16 @@ class _MobileLedgerSendSignScreenState
         _redactedPczts = redactedPczts;
       }
 
-      var pcztsWithProofs = _pcztsWithProofs;
-      if (pcztsWithProofs == null) {
-        final proved = <List<int>>[];
-        for (final pczt in basePczts) {
-          proved.add(
-            List<int>.unmodifiable(
-              await (widget.addProofs ?? rust_sync.addProofsToPczt)(
-                pcztBytes: pczt,
-                spendParamsPath: widget.args.needsSaplingParams
-                    ? saplingParams.spendPath
-                    : null,
-                outputParamsPath: widget.args.needsSaplingParams
-                    ? saplingParams.outputPath
-                    : null,
-              ),
-            ),
-          );
-          if (!_isCurrent(generation)) return;
-        }
-        pcztsWithProofs = List<List<int>>.unmodifiable(proved);
-        _pcztsWithProofs = pcztsWithProofs;
-      }
-
-      for (var index = _signedPczts.length; index < basePczts.length; index++) {
-        setState(() {
-          _round = index;
-          _phase = LedgerSigningModalPhase.awaitingDevice;
-        });
-        final signedPczt = await _connectionScope.run(
-          () => ref.read(ledgerPcztSignerProvider)(
-            widget.args.proposalAccountUuid,
-            redactedPczts![index],
-          ),
-        );
-        if (!_isCurrent(generation)) return;
-        _signedPczts.add(List<int>.unmodifiable(signedPczt));
-      }
+      // These branches consume separate copies of the same fixed transaction.
+      // Observe both immediately, but keep Ledger approval rounds sequential.
+      final proving = _prepareProofs(basePczts, saplingParams).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) =>
+            Error.throwWithStackTrace(_LedgerProofFailure(error), stack),
+      );
+      signing = _signPendingPczts(generation, redactedPczts);
+      await Future.wait([proving, signing], eagerError: true);
+      if (!_isCurrent(generation)) return;
       setState(() {
         _phase = LedgerSigningModalPhase.saving;
         _failure = null;
@@ -263,11 +254,106 @@ class _MobileLedgerSendSignScreenState
     } catch (error, stackTrace) {
       log('MobileLedgerSendSign._prepareAndSign: ERROR: $error\n$stackTrace');
       if (!_isCurrent(generation)) return;
+      if (error is _LedgerProofFailure) {
+        // A proof failure must end the active device request before retry.
+        // Invalidate its late result without discarding earlier signed rounds.
+        final recoveryGeneration = ++_attemptGeneration;
+        setState(() => _drainingFailure = true);
+        if (!_signingComplete) {
+          await _cancelOperationSafely();
+          try {
+            await signing;
+          } catch (_) {
+            // Keep the original proof failure as the recovery reason.
+          }
+          // Cancellation also invalidates a cached connection's guard. A
+          // request cancelled before transport entry cannot clear it itself.
+          _connectionScope.changeConnection();
+        }
+        if (!_isCurrent(recoveryGeneration)) return;
+        setState(() {
+          _drainingFailure = false;
+          _phase = LedgerSigningModalPhase.failed;
+          _failure = LedgerSigningFailurePresentation(
+            title: 'Could not finish transaction',
+            statusLabel: 'Action needed',
+            message: _signingComplete
+                ? 'Keep Vizor open and try again. No new Ledger approval needed.'
+                : 'Vizor could not prepare the transaction. Try again.',
+            showDeviceAppPrompt: false,
+            actionLabel: 'Try again',
+          );
+          _recoveryAction = _LedgerSendRecoveryAction.retrySigning;
+        });
+        return;
+      }
       _setPreSignatureFailure(error);
       return;
     }
 
     await _checkpoint(generation);
+  }
+
+  Future<void> _prepareProofs(
+    List<List<int>> basePczts,
+    SaplingParamsStatus params,
+  ) {
+    if (_pcztsWithProofs != null) return Future<void>.value();
+    if (_proofsFuture case final existing?) return existing;
+    final addProofs = widget.addProofs ?? rust_sync.addProofsToPczt;
+    final needsSaplingParams = widget.args.needsSaplingParams;
+    final work = () async {
+      final proved = <List<int>>[];
+      for (final pczt in basePczts) {
+        proved.add(
+          List<int>.unmodifiable(
+            await addProofs(
+              pcztBytes: pczt,
+              spendParamsPath: needsSaplingParams ? params.spendPath : null,
+              outputParamsPath: needsSaplingParams ? params.outputPath : null,
+            ),
+          ),
+        );
+        // A proof already running in Rust owns its bytes and may finish after
+        // cancellation. Do not start another round or publish its result then.
+        if (!mounted || _cancelled) return;
+      }
+      _pcztsWithProofs = List<List<int>>.unmodifiable(proved);
+    }();
+    _proofsFuture = work;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          if (identical(_proofsFuture, work)) _proofsFuture = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<void> _signPendingPczts(
+    int generation,
+    List<List<int>> signerPczts,
+  ) async {
+    for (var index = _signedPczts.length; index < signerPczts.length; index++) {
+      if (!_isCurrent(generation)) return;
+      setState(() {
+        _round = index;
+        _phase = LedgerSigningModalPhase.awaitingDevice;
+      });
+      final signedPczt = await _connectionScope.run(
+        () => ref.read(ledgerPcztSignerProvider)(
+          widget.args.proposalAccountUuid,
+          signerPczts[index],
+        ),
+      );
+      if (!_isCurrent(generation)) return;
+      _signedPczts.add(List<int>.unmodifiable(signedPczt));
+    }
+    if (_isCurrent(generation) && _pcztsWithProofs == null) {
+      setState(() => _phase = LedgerSigningModalPhase.finishing);
+    }
   }
 
   Future<List<List<int>>> _getOrCreateBasePczts({
@@ -369,6 +455,7 @@ class _MobileLedgerSendSignScreenState
     } else if (guidance != null) {
       presentation = LedgerSigningFailurePresentation(
         title: 'Ledger needs attention',
+        requestFailure: LedgerRequestFailure.fromError(error),
         statusLabel: 'Action needed',
         message: guidance.message,
         showDeviceAppPrompt: guidance.showDeviceAppPrompt,
@@ -390,6 +477,7 @@ class _MobileLedgerSendSignScreenState
       };
       presentation = LedgerSigningFailurePresentation(
         title: 'Ledger signing failed',
+        requestFailure: LedgerRequestFailure.fromError(error),
         statusLabel: 'Action needed',
         message: message,
         showDeviceAppPrompt: false,
@@ -442,10 +530,10 @@ class _MobileLedgerSendSignScreenState
           title: terminal
               ? 'Signed transaction needs attention'
               : 'Could not save signed transaction',
-          statusLabel: terminal ? 'Recovery required' : 'Signature preserved',
+          statusLabel: terminal ? 'Recovery required' : 'Action needed',
           message: terminal
               ? 'Vizor could not verify the saved transaction. Do not sign or send it again.'
-              : 'Your Ledger signature is preserved. Retry saving without approving another transaction.',
+              : 'Keep Vizor open and retry saving. No new Ledger approval needed.',
           showDeviceAppPrompt: false,
           actionLabel: terminal ? null : 'Retry saving',
         );
@@ -503,6 +591,7 @@ class _MobileLedgerSendSignScreenState
       if (failure != null) {
         _failure = LedgerSigningFailurePresentation(
           title: failure.title,
+          requestFailure: failure.requestFailure,
           statusLabel: failure.statusLabel,
           message: 'Could not finish cancelling. Please try again.',
           showDeviceAppPrompt: false,
@@ -513,7 +602,9 @@ class _MobileLedgerSendSignScreenState
   }
 
   Future<void> _cancelAndPop() async {
-    if (_signingComplete || _cancelled || _releasing) return;
+    if (_signingComplete || _cancelled || _releasing || _drainingFailure) {
+      return;
+    }
     setState(() => _cancelled = true);
     _attemptGeneration++;
     await _cancelOperationSafely();
@@ -568,13 +659,16 @@ class _MobileLedgerSendSignScreenState
 
   @override
   Widget build(BuildContext context) {
-    final canLeave = !_signingComplete && !_cancelled && !_releasing;
+    final canLeave =
+        !_signingComplete && !_cancelled && !_releasing && !_drainingFailure;
     return MobileLedgerSigningSurface(
       key: const ValueKey('mobile_ledger_signing_surface'),
       title: 'Confirm transaction',
       canLeave: canLeave,
       onBack: () => unawaited(_cancelAndPop()),
       child: LedgerSigningModal(
+        cancelling: _cancelled || _releasing || _drainingFailure,
+        resumingApproval: _resumingApproval,
         accountUuid: widget.args.proposalAccountUuid,
         phase: _phase,
         failure: _failure,

@@ -19,11 +19,13 @@ import '../../../providers/rpc_endpoint_provider.dart';
 import '../ledger_capability.dart';
 import '../services/ledger_app_readiness_service.dart';
 import '../services/ledger_signing_progress.dart';
+import '../services/ledger_failure_guidance.dart';
 import 'ledger_device_app_prompt.dart';
 
 enum LedgerSigningModalPhase {
   preparing,
   awaitingDevice,
+  finishing,
   saving,
   broadcasting,
   failed,
@@ -41,6 +43,7 @@ class LedgerSigningFailurePresentation {
     this.bluetoothRecovery = false,
     this.pairingRecovery = false,
     this.pairingInvalid = false,
+    this.requestFailure,
   });
 
   final String title;
@@ -53,6 +56,7 @@ class LedgerSigningFailurePresentation {
   final bool bluetoothRecovery;
   final bool pairingRecovery;
   final bool pairingInvalid;
+  final LedgerRequestFailure? requestFailure;
 }
 
 /// A memo the connected app would show as a hash was refused because the app
@@ -79,6 +83,8 @@ class LedgerSigningModal extends ConsumerWidget {
     this.roundFeeNotice,
     this.roundNumber = 1,
     this.roundCount = 1,
+    this.cancelling = false,
+    this.resumingApproval = false,
     super.key,
   }) : assert(roundNumber > 0 && roundNumber <= roundCount),
        assert(roundCount > 0),
@@ -102,6 +108,9 @@ class LedgerSigningModal extends ConsumerWidget {
   final String? roundFeeNotice;
   final int roundNumber;
   final int roundCount;
+  final bool cancelling;
+  // Keep transaction preparation complete while retrying the Ledger request.
+  final bool resumingApproval;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) =>
@@ -163,6 +172,7 @@ class LedgerSigningModal extends ConsumerWidget {
         signingStage ??
             (progress?.accountUuid == accountUuid ? progress?.stage : null) ??
             LedgerSigningStage.preparing,
+      LedgerSigningModalPhase.finishing ||
       LedgerSigningModalPhase.saving ||
       LedgerSigningModalPhase.broadcasting => LedgerSigningStage.finishing,
       LedgerSigningModalPhase.failed => LedgerSigningStage.preparing,
@@ -174,6 +184,11 @@ class LedgerSigningModal extends ConsumerWidget {
             progress?.accountUuid == accountUuid ? progress?.deviceModel : null,
           );
     var statusLabel = failed ? failure!.statusLabel : stage.status;
+    if (phase == LedgerSigningModalPhase.finishing) {
+      title = 'Finishing transaction';
+      message = 'Approved on Ledger. Vizor is finishing the transaction.';
+      statusLabel = 'Keep Vizor open';
+    }
     if (roundCount > 1) {
       final progress = 'Transaction $roundNumber of $roundCount';
       if (!failed) statusLabel = progress;
@@ -197,11 +212,14 @@ class LedgerSigningModal extends ConsumerWidget {
           break;
       }
     }
-    if (!failed && roundFeeNotice != null) {
+    if (!failed &&
+        roundFeeNotice != null &&
+        kAppFormFactor != AppFormFactor.mobile) {
       message = '$message ${roundFeeNotice!}';
     }
     final actionLabel = failed ? failure!.actionLabel : null;
     final showDeviceAppPrompt = switch (phase) {
+      LedgerSigningModalPhase.finishing ||
       LedgerSigningModalPhase.saving ||
       LedgerSigningModalPhase.broadcasting => false,
       LedgerSigningModalPhase.failed => failure!.showDeviceAppPrompt,
@@ -219,14 +237,26 @@ class LedgerSigningModal extends ConsumerWidget {
             !failed && stage == LedgerSigningStage.reviewing && roundCount == 1
             ? 'Waiting for your approval'
             : statusLabel,
-        active:
-            stage != LedgerSigningStage.reviewing &&
-            readiness.phase != LedgerAppReadinessPhase.confirmOpening,
+        active: !failed,
         failed: failed,
         account: account,
         onClose: onCancel,
         actionLabel: actionLabel,
         onAction: onFailureAction,
+        stage: stage,
+        readiness: readiness.phase,
+        deviceModel: progress?.accountUuid == accountUuid
+            ? progress?.deviceModel
+            : null,
+        saving: phase == LedgerSigningModalPhase.saving,
+        finishing: phase == LedgerSigningModalPhase.finishing,
+        broadcasting: phase == LedgerSigningModalPhase.broadcasting,
+        declined: failure?.requestFailure == LedgerRequestFailure.declined,
+        roundNumber: roundNumber,
+        roundCount: roundCount,
+        roundFeeNotice: roundFeeNotice,
+        cancelling: cancelling,
+        resumingApproval: resumingApproval,
       );
     }
     return AppModalCard(

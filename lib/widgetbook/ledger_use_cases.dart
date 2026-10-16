@@ -184,6 +184,7 @@ Widget buildLedgerSigningPreview({
   String deviceModel = 'Ledger Flex',
 }) {
   final canLeave =
+      phase != LedgerSigningModalPhase.finishing &&
       phase != LedgerSigningModalPhase.saving &&
       phase != LedgerSigningModalPhase.broadcasting;
   final modal = LedgerSigningModal(

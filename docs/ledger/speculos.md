@@ -92,6 +92,12 @@ VIZOR_LEDGER_SPECULOS_ELF='/absolute/path/zcash-nanosplus.elf' \
 - Saved signing contexts are reused unchanged; enabling output review does not
   repair an old failed PCZT. Account-OVK holders can recover the hotkey output
   and memo from published effects when Ledger output review is enabled.
+- Mobile Send rejects the first review on the emulated device, retries from
+  the approval step, and checks that PCZT creation and proving run only once.
+- The mobile TEX proof-failure case injects a failure after the first device
+  signature while the second request is in support validation. It exercises
+  production cancellation and device reselection, retains the first signature,
+  and completes native checkpointing and both broadcasts after one retry.
 - Speculos validates device-app/APDU behavior, not physical USB/Bluetooth or
   production broadcast. Externally managed mobile endpoints need their own
   forwarding; the Docker runner keeps APIs on host loopback, not the LAN.
