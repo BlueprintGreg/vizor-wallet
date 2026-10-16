@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:zcash_wallet/src/features/ledger/services/ledger_device_selection.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_progress.dart';
 import 'package:flutter/material.dart';
@@ -15,38 +17,68 @@ import 'package:zcash_wallet/src/features/ledger/widgets/ledger_modal_content.da
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
 
+import '../../figma_compare/figma_compare_font_loader.dart';
+
 void main() {
   for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
-    testWidgets('$platform failure does not offer a transport choice', (
+    testWidgets('$platform signing uses USB despite saved Bluetooth metadata', (
       tester,
     ) async {
-      await tester.pumpWidget(
-        _harness(
-          platform: platform,
-          phase: LedgerSigningModalPhase.failed,
-          account: const AccountInfo(
-            uuid: 'ledger-1',
-            name: 'Ledger',
-            order: 0,
-            isHardware: true,
-            hardwareSignerKind: HardwareSignerKind.ledger,
-            ledgerDeviceId: 'saved',
-            ledgerDeviceModel: 'Nano X',
+      final scope = LedgerConnectionScope();
+      var retries = 0;
+      for (final phase in [
+        LedgerSigningModalPhase.preparing,
+        LedgerSigningModalPhase.awaitingDevice,
+        LedgerSigningModalPhase.failed,
+      ]) {
+        await tester.pumpWidget(
+          _harness(
+            platform: platform,
+            phase: phase,
+            stage: LedgerSigningStage.reviewing,
+            account: _bluetoothAccount,
+            connectionScope: scope,
+            onFailureAction: () => retries++,
+            failure: phase == LedgerSigningModalPhase.failed
+                ? _usbConnectionFailure
+                : null,
           ),
-          failure: const LedgerSigningFailurePresentation(
-            title: 'Ledger signing failed',
-            statusLabel: 'Action needed',
-            message: 'Reconnect your Ledger and try again.',
-            showDeviceAppPrompt: true,
-            actionLabel: 'Try again',
-          ),
-        ),
-      );
-      expect(find.bySemanticsLabel('Change connection'), findsNothing);
-      expect(find.text('Bluetooth'), findsNothing);
-      expect(find.text('Auto'), findsNothing);
+        );
+        expect(find.text('My Ledger · USB'), findsOneWidget);
+        expect(find.bySemanticsLabel('Change connection'), findsNothing);
+        expect(find.byKey(const ValueKey('ledger_choose_usb')), findsNothing);
+        expect(find.textContaining('Bluetooth'), findsNothing);
+        expect(find.text('Auto'), findsNothing);
+      }
+      expect(find.text(_usbConnectionFailure.message), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      expect(retries, 1);
+      expect(scope.transport, isNull);
     });
   }
+
+  testWidgets('macOS signing identifies the current connection transport', (
+    tester,
+  ) async {
+    final scope = LedgerConnectionScope();
+    for (final transport in LedgerConnectionTransport.values) {
+      scope.transport = transport;
+      await tester.pumpWidget(
+        _harness(
+          phase: LedgerSigningModalPhase.awaitingDevice,
+          stage: LedgerSigningStage.reviewing,
+          account: _bluetoothAccount,
+          connectionScope: scope,
+        ),
+      );
+      expect(
+        find.text(
+          'My Ledger · ${transport == LedgerConnectionTransport.usb ? 'USB' : 'Bluetooth'}',
+        ),
+        findsOneWidget,
+      );
+    }
+  });
 
   testWidgets(
     'parks payment requests across signing phases and releases on exit',
@@ -431,6 +463,60 @@ void main() {
       }
     });
   }
+
+  testWidgets('captures USB-only signing and connection recovery', (
+    tester,
+  ) async {
+    const output = String.fromEnvironment('LEDGER_SIGNING_USB_CAPTURE_DIR');
+    if (output.isEmpty) return;
+    Directory(output).createSync(recursive: true);
+    await loadFigmaCompareFonts();
+    final shadowsWereDisabled = debugDisableShadows;
+    debugDisableShadows = false;
+    addTearDown(() => debugDisableShadows = shadowsWereDisabled);
+    await tester.binding.setSurfaceSize(const Size(1080, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    for (final platform in [TargetPlatform.windows, TargetPlatform.linux]) {
+      for (final theme in [AppThemeData.light, AppThemeData.dark]) {
+        for (final failed in [false, true]) {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          const boundary = ValueKey('ledger_signing_usb_capture');
+          await tester.pumpWidget(
+            RepaintBoundary(
+              key: boundary,
+              child: _harness(
+                platform: platform,
+                theme: theme,
+                phase: failed
+                    ? LedgerSigningModalPhase.failed
+                    : LedgerSigningModalPhase.awaitingDevice,
+                stage: LedgerSigningStage.reviewing,
+                account: _bluetoothAccount,
+                connectionScope: LedgerConnectionScope(),
+                failure: failed ? _usbConnectionFailure : null,
+                onFailureAction: _noop,
+              ),
+            ),
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+          expect(find.text('My Ledger · USB'), findsOneWidget);
+          expect(find.textContaining('Bluetooth'), findsNothing);
+          expect(tester.takeException(), isNull);
+          await expectLater(
+            find.byKey(boundary),
+            matchesGoldenFile(
+              File(
+                '$output/${platform.name}-${failed ? 'failed' : 'reviewing'}-${theme == AppThemeData.dark ? 'dark' : 'light'}.png',
+              ).uri,
+            ),
+          );
+        }
+      }
+    }
+    debugDisableShadows = shadowsWereDisabled;
+  }, tags: ['figma-capture']);
 }
 
 Widget _harness({
@@ -443,6 +529,7 @@ Widget _harness({
   AccountInfo? account,
   LedgerConnectionScope? connectionScope,
   TargetPlatform platform = TargetPlatform.macOS,
+  AppThemeData theme = AppThemeData.light,
 }) {
   return ProviderScope(
     key: ValueKey(readiness.phase),
@@ -456,18 +543,22 @@ Widget _harness({
         accountProvider.overrideWith(() => _StaticAccountNotifier(account)),
     ],
     child: MaterialApp(
+      debugShowCheckedModeBanner: false,
       home: Builder(
         builder: (context) => AppTheme(
-          data: AppThemeData.light,
-          child: Center(
-            child: LedgerSigningModal(
-              phase: phase,
-              connectionScope: connectionScope,
-              signingStage: stage,
-              failure: failure,
-              onCancel: onCancel,
-              onFailureAction: onFailureAction,
-              accountUuid: account?.uuid,
+          data: theme,
+          child: Material(
+            color: theme.colors.background.window,
+            child: Center(
+              child: LedgerSigningModal(
+                phase: phase,
+                connectionScope: connectionScope,
+                signingStage: stage,
+                failure: failure,
+                onCancel: onCancel,
+                onFailureAction: onFailureAction,
+                accountUuid: account?.uuid,
+              ),
             ),
           ),
         ),
@@ -477,6 +568,26 @@ Widget _harness({
 }
 
 void _noop() {}
+
+const _bluetoothAccount = AccountInfo(
+  uuid: 'ledger-1',
+  name: 'Ledger',
+  order: 0,
+  isHardware: true,
+  hardwareSignerKind: HardwareSignerKind.ledger,
+  ledgerDeviceId: 'saved',
+  ledgerDeviceName: 'My Ledger',
+  ledgerDeviceModel: 'Nano X',
+  ledgerLastTransport: LedgerConnectionTransport.bluetooth,
+);
+
+const _usbConnectionFailure = LedgerSigningFailurePresentation(
+  title: 'Ledger signing failed',
+  statusLabel: 'Action needed',
+  message: 'Connect and unlock your Ledger with USB, then try again.',
+  showDeviceAppPrompt: false,
+  actionLabel: 'Try again',
+);
 
 class _FakeReadinessController extends LedgerAppReadinessController {
   _FakeReadinessController(this.initialState);

@@ -129,12 +129,13 @@ class LedgerSigningModal extends ConsumerWidget {
     }
     final failed = phase == LedgerSigningModalPhase.failed;
     final failure = this.failure;
+    final platform = ref.watch(ledgerTargetPlatformProvider);
     final canChangeConnection =
         failed &&
         failure!.showConnectionPicker &&
         onFailureAction != null &&
         connectionScope != null &&
-        ref.watch(ledgerTargetPlatformProvider) == TargetPlatform.macOS;
+        platform == TargetPlatform.macOS;
     void changeConnection() {
       connectionScope!.changeConnection();
       onFailureAction?.call();
@@ -241,8 +242,10 @@ class LedgerSigningModal extends ConsumerWidget {
         ? progress?.deviceModel
         : null;
     final bluetooth =
-        connectionScope?.transport == LedgerConnectionTransport.bluetooth ||
-        (connectionScope?.transport == null && account?.ledgerDeviceId != null);
+        ledgerSupportsBluetooth(platform) &&
+        (connectionScope?.transport == LedgerConnectionTransport.bluetooth ||
+            (connectionScope?.transport == null &&
+                account?.ledgerDeviceId != null));
     final identity = selected != null
         ? ledgerDeviceLabel(selected)
         : account?.ledgerDeviceName ?? model ?? 'Ledger';
