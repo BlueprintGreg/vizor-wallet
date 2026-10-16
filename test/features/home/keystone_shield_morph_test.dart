@@ -2,6 +2,7 @@
 library;
 
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
@@ -26,6 +27,29 @@ KeystoneShieldFocus _focus(KeystoneShieldFocusStage stage) =>
       urParts: _parts,
       scannerBuilder: (_, _) => const SizedBox.shrink(),
     );
+
+Future<Uint8List> _raster(
+  WidgetTester tester,
+  KeystoneShieldMorph morph, {
+  double dpr = 3,
+}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder)..scale(dpr);
+  canvas.drawRect(
+    const Rect.fromLTWH(0, 0, 320, 320),
+    Paint()..color = Colors.black,
+  );
+  morph.paint(canvas);
+  final picture = recorder.endRecording();
+  final image = await tester.runAsync(
+    () => picture.toImage((320 * dpr).round(), (320 * dpr).round()),
+  );
+  final data = (await tester.runAsync(() => image!.toByteData()))!;
+  final bytes = Uint8List.fromList(data.buffer.asUint8List());
+  image!.dispose();
+  picture.dispose();
+  return bytes;
+}
 
 void main() {
   testWidgets(
@@ -190,48 +214,127 @@ void main() {
     expect(morph.particles.every((p) => p.square == 1 && p.alpha == 1), isTrue);
   });
 
+  for (final dpr in [1.0, 2.0, 3.0]) {
+    testWidgets(
+      'black QR modules and white quiet zone match every frame at DPR $dpr',
+      (tester) async {
+        const bounds = Rect.fromLTWH(11.3, 14.7, 280, 280);
+        final morph = KeystoneShieldMorph()
+          ..configure(_focus(KeystoneShieldFocusStage.qr));
+        addTearDown(morph.dispose);
+        morph.devicePixelRatio = dpr;
+        morph.setBounds(KeystoneShieldAnchorKind.qr, bounds);
+        morph.update(0, _cloud);
+        morph.update(1.2, _cloud);
+        for (var index = 0; index < _parts.length; index++) {
+          morph.update(1.21 + index * 0.2, _cloud);
+          expect(morph.qrIndex, index);
+          final bytes = await _raster(tester, morph, dpr: dpr);
+          final qr = QrImage(
+            QrCode.fromData(
+              data: _parts[index],
+              errorCorrectLevel: QrErrorCorrectLevel.M,
+            ),
+          );
+          final pitch = bounds.width / (qr.moduleCount + 8);
+          int ink(int x, int y) => bytes[(y * (320 * dpr).round() + x) * 4];
+          for (var y = -4; y < qr.moduleCount + 4; y++) {
+            for (var x = -4; x < qr.moduleCount + 4; x++) {
+              final expected =
+                  x >= 0 &&
+                  y >= 0 &&
+                  x < qr.moduleCount &&
+                  y < qr.moduleCount &&
+                  qr.isDark(y, x);
+              final px = ((bounds.left + (x + 4.5) * pitch) * dpr).floor();
+              final py = ((bounds.top + (y + 4.5) * pitch) * dpr).floor();
+              expect(
+                ink(px, py),
+                expected ? 0 : 255,
+                reason: 'QR cell ($x, $y)',
+              );
+            }
+          }
+        }
+      },
+    );
+  }
+
   testWidgets(
-    'the white raster preserves every module and a clear quiet zone',
+    'white particles occupy only light cells and the full quiet zone',
     (tester) async {
       const bounds = Rect.fromLTWH(0, 0, 280, 280);
+      final frames = KeystoneShieldQrFrames(_parts);
+      for (var index = 0; index < _parts.length; index++) {
+        final image = frames.frame(index);
+        final cells = frames.whiteCells(index, bounds, 3);
+        final pitch = bounds.width / (image.moduleCount + 8);
+        final positions = {
+          for (final p in cells)
+            (
+              (p.position.dx / pitch).floor() - 4,
+              (p.position.dy / pitch).floor() - 4,
+            ),
+        };
+        expect(positions.length, cells.length);
+        for (var y = -4; y < image.moduleCount + 4; y++) {
+          for (var x = -4; x < image.moduleCount + 4; x++) {
+            final dark =
+                x >= 0 &&
+                y >= 0 &&
+                x < image.moduleCount &&
+                y < image.moduleCount &&
+                image.isDark(y, x);
+            expect(positions.contains((x, y)), !dark);
+          }
+        }
+        expect(
+          cells.every(
+            (p) => p.color == Colors.white && p.alpha == 1 && p.square == 1,
+          ),
+          isTrue,
+        );
+      }
+    },
+  );
+
+  testWidgets(
+    'settled QR and departing white particles have identical pixels',
+    (tester) async {
       final morph = KeystoneShieldMorph()
         ..configure(_focus(KeystoneShieldFocusStage.qr));
       addTearDown(morph.dispose);
-      morph.devicePixelRatio = 3;
-      morph.setBounds(KeystoneShieldAnchorKind.qr, bounds);
-      morph.update(0, _cloud);
-      morph.update(1.2, _cloud);
-      morph.update(1.21, _cloud);
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder)..scale(3);
-      canvas.drawRect(bounds, Paint()..color = Colors.black);
-      morph.paint(canvas);
-      final picture = recorder.endRecording();
-      final image = await tester.runAsync(() => picture.toImage(840, 840));
-      final bytes = (await tester.runAsync(() => image!.toByteData()))!;
-      final qr = QrImage(
-        QrCode.fromData(
-          data: _parts.first,
-          errorCorrectLevel: QrErrorCorrectLevel.M,
-        ),
+      await tester.runAsync(morph.prepare);
+      morph.setBounds(
+        KeystoneShieldAnchorKind.qr,
+        const Rect.fromLTWH(11.3, 14.7, 280, 280),
       );
-      final pitch = 840 / (qr.moduleCount + 8);
-      int ink(int x, int y) => bytes.getUint8((y * 840 + x) * 4);
-      for (var y = -4; y < qr.moduleCount + 4; y++) {
-        for (var x = -4; x < qr.moduleCount + 4; x++) {
-          final expected =
-              x >= 0 &&
-              y >= 0 &&
-              x < qr.moduleCount &&
-              y < qr.moduleCount &&
-              qr.isDark(y, x);
-          final px = ((x + 4.5) * pitch).floor();
-          final py = ((y + 4.5) * pitch).floor();
-          expect(ink(px, py), expected ? 255 : 0, reason: 'QR cell ($x, $y)');
-        }
-      }
-      image!.dispose();
-      picture.dispose();
+      morph.setBounds(
+        KeystoneShieldAnchorKind.frame,
+        const Rect.fromLTWH(20, 20, 260, 260),
+      );
+      morph.setBounds(
+        KeystoneShieldAnchorKind.torch,
+        const Rect.fromLTWH(148, 296, 24, 24),
+      );
+      morph.devicePixelRatio = 3;
+      morph.update(0, _cloud);
+      morph.update(0.61, _cloud);
+      // Cover both animated QR frames, not only the first morph destination.
+      morph.update(0.82, _cloud);
+      final held = await _raster(tester, morph);
+      morph.configure(_focus(KeystoneShieldFocusStage.scanner));
+      morph.update(0.82, _cloud);
+      expect(await _raster(tester, morph), orderedEquals(held));
+      morph.update(1.3, _cloud);
+      morph.configure(_focus(KeystoneShieldFocusStage.qr));
+      morph.update(1.31, _cloud);
+      morph.update(1.92, _cloud);
+      expect(morph.qrReady, isTrue);
+      final returned = await _raster(tester, morph);
+      morph.configure(_focus(KeystoneShieldFocusStage.cloud));
+      morph.update(1.92, _cloud);
+      expect(await _raster(tester, morph), orderedEquals(returned));
     },
   );
 

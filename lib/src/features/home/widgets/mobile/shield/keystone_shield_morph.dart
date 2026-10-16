@@ -43,30 +43,29 @@ class KeystoneShieldQrFrames {
     ),
   );
 
-  List<ShieldParticleSample> modules(int index, Rect bounds, double dpr) {
-    final image = frame(index);
-    const quiet = 4;
-    final pitch = bounds.width / (image.moduleCount + quiet * 2);
-    double edge(double value) => (value * dpr).round() / dpr;
+  /// Particles fill the white surface, leaving the dark QR modules empty.
+  List<ShieldParticleSample> whiteCells(int index, Rect bounds, double dpr) {
+    final grid = _KeystoneQrGrid(frame(index), bounds, dpr);
     final points = <ShieldParticleSample>[];
-    for (var y = 0; y < image.moduleCount; y++) {
-      for (var x = 0; x < image.moduleCount; x++) {
-        if (!image.isDark(y, x)) continue;
-        final left = edge(bounds.left + (x + quiet) * pitch);
-        final top = edge(bounds.top + (y + quiet) * pitch);
-        final right = edge(bounds.left + (x + quiet + 1) * pitch);
-        final bottom = edge(bounds.top + (y + quiet + 1) * pitch);
+    for (var y = -grid.quiet; y < grid.count + grid.quiet; y++) {
+      for (var x = -grid.quiet; x < grid.count + grid.quiet; x++) {
+        if (grid.isDark(x, y)) continue;
+        final rect = grid.cell(x, y);
         points.add(
           ShieldParticleSample(
-            position: Offset((left + right) / 2, (top + bottom) / 2),
-            size: math.max(right - left, bottom - top),
+            position: rect.center,
+            size: math.max(rect.width, rect.height),
             alpha: 1,
             square: 1,
-            extent: Size(right - left, bottom - top),
+            extent: rect.size,
             arrival:
-                (x < 7 && y < 7) ||
-                    (x >= image.moduleCount - 7 && y < 7) ||
-                    (x < 7 && y >= image.moduleCount - 7)
+                x < 0 ||
+                    y < 0 ||
+                    x >= grid.count ||
+                    y >= grid.count ||
+                    (x < 7 && y < 7) ||
+                    (x >= grid.count - 7 && y < 7) ||
+                    (x < 7 && y >= grid.count - 7)
                 ? 0.82
                 : 1,
           ),
@@ -75,6 +74,44 @@ class KeystoneShieldQrFrames {
     }
     return points;
   }
+
+  /// The settled scan surface uses exactly the particle grid's pixel edges.
+  void paint(Canvas canvas, int index, Rect bounds, double dpr) {
+    final grid = _KeystoneQrGrid(frame(index), bounds, dpr);
+    final paint = Paint()
+      ..isAntiAlias = false
+      ..color = const Color(0xFFFFFFFF);
+    canvas.drawRect(grid.surface, paint);
+    paint.color = const Color(0xFF000000);
+    for (var y = 0; y < grid.count; y++) {
+      for (var x = 0; x < grid.count; x++) {
+        if (grid.isDark(x, y)) canvas.drawRect(grid.cell(x, y), paint);
+      }
+    }
+  }
+}
+
+class _KeystoneQrGrid {
+  _KeystoneQrGrid(this.image, this.bounds, this.dpr);
+  final QrImage image;
+  final Rect bounds;
+  final double dpr;
+  final int quiet = 4;
+  int get count => image.moduleCount;
+  double get pitch => bounds.width / (count + quiet * 2);
+  double _edge(double value) => (value * dpr).round() / dpr;
+  bool isDark(int x, int y) =>
+      x >= 0 && y >= 0 && x < count && y < count && image.isDark(y, x);
+  Rect cell(int x, int y) => Rect.fromLTRB(
+    _edge(bounds.left + (x + quiet) * pitch),
+    _edge(bounds.top + (y + quiet) * pitch),
+    _edge(bounds.left + (x + quiet + 1) * pitch),
+    _edge(bounds.top + (y + quiet + 1) * pitch),
+  );
+  Rect get surface => Rect.fromPoints(
+    cell(-quiet, -quiet).topLeft,
+    cell(count + quiet - 1, count + quiet - 1).bottomRight,
+  );
 }
 
 /// Retargets the visible particles without restarting the cloud or transaction.
@@ -225,7 +262,7 @@ class KeystoneShieldMorph {
     // A held QR follows layout changes directly. Restarting it here creates a
     // feedback loop when the enabled footer's border changes its own height.
     if (kind == KeystoneShieldAnchorKind.qr && qrReady) {
-      _particles = _qr!.modules(qrIndex, rect, devicePixelRatio);
+      _particles = _qr!.whiteCells(qrIndex, rect, devicePixelRatio);
       return;
     }
     if (_goal != KeystoneShieldFocusStage.cloud) {
@@ -266,7 +303,7 @@ class KeystoneShieldMorph {
       case KeystoneShieldFocusStage.qr:
         final bounds = _bounds[KeystoneShieldAnchorKind.qr];
         if (bounds == null || _qr == null || _qr!.parts.isEmpty) return null;
-        return _qr!.modules(0, bounds, devicePixelRatio);
+        return _qr!.whiteCells(0, bounds, devicePixelRatio);
       case KeystoneShieldFocusStage.scanner:
         final frame = _bounds[KeystoneShieldAnchorKind.frame];
         final torch = _bounds[KeystoneShieldAnchorKind.torch];
@@ -391,7 +428,7 @@ class KeystoneShieldMorph {
     final start = _start;
     if (start == null) {
       if (qrReady) {
-        _particles = _qr!.modules(
+        _particles = _qr!.whiteCells(
           qrIndex,
           _bounds[KeystoneShieldAnchorKind.qr]!,
           devicePixelRatio,
@@ -490,6 +527,15 @@ class KeystoneShieldMorph {
 
   void paint(Canvas canvas) {
     if (!active) return;
+    if (qrReady) {
+      _qr!.paint(
+        canvas,
+        qrIndex,
+        _bounds[KeystoneShieldAnchorKind.qr]!,
+        devicePixelRatio,
+      );
+      return;
+    }
     final glyphOut = 1 - scannerGlyphOpacity;
     for (final particle in _particles) {
       final alpha =
