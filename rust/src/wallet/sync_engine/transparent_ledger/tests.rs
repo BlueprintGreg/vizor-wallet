@@ -2493,9 +2493,11 @@ async fn followup(
 /// A restoring account watches a fixed window of addresses whatever the
 /// replies show, so a receive inside it grows nothing. The forged receive
 /// sits at the window's last address, the only place a reply can grow it.
+/// The growth is stored, and watched from the next recovery target; these
+/// syncs all recover at one target, so the watch set stays as it was.
 #[tokio::test]
 async fn a_forged_receive_does_not_change_when_recovery_runs() {
-    async fn calls_per_sync(forge: bool) -> (Vec<usize>, usize) {
+    async fn calls_per_sync(forge: bool) -> (Vec<usize>, usize, i64) {
         let mut wallet = private_wallet();
         let window = watched(&wallet).len();
         let source = FixtureSource::new(main_hash);
@@ -2512,14 +2514,23 @@ async fn a_forged_receive_does_not_change_when_recovery_runs() {
                 calls.push(source.calls());
             }
         }
-        (calls, watched(&wallet).len() - window)
+        let stored = count(&wallet.path, "SELECT COUNT(*) FROM tpir_receive_events");
+        (calls, watched(&wallet).len() - window, stored)
     }
-    let (honest, honest_growth) = calls_per_sync(false).await;
-    let (forged, forged_growth) = calls_per_sync(true).await;
+    let (honest, honest_growth, honest_stored) = calls_per_sync(false).await;
+    let (forged, forged_growth, forged_stored) = calls_per_sync(true).await;
     assert_eq!(honest, [1, 1, 2, 2, 3, 3, 4, 4]);
     assert_eq!(forged, honest, "the same requests at the same blocks");
-    assert_eq!(honest_growth, 0);
-    assert!(forged_growth > 0, "the forged receive grew the window");
+    assert_eq!(
+        (honest_stored, forged_stored),
+        (0, 1),
+        "the forged receive was stored"
+    );
+    assert_eq!(
+        (honest_growth, forged_growth),
+        (0, 0),
+        "growth at this target is watched from the next"
+    );
 }
 
 /// A restore whose funds lie beyond the first window completes over the
