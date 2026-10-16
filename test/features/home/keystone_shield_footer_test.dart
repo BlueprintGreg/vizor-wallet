@@ -2,12 +2,14 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/keystone_shield_footer.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/keystone_shield_morph.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/particles/particle_field.dart';
 import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
+import '../../figma_compare/figma_compare_font_loader.dart';
 
 void main() {
   testWidgets(
@@ -150,6 +152,94 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'primary action stays on one line with real fonts and unchanged margins',
+    (tester) async {
+      await loadFigmaCompareFonts();
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      for (final width in [360.0, 375.0, 390.0, 393.0, 402.0, 430.0]) {
+        for (final scale in [1.0, 1.15, if (width >= 390) 1.3]) {
+          tester.view.physicalSize = Size(width, 850);
+          final qr = ValueNotifier(true);
+          var nextCalls = 0, showCalls = 0, cancelCalls = 0;
+          await tester.pumpWidget(
+            MaterialApp(
+              home: AppTheme(
+                data: AppThemeData.dark,
+                child: MediaQuery(
+                  data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+                  child: Center(
+                    child: SizedBox(
+                      width: width - 48,
+                      child: ValueListenableBuilder(
+                        valueListenable: qr,
+                        builder: (_, value, _) => KeystoneShieldFooter(
+                          showQr: value,
+                          onCancel: () => cancelCalls++,
+                          onNext: () => nextCalls++,
+                          onShowQr: () => showCalls++,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 300));
+          void expectOneLine(String label) {
+            final paragraph = tester.renderObject<RenderParagraph>(
+              find.text(label),
+            );
+            expect(
+              paragraph.getBoxesForSelection(
+                TextSelection(baseOffset: 0, extentOffset: label.length),
+              ),
+              hasLength(1),
+              reason: '$label at $width px / $scale',
+            );
+          }
+
+          final action = find.byKey(
+            const ValueKey('mobile_keystone_stage_action'),
+          );
+          final cancel = find.byKey(const ValueKey('mobile_keystone_cancel'));
+          final actionRect = tester.getRect(action),
+              cancelRect = tester.getRect(cancel);
+          expect(cancelRect.left, 48);
+          expect(actionRect.right, width - 48);
+          expect(actionRect.left - cancelRect.right, AppSpacing.s);
+          expect(actionRect.width, greaterThan(cancelRect.width));
+          expectOneLine('Next step');
+          expectOneLine('Cancel');
+          expect(
+            actionRect.height,
+            AppButtonSizing.largeHeight,
+            reason: '$width px / $scale',
+          );
+          await tester.tap(action);
+          expect(nextCalls, 1);
+          qr.value = false;
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 90));
+          expect(tester.getRect(action), actionRect);
+          expect(tester.getRect(cancel), cancelRect);
+          await tester.pump(const Duration(milliseconds: 210));
+          expectOneLine('Show QR');
+          await tester.tap(action);
+          await tester.tap(cancel);
+          expect(showCalls, 1);
+          expect(cancelCalls, 1);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+          qr.dispose();
+        }
+      }
+    },
+  );
 
   testWidgets(
     'footer follows formation time and exits before the cloud returns',

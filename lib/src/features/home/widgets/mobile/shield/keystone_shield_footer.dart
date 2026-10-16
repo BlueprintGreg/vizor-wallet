@@ -40,31 +40,50 @@ class KeystoneShieldFooter extends StatelessWidget {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final buttonWidth = (constraints.maxWidth - AppSpacing.s) / 2;
-          // Reserve the narrowest interior (primary's border) in both states.
-          final labelWidth = math.max(
-            1.0,
-            buttonWidth - AppSpacing.sm * 2 - AppSpacing.xxs * 2 - 3,
-          );
-          double measure(String text, double width) {
+          Size measure(String text, double width) {
             final painter = TextPainter(
               text: TextSpan(text: text, style: AppTypography.labelLarge),
               textDirection: Directionality.of(context),
               textScaler: MediaQuery.textScalerOf(context),
             )..layout(maxWidth: math.max(1, width));
-            final height = painter.height;
+            final size = painter.size;
             painter.dispose();
-            return height;
+            return size;
           }
 
+          final availableWidth = math.max(
+            0.0,
+            constraints.maxWidth - AppSpacing.s,
+          );
+          const labelInsets = AppSpacing.sm * 2 + AppSpacing.xxs * 2;
+          // Give Cancel its natural width and the action the remaining space.
+          // At large text sizes keep at least half for the action, retaining
+          // the existing wrapping fallback without moving either button.
+          final cancelWidth = math.min(
+            availableWidth / 2,
+            math.max(
+              AppButtonSizing.largeHeight,
+              measure('Cancel', double.infinity).width.ceilToDouble() +
+                  labelInsets,
+            ),
+          );
+          final cancelLabelWidth = math.max(1.0, cancelWidth - labelInsets);
+          // Reserve the primary border in both QR and scanner states.
+          final actionLabelWidth = math.max(
+            1.0,
+            availableWidth - cancelWidth - labelInsets - 3,
+          );
           const iconSize = 20.0;
           final contentHeight = math.max(
             iconSize,
             math.max(
-              measure('Cancel', labelWidth),
+              measure('Cancel', cancelLabelWidth).height,
               math.max(
-                measure('Show QR', labelWidth),
-                measure('Next step', labelWidth - iconSize - AppSpacing.xxs),
+                measure('Show QR', actionLabelWidth).height,
+                measure(
+                  'Next step',
+                  actionLabelWidth - iconSize - AppSpacing.xxs,
+                ).height,
               ),
             ),
           );
@@ -74,7 +93,8 @@ class KeystoneShieldFooter extends StatelessWidget {
           );
           return Row(
             children: [
-              Expanded(
+              SizedBox(
+                width: cancelWidth,
                 child: AppButton(
                   key: const ValueKey('mobile_keystone_cancel'),
                   expand: true,
