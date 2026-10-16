@@ -578,6 +578,31 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-enabled',
+    description: 'Mobile welcome network settings with private queries on',
+    builder: buildMobileWelcomePrivateQueriesEnabled,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-changing',
+    description: 'Mobile welcome network settings while saving private queries',
+    builder: buildMobileWelcomePrivateQueriesChanging,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-failed',
+    description:
+        'Mobile welcome network settings after private queries save fails',
+    builder: buildMobileWelcomePrivateQueriesFailed,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-welcome-network-connecting',
     description: 'Mobile welcome network settings: connecting',
     builder: buildMobileWelcomeNetworkConnecting,

@@ -230,6 +230,18 @@ class WidgetbookApp extends StatelessWidget {
                       builder: buildMobileWelcomeNetworkOff,
                     ),
                     WidgetbookUseCase(
+                      name: 'Private queries on',
+                      builder: buildMobileWelcomePrivateQueriesEnabled,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Private queries changing',
+                      builder: buildMobileWelcomePrivateQueriesChanging,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Private queries save failed',
+                      builder: buildMobileWelcomePrivateQueriesFailed,
+                    ),
+                    WidgetbookUseCase(
                       name: 'Connecting',
                       builder: buildMobileWelcomeNetworkConnecting,
                     ),
