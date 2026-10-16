@@ -4,7 +4,7 @@ library;
 import 'dart:async';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_device_request.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_device_selection.dart';
-import 'package:zcash_wallet/src/features/ledger/widgets/mobile/mobile_ledger_procedure.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'package:flutter/services.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_failure_guidance.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_mobile_ble_service.dart';
@@ -408,6 +408,111 @@ void main() {
     },
   );
 
+  for (final tex in [false, true]) {
+    testWidgets(
+      'leaving after approval releases inputs before saving (TEX: $tex)',
+      (tester) async {
+        final proofs = Completer<List<int>>();
+        final service = _FakeOperationService();
+        var proves = 0, signs = 0, cancels = 0, discards = 0;
+        addTearDown(() {
+          if (!proofs.isCompleted) proofs.complete(const [3]);
+        });
+        await tester.pumpWidget(
+          _app(
+            args: tex ? _texArgs : _args,
+            operationService: service,
+            proofAdder:
+                ({required pcztBytes, spendParamsPath, outputParamsPath}) {
+                  proves++;
+                  return proofs.future;
+                },
+            signer: (_) async {
+              signs++;
+              return const [4];
+            },
+            canceller: () async => cancels++,
+            onDiscard: () async {
+              discards++;
+              return true;
+            },
+          ),
+        );
+        await tester.tap(find.text('Open signing'));
+        await tester.pump();
+        await tester.pump();
+        expect(signs, tex ? 2 : 1);
+        expect(proves, 1);
+        final router = GoRouter.of(
+          tester.element(find.byType(MobileLedgerSendSignScreen)),
+        );
+        router.go('/');
+        await tester.pumpAndSettle();
+        expect(discards, 1);
+        expect(cancels, 0);
+        proofs.complete(const [3]);
+        await tester.pumpAndSettle();
+        expect(
+          proves,
+          1,
+          reason: 'Do not start the next TEX proof after leaving.',
+        );
+        expect(service.checkpointCalls + service.batchCheckpointCalls, 0);
+        expect(discards, 1);
+        expect(find.text('Open signing'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'leaving preserves inputs once saving has started (TEX: $tex)',
+      (tester) async {
+        final checkpoint = Completer<void>();
+        final service = _FakeOperationService(checkpointGate: checkpoint);
+        var signs = 0, cancels = 0, discards = 0, results = 0;
+        addTearDown(() {
+          if (!checkpoint.isCompleted) checkpoint.complete();
+        });
+        await tester.pumpWidget(
+          _app(
+            args: tex ? _texArgs : _args,
+            operationService: service,
+            signer: (_) async {
+              signs++;
+              return const [4];
+            },
+            canceller: () async => cancels++,
+            onDiscard: () async {
+              discards++;
+              return true;
+            },
+            onResult: (_) => results++,
+          ),
+        );
+        await tester.tap(find.text('Open signing'));
+        await tester.pump();
+        await tester.pump();
+        expect(service.checkpointCalls, tex ? 0 : 1);
+        expect(service.batchCheckpointCalls, tex ? 1 : 0);
+        final router = GoRouter.of(
+          tester.element(find.byType(MobileLedgerSendSignScreen)),
+        );
+        router.go('/');
+        await tester.pumpAndSettle();
+        expect(discards, 0);
+        expect(cancels, 0);
+        checkpoint.complete();
+        await tester.pumpAndSettle();
+        expect(signs, tex ? 2 : 1);
+        expect(service.checkpointCalls + service.batchCheckpointCalls, 1);
+        expect(discards, 0);
+        expect(results, 0);
+        expect(find.text('Open signing'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'proof failure after signing retries proofs without another Ledger approval',
     (tester) async {
@@ -538,7 +643,7 @@ void main() {
       // Observe the frame before the retry can even start another Ledger call.
       expect(
         tester
-            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .widget<LedgerProcedure>(find.byType(LedgerProcedure))
             .currentStep,
         1,
       );
@@ -568,7 +673,7 @@ void main() {
       await tester.pump();
       expect(
         tester
-            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .widget<LedgerProcedure>(find.byType(LedgerProcedure))
             .currentStep,
         1,
       );
@@ -582,7 +687,7 @@ void main() {
       expect(find.text('Keep Zcash open.'), findsOneWidget);
       expect(
         tester
-            .widget<MobileLedgerProcedure>(find.byType(MobileLedgerProcedure))
+            .widget<LedgerProcedure>(find.byType(LedgerProcedure))
             .currentStep,
         1,
       );
@@ -1434,10 +1539,15 @@ class _FakeOperationService
     implements
         LedgerSignedOperationService,
         LedgerSignedOperationBatchCheckpointService {
-  _FakeOperationService({this.events, this.failCheckpointOnce = false});
+  _FakeOperationService({
+    this.events,
+    this.failCheckpointOnce = false,
+    this.checkpointGate,
+  });
 
   final List<String>? events;
   final bool failCheckpointOnce;
+  final Completer<void>? checkpointGate;
   var checkpointCalls = 0;
   var batchCheckpointCalls = 0;
   List<List<int>>? batchProofs;
@@ -1454,6 +1564,7 @@ class _FakeOperationService
   }) async {
     checkpointCalls++;
     events?.add('checkpoint:$pcztWithProofsBytes:$pcztWithSignaturesBytes');
+    await checkpointGate?.future;
     if (failCheckpointOnce && checkpointCalls == 1) {
       throw StateError('temporary storage failure');
     }
@@ -1472,6 +1583,7 @@ class _FakeOperationService
     batchProofs = pcztsWithProofs.map(List<int>.of).toList();
     batchSignatures = pcztsWithSignatures.map(List<int>.of).toList();
     events?.add('checkpoint-batch:$batchProofs:$batchSignatures');
+    await checkpointGate?.future;
     if (failCheckpointOnce && batchCheckpointCalls == 1) {
       throw StateError('temporary storage failure');
     }

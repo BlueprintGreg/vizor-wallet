@@ -122,6 +122,7 @@ class _MobileLedgerSendSignScreenState
   var _round = 0;
   var _attemptGeneration = 0;
   var _ownershipTransferred = false;
+  var _checkpointStarted = false;
   Future<bool>? _discardFuture;
   var _releasing = false;
   var _cancelled = false;
@@ -148,11 +149,15 @@ class _MobileLedgerSendSignScreenState
   @override
   void dispose() {
     _attemptGeneration++;
-    final hasUncheckpointedSignature =
-        _signingComplete && !_ownershipTransferred;
-    if (!_ownershipTransferred && !hasUncheckpointedSignature) {
-      if (!_cancelled) unawaited(_cancelOperationSafely());
-      unawaited(_releaseProposal('MobileLedgerSendSign(dispose)'));
+    if (!_ownershipTransferred) {
+      if (!_signingComplete && !_cancelled) {
+        unawaited(_cancelOperationSafely());
+      }
+      // Approval alone does not transfer the proposal. Preserve inputs only
+      // once saving starts, because its native commit can outlive this screen.
+      if (!_checkpointStarted) {
+        unawaited(_releaseProposal('MobileLedgerSendSign(dispose)'));
+      }
     }
     super.dispose();
   }
@@ -499,6 +504,7 @@ class _MobileLedgerSendSignScreenState
     try {
       final operationService = ref.read(ledgerSignedOperationServiceProvider);
       if (proofs.length == 1) {
+        _checkpointStarted = true;
         await operationService.checkpoint(
           operationId: _operationId,
           accountUuid: widget.args.proposalAccountUuid,
@@ -508,6 +514,7 @@ class _MobileLedgerSendSignScreenState
         );
       } else if (operationService
           case final LedgerSignedOperationBatchCheckpointService batchService) {
+        _checkpointStarted = true;
         await batchService.checkpointBatch(
           operationId: _operationId,
           accountUuid: widget.args.proposalAccountUuid,
