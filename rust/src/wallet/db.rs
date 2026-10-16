@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Mutex, MutexGuard, OnceLock, TryLockError,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use voting_crypto_deps::rand::rngs::OsRng;
-use zcash_client_sqlite::{util::SystemClock, WalletDb};
+use zcash_client_sqlite::{util::SystemClock, EnhancePirSession, WalletDb};
 
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::transparent_ledger_mode_for;
@@ -172,6 +173,28 @@ pub(crate) fn open_wallet_db_readonly_with_timeout(
 fn wallet_db(conn: rusqlite::Connection, db_path: &str, network: WalletNetwork) -> WalletDatabase {
     WalletDb::from_connection(conn, network, SystemClock, OsRng)
         .with_transparent_ledger_mode(transparent_ledger_mode_for(db_path, network))
+        .with_enhance_pir_session(enhance_pir_session(db_path))
+}
+
+/// The Enhance PIR session of the wallet at `db_path`, shared by every handle
+/// this process opens on it.
+///
+/// The session counts, in memory, the Enhance replies for each note position
+/// that failed on content; the library stops querying a position after three.
+/// One session lives for the app's lifetime, so the bound holds across syncs
+/// and handles within one app session, and an app restart starts a fresh
+/// allowance. Sessions are keyed by path and never shared between wallets; a
+/// wallet recreated at the same path drops counts for requests it no longer
+/// has at its first work read.
+pub(crate) fn enhance_pir_session(db_path: &str) -> EnhancePirSession {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, EnhancePirSession>>> = OnceLock::new();
+    SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(db_path.to_owned())
+        .or_default()
+        .clone()
 }
 
 /// A configured wallet handle over a connection the caller already holds, so
@@ -434,6 +457,61 @@ pub(crate) fn open_readonly_conn_with_timeout(
 mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// Every handle the app opens on one wallet counts Enhance content
+    /// failures in the same session: three unreadable replies recorded
+    /// through one handle suspend the request for every other handle on that
+    /// wallet, so opening a fresh handle for the next sync never restores the
+    /// allowance. A wallet at another path keeps its own.
+    #[test]
+    fn every_handle_on_a_wallet_shares_its_enhance_allowance() {
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+        use zcash_client_backend::data_api::enhance_pir::{
+            EnhancePirRead, EnhancePirSuspension, EnhancePirWork, EnhancePirWrite,
+            TransactionEnhancementWork,
+        };
+
+        let (dir, path, request) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let other_path = dir.path().join("other.db").to_str().unwrap().to_owned();
+        std::fs::copy(&path, &other_path).unwrap();
+        let network = WalletNetwork::Regtest;
+        let open = |path: &str| {
+            let mut db = open_wallet_db_with_timeout(path, network, SYNC_DB_BUSY_TIMEOUT).unwrap();
+            db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+            db
+        };
+        let query = TransactionEnhancementWork::Private(EnhancePirWork::Query(request));
+        let suspended = TransactionEnhancementWork::Private(EnhancePirWork::Suspended(
+            EnhancePirSuspension::Rejected(request),
+        ));
+        let mut first = open(&path);
+        assert!(first
+            .transaction_enhancement_work()
+            .unwrap()
+            .contains(&query));
+
+        for _ in 0..3 {
+            first
+                .record_ironwood_enhance_unreadable(&[request])
+                .unwrap();
+        }
+        let second = open(&path);
+        let work = second.transaction_enhancement_work().unwrap();
+        assert!(work.contains(&suspended), "{work:?}");
+        assert!(!work.contains(&query));
+
+        let mut other = open(&other_path);
+        // The copy starts a separate session with its own failure allowance.
+        {
+            use zcash_client_backend::data_api::{WalletRead as _, WalletWrite as _};
+            let tip = other.chain_height().unwrap().unwrap();
+            other.update_chain_tip(tip).unwrap();
+        }
+        let work = other.transaction_enhancement_work().unwrap();
+        assert!(work.contains(&query), "another wallet keeps its allowance");
+        assert!(!work.contains(&suspended));
+    }
 
     #[test]
     fn mined_history_is_atomic_and_removed_with_transaction() {

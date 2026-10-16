@@ -5,7 +5,6 @@
 
 import '../frb_generated.dart';
 import 'keystone.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `api_proposal_result`, `catch`, `enhance_pir_enabled`, `fetch_block_time`, `migration_status_from_balance`, `parse_network_and_migrate`, `payment_link_batch_pairs`, `run_full_sync_internal`, `to_wallet_action_sigs`, `to_wallet_migration_schedule`, `to_wallet_signed_messages`
@@ -1732,6 +1731,10 @@ class EnhanceRecoveryStatus {
   /// deferred private status failure leaves these durable without payload
   /// work, so they count toward a recovery-only sync restart.
   final int status;
+
+  /// A public transparent-service wait expired. Retry only its accounts,
+  /// independently of the payload/status backoff and without a new block.
+  final bool transparentRetryDue;
   final String serviceState;
 
   const EnhanceRecoveryStatus({
@@ -1739,6 +1742,7 @@ class EnhanceRecoveryStatus {
     required this.rediscovery,
     required this.suspended,
     required this.status,
+    required this.transparentRetryDue,
     required this.serviceState,
   });
 
@@ -1748,6 +1752,7 @@ class EnhanceRecoveryStatus {
       rediscovery.hashCode ^
       suspended.hashCode ^
       status.hashCode ^
+      transparentRetryDue.hashCode ^
       serviceState.hashCode;
 
   @override
@@ -1759,6 +1764,7 @@ class EnhanceRecoveryStatus {
           rediscovery == other.rediscovery &&
           suspended == other.suspended &&
           status == other.status &&
+          transparentRetryDue == other.transparentRetryDue &&
           serviceState == other.serviceState;
 }
 
@@ -3384,6 +3390,11 @@ enum TransparentDetailsState {
   /// reachable.
   unavailable,
 
+  /// The lookup was given up after three replies failed on content: no sync
+  /// asks again until the transaction is mined at another height. Show it as
+  /// `Unavailable`, but do not re-read or prioritise it.
+  gaveUp,
+
   /// Private mode cannot look the transaction up: the private publication
   /// does not cover it.
   notCovered,
@@ -3436,7 +3447,7 @@ enum TransparentStopReason {
   /// The service withdrew a publication the account was recovered from.
   withdrawn,
 
-  /// Recovery stalled repeatedly.
+  /// Recovery stalled repeatedly, or a record it needs failed three times.
   stalled,
 
   /// The wallet requires private recovery while private queries are off:

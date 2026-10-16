@@ -667,6 +667,16 @@ mod tests {
             zakura_transaction_status::StatusObservation,
             zakura_transaction_status::StatusError,
         >,
+        /// Answers given first, in order, before `response`.
+        script: std::collections::VecDeque<
+            Result<
+                zakura_transaction_status::StatusObservation,
+                zakura_transaction_status::StatusError,
+            >,
+        >,
+        /// Runs as each reply is given, standing in for what the reply
+        /// changes in the wallet.
+        on_reply: Option<Box<dyn Fn()>>,
     }
     impl zakura_transaction_status::StatusSource for FakeStatusSource {
         type Session = Self;
@@ -684,7 +694,10 @@ mod tests {
             zakura_transaction_status::StatusError,
         > {
             self.requests.lock().unwrap().push(request);
-            self.response
+            if let Some(on_reply) = &self.on_reply {
+                on_reply();
+            }
+            self.script.pop_front().unwrap_or(self.response)
         }
     }
     fn status_source(
@@ -697,6 +710,8 @@ mod tests {
             opens: Default::default(),
             requests: Default::default(),
             response,
+            script: Default::default(),
+            on_reply: None,
         }
     }
 
@@ -765,6 +780,9 @@ mod tests {
                             .unwrap()
                     );
                     conn.execute("INSERT INTO blocks (height, hash, time, sapling_tree) VALUES (900000, ?1, 0, X'000000')", [[7u8; 32].as_slice()]).unwrap();
+                    // A private txid is asked once per block: the retry
+                    // comes with the next one.
+                    super::super::content_failures::at_tip(path, 900_001);
                 }
                 super::super::status::run_requests(
                     &mut reader,
@@ -872,13 +890,13 @@ mod tests {
         .unwrap();
 
         db.set_status_mode(TransactionStatusMode::Private);
-        let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+        let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
         assert_eq!(status.status, 1, "the private obligation is recovery work");
 
         // A public status failure fails the sync instead of being deferred, so
         // public status work never needs a recovery-only restart.
         db.set_status_mode(TransactionStatusMode::Public);
-        let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+        let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
         assert_eq!(status.status, 0);
     }
 
@@ -918,7 +936,7 @@ mod tests {
                     }
                     TransactionEnhancementWork::Private(_) => false,
                 }));
-            let status = super::super::super::recovery_status_for(&db, String::new()).unwrap();
+            let status = super::super::super::recovery_status_for(&db, "", String::new()).unwrap();
             assert_eq!(
                 (status.status, status.queries, status.rediscovery),
                 (0, 0, 0)
@@ -948,7 +966,6 @@ mod tests {
             StatusError::Unavailable,
             StatusError::Stale,
             StatusError::Timeout,
-            StatusError::Malformed,
             StatusError::Transport { code: 14 },
         ] {
             let (_file, mut db, txid) = private_status_work_db();
@@ -1006,6 +1023,446 @@ mod tests {
                 Some(BlockHeight::from_u32(100))
             );
         }
+    }
+
+    /// A private status reply that does not decode concerns its own
+    /// transaction's row, which a service could choose: the work stays for a
+    /// later sync, private status stays on, and the rest of the status work
+    /// is still asked.
+    #[tokio::test]
+    async fn a_malformed_private_status_reply_defers_only_its_transaction() {
+        use zakura_transaction_status::{StatusError, StatusObservation};
+        let (_file, mut db, txid) = private_status_work_db();
+        let item = db.transaction_status_work_for(txid).unwrap();
+        // The same obligation twice stands in for the next transaction.
+        let work = vec![item, item];
+        let mut private = status_source(Ok(StatusObservation::NotFound));
+        private.script.push_back(Err(StatusError::Malformed));
+        let requests = private.requests.clone();
+        let public = status_source(Ok(StatusObservation::NotFound));
+        let mut reader = super::super::status::RoutedStatusReader::new(public, private);
+        let mut private_failed = false;
+
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut private_failed,
+            _file.path().to_str().unwrap(),
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!private_failed, "private status stays on");
+        assert_eq!(requests.lock().unwrap().len(), 2, "the next item is asked");
+    }
+
+    /// A request outcome (here the service refusing with 503) is not about
+    /// any row: it still defers the rest of the checkpoint's private status
+    /// work and leaves the refused work in the queue for a later sync.
+    #[tokio::test]
+    async fn a_refused_status_request_still_defers_the_checkpoint() {
+        use zakura_transaction_status::{StatusError, StatusObservation};
+        use zcash_client_backend::data_api::status::{
+            PrivateTransactionStatusRequest, TransactionStatusWork,
+        };
+        let (file, mut db, txid) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        let mut work = db.transaction_status_work().unwrap();
+        assert_eq!(work.len(), 1);
+        let other = TxId::from_bytes([0xb2; 32]);
+        work.push(TransactionStatusWork::Private(
+            PrivateTransactionStatusRequest::new(other, None),
+        ));
+        let mut private = status_source(Ok(StatusObservation::NotFound));
+        private.script.push_back(Err(StatusError::Unavailable));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut private_failed = false;
+
+        super::super::status::run_requests(
+            &mut reader,
+            &mut db,
+            &work,
+            &allowed_gate(),
+            &mut std::collections::HashSet::new(),
+            &mut private_failed,
+            &path,
+            &mut std::collections::HashSet::new(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+
+        let asked: Vec<_> = requests.lock().unwrap().iter().map(|r| r.txid).collect();
+        assert_eq!(asked, [txid], "the 503 defers {other} to a later sync");
+        assert!(private_failed, "a refusal defers private status");
+        assert!(
+            db.transaction_status_work()
+                .unwrap()
+                .iter()
+                .any(
+                    |work| matches!(work, TransactionStatusWork::Private(_)) && work.txid() == txid
+                ),
+            "the refused work stays in the queue"
+        );
+    }
+
+    /// Private status work for one unmined transaction.
+    fn unmined_private_status_db() -> (tempfile::NamedTempFile, WalletDatabase, TxId) {
+        let (file, mut db, tx) =
+            scanned_transaction_missing_fee_test_db(BlockHeight::from_u32(100), false);
+        let conn = rusqlite::Connection::open(file.path()).unwrap();
+        conn.execute("UPDATE transactions SET mined_height = NULL", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 0)
+             ON CONFLICT (txid, query_type) DO NOTHING",
+            rusqlite::params![tx.txid().as_ref()],
+        )
+        .unwrap();
+        db.set_status_mode(TransactionStatusMode::Private);
+        (file, db, tx.txid())
+    }
+
+    /// No private status txid is asked twice at one block, whatever its
+    /// reply. An honest "not found" for an unmined transaction leaves its work
+    /// in place, as a malformed reply does; neither counts towards a
+    /// recovery-only restart, and neither is asked again, until the next
+    /// block. An honest "mined" completes the work, so a forged reply must not
+    /// be asked again either. A request failure is not a reply: it still
+    /// counts.
+    #[tokio::test]
+    async fn private_status_is_asked_once_per_block_whatever_the_reply() {
+        use super::super::content_failures;
+        use zakura_transaction_status::{StatusError, StatusObservation};
+
+        for (reply, counted) in [
+            (Ok(StatusObservation::NotFound), false),
+            (Err(StatusError::Malformed), false),
+            (Err(StatusError::Unavailable), true),
+        ] {
+            let (file, mut db, _) = unmined_private_status_db();
+            let path = file.path().to_str().unwrap().to_owned();
+            content_failures::at_tip(&path, 100);
+            let restart_units = |db: &WalletDatabase| {
+                super::super::super::recovery_status_for(db, &path, String::new())
+                    .unwrap()
+                    .status
+            };
+            let private = status_source(reply);
+            let requests = private.requests.clone();
+            let mut reader = super::super::status::RoutedStatusReader::new(
+                status_source(Ok(StatusObservation::NotFound)),
+                private,
+            );
+            // One sync's status lookups.
+            let mut sync = async |db: &mut WalletDatabase| {
+                let work = db.transaction_status_work().unwrap();
+                super::super::status::run_requests(
+                    &mut reader,
+                    db,
+                    &work,
+                    &allowed_gate(),
+                    &mut std::collections::HashSet::new(),
+                    &mut false,
+                    &path,
+                    &mut std::collections::HashSet::new(),
+                    &|| false,
+                )
+                .await
+                .unwrap();
+            };
+            assert_eq!(restart_units(&db), 1);
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 1, "{reply:?}");
+            assert_eq!(restart_units(&db), u32::from(counted), "{reply:?}");
+            if counted {
+                continue;
+            }
+            // Another sync at the same block, as after a resume, asks nothing.
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 1, "{reply:?}");
+            // The next block asks again.
+            content_failures::at_tip(&path, 101);
+            assert_eq!(restart_units(&db), 1, "{reply:?}");
+            sync(&mut db).await;
+            assert_eq!(requests.lock().unwrap().len(), 2, "{reply:?}");
+        }
+    }
+
+    /// Work that failed on content at this chain tip is not counted towards a
+    /// recovery-only restart: an honest reply would have completed it, so a
+    /// bad one must not bring the next request sooner. A new block counts it
+    /// again.
+    #[test]
+    fn content_failures_at_this_tip_do_not_count_towards_a_restart() {
+        use super::super::content_failures;
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+
+        let (file, db, txid) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        content_failures::at_tip(&path, 100);
+        let status = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .status
+        };
+        assert_eq!(status(&db), 1);
+        content_failures::status_answered(&path, txid);
+        assert_eq!(
+            status(&db),
+            0,
+            "a malformed reply leaves nothing to restart for"
+        );
+        content_failures::at_tip(&path, 100);
+        assert_eq!(status(&db), 0, "the same block");
+        content_failures::at_tip(&path, 101);
+        assert_eq!(status(&db), 1, "the next block asks again");
+
+        // One private Enhance query.
+        let (_dir, path, request) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            crate::wallet::network::WalletNetwork::Regtest,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+        db.set_status_mode(TransactionStatusMode::Private);
+        content_failures::at_tip(&path, 100);
+        let queries = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .queries
+        };
+        assert_eq!(queries(&db), 1);
+        content_failures::enhance(&path, [request]);
+        assert_eq!(
+            queries(&db),
+            0,
+            "an unreadable reply leaves nothing to restart for"
+        );
+        content_failures::at_tip(&path, 101);
+        assert_eq!(queries(&db), 1, "the next block asks again");
+    }
+
+    /// A row without the transaction's status record is a reply about that
+    /// transaction. It waits for the next block like any other answer: it is
+    /// neither counted towards a restart nor asked again at this tip.
+    #[tokio::test]
+    async fn a_missing_status_record_waits_for_the_next_block() {
+        use super::super::content_failures;
+        use zakura_transaction_status::{StatusError, StatusObservation};
+
+        let (file, mut db, _) = unmined_private_status_db();
+        let path = file.path().to_str().unwrap().to_owned();
+        content_failures::at_tip(&path, 100);
+        let private = status_source(Err(StatusError::CoverageIncomplete));
+        let requests = private.requests.clone();
+        let mut reader = super::super::status::RoutedStatusReader::new(
+            status_source(Ok(StatusObservation::NotFound)),
+            private,
+        );
+        let mut sync = async |db: &mut WalletDatabase| {
+            let work = db.transaction_status_work().unwrap();
+            super::super::status::run_requests(
+                &mut reader,
+                db,
+                &work,
+                &allowed_gate(),
+                &mut std::collections::HashSet::new(),
+                &mut false,
+                &path,
+                &mut std::collections::HashSet::new(),
+                &|| false,
+            )
+            .await
+        };
+        assert!(matches!(
+            sync(&mut db).await,
+            Err(SyncError::PrivateStatusCoverageIncomplete)
+        ));
+        let restart_units = |db: &WalletDatabase| {
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .status
+        };
+        assert_eq!(restart_units(&db), 0);
+        sync(&mut db).await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "not asked again here");
+
+        content_failures::at_tip(&path, 101);
+        assert_eq!(restart_units(&db), 1, "the next block counts it");
+        let _ = sync(&mut db).await;
+        assert_eq!(requests.lock().unwrap().len(), 2, "and asks it");
+    }
+
+    /// An Enhance transport that refuses every request and counts them.
+    #[derive(Default)]
+    struct RefusingEnhance(std::sync::atomic::AtomicUsize);
+
+    impl zakura_pir_enhance::transport::Transport for RefusingEnhance {
+        async fn execute(
+            &self,
+            _: zakura_pir_enhance::transport::Request,
+        ) -> Result<zakura_pir_enhance::transport::ResponseBody, zakura_pir_enhance::ClientError>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(zakura_pir_enhance::ClientError::Transport("offline".into()))
+        }
+    }
+
+    /// A status reply that makes a transaction mined unlocks its Enhance
+    /// query. Through whole checkpoints: the query is not asked in the
+    /// checkpoint whose reply created it, nor in another checkpoint at the
+    /// same block, and it does not count towards a recovery-only restart
+    /// there. The next block counts it and asks it. Whether more lookups
+    /// follow never depends on what a reply said.
+    #[tokio::test]
+    async fn work_a_status_reply_unlocks_waits_for_the_next_block() {
+        use super::super::content_failures;
+        use crate::wallet::sync_engine::test_lwd::CapturingLwd;
+        use zakura_transaction_status::StatusObservation;
+        use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
+
+        let (_dir, path, _) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let network = WalletNetwork::Regtest;
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let (txid, height): (Vec<u8>, u32) = conn
+            .query_row(
+                "SELECT q.txid, t.mined_height FROM tx_retrieval_queue q
+                 JOIN transactions t ON t.txid = q.txid WHERE q.query_type = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // The query appears only when the status reply arrives.
+        conn.execute("DELETE FROM tx_retrieval_queue WHERE query_type = 1", [])
+            .unwrap();
+        // Status is asked for transactions the wallet does not see mined.
+        conn.execute(
+            "UPDATE transactions SET mined_height = NULL WHERE txid = ?1",
+            [&txid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 0)",
+            [&txid],
+        )
+        .unwrap();
+        let mut status = status_source(Ok(StatusObservation::Mined(BlockHeight::from_u32(height))));
+        let requests = status.requests.clone();
+        let unlock_path = path.clone();
+        let unlock_txid = txid.clone();
+        status.on_reply = Some(Box::new(move || {
+            rusqlite::Connection::open(&unlock_path)
+                .unwrap()
+                .execute(
+                    "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 1)
+                     ON CONFLICT (txid, query_type) DO NOTHING",
+                    [&unlock_txid],
+                )
+                .unwrap();
+        }));
+
+        let policy = super::super::EnhancementPolicy::current(network)
+            .with_private_queries()
+            .with_transparent_mode(TransparentLedgerMode::PrivateRequired);
+        let session = || {
+            let mut session = super::EnhancementSession::with_policy(network, &path, policy);
+            session.payload.set_endpoint("https://example.test");
+            session
+        };
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            network,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        let mut lwd = CapturingLwd::start(Vec::new()).await;
+        let enhance = RefusingEnhance::default();
+        let queries = |db: &mut WalletDatabase| {
+            policy.configure_db(db);
+            super::super::super::recovery_status_for(db, &path, String::new())
+                .unwrap()
+                .queries
+        };
+        let tip = 1_000;
+        content_failures::at_tip(&path, tip);
+
+        session()
+            .checkpoint_with(&mut db, &mut lwd.client, None, status, &enhance, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "the status is asked");
+        assert_eq!(queries(&mut db), 0, "the unlocked query is not counted");
+        assert_eq!(enhance.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Another checkpoint at the same block.
+        session()
+            .checkpoint_with(
+                &mut db,
+                &mut lwd.client,
+                None,
+                status_source(Ok(StatusObservation::NotFound)),
+                &enhance,
+                &|| false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(queries(&mut db), 0);
+        assert_eq!(enhance.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // The next block.
+        content_failures::at_tip(&path, tip + 1);
+        assert_eq!(queries(&mut db), 1, "the next block counts it");
+        session()
+            .checkpoint_with(
+                &mut db,
+                &mut lwd.client,
+                None,
+                status_source(Ok(StatusObservation::NotFound)),
+                &enhance,
+                &|| false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            enhance.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "and asks it"
+        );
+    }
+
+    /// Newly queued payload work is eligible without an artificial first-query delay.
+    #[test]
+    fn a_new_enhance_position_is_eligible_without_a_first_query_delay() {
+        use zcash_client_backend::data_api::enhance_pir::EnhancementMode;
+        let (dir, due, _) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        // Read a fresh wallet handle before any write.
+        let path = dir.path().join("fresh.db").to_str().unwrap().to_owned();
+        std::fs::copy(&due, &path).unwrap();
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            crate::wallet::network::WalletNetwork::Regtest,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        db.set_enhancement_mode(EnhancementMode::PrivateIronwood);
+        db.set_status_mode(TransactionStatusMode::Private);
+        let status = super::super::super::recovery_status_for(&db, &path, String::new()).unwrap();
+        assert_eq!(status.queries, 1, "new work is eligible immediately");
+        assert_eq!(status.suspended, 0, "no artificial wait is suspended");
     }
 
     #[tokio::test]

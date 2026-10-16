@@ -4,6 +4,7 @@
 //! deferred-failure state, and rediscovery attempts for one full sync. The
 //! sibling scheduler owns transport selection; this module never converts a
 //! private failure or suspension into public transaction-ID retrieval.
+use super::super::content_failures;
 use super::{
     super::{
         super::SyncError,
@@ -15,12 +16,14 @@ use super::{
 };
 use crate::wallet::network::WalletNetwork;
 use futures::StreamExt;
+use std::collections::BTreeSet;
 use zakura_pir_enhance::transport::{self, PendingClient};
-use zakura_pir_enhance::wallet::Acceptance;
-use zakura_pir_enhance::{ClientError, Manifest};
+use zakura_pir_enhance::wallet::{Acceptance, PreparedWork};
+use zakura_pir_enhance::{ClientError, Manifest, RECORDS_PER_ROW};
 use zcash_client_backend::data_api::enhance_pir::{
     EnhancePirStoreResult, IronwoodEnhanceDiscoveryRequest,
 };
+use zcash_primitives::transaction::TxId;
 use zcash_protocol::consensus::BlockHeight;
 /// Debug builds only: overrides the Enhance PIR endpoint. Release builds
 /// always use [`DEFAULT_MAINNET_ENDPOINT`] and never read it.
@@ -86,12 +89,16 @@ pub(super) fn random_rediscovery_offset() -> u32 {
 
 pub(in crate::wallet::sync_engine) struct RoutedPayloadEnhancement {
     network: WalletNetwork,
-    db_path: String,
+    pub(super) db_path: String,
     pub(super) endpoint: Option<String>,
     pending_routing: Option<PendingClient>,
     pub(super) accepted_routing: Option<transport::Client>,
     pub(super) private_failed_for_sync: bool,
     rediscovery_attempts: Vec<IronwoodEnhanceDiscoveryRequest>,
+    /// The private work this drain may ask: the queries and rediscovery jobs
+    /// that existed when its drain point began. Work a status, history or
+    /// Enhance reply created since waits for the next block.
+    pub(in crate::wallet::sync_engine) snapshot: Option<content_failures::PrivateWork>,
 }
 #[derive(Debug)]
 pub(in crate::wallet::sync_engine) enum EnhancePirRunError {
@@ -135,8 +142,15 @@ impl RoutedPayloadEnhancement {
             accepted_routing: None,
             private_failed_for_sync: false,
             rediscovery_attempts: Vec::new(),
+            snapshot: None,
         }
     }
+    /// Test seam for a private Enhance endpoint on a network without one.
+    #[cfg(test)]
+    pub(in crate::wallet::sync_engine) fn set_endpoint(&mut self, endpoint: &str) {
+        self.endpoint = Some(endpoint.to_owned());
+    }
+
     pub(in crate::wallet::sync_engine) fn enabled(&self) -> bool {
         self.endpoint.is_some()
     }
@@ -259,7 +273,10 @@ impl RoutedPayloadEnhancement {
         if should_exit() {
             return Err(EnhancePirRunError::ExitRequested);
         }
-        let work = db.work()?.prepared();
+        let work = db
+            .work()?
+            .askable(&self.db_path, self.snapshot.as_ref())
+            .prepared();
         if work.query_count() == 0 {
             return Ok(());
         }
@@ -304,8 +321,13 @@ impl RoutedPayloadEnhancement {
         }
         for attempt in 0..=1 {
             // Re-read after a partial batch: successfully stored rows are no
-            // longer pending, and only the durable remainder is retried.
-            let work = db.work()?.prepared();
+            // longer pending, and only the durable remainder is retried. Rows
+            // that failed on content stay out of the retry, as an honest
+            // reply would have completed them.
+            let work = db
+                .work()?
+                .askable(&self.db_path, self.snapshot.as_ref())
+                .prepared();
             if work.query_count() == 0 {
                 break;
             }
@@ -321,6 +343,12 @@ impl RoutedPayloadEnhancement {
                     Ok(results) => {
                         futures::pin_mut!(results);
                         let mut stale = None;
+                        let mut unreadable = BTreeSet::new();
+                        // A request outcome inside the batch defers the
+                        // rest of the sync once the batch has been asked to
+                        // its end. The client stops dispatch on HTTP 429/503;
+                        // stale routing and cancellation also stop below.
+                        let mut refused = None;
                         while let Some(result) = results.next().await {
                             if should_exit() {
                                 return Err(EnhancePirRunError::ExitRequested);
@@ -333,15 +361,46 @@ impl RoutedPayloadEnhancement {
                                     stale = Some(status);
                                     break;
                                 }
-                                result => result?,
+                                Err(ClientError::Cancelled) => {
+                                    return Err(EnhancePirRunError::ExitRequested)
+                                }
+                                // The reply arrived for this session, but its
+                                // row, or this record in it, did not decode: a
+                                // content failure, which a service could aim
+                                // at chosen rows. Count it against the
+                                // requests of its transaction in that row,
+                                // once per row, and keep going so the rest of
+                                // the batch is asked exactly as an honest
+                                // reply would have it.
+                                Err(error) if is_unreadable(&error) => {
+                                    report_unreadable(
+                                        db,
+                                        &self.db_path,
+                                        &work,
+                                        result.position,
+                                        &mut unreadable,
+                                    )?;
+                                    continue;
+                                }
+                                // A request outcome: the service chose it
+                                // without knowing which row was asked.
+                                Err(error) => {
+                                    refused.get_or_insert(error);
+                                    continue;
+                                }
+                                Ok(record) => record,
                             };
                             for (request, record) in work.map_record(result.position, record) {
                                 match db.apply(request, &record)? {
+                                    // The wallet rolled the record back and
+                                    // counted it; it stops asking after three.
+                                    // Like an unreadable record, it does not
+                                    // stop the rest of the batch.
                                     EnhancePirStoreResult::Rejected => {
-                                        return Err(SyncError::parse(
-                                            "PIR record failed wallet authentication",
-                                        )
-                                        .into());
+                                        content_failures::enhance(&self.db_path, [request]);
+                                        log::warn!(
+                                            "sync: a private Ironwood enhancement record failed wallet authentication"
+                                        );
                                     }
                                     // Mixed transaction under a private transparent
                                     // policy: financial facts are kept and the
@@ -355,6 +414,9 @@ impl RoutedPayloadEnhancement {
                                     _ => {}
                                 }
                             }
+                        }
+                        if let Some(error) = refused {
+                            return Err(error.into());
                         }
                         stale
                     }
@@ -378,7 +440,7 @@ impl RoutedPayloadEnhancement {
         }
         let remaining = db.work()?.prepared();
         log::info!(
-            "sync: private recovery has {} active queries, {} rediscovery jobs, and {} suspended obligations",
+            "sync: private recovery has {} active queries, {} rediscovery jobs, {} suspended obligations",
             remaining.query_count(),
             remaining.rediscover.len(),
             remaining.suspended
@@ -386,6 +448,67 @@ impl RoutedPayloadEnhancement {
         Ok(())
     }
 }
+/// Whether a row result failed on content: the reply matched the session,
+/// but its row did not decrypt (`Pir`) or decode, or a record in it did not
+/// (`Response`). A body over the size limit, or a reply whose length or
+/// session binding does not match, is a request outcome like an HTTP
+/// refusal, a transport or JSON error, or a rotated generation: the service
+/// chooses those without knowing which row was asked.
+fn is_unreadable(error: &ClientError) -> bool {
+    match error {
+        ClientError::Row(error) => match error.as_ref() {
+            ClientError::Pir(_) => true,
+            ClientError::Response(message) => !is_envelope_failure(message),
+            _ => false,
+        },
+        // A record of a decoded row.
+        ClientError::Response(_) => true,
+        _ => false,
+    }
+}
+
+/// `ClientError::Response` messages the Enhance client gives a row reply
+/// before it reads the row: the body size, the framing and binding header,
+/// and the expected length. The client has no typed error for these.
+fn is_envelope_failure(message: &str) -> bool {
+    matches!(
+        message,
+        "HTTP body exceeds limit"
+            | "invalid query framing"
+            | "PIR response binding or length mismatch"
+            | "invalid PIR dimensions"
+            | "unqualified native column count"
+    )
+}
+
+/// Reports the requests whose record at `position` arrived but did not decode:
+/// for each transaction with a request there, every request of that
+/// transaction in the position's row, as the wallet counts content failures
+/// per row reply. `reported` holds the (transaction, row) pairs already
+/// counted in this batch, so a row with several bad records counts once.
+fn report_unreadable(
+    db: &mut impl RecoveryWallet,
+    db_path: &str,
+    work: &PreparedWork,
+    position: u64,
+    reported: &mut BTreeSet<(TxId, u64)>,
+) -> Result<(), EnhancePirRunError> {
+    let row = position / RECORDS_PER_ROW as u64;
+    for ((txid, batch_row), requests) in work.batches_by_tx_and_row() {
+        if batch_row == row
+            && requests
+                .iter()
+                .any(|request| u64::from(request.position()) == position)
+            && reported.insert((txid, row))
+        {
+            log::warn!("sync: a private Ironwood enhancement record did not decode");
+            db.record_unreadable(&requests)?;
+            content_failures::enhance(db_path, requests);
+        }
+    }
+    Ok(())
+}
+
 /// A bad candidate cannot invalidate a separately revalidated current session.
 /// Cancellation always wins, even when old coverage remains usable. A local
 /// database failure is never a bad candidate: it is returned so the sync fails
@@ -438,6 +561,35 @@ mod tests {
         assert!(current_or_newer_routing_revision(current, current));
         assert!(!current_or_newer_routing_revision(current, (36, 0)));
         assert!(!current_or_newer_routing_revision((37, 1), (37, 0)));
+    }
+
+    #[test]
+    fn only_a_row_that_fails_to_decode_is_unreadable() {
+        let row = |error| ClientError::Row(Arc::new(error));
+        for unreadable in [
+            row(ClientError::Pir("decryption failed".into())),
+            row(ClientError::Response("short row".into())),
+            ClientError::Response("invalid record flags".into()),
+        ] {
+            assert!(is_unreadable(&unreadable), "{unreadable}");
+        }
+        for refused in [
+            row(ClientError::Response("HTTP body exceeds limit".into())),
+            row(ClientError::Response("invalid query framing".into())),
+            row(ClientError::Response(
+                "PIR response binding or length mismatch".into(),
+            )),
+            row(ClientError::Transport("connection reset".into())),
+            row(ClientError::HttpStatus(500)),
+            row(ClientError::Generation("session rotated".into())),
+            row(ClientError::Json(
+                serde_json::from_str::<u8>("x").unwrap_err(),
+            )),
+            ClientError::HttpStatus(503),
+            ClientError::Transport("connection reset".into()),
+        ] {
+            assert!(!is_unreadable(&refused), "{refused}");
+        }
     }
 
     #[test]

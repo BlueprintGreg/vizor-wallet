@@ -1377,9 +1377,8 @@ mod tests {
     }
 
     fn transparent_pczt() -> (Vec<u8>, secp256k1::SecretKey, [u8; 33]) {
-        let sk = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
-        let secp = secp256k1::Secp256k1::new();
-        let pubkey = sk.public_key(&secp);
+        let sk = secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
+        let pubkey = sk.public_key();
         let pubkey_bytes = pubkey.serialize();
         let address = TransparentAddress::from_pubkey(&pubkey);
 
@@ -1437,8 +1436,7 @@ mod tests {
             .unwrap()
             .transparent_sighash(0)
             .unwrap();
-        let secp = secp256k1::Secp256k1::new();
-        let signature = secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash), &sk);
+        let signature = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(sighash), &sk);
         let mut ledger_der = signature.serialize_der().to_vec();
         ledger_der[0] |= 1;
 

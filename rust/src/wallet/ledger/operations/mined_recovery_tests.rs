@@ -17,7 +17,7 @@ impl Signed {
         Self::with_key(
             prevout,
             value,
-            secp256k1::SecretKey::from_slice(&[7; 32]).unwrap(),
+            secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
         )
     }
 
@@ -282,8 +282,7 @@ impl Wallet {
         .transparent()
         .derive_external_secret_key(NonHardenedChildIndex::ZERO)
         .unwrap();
-        let address =
-            TransparentAddress::from_pubkey(&key.public_key(&secp256k1::Secp256k1::new()));
+        let address = TransparentAddress::from_pubkey(&key.public_key());
         // Pending-transaction storage requires the wallet's observed chain tip.
         let mut db = crate::wallet::db::open_wallet_db_with_timeout(
             &path,
@@ -852,8 +851,7 @@ async fn partial_storage_failure_retains_real_inputs_after_acknowledgement() {
             .unwrap()
             .derive_external_secret_key(NonHardenedChildIndex::from_index(0).unwrap())
             .unwrap();
-            let address =
-                TransparentAddress::from_pubkey(&key.public_key(&secp256k1::Secp256k1::new()));
+            let address = TransparentAddress::from_pubkey(&key.public_key());
             wallet.signed[0] = Signed::with_key(OutPoint::new([1; 32], 0), 1_000_000, key);
             wallet.signed[1] = Signed::with_key(
                 OutPoint::new(*wallet.signed[0].tx.txid().as_ref(), 0),
@@ -1156,7 +1154,7 @@ async fn interrupted_outcome_write_recovers_in_a_fresh_offline_process() {
     .unwrap()
     .derive_external_secret_key(NonHardenedChildIndex::from_index(0).unwrap())
     .unwrap();
-    let address = TransparentAddress::from_pubkey(&key.public_key(&secp256k1::Secp256k1::new()));
+    let address = TransparentAddress::from_pubkey(&key.public_key());
     wallet.signed[0] = Signed::with_key(OutPoint::new([1; 32], 0), 1_000_000, key);
     let signed = &wallet.signed[0];
     let mut db =

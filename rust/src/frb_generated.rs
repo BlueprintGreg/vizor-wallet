@@ -11262,12 +11262,14 @@ impl SseDecode for crate::api::sync::EnhanceRecoveryStatus {
         let mut var_rediscovery = <u32>::sse_decode(deserializer);
         let mut var_suspended = <u32>::sse_decode(deserializer);
         let mut var_status = <u32>::sse_decode(deserializer);
+        let mut var_transparentRetryDue = <bool>::sse_decode(deserializer);
         let mut var_serviceState = <String>::sse_decode(deserializer);
         return crate::api::sync::EnhanceRecoveryStatus {
             queries: var_queries,
             rediscovery: var_rediscovery,
             suspended: var_suspended,
             status: var_status,
+            transparent_retry_due: var_transparentRetryDue,
             service_state: var_serviceState,
         };
     }
@@ -14715,7 +14717,8 @@ impl SseDecode for crate::api::sync::TransparentDetailsState {
             0 => crate::api::sync::TransparentDetailsState::Available,
             1 => crate::api::sync::TransparentDetailsState::Pending,
             2 => crate::api::sync::TransparentDetailsState::Unavailable,
-            3 => crate::api::sync::TransparentDetailsState::NotCovered,
+            3 => crate::api::sync::TransparentDetailsState::GaveUp,
+            4 => crate::api::sync::TransparentDetailsState::NotCovered,
             _ => unreachable!("Invalid variant for TransparentDetailsState: {}", inner),
         };
     }
@@ -16985,6 +16988,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::EnhanceRecoveryStatus {
             self.rediscovery.into_into_dart().into_dart(),
             self.suspended.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
+            self.transparent_retry_due.into_into_dart().into_dart(),
             self.service_state.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -19654,7 +19658,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::TransparentDetailsState
             Self::Available => 0.into_dart(),
             Self::Pending => 1.into_dart(),
             Self::Unavailable => 2.into_dart(),
-            Self::NotCovered => 3.into_dart(),
+            Self::GaveUp => 3.into_dart(),
+            Self::NotCovered => 4.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -21089,6 +21094,7 @@ impl SseEncode for crate::api::sync::EnhanceRecoveryStatus {
         <u32>::sse_encode(self.rediscovery, serializer);
         <u32>::sse_encode(self.suspended, serializer);
         <u32>::sse_encode(self.status, serializer);
+        <bool>::sse_encode(self.transparent_retry_due, serializer);
         <String>::sse_encode(self.service_state, serializer);
     }
 }
@@ -23650,7 +23656,8 @@ impl SseEncode for crate::api::sync::TransparentDetailsState {
                 crate::api::sync::TransparentDetailsState::Available => 0,
                 crate::api::sync::TransparentDetailsState::Pending => 1,
                 crate::api::sync::TransparentDetailsState::Unavailable => 2,
-                crate::api::sync::TransparentDetailsState::NotCovered => 3,
+                crate::api::sync::TransparentDetailsState::GaveUp => 3,
+                crate::api::sync::TransparentDetailsState::NotCovered => 4,
                 _ => {
                     unimplemented!("");
                 }

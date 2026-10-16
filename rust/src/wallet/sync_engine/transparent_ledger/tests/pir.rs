@@ -411,6 +411,75 @@ async fn companions_are_per_account_and_bound_to_origin_and_schema() {
     TransparentHistoryRecovery::open(&a_path, config).unwrap();
 }
 
+/// A companion an earlier build left in the recovery cache's format 6 is
+/// upgraded in place to format 7 by the next pass, which proceeds as usual:
+/// same file, its saved state kept, and an empty table of failure counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_format_6_companion_is_upgraded_in_place_and_the_next_pass_proceeds() {
+    let wallet = main_wallet(1);
+    let (uuid, account) = wallet.accounts[0].clone();
+    let seam = test_transport::set(&wallet.path, refusing());
+    let source = TransparentPirSource::new(&wallet.path, MAIN);
+    assert_eq!(
+        answered(
+            source
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
+        Ok(COMPLETE)
+    );
+    drop(source);
+    let path = companion(&wallet.path, &uuid);
+    let format = |db: &rusqlite::Connection| -> String {
+        db.query_row(
+            "SELECT value FROM wallet_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    {
+        // Format 6 is format 7 without the failure counts.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(format(&db), "7");
+        db.execute_batch(
+            "DROP TABLE failed_entries;
+             UPDATE wallet_meta SET value = '6' WHERE key = 'schema_version';
+             INSERT INTO wallet_meta VALUES ('vizor-upgrade-test', 'kept');",
+        )
+        .unwrap();
+    }
+
+    let source = TransparentPirSource::new(&wallet.path, MAIN);
+    assert_eq!(
+        answered(
+            source
+                .recover(request(account, &bare(account), &|| false))
+                .await
+        ),
+        Ok(COMPLETE)
+    );
+    drop(source);
+    assert!(seam.seam.observer.requests().is_empty());
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(format(&db), "7");
+    let kept: String = db
+        .query_row(
+            "SELECT value FROM wallet_meta WHERE key = 'vizor-upgrade-test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "kept");
+    let failures: i64 = db
+        .query_row("SELECT COUNT(*) FROM failed_entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(failures, 0);
+    // Vizor's sweep keeps the live account's companion.
+    pir::remove_orphan_companions(&wallet.path).unwrap();
+    assert!(path.exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn deleting_an_account_removes_its_companion_and_sidecars() {
     let wallet = main_wallet(2);
