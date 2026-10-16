@@ -336,7 +336,12 @@ async fn early_restore(
         );
         match begin.await {
             Ok(Some(restore)) => restores.push(restore),
-            Ok(None) => {}
+            // Only accounts that allowed one get here, so the wallet refused the
+            // publication, as it does one ending above its chain tip.
+            Ok(None) => log::warn!(
+                "Early swap restore not begun: the wallet refused the directory's \
+                 publication; restore sweeps take over"
+            ),
             Err(e) => log::warn!("Early swap restore not begun: {e}"),
         }
     }

@@ -366,6 +366,10 @@ fn incoming_payout_is_found_live_and_by_a_later_restore() {
         world.directory.lookups() > lookups,
         "B looked the payout up in the directory"
     );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for the payout"
+    );
     world.spend_all(&b);
 }
 
@@ -532,7 +536,10 @@ fn refund_is_found_live_and_by_a_later_restore() {
         b.total(),
         a.total()
     );
-    assert!(b.early_restore_accepted(), "B's restore scan looked for the refund");
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for the refund"
+    );
     world.spend_all(&b);
 }
 
@@ -610,6 +617,10 @@ fn refund_funding_is_exact_and_a_restore_recovers_its_key_from_spent_change() {
         "B finds the refund (holds {})",
         b.total()
     );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for its swap keys"
+    );
     let next = world.quote_refund(&b, HOUR);
     assert!(
         next.index > swap.index,
@@ -663,6 +674,10 @@ fn a_zero_value_refund_marker_restores_the_key() {
     assert!(
         b.refund_key_indices().contains(&swap.index),
         "B recovered the refund key from the zero-value marker"
+    );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for the refund"
     );
     world.spend_all(&b);
 }
@@ -774,6 +789,14 @@ fn two_accounts_in_one_wallet_keep_their_swaps_apart() {
         b2.total(),
         a2.total()
     );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for A's swaps"
+    );
+    assert!(
+        b2.early_restore_accepted(),
+        "B2's restore scan looked for A2's swaps"
+    );
     let next = [world.quote_refund(&a, HOUR), world.quote_refund(&a2, HOUR)];
     assert_eq!(
         (next[0].index, next[1].index),
@@ -841,6 +864,10 @@ fn turning_swap_privacy_off_mid_swap_keeps_finding_its_funds() {
         b.total(),
         a.total()
     );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for both payments with swap privacy off"
+    );
     world.spend_all(&b);
     sync_api::set_near_swap_privacy_enabled(true);
 }
@@ -896,6 +923,10 @@ fn incoming_swaps_sharing_a_deposit_address_keep_their_own_statuses() {
         "B, restored from A's seed, finds both payouts (holds {}, A holds {})",
         b.total(),
         a.total()
+    );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for both payouts"
     );
     world.spend_all(&b);
 }
@@ -962,6 +993,10 @@ fn a_restore_after_two_payouts_in_one_transaction_were_spent_holds_nothing() {
         "B counts A's spend of both payouts"
     );
     assert_eq!(b.total(), 0, "B holds nothing A already spent");
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for both payouts"
+    );
 }
 
 /// A ZEC-to-X swap whose deposit NEAR reports as INCOMPLETE_DEPOSIT, which is not final.
@@ -1017,6 +1052,10 @@ fn an_underpaid_swap_refunded_weeks_after_its_deadline_is_found_live() {
         b.total(),
         a.total()
     );
+    assert!(
+        b.early_restore_accepted(),
+        "B's restore scan looked for the refund"
+    );
     world.spend_all(&b);
 }
 
@@ -1056,6 +1095,10 @@ fn a_restore_during_a_directory_outage_finds_the_refund_once_it_returns() {
         world.directory.lookups(),
         lookups,
         "B never reached the directory"
+    );
+    assert!(
+        !b.early_restore_accepted(),
+        "B's early restore cannot begin without the directory, so sweeps take over"
     );
     assert!(
         b.refund_key_indices().contains(&swap.index),
