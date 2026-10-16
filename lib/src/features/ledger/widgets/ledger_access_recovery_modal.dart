@@ -230,6 +230,10 @@ class _LedgerAccessRecoveryModalState
       onRetry: retry,
       onClose: widget.onClose,
       retryLabel: 'Find Ledger',
+      onBusyChanged: (busy) {
+        _canChange = !busy;
+        _refresh();
+      },
       builder: (context, c) => frame(
         c.title,
         Column(
