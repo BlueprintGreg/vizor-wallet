@@ -77,6 +77,7 @@ void main() {
         'https://na.zec.rocks:443',
         'https://sa.zec.rocks:443',
         'https://eu.zec.rocks:443',
+        'https://kr.zec.stardust.rest:443',
         'https://ap.zec.rocks:443',
         'https://z3.deepikaw.xyz:443',
         'https://zprivacy.online:443',
@@ -100,6 +101,13 @@ void main() {
           networkName: 'main',
         )?.region,
         'Europe',
+      );
+      expect(
+        findRpcEndpointPresetByUrl(
+          'kr.zec.stardust.rest:443',
+          networkName: 'main',
+        )?.region,
+        'Asia Pacific',
       );
       expect(
         findRpcEndpointPresetByUrl(
@@ -362,6 +370,25 @@ void main() {
         'https://eu.zec.stardust.rest:443',
       );
     });
+
+    test(
+      'orders Stardust Korea after Zec Rocks global, Americas, and Europe',
+      () {
+        final presetIds = fallbackRpcEndpointCandidatesFor(
+          defaultRpcEndpointConfig('main'),
+        ).map((candidate) => candidate.presetId).toList();
+
+        expect(presetIds.sublist(0, 7), [
+          'eu-zec-stardust',
+          'zec-rocks',
+          'na-zec-rocks',
+          'sa-zec-rocks',
+          'eu-zec-rocks',
+          'kr-zec-stardust',
+          'ap-zec-rocks',
+        ]);
+      },
+    );
 
     test('does not fallback from a custom mainnet endpoint', () {
       final candidates = fallbackRpcEndpointCandidatesFor(
