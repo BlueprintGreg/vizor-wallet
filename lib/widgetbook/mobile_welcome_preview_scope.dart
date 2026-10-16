@@ -5,6 +5,7 @@ import '../src/app_bootstrap.dart';
 import '../src/core/config/rpc_endpoint_config.dart';
 import '../src/features/onboarding/providers/welcome_network_settings_provider.dart';
 import '../src/providers/network_privacy_provider.dart';
+import '../src/providers/enhance_pir_provider.dart';
 import '../src/providers/rpc_endpoint_provider.dart';
 
 /// Deterministic provider scope for previews and captures of the mobile
@@ -18,15 +19,39 @@ import '../src/providers/rpc_endpoint_provider.dart';
 Widget mobileWelcomePreviewScope({
   required NetworkPrivacyState state,
   required Widget child,
+  bool privateQueriesEnabled = false,
+  String? privateQueriesTransition,
 }) => ProviderScope(
   overrides: [
     appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
     networkPrivacyProvider.overrideWith(() => _PreviewPrivacy(state)),
     rpcEndpointProvider.overrideWith(_PreviewRpc.new),
     welcomeNetworkSettingsPresentedProvider.overrideWith(_PreviewPresented.new),
+    enhancePirProvider.overrideWith(
+      () => _PreviewPrivateQueries(privateQueriesEnabled),
+    ),
+    enhancePirTransitionProvider.overrideWith(
+      () => _PreviewPrivateQueriesTransition(privateQueriesTransition),
+    ),
   ],
   child: child,
 );
+
+class _PreviewPrivateQueries extends EnhancePirNotifier {
+  _PreviewPrivateQueries(this.initial);
+  final bool initial;
+  @override
+  bool build() => initial;
+  @override
+  Future<void> set(bool enabled) async => state = enabled;
+}
+
+class _PreviewPrivateQueriesTransition extends EnhancePirTransitionNotifier {
+  _PreviewPrivateQueriesTransition(this.initial);
+  final String? initial;
+  @override
+  String? build() => initial;
+}
 
 class _PreviewPresented extends WelcomeNetworkSettingsNotifier {
   @override
