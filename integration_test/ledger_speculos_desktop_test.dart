@@ -23,6 +23,7 @@ import 'package:zcash_wallet/src/features/ledger/ledger_capability.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_account_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signing_service.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_signed_operation_service.dart';
+import 'package:zcash_wallet/src/features/ledger/widgets/ledger_access_recovery_modal.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_signing_modal.dart';
 import 'package:zcash_wallet/src/features/ledger/widgets/ledger_procedure.dart';
 import 'package:zcash_wallet/src/features/onboarding/import/import_birthday_estimator.dart';
@@ -370,16 +371,52 @@ void main() {
     expect(lightwalletd.sendTransactionCount, 0);
     await tester.tap(find.text('Try again'));
     await tester.pump();
+    // USB readiness can temporarily replace the procedure during retry.
+    // Keep checking the prepared transaction while waiting for device review.
+    await _pumpUntil(
+      tester,
+      () {
+        final modal = tester.widget<LedgerSigningModal>(
+          find.byType(LedgerSigningModal),
+        );
+        expect(modal.resumingApproval, isTrue);
+        expect(
+          modal.phase,
+          anyOf(
+            LedgerSigningModalPhase.preparing,
+            LedgerSigningModalPhase.awaitingDevice,
+          ),
+        );
+        expect(pcztCreations, 1);
+        expect(operationService.checkpointCount, 0);
+        expect(operationService.broadcastCount, 0);
+        expect(lightwalletd.sendTransactionCount, 0);
+        final procedures = find.byType(LedgerProcedure);
+        if (tester.any(procedures)) {
+          expect(
+            tester.widget<LedgerProcedure>(procedures).currentStep,
+            1,
+            reason: 'Retry must retain the completed preparation step.',
+          );
+        } else {
+          final recovery = tester.widget<LedgerAccessRecoveryModal>(
+            find.byType(LedgerAccessRecoveryModal),
+          );
+          expect(recovery.selectionRequest, isNotNull);
+          expect(
+            recovery.selectionRequest!.initialTransport,
+            LedgerConnectionTransport.usb,
+          );
+        }
+        return tester.any(_ledgerReviewPrompt());
+      },
+      description: 'Ledger retry approval prompt',
+      timeout: const Duration(minutes: 2),
+    );
     expect(
       tester.widget<LedgerProcedure>(find.byType(LedgerProcedure)).currentStep,
       1,
       reason: 'Retry must retain the completed preparation step.',
-    );
-    await _pumpUntil(
-      tester,
-      () => tester.any(_ledgerReviewPrompt()),
-      description: 'Ledger retry approval prompt',
-      timeout: const Duration(minutes: 2),
     );
     final signingApproval = approveNextSpeculosReview(fixture.signingApiUrl);
     await _pumpUntil(
@@ -1240,12 +1277,27 @@ Future<void> _runLedgerSwapScenario(
     );
     await tester.enterText(amountInput, '0.693');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('pay_amount_continue_button')));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const ValueKey('pay_recipient_search_field')),
-      _externalRecipient,
+    final continueButton = find.byKey(
+      const ValueKey('pay_amount_continue_button'),
     );
+    await _pumpUntil(
+      tester,
+      () => tester.widget<AppButton>(continueButton).onPressed != null,
+      description: 'Pay amount Continue enabled',
+      timeout: const Duration(seconds: 30),
+    );
+    expect(tester.widget<TextField>(amountInput).controller!.text, '0.693');
+    await tester.tap(continueButton);
+    final recipientInput = find.byKey(
+      const ValueKey('pay_recipient_search_field'),
+    );
+    await _pumpUntil(
+      tester,
+      () => tester.any(recipientInput),
+      description: 'Pay recipient input',
+      timeout: const Duration(seconds: 30),
+    );
+    await tester.enterText(recipientInput, _externalRecipient);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('pay_select_recipient_button')));
     await _pumpUntil(
