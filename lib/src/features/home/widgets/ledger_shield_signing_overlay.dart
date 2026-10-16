@@ -87,6 +87,7 @@ class _LedgerShieldSigningOverlayState
   bool _momentComplete = false;
   late final BigInt _initialAmount;
   BigInt _shieldedTotal = BigInt.zero;
+  bool _shieldedTotalKnown = true;
   int _sentRounds = 0;
   BigInt? _roundShielded;
   int _round = 1;
@@ -170,6 +171,7 @@ class _LedgerShieldSigningOverlayState
           });
           return;
         }
+        _roundShielded = existingOperation.shieldedZatoshi;
         await _broadcastCheckpointed();
         return;
       }
@@ -433,10 +435,13 @@ class _LedgerShieldSigningOverlayState
         return false;
       }
       _sentRounds++;
-      if (_roundShielded != null) {
-        _shieldedTotal += _roundShielded!;
-        _roundShielded = null;
+      final amount = _roundShielded;
+      if (amount != null && amount > BigInt.zero) {
+        _shieldedTotal += amount;
+      } else {
+        _shieldedTotalKnown = false;
       }
+      _roundShielded = null;
       return true;
     } catch (e, st) {
       log('LedgerShieldConfirm._broadcast: ERROR: $e\n$st');
@@ -739,7 +744,8 @@ class _LedgerShieldSigningOverlayState
               amount: formatZecAmount(_initialAmount),
               resultAmount: _shieldedTotal > BigInt.zero
                   ? formatZecAmount(_shieldedTotal)
-                  : '—',
+                  : null,
+              showResultAmount: _shieldedTotalKnown,
               title: !_momentStarted
                   ? 'Transparent Balance'
                   : _momentComplete

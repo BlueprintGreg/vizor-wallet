@@ -11681,6 +11681,7 @@ impl SseDecode for crate::api::ledger::LedgerSignedOperation {
         let mut var_kind = <String>::sse_decode(deserializer);
         let mut var_externalRef = <Option<String>>::sse_decode(deserializer);
         let mut var_expiryHeight = <Option<u32>>::sse_decode(deserializer);
+        let mut var_shieldedZatoshi = <Option<u64>>::sse_decode(deserializer);
         let mut var_state = <String>::sse_decode(deserializer);
         let mut var_txid = <Option<String>>::sse_decode(deserializer);
         let mut var_status = <Option<String>>::sse_decode(deserializer);
@@ -11693,6 +11694,7 @@ impl SseDecode for crate::api::ledger::LedgerSignedOperation {
             kind: var_kind,
             external_ref: var_externalRef,
             expiry_height: var_expiryHeight,
+            shielded_zatoshi: var_shieldedZatoshi,
             state: var_state,
             txid: var_txid,
             status: var_status,
@@ -17561,6 +17563,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ledger::LedgerSignedOperation
             self.kind.into_into_dart().into_dart(),
             self.external_ref.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
+            self.shielded_zatoshi.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
@@ -21366,6 +21369,7 @@ impl SseEncode for crate::api::ledger::LedgerSignedOperation {
         <String>::sse_encode(self.kind, serializer);
         <Option<String>>::sse_encode(self.external_ref, serializer);
         <Option<u32>>::sse_encode(self.expiry_height, serializer);
+        <Option<u64>>::sse_encode(self.shielded_zatoshi, serializer);
         <String>::sse_encode(self.state, serializer);
         <Option<String>>::sse_encode(self.txid, serializer);
         <Option<String>>::sse_encode(self.status, serializer);

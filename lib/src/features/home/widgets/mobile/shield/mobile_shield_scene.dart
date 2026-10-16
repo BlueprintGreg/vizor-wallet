@@ -30,6 +30,7 @@ class MobileShieldScene extends StatefulWidget {
     required this.amount,
     required this.title,
     this.resultAmount,
+    this.showResultAmount = true,
     this.backdrop,
     this.body,
     this.focusChild,
@@ -46,6 +47,7 @@ class MobileShieldScene extends StatefulWidget {
   final MobileShieldPhase phase;
   final String amount;
   final String? resultAmount;
+  final bool showResultAmount;
   final MobileShieldBackdrop? backdrop;
   final String title;
   final String? body;
@@ -139,7 +141,8 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       _backdropImage = next;
     }
     if (oldWidget.amount != widget.amount ||
-        oldWidget.resultAmount != widget.resultAmount) {
+        oldWidget.resultAmount != widget.resultAmount ||
+        oldWidget.showResultAmount != widget.showResultAmount) {
       _retargeting = _art != null;
       _prepare();
     }
@@ -188,6 +191,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       final art = await ShieldParticleArt.load(
         widget.amount,
         resultAmount: _result,
+        showResultAmount: widget.showResultAmount,
         count: shieldCloudDots.length,
         random: math.Random(7),
         fontSize: _beforeFontSize,
@@ -954,7 +958,7 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
           if (!auxiliary && a != null && a >= ShieldTimeline.textIn.start) ...[
             icon('success_shield_fill', ShieldTimeline.iconIn.eased(a)),
             title(widget.title, ShieldTimeline.successLabelIn.eased(a)),
-            balance(after, result: true),
+            if (widget.showResultAmount) balance(after, result: true),
           ],
         ],
       ),

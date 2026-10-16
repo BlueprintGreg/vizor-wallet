@@ -68,6 +68,7 @@ class ShieldParticleArt {
   static Future<ShieldParticleArt> load(
     String amount, {
     required String resultAmount,
+    bool showResultAmount = true,
     required int count,
     required math.Random random,
     required double fontSize,
@@ -94,12 +95,14 @@ class ShieldParticleArt {
       count: count,
       random: random,
     );
-    final balancePoints = await ShapeSampler.picture(
-      after.size,
-      after.paint,
-      count: count - ShieldTimeline.iconParticles - ShieldTimeline.strays,
-      random: random,
-    );
+    final balancePoints = showResultAmount
+        ? await ShapeSampler.picture(
+            after.size,
+            after.paint,
+            count: count - ShieldTimeline.iconParticles - ShieldTimeline.strays,
+            random: random,
+          )
+        : <Offset>[];
     final iconPoints = await ShapeSampler.svgPoints(
       _shieldAsset,
       height: iconHeight,

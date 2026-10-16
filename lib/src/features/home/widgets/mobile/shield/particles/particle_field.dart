@@ -156,6 +156,16 @@ class ParticleField extends ChangeNotifier {
     ]) {
       copy(pair.$1, pair.$2);
     }
+    // Omitting an unknown result amount turns its dots into residual emitters.
+    // Initialize their lifetimes before copying the new roles; existing emitters
+    // keep their live paths and clocks.
+    for (var i = 0; i < n; i++) {
+      if (targets._stray[i] == 1 && _stray[i] == 0) {
+        _eLife[i] = targets._eLife[i];
+        _eReach[i] = targets._eReach[i];
+        _eSize[i] = targets._eSize[i];
+      }
+    }
     _icon.setAll(0, targets._icon);
     _stray.setAll(0, targets._stray);
     // A viewport change maps the current cloud into the new coordinate space.

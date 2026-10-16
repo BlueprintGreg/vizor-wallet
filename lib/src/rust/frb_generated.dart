@@ -13028,20 +13028,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   LedgerSignedOperation dco_decode_ledger_signed_operation(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return LedgerSignedOperation(
       operationId: dco_decode_String(arr[0]),
       accountUuid: dco_decode_String(arr[1]),
       kind: dco_decode_String(arr[2]),
       externalRef: dco_decode_opt_String(arr[3]),
       expiryHeight: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      state: dco_decode_String(arr[5]),
-      txid: dco_decode_opt_String(arr[6]),
-      status: dco_decode_opt_String(arr[7]),
-      message: dco_decode_opt_String(arr[8]),
-      createdAtMs: dco_decode_i_64(arr[9]),
-      updatedAtMs: dco_decode_i_64(arr[10]),
+      shieldedZatoshi: dco_decode_opt_box_autoadd_u_64(arr[5]),
+      state: dco_decode_String(arr[6]),
+      txid: dco_decode_opt_String(arr[7]),
+      status: dco_decode_opt_String(arr[8]),
+      message: dco_decode_opt_String(arr[9]),
+      createdAtMs: dco_decode_i_64(arr[10]),
+      updatedAtMs: dco_decode_i_64(arr[11]),
     );
   }
 
@@ -17362,6 +17363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_String(deserializer);
     var var_externalRef = sse_decode_opt_String(deserializer);
     var var_expiryHeight = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_shieldedZatoshi = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_state = sse_decode_String(deserializer);
     var var_txid = sse_decode_opt_String(deserializer);
     var var_status = sse_decode_opt_String(deserializer);
@@ -17374,6 +17376,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       kind: var_kind,
       externalRef: var_externalRef,
       expiryHeight: var_expiryHeight,
+      shieldedZatoshi: var_shieldedZatoshi,
       state: var_state,
       txid: var_txid,
       status: var_status,
@@ -22435,6 +22438,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.kind, serializer);
     sse_encode_opt_String(self.externalRef, serializer);
     sse_encode_opt_box_autoadd_u_32(self.expiryHeight, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.shieldedZatoshi, serializer);
     sse_encode_String(self.state, serializer);
     sse_encode_opt_String(self.txid, serializer);
     sse_encode_opt_String(self.status, serializer);

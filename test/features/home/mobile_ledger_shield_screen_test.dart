@@ -83,6 +83,143 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  for (final recoveredAmount in [BigInt.from(1970000), null]) {
+    for (final precedingRound in [false, true]) {
+      testWidgets('resumed shielding preserves amount $recoveredAmount '
+          '(preceding round: $precedingRound)', (tester) async {
+        final operations = _SigningOperations()
+          ..pending = precedingRound ? [] : [_checkpoint(recoveredAmount)]
+          ..recoverAfterFirstBroadcast = precedingRound
+              ? _checkpoint(recoveredAmount)
+              : null;
+        operations.checkpointed.complete();
+        final container = await _mountSigning(
+          tester,
+          operations,
+          (_) async => [7, 8, 9],
+          readProgress:
+              ({
+                required dbPath,
+                required network,
+                required accountUuid,
+              }) async => LedgerShieldingProgress(
+                inputCount: precedingRound
+                    ? 2 - operations.successfulBroadcasts
+                    : 0,
+                inputLimit: 32,
+                belowThreshold: false,
+              ),
+        );
+        await _until(tester, () => operations.broadcastCalls == 1);
+        expect(api.creates, precedingRound ? 1 : 0);
+        operations.broadcasted.complete();
+        await _until(
+          tester,
+          () =>
+              tester
+                  .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+                  .phase ==
+              MobileShieldPhase.succeeded,
+        );
+        final scene = tester.widget<MobileShieldScene>(
+          find.byType(MobileShieldScene),
+        );
+        expect(operations.successfulBroadcasts, precedingRound ? 2 : 1);
+        expect(api.creates, precedingRound ? 1 : 0);
+        expect(scene.showResultAmount, recoveredAmount != null);
+        if (recoveredAmount != null) {
+          expect(scene.resultAmount, precedingRound ? '0.0296' : '0.0197');
+        }
+        container.read(pendingActivityEvidenceProvider.notifier).clear();
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+  }
+
+  testWidgets(
+    'resumed operation still pauses if remaining input reduction is unconfirmed',
+    (tester) async {
+      final operations = _SigningOperations()
+        ..pending = [_checkpoint(BigInt.from(1970000))];
+      final container = await _mountSigning(
+        tester,
+        operations,
+        (_) async => throw StateError('must not sign again'),
+        readProgress:
+            ({required dbPath, required network, required accountUuid}) async =>
+                LedgerShieldingProgress(
+                  inputCount: 1,
+                  inputLimit: 32,
+                  belowThreshold: false,
+                ),
+      );
+      await _until(tester, () => operations.broadcastCalls == 1);
+      operations.broadcasted.complete();
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+                .phase ==
+            MobileShieldPhase.failed,
+      );
+      expect(api.creates, 0);
+      expect(operations.successfulBroadcasts, 1);
+      expect(
+        tester
+            .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+            .resultAmount,
+        '0.0197',
+      );
+      container.read(pendingActivityEvidenceProvider.notifier).clear();
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'resumed broadcast failure retries without losing or doubling amount',
+    (tester) async {
+      final operations = _SigningOperations()
+        ..pending = [_checkpoint(BigInt.from(1970000))]
+        ..failNextBroadcast = true;
+      final container = await _mountSigning(
+        tester,
+        operations,
+        (_) async => throw StateError('must not sign again'),
+      );
+      await _until(tester, () => operations.broadcastCalls == 1);
+      operations.broadcasted.complete();
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+                .phase ==
+            MobileShieldPhase.failed,
+      );
+      await tester.pump(const Duration(seconds: 2));
+      await tester.tap(find.text('Try again'));
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+                .phase ==
+            MobileShieldPhase.succeeded,
+      );
+      final scene = tester.widget<MobileShieldScene>(
+        find.byType(MobileShieldScene),
+      );
+      expect(operations.broadcastCalls, 2);
+      expect(operations.successfulBroadcasts, 1);
+      expect(scene.showResultAmount, isTrue);
+      expect(scene.resultAmount, '0.0197');
+      expect(api.creates, 0);
+      container.read(pendingActivityEvidenceProvider.notifier).clear();
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets('declined approval retries step 2 with the existing proofs', (
     tester,
   ) async {
@@ -267,6 +404,7 @@ Future<ProviderContainer> _mountSigning(
   Future<List<int>> Function(Ref) signer, {
   Future<void> Function()? cancel,
   VoidCallback? onClose,
+  LedgerShieldingProgressReader? readProgress,
 }) async {
   FlutterSecureStorage.setMockInitialValues({});
   final dir = (await tester.runAsync(
@@ -290,12 +428,13 @@ Future<ProviderContainer> _mountSigning(
             (_, _) => signer(ref),
       ),
       ledgerShieldingProgressReaderProvider.overrideWithValue(
-        ({required dbPath, required network, required accountUuid}) async =>
-            LedgerShieldingProgress(
-              inputCount: operations.broadcastCalls == 0 ? 1 : 0,
-              inputLimit: 32,
-              belowThreshold: false,
-            ),
+        readProgress ??
+            ({required dbPath, required network, required accountUuid}) async =>
+                LedgerShieldingProgress(
+                  inputCount: operations.successfulBroadcasts == 0 ? 1 : 0,
+                  inputLimit: 32,
+                  belowThreshold: false,
+                ),
       ),
     ],
   );
@@ -323,10 +462,24 @@ Future<ProviderContainer> _mountSigning(
   return container;
 }
 
+LedgerSignedOperationMetadata _checkpoint(BigInt? amount) =>
+    LedgerSignedOperationMetadata(
+      operationId: 'recovered-shield',
+      accountUuid: 'account-1',
+      kind: LedgerSignedOperationKind.shield,
+      state: 'signed_pending_broadcast',
+      shieldedZatoshi: amount,
+    );
+
 class _SigningOperations extends _Operations {
   final checkpointed = Completer<void>();
   final broadcasted = Completer<void>();
-  int checkpointCalls = 0, broadcastCalls = 0;
+  int checkpointCalls = 0, broadcastCalls = 0, successfulBroadcasts = 0;
+  bool failNextBroadcast = false;
+  List<LedgerSignedOperationMetadata> pending = [];
+  LedgerSignedOperationMetadata? recoverAfterFirstBroadcast;
+  @override
+  Future<List<LedgerSignedOperationMetadata>> list() async => pending;
   @override
   Future<void> checkpoint({
     required String operationId,
@@ -348,6 +501,14 @@ class _SigningOperations extends _Operations {
   }) async {
     broadcastCalls++;
     await broadcasted.future;
+    if (failNextBroadcast) {
+      failNextBroadcast = false;
+      throw StateError('broadcast failed');
+    }
+    successfulBroadcasts++;
+    pending = successfulBroadcasts == 1 && recoverAfterFirstBroadcast != null
+        ? [recoverAfterFirstBroadcast!]
+        : [];
     return LedgerSignedOperationBroadcastResult(
       operationId: operationId,
       txid: 'preview-shield',
@@ -409,6 +570,8 @@ class _Paths extends Fake
 }
 
 class _Sync extends SyncNotifier {
+  @override
+  Future<void> refreshAfterSend() async {}
   @override
   Future<SyncState> build() async => SyncState(
     accountUuid: 'account-1',

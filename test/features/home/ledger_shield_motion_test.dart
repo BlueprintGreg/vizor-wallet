@@ -180,6 +180,50 @@ void main() {
   }
 
   testWidgets(
+    'unknown result omits amount text and particle digits after retargeting',
+    (tester) async {
+      final known = ValueNotifier(true);
+      final phase = ValueNotifier(MobileShieldPhase.working);
+      addTearDown(known.dispose);
+      addTearDown(phase.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ListenableBuilder(
+            listenable: Listenable.merge([known, phase]),
+            builder: (_, _) => MobileShieldScene(
+              phase: phase.value,
+              amount: '14.12',
+              resultAmount: '0.0099',
+              showResultAmount: known.value,
+              title: 'Shielded successfully',
+            ),
+          ),
+        ),
+      );
+      await _artFrames(tester);
+      final original = _field(tester);
+      expect(original.geometry.balancePoints, isNotEmpty);
+      known.value = false;
+      await tester.pump();
+      await _artFrames(tester);
+      expect(identical(_field(tester), original), isTrue);
+      expect(original.geometry.balancePoints, isEmpty);
+      phase.value = MobileShieldPhase.succeeded;
+      await tester.pump();
+      for (var i = 0; i < 360; i++) {
+        await tester.pump(const Duration(microseconds: 16667));
+      }
+      expect(
+        find.byKey(const ValueKey('mobile_shield_result_amount')),
+        findsNothing,
+      );
+      expect(find.text('Shielded successfully'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'late result amounts retarget the same live cloud after a long signing wait',
     (tester) async {
       final result = ValueNotifier('—');
