@@ -101,15 +101,12 @@ abstract final class ShieldTimeline {
     return 2 * fallDistance * u / fall.duration;
   }
 
-  /// Scale of the balance: a touch larger on the lift, then receding into
+  /// Keep the balance at its review size on the lift, then recede into
   /// depth as it falls.
   static double fallScale(double t) {
-    if (t <= lift.start) return 1;
-    if (t < fall.start) {
-      return 1 + 0.02 * VMotion.easeOut.transform(lift.progress(t));
-    }
+    if (t < fall.start) return 1;
     final u = math.min((t - fall.start) / fall.duration, 1.6);
-    return 1.02 - 0.12 * u * u;
+    return 1 - 0.12 * u * u;
   }
 
   /// Dissolve front, 0 = nothing eaten, 1 = fully crumbled.
