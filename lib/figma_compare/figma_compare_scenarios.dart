@@ -3189,6 +3189,22 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-receive-request-compose-expanded-message',
+    description: 'Mobile request sheet with a two-line memo editor',
+    builder: buildRequestMobileComposeExpandedMessageUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-receive-request-compose-expanded-message-keyboard',
+    description:
+        'Mobile two-line memo editor with Gboard-sized keyboard insets',
+    builder: buildRequestMobileComposeExpandedMessageKeyboardUseCase,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-receive-request-compose-error',
     description: 'Mobile request sheet step one with an invalid amount',
     builder: buildRequestMobileComposeAmountErrorUseCase,
