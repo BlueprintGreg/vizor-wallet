@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use zakura_pir_transparent::WithdrawnCause;
+use zakura_transparent_private_wallet::WithdrawnCause;
 
 use super::*;
 use crate::wallet::db::open_wallet_db_for_read_with_timeout;

@@ -168,9 +168,13 @@ version = "=0.0.1-rc3"
 default-features = false
 features = ["wallet"]
 
-# Transparent PIR recovery adapter from the published Common v3 wallet family.
-[dependencies.zakura-pir-transparent]
-version = "=0.0.1-rc1"
+# Transparent private-mode wallet: recovery, txid display lookups and the
+# companion. Not released on crates.io yet, so a git dependency. Its own
+# wallet-libraries dependencies are redirected to the published releases this
+# app already uses; see `[patch."https://github.com/zakura-core/wallet-libraries"]`.
+[dependencies.zakura-transparent-private-wallet]
+git = "https://github.com/zakura-core/wallet-libraries"
+rev = "e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
 default-features = false
 # `sqlite` applies a batch to the wallet and acknowledges it in one call.
 features = ["sqlite"]
@@ -216,14 +220,21 @@ features = ["test-dependencies"]
 version = "=5.2.0-rc.1"
 features = ["test-fixtures"]
 
-# Real adapter batches for the coordinator's fixture source, the fake txid
-# display publication the loop-4 tests serve, and a real shard service in
-# process, with the wallet-pir crates it publishes with. Keep the version
-# aligned with the runtime dependency above.
-[dev-dependencies.zakura-pir-transparent]
-version = "=0.0.1-rc1"
+# Real adapter batches for the coordinator's fixture source and the fake txid
+# display publication the loop-4 tests serve. Keep the rev aligned with the
+# runtime dependency above.
+[dev-dependencies.zakura-transparent-private-wallet]
+git = "https://github.com/zakura-core/wallet-libraries"
+rev = "e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
 default-features = false
 features = ["sqlite", "testing"]
+
+# A real shard service in process for the recovery tests: the publisher and its
+# native evaluation. Tests only; the app never builds the server crate.
+[dev-dependencies.zakura-transparent-private-server]
+git = "https://github.com/zakura-core/wallet-libraries"
+rev = "e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
+features = ["testing"]
 
 [dev-dependencies.ipir-sp]
 version = "=0.1.0-rc.7"
@@ -250,6 +261,14 @@ items_after_test_module = "allow"
 assertions_on_constants = "allow"
 
 # Wallet and voting dependencies use their coordinated published releases.
+# The Transparent crates above come from git, but build on the same published
+# backend, SQLite and PCZT releases as the rest of the app: no second copy of
+# them, and no wallet database migration beyond the released ones. Drop this
+# once a release includes the Transparent crates.
+[patch."https://github.com/zakura-core/wallet-libraries"]
+zakura-client-backend = { version = "=0.1.0-rc9" }
+zakura-client-sqlite = { version = "=0.1.0-rc9" }
+zakura-pczt = { version = "=0.1.0-rc6" }
 # Voting 5.2 is an explicit opt-in; keep the exact prerelease pin during validation.
 
 # Flutter debug builds use Cargokit + Cargo's dev profile (`cargo build`

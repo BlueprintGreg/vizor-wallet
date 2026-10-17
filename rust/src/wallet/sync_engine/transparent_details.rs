@@ -57,7 +57,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use futures::FutureExt;
 use tonic::transport::Channel;
-use zakura_pir_transparent::{DetailAnswer, DetailApplied, DetailRun, DetailStep, DetailWrite};
+use zakura_transparent_private_wallet::{DetailAnswer, DetailApplied, DetailRun, DetailStep, DetailWrite};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
         TransparentDetailOutcome, TransparentDetailRequest, TransparentDetailWrite,
@@ -991,10 +991,10 @@ pub(crate) fn debug_lookup(
 pub(crate) fn debug_answer(
     network: WalletNetwork,
     txid: [u8; 32],
-    found: zakura_pir_transparent::TxidLookup,
+    found: zakura_transparent_private_wallet::TxidLookup,
     mined_height: u64,
 ) -> Result<DebugLookup, String> {
-    use zakura_pir_transparent::TxidLookup;
+    use zakura_transparent_private_wallet::TxidLookup;
     use zcash_client_backend::data_api::transparent_ledger::WholeTransactionFee;
     let mut answer = DebugLookup {
         outcome: "found",
@@ -1006,7 +1006,7 @@ pub(crate) fn debug_answer(
     match found {
         TxidLookup::Found { entry, provenance } => {
             let height = u32::try_from(mined_height).map_err(|_| "height out of range")?;
-            let facts = zakura_pir_transparent::display_facts(
+            let facts = zakura_transparent_private_wallet::display_facts(
                 TxId::from_bytes(txid),
                 &entry,
                 &provenance,

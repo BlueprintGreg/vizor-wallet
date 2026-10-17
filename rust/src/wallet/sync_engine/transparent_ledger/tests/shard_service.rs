@@ -3,7 +3,7 @@
 //! shard server answers the requests a test transport hands it, so a test
 //! reaches real filters and real PIR without a network.
 //!
-//! The publisher and server are `zakura_pir_transparent::testing::service`;
+//! The publisher and server are `zakura_transparent_private_server::testing::service`;
 //! this module adds the events the coordinator tests publish and plugs the
 //! server into the transport's request observer. Every shard has the smallest
 //! published geometry; a publication may declare re-cuts of an earlier one. Block hashes follow the coordinator
@@ -14,15 +14,15 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use transparent::address::TransparentAddress;
-use zakura_pir_transparent::testing::service::{publish, superseded, InProcess, SEAL};
-use zakura_pir_transparent::testing::transparent_events::{
+use zakura_transparent_private_server::testing::service::{publish, superseded, InProcess, SEAL};
+use zakura_transparent_private_wallet::shared::events::{
     ReceiveEvent, SpendEvent, TransparentEvent, Txid,
 };
-use zakura_pir_transparent::testing::transparent_filter::{
+use zakura_transparent_private_wallet::shared::filter::{
     BlockHash, Recut, ScriptBytes, ShardMap,
 };
 
-pub(super) use zakura_pir_transparent::testing::service::ShardSpec;
+pub(super) use zakura_transparent_private_server::testing::service::ShardSpec;
 
 use crate::wallet::sync_engine::enhancement::{ObservedRequest, RequestObserver};
 

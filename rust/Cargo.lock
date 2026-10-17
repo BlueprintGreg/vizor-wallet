@@ -1628,7 +1628,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d308ebe4b10924331bd079044b418da7b227d724d3e2408567a47ad7c3da2a0"
 dependencies = [
  "derive-deftly-macros",
- "heck 0.5.0",
+ "heck 0.4.1",
 ]
 
 [[package]]
@@ -1637,7 +1637,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd5f2b7218a51c827a11d22d1439b598121fac94bf9b99452e4afffe512d78c9"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "indexmap 2.14.2",
  "itertools 0.14.0",
  "proc-macro-crate",
@@ -1773,7 +1773,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2009,7 +2009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3258,7 +3258,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3672,7 +3672,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4135,42 +4135,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-control"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "218ff42f9e0129b600cfd03d126c0964460a9d085b3a3ea69443e5742d4c7854"
-dependencies = [
- "hex",
- "rand 0.8.8",
- "serde",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "pir-native"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d418b79cb9fca50a00e3cc4d2bf4ba9d9a4f3e4eeded0b52c9aedb0cbc956f4"
-dependencies = [
- "ipir-sp",
- "rand 0.8.8",
- "rand_chacha 0.3.1",
- "rayon",
- "reinspiring",
-]
-
-[[package]]
-name = "pir-observability"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1adddf7e3ac9297a7fbe939df8f23f0a4d01643b7523a5f376c5690eb96e89b"
-dependencies = [
- "axum 0.7.9",
- "http-body",
- "serde",
-]
-
-[[package]]
 name = "pir-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4461,7 +4425,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -4989,13 +4953,14 @@ dependencies = [
  "zakura-pczt",
  "zakura-pir-enhance",
  "zakura-pir-status",
- "zakura-pir-transparent",
  "zakura-primitives",
  "zakura-proofs",
  "zakura-protocol",
  "zakura-sapling-crypto",
  "zakura-transaction-status",
  "zakura-transparent",
+ "zakura-transparent-private-server",
+ "zakura-transparent-private-wallet",
  "zcash_script",
  "zcash_voting",
  "zeroize",
@@ -5049,7 +5014,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5218,7 +5183,7 @@ version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9465315bc9d4566e1724f0fffcbcc446268cb522e60f9a27bcded6b19c108113"
 dependencies = [
- "bitcoin_hashes 0.14.101",
+ "bitcoin_hashes 0.12.0",
  "secp256k1-sys 0.10.1",
 ]
 
@@ -5633,7 +5598,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5867,7 +5832,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6070,7 +6035,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -7282,22 +7246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags 2.13.2",
- "bytes",
- "http",
- "http-body",
- "http-body-util",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "tower-layer"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7401,142 +7349,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "transparent-events"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b566f517dec3abeeece5191c18204f5266ff42dc2e4d4d46db0b86387950b01a"
-dependencies = [
- "hex",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "transparent-filter"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86d64dd5c657e4deed127d3540668861028cdf9b99f0a1cc08439f0372a0082a"
-dependencies = [
- "bitcoin",
- "hex",
- "serde",
- "sha2 0.10.9",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "transparent-native"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82f5dd7d5c42a4dd7e8904b1fdfb34290c054a207bf4f4d5a5e107718c4043f4"
-dependencies = [
- "hex",
- "pir-native",
- "rayon",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "transparent-shard"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e054f8d90e8ea540e855e2f01e1889d522dccc71912f08a792755be4ae2853db"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "transparent-events",
- "transparent-filter",
-]
-
-[[package]]
-name = "transparent-shard-server"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66da689e592881d64994b4c2b6c90b933e2a9644d516607d537ad4d2887fbf75"
-dependencies = [
- "axum 0.7.9",
- "base64 0.22.1",
- "clap",
- "hex",
- "http-body",
- "ipir-sp",
- "memmap2",
- "pir-control",
- "pir-observability",
- "rayon",
- "reinspiring",
- "rustix 1.1.5",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sysinfo",
- "thiserror 2.0.21",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "transparent-events",
- "transparent-filter",
- "transparent-native",
- "transparent-shard",
-]
-
-[[package]]
-name = "transparent-txid-client"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8e64944a5565e8b11b198f01adfcf3b75ad3e42b68551bf18032dff69aca1f4"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "transparent-events",
- "transparent-native",
- "transparent-shard",
-]
-
-[[package]]
-name = "transparent-wallet"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2306996a00cf5a6cbfe5e7f2a98bfab8fe46d0c86d316d9eb7fbcc4d748bd344"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "transparent-events",
- "transparent-filter",
- "transparent-native",
- "transparent-shard",
-]
-
-[[package]]
-name = "transparent-wallet-store"
-version = "0.1.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a2c9831761563028fd8e38c760eeaa768000c22afa921dbbbe296fa6e7e328c"
-dependencies = [
- "hex",
- "rusqlite",
- "serde_json",
- "thiserror 2.0.21",
- "transparent-events",
- "transparent-shard",
- "transparent-wallet",
 ]
 
 [[package]]
@@ -8057,7 +7869,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8869,7 +8681,7 @@ dependencies = [
  "url",
  "zakura-client-backend",
  "zakura-pir-enhance-types",
- "zakura-pir-native",
+ "zakura-pir-native 0.0.1-rc1",
  "zakura-primitives",
  "zakura-protocol",
 ]
@@ -8893,6 +8705,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zakura-pir-native"
+version = "0.0.1-rc2"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=e5195d59c2d5dc9fdca2b2486d4949f19eba5529#e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
+dependencies = [
+ "ipir-sp",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "reinspiring",
+]
+
+[[package]]
 name = "zakura-pir-status"
 version = "0.0.1-rc1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8904,40 +8728,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "zakura-pir-native",
-]
-
-[[package]]
-name = "zakura-pir-transparent"
-version = "0.0.1-rc1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ed09da24bf34864f20d22d32a1ec147d14d80fdd00f80d0979d87479a56e233"
-dependencies = [
- "axum 0.7.9",
- "base64 0.22.1",
- "hex",
- "rusqlite",
- "rustix 1.1.5",
- "same-file",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "tokio",
- "tower",
- "transparent-events",
- "transparent-filter",
- "transparent-native",
- "transparent-shard",
- "transparent-shard-server",
- "transparent-txid-client",
- "transparent-wallet",
- "transparent-wallet-store",
- "url",
- "zakura-client-backend",
- "zakura-client-sqlite",
- "zakura-primitives",
- "zakura-protocol",
- "zakura-transparent",
+ "zakura-pir-native 0.0.1-rc1",
 ]
 
 [[package]]
@@ -9111,6 +8902,64 @@ dependencies = [
  "zcash_script",
  "zcash_spec",
  "zip32",
+]
+
+[[package]]
+name = "zakura-transparent-private-server"
+version = "0.0.1-rc0"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=e5195d59c2d5dc9fdca2b2486d4949f19eba5529#e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
+dependencies = [
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "bitcoin",
+ "hex",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zakura-pir-native 0.0.1-rc2",
+ "zakura-transparent-private-shared",
+]
+
+[[package]]
+name = "zakura-transparent-private-shared"
+version = "0.0.1-rc0"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=e5195d59c2d5dc9fdca2b2486d4949f19eba5529#e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zakura-pir-native 0.0.1-rc2",
+]
+
+[[package]]
+name = "zakura-transparent-private-wallet"
+version = "0.0.1-rc0"
+source = "git+https://github.com/zakura-core/wallet-libraries?rev=e5195d59c2d5dc9fdca2b2486d4949f19eba5529#e5195d59c2d5dc9fdca2b2486d4949f19eba5529"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "hex",
+ "rusqlite",
+ "rustix 1.1.5",
+ "same-file",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "url",
+ "zakura-client-backend",
+ "zakura-client-sqlite",
+ "zakura-pir-native 0.0.1-rc2",
+ "zakura-primitives",
+ "zakura-protocol",
+ "zakura-transparent",
+ "zakura-transparent-private-server",
+ "zakura-transparent-private-shared",
 ]
 
 [[package]]

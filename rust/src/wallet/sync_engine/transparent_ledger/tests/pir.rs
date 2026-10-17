@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::Full;
 use sha2::{Digest, Sha256};
-use zakura_pir_transparent::{ApplyStats, Outcome, Progress, TransparentHistoryRecovery, SCHEMA};
+use zakura_transparent_private_wallet::{ApplyStats, Outcome, Progress, TransparentHistoryRecovery, SCHEMA};
 use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
 
 use super::super::pir::{self, test_transport, TransparentPirSource, PASS_DEADLINE};

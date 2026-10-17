@@ -22,7 +22,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use zakura_pir_transparent::{forget_private_recovery, ForgetError, Interrupted, WriteGate};
+use zakura_transparent_private_wallet::{forget_private_recovery, ForgetError, Interrupted, WriteGate};
 use zcash_client_backend::data_api::transparent_ledger::{
     AppliedTransparentPolicy, ForgottenTransparentLedger, TransparentLedgerMode,
     TransparentLedgerRead,
