@@ -183,8 +183,7 @@ pub(crate) fn history_pending(db: &WalletDatabase) -> Result<bool, String> {
         let status = db
             .one_time_discovery(account, now)
             .map_err(|e| e.to_string())?;
-        if status.is_some_and(|s| !s.complete || !s.lookups.is_empty() || !s.witnesses.is_empty())
-        {
+        if status.is_some_and(|s| !s.complete || !s.lookups.is_empty() || !s.witnesses.is_empty()) {
             return Ok(true);
         }
     }
@@ -484,14 +483,9 @@ mod tests {
             .unwrap();
         db.mark_one_time_account_fresh(added).unwrap();
         let now = now().unwrap();
-        db.prepare_receive_reservation(
-            added,
-            now,
-            BlockHeight::from_u32(110),
-            Some(&unseen(now)),
-        )
-        .unwrap()
-        .unwrap();
+        db.prepare_receive_reservation(added, now, BlockHeight::from_u32(110), Some(&unseen(now)))
+            .unwrap()
+            .unwrap();
         let registered: u64 = rusqlite::Connection::open(path)
             .unwrap()
             .query_row("SELECT COUNT(*) FROM ironwood_one_time_keys", [], |r| {
