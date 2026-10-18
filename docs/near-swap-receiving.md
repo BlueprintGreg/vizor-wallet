@@ -20,8 +20,9 @@ queries back on does not re-enable it. Desktop and mobile share the preference.
 
 Turning NEAR swap privacy off only stops new addresses. Existing reservations,
 funding memos, keys, notes and status tracking remain, received notes stay
-spendable, and recovery runs for every software account with either setting off.
-Turning NEAR swap privacy on sweeps every closed swap key once more (see
+spendable, and discovery runs for every software account with either setting off.
+
+Below NEAR swap privacy, software accounts get **Check swap history** (see
 [Closing](#closing)).
 
 ## Issuing addresses
@@ -49,11 +50,18 @@ sequences.
   block until its swap closes. Missing outgoing enhancement metadata does not
   block it. See [Incoming reservations](#incoming-reservations).
 
-Quote errors, amount edits and refreshes keep the same address for the current
-account and direction. Starting a swap, quoting for another account or direction,
-or restarting the app needs a new refund address; the incoming draft is stored in
-the wallet and resumed until a swap starts with it. Errors never roll back a key
-that may already have been sent to the provider.
+Every new address needs NEAR's seen set read within the last fifteen minutes (see
+[Incoming reservations](#incoming-reservations)). Without one, issuance fails
+closed: the swap screen says private swaps are paused and links to Settings, where
+NEAR swap privacy can be turned off.
+
+The app keeps one prepared incoming address per account and direction across
+amount edits, cancels, direction switches and quote errors, and the wallet
+resumes that draft until its latest quote's deadline passes. It is dropped when
+NEAR swap privacy changes, when the wallet refuses it as stale (the quote is then
+retried once with a new address), or once a swap starts with it. A refund address
+serves one quote. Errors never roll back a key that may already have been sent to
+the provider.
 
 Received notes keep their derived key for reconstruction and software spending,
 and change returns to the ordinary internal key.
@@ -82,63 +90,49 @@ mined while the app was offline are checked first. Closing uses the earlier of t
 device clock and the tip's block time, so a clock that runs fast cannot close a key
 early.
 
-A payment after its key closed, such as a second refund, is found by turning NEAR
-swap privacy off and on, which sweeps every closed key once through the receiver
-directory and starts a sync, or by a seed restore. Swap
-addresses are not permanent receive addresses.
+A payment after its key closed, such as a second refund, is found by **Check swap
+history**, which starts a new discovery pass (see [Restore](#restore)) and syncs
+until it is done, or by a seed restore. Nothing else starts a pass once discovery
+is complete. Swap addresses are not permanent receive addresses.
 
 ## Restore
 
-A seed restore finds swap keys without trial-decrypting history for every index:
+A restored account finds its swap keys through discovery
+(`zakura_pir_receiver::discover`) instead of trial-decrypting history for every
+index. An account the app created from a seed it generated is marked fresh and
+has nothing to discover.
 
-1. Ordinary scanning runs from the account birthday. Ironwood spend evidence that
-   compact scanning already delivered is retained, so an old payment can be
-   checked for a later spend.
-2. At the tip, confirmed internal funding memos register refund keys, but only when
-   the same account supplied an input to the funding transaction. Thirty incoming
-   lookahead keys are registered from the birthday or Ironwood activation,
-   whichever is later.
-3. Each restored key gets one receiver-directory sweep. The wallet accepts a
-   publication at a block it scanned and downloads its filters, which every wallet
-   downloads alike, then tests each receiver locally. Only a receiver the paid
-   filter holds is queried over PIR, with the common witness file. The directory's
-   answer carries each payment's compact note data, and a swap key's notes carry no
-   memo the wallet reads, so no other service is asked. A wallet with nothing to
-   look up makes no PIR query. The wallet authenticates the note with the derived
-   key, checks the inclusion path against its own chain and the spend state against
-   retained history, then stores the note, key, witness and known spend together.
-   Missing evidence leaves
-   a candidate pending without crediting balance; an answer that fails a check is
-   asked for again.
-4. A key the recent filter holds, because NEAR was given its address in the last
-   day, keeps scanning for 24 hours after its sweep, catching a payout or refund
-   from a swap in flight at restore. Any other key closes at its sweep. The wallet
-   trusts the recent filter only while it is current, NEAR's feed having been read
-   within the last fifteen minutes, and covers the whole day; otherwise every
-   restored key keeps scanning for 24 hours. Paid incoming indices extend
-   the lookahead, and a later run sweeps the new keys. A key the seen filter holds,
-   because NEAR was ever given its address, is marked quoted, so this device does not
-   hand out the old device's addresses again.
-5. Once memos, lookahead, sweeps and candidates are resolved, old unrelated spend
-   evidence is released. Other pools keep their ordinary retention.
+1. Every sync runs discovery for each software account after updating the chain
+   tip and before the first scan batch, and again as its last follow-up. A run
+   with nothing due makes no request.
+2. A pass checks each purpose's keys from index zero against the publication's
+   filters, which every wallet downloads alike: always the first 100, then on
+   until 30 consecutive keys are in no seen set and not in the paid filter, then
+   every closed key past that. The wallet accepts a publication only once its scan
+   stores the publication's last block.
+3. Only a key the paid filter holds is looked up over PIR. A payment the wallet has
+   not scanned yet becomes a scan hint that the same sync scans. A payment it has
+   already scanned past becomes a late candidate, credited once its inclusion path
+   from the publication's common witness file checks against the wallet's own
+   chain. The wallet authenticates every payment with the derived key first.
+4. A key only discovery found closes 24 hours after the block its lookup finished
+   at, catching a payout or refund from a swap in flight at restore. A key the
+   seen set holds is marked quoted, so this device does not hand out the old
+   device's addresses again. New addresses wait for a restored account's
+   discovery to register what its filters mark.
+5. Refund keys recovered from funding memos after discovery finished are looked up
+   by the first run whose publication reaches the blocks scanned without them.
 
 Restore makes no NEAR status request and cannot recreate a swap's activity record
-or an incoming swap's provider association. Incoming recovery has a gap limit of
-30 consecutive unpaid indices. A payment before the account birthday is not
-tracked, as with any note, but once its inclusion is checked its index is marked
-used and counts toward that window.
+or an incoming swap's provider association. A payment before the account birthday
+is not tracked, as with any note.
 
-Sweeps resume after interruption without repeating finished lookups. Failed
-lookups back off from one minute to twelve hours. A directory that cannot be
-reached or used fails a run before any key is leased, so the next sync tries
-again. One recovery run sweeps at most one batch of due keys per software account,
-within three minutes, as the last follow-up after sync reports completion, so sends
-never wait for it; background preparation syncs skip it. After a seed import, once
-the first sync ends, the app starts a quiet sync every 10 seconds for five minutes,
-so a restore's sweeps continue without waiting for a new block. None of these fails
-ordinary sync or makes recovery appear complete. Rewinds below a sweep
-reopen it. If an included candidate needs pruned spend history, the library
-replays the account's public Ironwood recovery interval once.
+Every discovery step commits on its own, so a run stopped by its budget (one
+minute before the scan, three minutes after it), cancellation or a failure resumes
+where it stopped. Failed lookups back off, and none of this fails ordinary sync.
+Background preparation syncs skip discovery. After a seed import, once the first
+sync ends, the app starts a quiet sync every 10 seconds for five minutes, so a
+restore's discovery continues without waiting for a new block.
 
 ## Incoming reservations
 
@@ -153,15 +147,15 @@ quote matches the deposit address and memo, and the next swap gets another addre
   same small file for every wallet: every address NEAR was given in a quote, funded
   or not, since its feed started. An address the set holds, one NEAR accepted a
   quote for, or one with a quote newer than the set's last read (less an hour for
-  clock differences) is never issued again. If the directory cannot be reached,
-  every quote that was not rejected counts. So a review whose address NEAR quoted
-  drops it, and the next quote gets another.
+  clock differences) is never issued again. A reservation's first quote request
+  checks the same set while it is still current, or a new one. A set read more than
+  fifteen minutes ago, or none at all, refuses issuance as `SeenUnavailable`.
 - Issuance takes the lowest address never quoted and reuses the lowest abandoned
   one, such as a request NEAR never received, only when nothing else fits. Seen
   addresses move the 30-index recovery gap like received ones, since a restore walks
   past them, so issuance never goes more than 30 indices past the highest receipt
-  with 10 confirmations or the highest seen address. It waits for incoming restore
-  sweeps, which may reveal paid or seen indices.
+  with 10 confirmations or the highest seen address. It waits for a restored
+  account's discovery, which may reveal paid or seen indices.
 - An unpaid reservation is reclaimed two hours after its creation and every
   quote's deposit deadline, with the wallet scanned to its tip and no payment to the
   address. A started one also needs a fresh conclusive status from the activity
@@ -183,13 +177,11 @@ with bounded requests, no redirects and no direct or public fallback. Receiver
 discovery always uses PIR, whatever the Private queries setting; ordinary
 transaction and memo retrieval follows that setting.
 
-A publication must commit to mainnet's genesis, cover history from Ironwood
-activation, and end within 100 blocks of the wallet's scanned tip. The directory
-polls every ten seconds and publishes the latest canonical tip. The common witness
-file holds deduplicated sibling hashes for every published payment; each wallet
-downloads the same bytes and verifies every path against its own accepted root.
-Large jobs download the row file (32 MiB today) instead of querying over PIR, and
-a key with more than 16 payments switches to it; the directory can see either.
+A publication must commit to mainnet's genesis and cover history from Ironwood
+activation. It is provisional until the wallet's scan stores its last block, which
+must match the wallet's chain. The common witness file holds deduplicated sibling
+hashes for every published payment; each wallet downloads the same bytes, only
+when a late candidate needs a path, and verifies every path against its own chain.
 
 Inclusion authenticates a note and its position; transaction IDs and action indices
 remain directory assertions, checked against local data. Directory omission
@@ -204,8 +196,8 @@ and Rust, and do not reuse an installed app's wallet identity.
 
 ## Tests
 
-The shared library covers derivation, funding records, scanning, closing, restore
-sweeps and reservations. In this repository:
+The shared library covers derivation, funding records, scanning, closing,
+discovery and reservations. In this repository:
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml --lib -- swap one_time_ivk
@@ -220,13 +212,13 @@ explicitly authorized exercise.
 - Restore the seed into a fresh wallet with a birthday before funding, once with
   Private queries on and once off, both with NEAR swap privacy off. Both runs must
   recover the same notes without duplicates, and following the tip must not repeat
-  finished sweeps. Interrupt one restore once; it must resume without duplicates.
+  finished lookups. Interrupt one restore once; it must resume without duplicates.
 - Spend recovered notes together with ordinary funds; the change must belong to
   the ordinary internal key.
 - Check that both settings default off and persist across a restart, and that
   disabling Private queries keeps NEAR swap privacy off after re-enabling it.
 - Turn NEAR swap privacy off during a pending swap; its refund must still be found.
-  After a key closes, turn the setting off and on; the next sync must sweep closed
-  keys once and add no duplicate notes.
+  After a key closes, run **Check swap history**; it must look up closed keys once
+  and add no duplicate notes.
 - Confirm hardware accounts keep their existing address flow, and that quote
   refreshes keep the same incoming address.
