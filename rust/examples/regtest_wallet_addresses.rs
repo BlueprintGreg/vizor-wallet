@@ -42,6 +42,7 @@ fn main() {
         "regtest".to_string(),
         db_path.clone(),
         Some("E2E Account".to_string()),
+        false,
     )
     .expect("import regtest wallet");
 

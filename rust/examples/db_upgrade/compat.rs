@@ -16,6 +16,7 @@ pub fn import_wallet(mnemonic: &str, network: &str, db_path: &str, name: &str) -
         network.to_string(),
         db_path.to_string(),
         Some(name.to_string()),
+        false,
     )
     .expect("import wallet")
     .account_uuid

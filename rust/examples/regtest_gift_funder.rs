@@ -16,7 +16,7 @@ fn run(args: &[String]) -> Result<serde_json::Value, String> {
             }
             let account = wallet::import_wallet(
                 MNEMONIC.into(), String::new(), Some(1), NETWORK.into(),
-                db.clone(), Some("Gift E2E funder".into()),
+                db.clone(), Some("Gift E2E funder".into()), false,
             )?;
             sync::update_chain_tip(db.clone(), NETWORK.into(), 1)?;
             let mut addresses = vec![account.unified_address];
