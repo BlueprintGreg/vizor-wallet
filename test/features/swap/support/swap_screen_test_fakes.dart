@@ -125,9 +125,18 @@ class _FakeSwapProvider implements SwapProvider {
     return supportedAssets;
   }
 
+  /// Sends `request` as the NEAR adapter does: its send hook runs, then the
+  /// request counts as received.
+  Future<void> send(SwapQuoteRequest request) async {
+    await request.beforeSend?.call(
+      DateTime.now().add(const Duration(hours: 1)),
+    );
+    requests.add(request);
+  }
+
   @override
   Future<SwapQuote> quote(SwapQuoteRequest request) async {
-    requests.add(request);
+    await send(request);
     final estimate = SwapQuote.estimate(
       direction: request.direction,
       externalAsset: request.externalAsset,
@@ -641,17 +650,10 @@ class _StaleFirstReservationStore extends Fake
   Future<void> finish(String request, SwapQuote? accepted) async {}
 }
 
-/// Runs each quote request's send hook before quoting, as the NEAR adapter does.
+/// Quotes address-only ZEC deposits, running each request's send hook first
+/// (see [_FakeSwapProvider.send]).
 class _SendHookSwapProvider extends _FakeSwapProvider {
   _SendHookSwapProvider() : super(zecDepositMemo: null);
-
-  @override
-  Future<SwapQuote> quote(SwapQuoteRequest request) async {
-    await request.beforeSend?.call(
-      DateTime.now().add(const Duration(hours: 1)),
-    );
-    return super.quote(request);
-  }
 }
 
 /// Quotes with a new address-only ZEC deposit address each time, as NEAR does.
@@ -692,15 +694,35 @@ class _FakeNearSwapPrivacyNotifier extends NearSwapPrivacyNotifier {
 class _FailingQuoteSwapProvider extends _FakeSwapProvider {
   @override
   Future<SwapQuote> quote(SwapQuoteRequest request) async {
-    requests.add(request);
+    await send(request);
     throw StateError('provider unavailable');
+  }
+}
+
+/// NEAR receives each quote request, but its response is lost.
+class _LostResponseSwapProvider extends _FakeSwapProvider {
+  @override
+  Future<SwapQuote> quote(SwapQuoteRequest request) async {
+    await send(request);
+    throw TimeoutException('quote response lost');
+  }
+}
+
+/// Fails each quote request in local checks, before it is sent.
+class _UnsentQuoteSwapProvider extends _FakeSwapProvider {
+  final unsent = <SwapQuoteRequest>[];
+
+  @override
+  Future<SwapQuote> quote(SwapQuoteRequest request) async {
+    unsent.add(request);
+    throw StateError('unsupported asset');
   }
 }
 
 class _LowAmountQuoteSwapProvider extends _FakeSwapProvider {
   @override
   Future<SwapQuote> quote(SwapQuoteRequest request) async {
-    requests.add(request);
+    await send(request);
     throw const OneClickApiException(
       'NEAR Intents quote failed (400): amount is too low',
       statusCode: 400,

@@ -767,7 +767,8 @@ class SwapNotifier extends Notifier<SwapState> {
   /// until NEAR swap privacy changes, its reservation goes stale, or its swap
   /// starts; the wallet also resumes its draft until the latest quote expires.
   /// A refund address serves one quote request, so [_showReview] drops it once
-  /// it commits to sending one, and returns it only if the provider refused.
+  /// it commits to sending one, and returns it only if the request never left
+  /// the device.
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
@@ -829,8 +830,11 @@ class SwapNotifier extends Notifier<SwapState> {
       clearQuoteError: true,
     );
 
-    // The refund address this request took from the cache, if any.
-    SwapZecStagingAddress? sentRefund;
+    // The refund address this request took from the cache, if any, and
+    // whether the provider adapter reached its send hook, after which NEAR may
+    // have seen the request.
+    SwapZecStagingAddress? takenRefund;
+    var mayHaveSent = false;
     try {
       if (!state.payMode) {
         await _persistComposerPreferences(preferences);
@@ -849,7 +853,7 @@ class SwapNotifier extends Notifier<SwapState> {
       // an edit's or a refresh's, may use it even while this one is in flight.
       if (stagingAddress.refundIndex != null) {
         _dropReviewAddress(accountUuid, direction);
-        sentRefund = stagingAddress;
+        takenRefund = stagingAddress;
       }
       final addressPlan = stagingAddress.toAddressPlan(
         direction: direction,
@@ -869,7 +873,10 @@ class SwapNotifier extends Notifier<SwapState> {
                     amount: amount,
                     amountText: amountText,
                     slippageBps: state.slippageBps,
-                    beforeSend: beforeSend,
+                    beforeSend: (deadline) async {
+                      mayHaveSent = true;
+                      await beforeSend?.call(deadline);
+                    },
                   ),
                 ),
           );
@@ -892,13 +899,13 @@ class SwapNotifier extends Notifier<SwapState> {
     } catch (e) {
       if (generation != _quoteGeneration) return;
       final receiveError = _receiveError(e);
-      // A refused or failed provider request bound no deposit to its refund
-      // key, so the next quote may reuse it. A wallet error may mean the key
-      // is bound. An outdated request gives its key up, since a newer one may
-      // already have reserved another.
-      if (sentRefund != null && receiveError == null) {
+      // Only a request that never left the device returns its refund key.
+      // Once sent, NEAR may have seen the address even without a response, so
+      // a refusal, timeout or bad response retires it. An outdated request
+      // gives its key up too, since a newer one may have reserved another.
+      if (takenRefund != null && !mayHaveSent) {
         _reviewStagingAddresses[(accountUuid, direction)] ??= Future.value(
-          sentRefund,
+          takenRefund,
         );
       }
       final stale = receiveError?.kind == ReceiveErrorKind.stale;

@@ -8290,7 +8290,7 @@ void main() {
 
   for (final direction in SwapDirection.values) {
     testWidgets(
-      'rejected POC ${direction.name} quotes reuse the first key after amount edits',
+      'rejected POC ${direction.name} quotes retire only a refund key',
       (tester) async {
         await _setDesktopViewport(tester);
         final provider = _LowAmountQuoteSwapProvider();
@@ -8308,7 +8308,9 @@ void main() {
                   reservations++;
                   return SwapZecStagingAddress(
                     address: 'u1poc$reservations',
-                    refundIndex: BigInt.from(reservations),
+                    refundIndex: direction.sendsZec
+                        ? BigInt.from(reservations)
+                        : null,
                   );
                 },
           ),
@@ -8342,12 +8344,17 @@ void main() {
           );
         }
         expect(provider.requests, hasLength(3));
-        expect(reservations, 1);
+        // NEAR saw each refused refund address, so each quote takes a new
+        // one. An incoming address is reused until its deadline.
+        final keys = direction.sendsZec
+            ? ['u1poc1', 'u1poc2', 'u1poc3']
+            : ['u1poc1', 'u1poc1', 'u1poc1'];
+        expect(reservations, direction.sendsZec ? 3 : 1);
         expect(
-          provider.requests
-              .map((r) => direction.sendsZec ? r.refundAddress : r.destination)
-              .toSet(),
-          {'u1poc1'},
+          provider.requests.map(
+            (r) => direction.sendsZec ? r.refundAddress : r.destination,
+          ),
+          keys,
         );
       },
     );
@@ -8503,6 +8510,64 @@ void main() {
       BigInt.two: 't1deposit2',
     });
   });
+
+  for (final sent in [true, false]) {
+    testWidgets(
+      sent
+          ? 'a refund quote whose response is lost retires its refund key'
+          : 'a refund quote that never left the device keeps its refund key',
+      (tester) async {
+        await _setDesktopViewport(tester);
+        var reservations = 0;
+        final provider = sent
+            ? _LostResponseSwapProvider()
+            : _UnsentQuoteSwapProvider();
+        await tester.pumpWidget(
+          _routerHarness(
+            GoRouter(
+              initialLocation: '/swap',
+              routes: [_swapRoute(), _swapActivityRoute()],
+            ),
+            seedSwapActivityFixtures: false,
+            swapProvider: provider,
+            reserveSwapAddress:
+                ({required accountUuid, required direction}) async {
+                  reservations++;
+                  return SwapZecStagingAddress(
+                    address: 'u1swap$reservations',
+                    refundIndex: BigInt.from(reservations),
+                  );
+                },
+          ),
+        );
+        await tester.pumpAndSettle();
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(SwapScreen)),
+        );
+        final notifier = container.read(swapStateProvider.notifier);
+        notifier.selectDirection(SwapDirection.zecToExternal);
+        notifier.updateDestination(
+          '0x52908400098527886e0f7030069857d2e4169ee7',
+        );
+        for (final amount in ['0.5', '0.6']) {
+          notifier.updateAmount(amount);
+          await notifier.showReview();
+          await tester.pumpAndSettle();
+          expect(container.read(swapStateProvider).quoteError, isNotNull);
+        }
+
+        final attempts = switch (provider) {
+          final _UnsentQuoteSwapProvider unsent => unsent.unsent,
+          _ => provider.requests,
+        };
+        expect(attempts.map((r) => r.refundAddress), [
+          'u1swap1',
+          sent ? 'u1swap2' : 'u1swap1',
+        ]);
+        expect(reservations, sent ? 2 : 1);
+      },
+    );
+  }
 
   testWidgets('POC amount edits share an in-flight address reservation', (
     tester,
