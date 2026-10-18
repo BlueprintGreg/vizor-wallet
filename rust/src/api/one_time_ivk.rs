@@ -79,7 +79,7 @@ impl From<ReservationPolicy> for ReceiveError {
             ),
             ReservationPolicy::SeenUnavailable => (
                 "Private swaps are paused because we can't confirm which addresses \
-                 are free right now. Turn off private swap addresses to swap now.",
+                 are free right now. Turn off NEAR swap privacy to swap now.",
                 ReceiveErrorKind::SeenUnavailable,
             ),
         };
