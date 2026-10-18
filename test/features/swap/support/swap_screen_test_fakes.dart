@@ -662,6 +662,23 @@ class _NewDepositPerQuoteSwapProvider extends _FakeSwapProvider {
   String get zecDepositAddress => 't1deposit${requests.length}';
 }
 
+/// Holds the first quote's response until [releaseFirst], so a later quote
+/// can be sent and answered while it is in flight.
+class _HeldFirstQuoteSwapProvider extends _NewDepositPerQuoteSwapProvider {
+  final _first = Completer<void>();
+
+  /// Lets the first quote's response arrive.
+  void releaseFirst() => _first.complete();
+
+  @override
+  Future<SwapQuote> quote(SwapQuoteRequest request) async {
+    final first = requests.isEmpty;
+    final quote = await super.quote(request);
+    if (first) await _first.future;
+    return quote;
+  }
+}
+
 /// NEAR swap privacy, off at first, that a test sets without the settings
 /// store or native calls.
 class _FakeNearSwapPrivacyNotifier extends NearSwapPrivacyNotifier {

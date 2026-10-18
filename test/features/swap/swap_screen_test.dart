@@ -8446,6 +8446,64 @@ void main() {
     });
   });
 
+  testWidgets('an amount edit during a refund quote reserves another refund '
+      'key', (tester) async {
+    await _setDesktopViewport(tester);
+    var reservations = 0;
+    final provider = _HeldFirstQuoteSwapProvider();
+    final store = _BindingReceiveReservationStore();
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        swapProvider: provider,
+        reservationStore: store,
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          return SwapZecStagingAddress(
+            address: 'u1swap$reservations',
+            refundIndex: BigInt.from(reservations),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.zecToExternal);
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    notifier.updateAmount('0.5');
+    final first = notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(provider.requests, hasLength(1), reason: 'the first quote is sent');
+
+    // The edit quotes again before the first response arrives.
+    notifier.updateAmount('0.6');
+    final second = notifier.showReview();
+    await tester.pumpAndSettle();
+    provider.releaseFirst();
+    await tester.pumpAndSettle();
+    await Future.wait([first, second]);
+
+    expect(reservations, 2);
+    expect(provider.requests.map((r) => r.refundAddress), [
+      'u1swap1',
+      'u1swap2',
+    ]);
+    final state = container.read(swapStateProvider);
+    expect(state.quoteError, isNull);
+    expect(state.reviewAddressPlan?.oneClickRefundTo, 'u1swap2');
+    expect(store.bindings, {
+      BigInt.one: 't1deposit1',
+      BigInt.two: 't1deposit2',
+    });
+  });
+
   testWidgets('POC amount edits share an in-flight address reservation', (
     tester,
   ) async {

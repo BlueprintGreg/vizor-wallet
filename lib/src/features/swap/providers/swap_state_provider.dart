@@ -766,7 +766,8 @@ class SwapNotifier extends Notifier<SwapState> {
   /// preparation do not allocate another key. An incoming address stays cached
   /// until NEAR swap privacy changes, its reservation goes stale, or its swap
   /// starts; the wallet also resumes its draft until the latest quote expires.
-  /// A refund address serves one quote (see [showReview]).
+  /// A refund address serves one quote request, so [_showReview] drops it once
+  /// it commits to sending one, and returns it only if the provider refused.
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
@@ -828,6 +829,8 @@ class SwapNotifier extends Notifier<SwapState> {
       clearQuoteError: true,
     );
 
+    // The refund address this request took from the cache, if any.
+    SwapZecStagingAddress? sentRefund;
     try {
       if (!state.payMode) {
         await _persistComposerPreferences(preferences);
@@ -841,6 +844,12 @@ class SwapNotifier extends Notifier<SwapState> {
       );
       if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
         return;
+      }
+      // This request binds the refund key to its deposit, so no other quote,
+      // an edit's or a refresh's, may use it even while this one is in flight.
+      if (stagingAddress.refundIndex != null) {
+        _dropReviewAddress(accountUuid, direction);
+        sentRefund = stagingAddress;
       }
       final addressPlan = stagingAddress.toAddressPlan(
         direction: direction,
@@ -864,11 +873,6 @@ class SwapNotifier extends Notifier<SwapState> {
                   ),
                 ),
           );
-      // The quote bound the refund key to its deposit, so the next quote, a
-      // refresh included, reserves another key.
-      if (quote.swapRefundIndex != null) {
-        _dropReviewAddress(accountUuid, direction);
-      }
       if (generation != _quoteGeneration) {
         return;
       }
@@ -888,11 +892,19 @@ class SwapNotifier extends Notifier<SwapState> {
     } catch (e) {
       if (generation != _quoteGeneration) return;
       final receiveError = _receiveError(e);
+      // A refused or failed provider request bound no deposit to its refund
+      // key, so the next quote may reuse it. A wallet error may mean the key
+      // is bound. An outdated request gives its key up, since a newer one may
+      // already have reserved another.
+      if (sentRefund != null && receiveError == null) {
+        _reviewStagingAddresses[(accountUuid, direction)] ??= Future.value(
+          sentRefund,
+        );
+      }
       final stale = receiveError?.kind == ReceiveErrorKind.stale;
-      // A refund key failure drops it, as one key serves one quote. An
-      // incoming reservation survives other errors and is dropped only once
+      // An incoming reservation survives other errors and is dropped only once
       // stale, when the next attempt needs another address.
-      if (stale || (receiveError != null && direction.sendsZec)) {
+      if (stale) {
         _dropReviewAddress(accountUuid, direction);
       }
       if (stale && retry) {
@@ -1867,14 +1879,9 @@ class SwapNotifier extends Notifier<SwapState> {
   }
 
   void _clearReviewState() {
-    // A refund key serves one quote, so the next quote reserves another. An
-    // incoming address is kept: the wallet resumes its draft until the latest
-    // quote expires, then refuses it as stale.
-    final quote = state.reviewQuote;
-    final account = state.reviewAccountUuid;
-    if (quote != null && quote.swapRefundIndex != null && account != null) {
-      _dropReviewAddress(account, quote.direction);
-    }
+    // Cached swap addresses are kept: a refund key leaves the cache when its
+    // quote request is sent, and the wallet resumes an incoming draft until
+    // the latest quote expires, then refuses it as stale.
     _quoteGeneration++;
     state = state.copyWith(
       reviewVisible: false,
