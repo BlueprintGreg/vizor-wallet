@@ -399,6 +399,49 @@ void main() {
     await done(tester);
   });
 
+  testWidgets('a transport restart suspends the window, which resumes with '
+      'the ticks it had left', (tester) async {
+    await addAccount(tester, imported: true);
+    await endFirstSync(tester);
+    final ticks =
+        kSeedImportSyncWindow.inMicroseconds ~/
+        kSeedImportSyncInterval.inMicroseconds;
+    await tester.pump(kSeedImportSyncInterval);
+    await settle(tester);
+    expect(api.syncs, hasLength(2));
+    await api.finish(1);
+    await settle(tester);
+
+    final transport = Completer<void>();
+    final restart = sync.restartSyncAfterTransportChange(
+      () => transport.future,
+    );
+    await settle(tester);
+    expect(sync.seedImportSyncWindowOpenForTesting, isFalse);
+    // No quiet sync reaches the network while the transport changes.
+    await tester.pump(kSeedImportSyncInterval * 3);
+    await settle(tester);
+    expect(api.syncs, hasLength(2));
+
+    transport.complete();
+    await restart;
+    await settle(tester);
+    sync.stopTipChecksForTesting();
+    expect(api.syncs, hasLength(3), reason: 'the restart syncs');
+    expect(sync.seedImportSyncWindowOpenForTesting, isTrue);
+    // The restarted sync keeps running, so the remaining ticks only count.
+    await tester.pump(kSeedImportSyncInterval * (ticks - 2));
+    await settle(tester);
+    expect(sync.seedImportSyncWindowOpenForTesting, isTrue);
+    await tester.pump(kSeedImportSyncInterval);
+    await settle(tester);
+    expect(sync.seedImportSyncWindowOpenForTesting, isFalse);
+    expect(api.syncs, hasLength(3));
+    await api.finish(2);
+    await settle(tester);
+    await done(tester);
+  });
+
   testWidgets('another active account ends the window', (tester) async {
     await addAccount(tester, imported: true);
     await endFirstSync(tester);

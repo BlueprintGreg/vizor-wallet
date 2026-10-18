@@ -5,7 +5,9 @@
 use super::enhancement::transport::{RoutedHttpError, RoutedTransport};
 use super::WalletDatabase;
 use crate::wallet::{db::with_wallet_db_write_lock, network::WalletNetwork};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use zakura_one_time_ivk::swap::provider_read_is_current;
 use zakura_pir_receiver::{DirectoryError, Seen, Transport, WriteLock, MAINNET_GENESIS};
@@ -250,6 +252,76 @@ pub(crate) async fn current_seen(network: WalletNetwork, now: i64) -> Result<Arc
     }
 }
 
+/// Orders one wallet's discovery runs against "Check swap history" resets. A run holds
+/// its wallet's gate from its first read to its last write. A reset that landed in
+/// between would let the run write back the pass it read, finish it, and report the
+/// check done without the newer publication. A reset asks the run to stop and waits.
+struct DiscoveryGate {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    /// Resets waiting for or holding the gate. A run stops while any is.
+    rechecks: AtomicUsize,
+}
+
+/// Each wallet's [`DiscoveryGate`], by database path.
+static GATES: Mutex<BTreeMap<String, Arc<DiscoveryGate>>> = Mutex::new(BTreeMap::new());
+
+/// The [`DiscoveryGate`] of the wallet at `db_path`.
+fn gate(db_path: &str) -> Arc<DiscoveryGate> {
+    GATES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(db_path.to_owned())
+        .or_insert_with(|| {
+            Arc::new(DiscoveryGate {
+                lock: Arc::new(tokio::sync::Mutex::new(())),
+                rechecks: AtomicUsize::new(0),
+            })
+        })
+        .clone()
+}
+
+/// A discovery run's hold on its wallet's [`DiscoveryGate`].
+pub(crate) struct DiscoveryRun {
+    gate: Arc<DiscoveryGate>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl DiscoveryRun {
+    /// Waits until no reset or other run holds the gate of the wallet at `db_path`.
+    pub(crate) async fn start(db_path: &str) -> Self {
+        let gate = gate(db_path);
+        let held = gate.lock.clone().lock_owned().await;
+        Self { gate, _held: held }
+    }
+
+    /// Whether a reset is waiting for this run, which should then stop.
+    pub(crate) fn preempted(&self) -> bool {
+        self.gate.rechecks.load(Ordering::SeqCst) > 0
+    }
+}
+
+/// Runs `reset` while no discovery run holds the gate of the wallet at `db_path`,
+/// first asking a running one to stop (see [`DiscoveryGate`]). Blocks the calling
+/// thread, so never call it from async code.
+pub(crate) fn exclusive_of_discovery<T>(db_path: &str, reset: impl FnOnce() -> T) -> T {
+    /// Withdraws a reset's stop request when dropped, even on a panic.
+    struct Waiting<'a>(&'a AtomicUsize);
+    impl Drop for Waiting<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let gate = gate(db_path);
+    gate.rechecks.fetch_add(1, Ordering::SeqCst);
+    let waiting = Waiting(&gate.rechecks);
+    let held = gate.lock.blocking_lock();
+    let result = reset();
+    // Withdrawn before release, so a run queued behind this reset is not stopped.
+    drop(waiting);
+    drop(held);
+    result
+}
+
 /// Whether a discovery run for an account in `status` would do anything: the same test
 /// `zakura_pir_receiver::discover` makes before its first request.
 fn due(status: &Option<DiscoveryStatus>) -> bool {
@@ -267,16 +339,25 @@ fn due(status: &Option<DiscoveryStatus>) -> bool {
 /// sync, for late payments, and only where one-time IVKs are `supported`. An account
 /// with nothing due makes no request. Every step commits on its own, so stopping at the
 /// budget or on `should_exit` is safe; failures are logged and retried on a later run.
+/// The run holds the wallet's [`DiscoveryGate`] and stops early, reporting a possible
+/// change, when a swap history check needs it.
 pub(super) async fn discover(
     db: &mut WalletDatabase,
+    db_path: &str,
     network: WalletNetwork,
     budget: Duration,
     should_exit: &impl Fn() -> bool,
 ) -> bool {
-    let result = tokio::select! {
+    let run = tokio::select! {
         biased;
         _ = super::watch_for_exit(should_exit) => return false,
-        result = tokio::time::timeout(budget, discover_accounts(db, network, should_exit)) => {
+        run = DiscoveryRun::start(db_path) => run,
+    };
+    let stop = || should_exit() || run.preempted();
+    let result = tokio::select! {
+        biased;
+        _ = super::watch_for_exit(&stop) => return !should_exit(),
+        result = tokio::time::timeout(budget, discover_accounts(db, network, &stop)) => {
             result.unwrap_or_else(|_| Err("time budget reached".to_owned()))
         }
     };

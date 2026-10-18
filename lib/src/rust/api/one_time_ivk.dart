@@ -139,7 +139,8 @@ Future<void> observeSwapStatus({
 /// "Check swap history": ends every software account's discovery pass, so the next
 /// sync starts a new one against the directory's current publication and finds a
 /// second refund or a late payout that arrived after its key stopped scanning. Once
-/// discovery is complete nothing else starts a pass. The caller then syncs, and
+/// discovery is complete nothing else starts a pass. A discovery run in progress is
+/// stopped first, and the call waits for it. The caller then syncs, and
 /// [`is_swap_history_checking`] says when the check is done.
 Future<void> checkSwapHistory({
   required String dbPath,
