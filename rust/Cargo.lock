@@ -8209,7 +8209,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-backend"
 version = "0.1.0-rc9"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "ambassador",
  "arti-client",
@@ -8283,7 +8283,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-sqlite"
 version = "0.1.0-rc9"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "ambassador",
  "bip32",
@@ -8344,7 +8344,7 @@ dependencies = [
 [[package]]
 name = "zakura-filters"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "bitcoin-io",
  "bitcoin_hashes 0.14.101",
@@ -8529,7 +8529,7 @@ dependencies = [
 [[package]]
 name = "zakura-one-time-ivk"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "blake2b_simd",
  "ff 0.14.0",
@@ -8666,7 +8666,7 @@ dependencies = [
 [[package]]
 name = "zakura-pczt"
 version = "0.1.0-rc6"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "blake2b_simd",
  "document-features",
@@ -8695,7 +8695,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-client"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
@@ -8730,7 +8730,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-protocol"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "base64 0.22.1",
  "bitcoin_hashes 0.14.101",
@@ -8751,7 +8751,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-publisher"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "base64 0.22.1",
  "bitcoin_hashes 0.14.101",
@@ -8768,7 +8768,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-query-server"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "rayon",
  "reinspiring 0.1.3-rc.1 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
@@ -8779,7 +8779,7 @@ dependencies = [
 [[package]]
 name = "zakura-pir-server-core"
 version = "0.0.1-rc0"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "rayon",
  "reinspiring 0.1.3-rc.1 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
@@ -8981,7 +8981,7 @@ dependencies = [
 [[package]]
 name = "zakura-wallet-lib"
 version = "0.1.0-rc8"
-source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=bffb3cdcfcc5442b612cad91df26619d7b909d89#bffb3cdcfcc5442b612cad91df26619d7b909d89"
+source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=3ce402717973dd4cf791cde74902435663e50a9c#3ce402717973dd4cf791cde74902435663e50a9c"
 dependencies = [
  "zakura-address",
  "zakura-bellman",
