@@ -20,6 +20,8 @@ import 'package:zcash_wallet/src/features/settings/screens/settings_screen.dart'
 import 'package:zcash_wallet/src/features/settings/settings_platform.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/enhance_pir_privacy_control.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/near_swap_privacy_info.dart';
+import 'package:zcash_wallet/src/features/settings/widgets/swap_history_check_control.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/network_privacy_control.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/private_queries_turn_off.dart';
 import 'package:zcash_wallet/src/features/payment_links/providers/payment_link_cards_provider.dart';
@@ -658,6 +660,48 @@ void main() {
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
+  testWidgets('Check swap history reports its progress', (tester) async {
+    final checking = Completer<bool>();
+    var begun = 0;
+    await tester.pumpWidget(
+      _settingsHarness(
+        extraOverrides: [
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async => begun++,
+              isChecking: () => checking.future,
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    final button = find.byKey(const ValueKey('settings_check_swap_history'));
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.idle),
+    );
+    await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
+    await tester.tap(button);
+    await tester.pump();
+    expect(begun, 1);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+    checking.complete(false);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+  });
+
   testWidgets('NEAR swap privacy names the hardware account exception', (
     tester,
   ) async {
@@ -681,6 +725,11 @@ void main() {
     await tester.pump();
     expect(find.text(kNearSwapPrivacyHardwareCopy), findsOneWidget);
     expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
+    // Hardware accounts have no one-time keys to check.
+    expect(
+      find.byKey(const ValueKey('settings_check_swap_history')),
+      findsNothing,
+    );
   });
 
   testWidgets('connected Tor state describes Vizor and external app routes', (

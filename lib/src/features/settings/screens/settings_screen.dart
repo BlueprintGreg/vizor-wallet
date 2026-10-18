@@ -38,6 +38,7 @@ import '../widgets/enhance_pir_privacy_control.dart';
 import '../widgets/private_queries_turn_off.dart';
 import '../widgets/settings_new_badge.dart';
 import '../widgets/settings_sub_option.dart';
+import '../widgets/swap_history_check_control.dart';
 import '../widgets/windows_update_download_flow.dart';
 
 const _settingsRowActivationShortcuts = <ShortcutActivator, Intent>{
@@ -663,6 +664,15 @@ class _SettingsList extends ConsumerWidget {
                         ),
                 ),
               ),
+              // Discovery runs for software accounts whatever the switches say,
+              // so the check does too.
+              if (!hardwareAccount) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Padding(
+                  padding: const EdgeInsets.only(left: AppSpacing.xs + 20),
+                  child: const SwapHistoryCheckControl(),
+                ),
+              ],
             ],
           ],
         ),

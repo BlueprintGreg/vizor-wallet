@@ -597,6 +597,15 @@ void main() {
     );
     await tester.scrollUntilVisible(description, 200);
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(
+          const ValueKey('mobile_settings_near_swap_privacy_sub_option'),
+        ),
+        matching: find.byKey(const ValueKey('settings_check_swap_history')),
+      ),
+      findsOneWidget,
+    );
   });
 
   for (final (name, accountState) in [
@@ -616,6 +625,10 @@ void main() {
       await tester.scrollUntilVisible(description, 200);
       expect(find.text(kNearSwapPrivacyHardwareCopy), findsOneWidget);
       expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
+      expect(
+        find.byKey(const ValueKey('settings_check_swap_history')),
+        findsNothing,
+      );
     });
   }
 
