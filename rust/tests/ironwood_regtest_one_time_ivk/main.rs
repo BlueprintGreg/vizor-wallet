@@ -114,6 +114,42 @@ impl World {
         false
     }
 
+    /// Republishes and syncs `wallet`, mining a block between syncs, until its discovery
+    /// uses a publication other than `stale` that its scan accepted, and returns that
+    /// publication's last height and hash. Fails after `rounds` syncs. Each round checks
+    /// the wallet never holds more than [`PAYOUT`], so a payout counted twice fails at once.
+    fn accepted_replacement(
+        &mut self,
+        wallet: &Wallet,
+        stale: &(u32, Vec<u8>),
+        rounds: u32,
+    ) -> (u32, Vec<u8>) {
+        for round in 0..rounds {
+            if round > 0 {
+                self.stack.mine(1);
+            }
+            self.sync(wallet);
+            assert!(
+                wallet.total() <= PAYOUT,
+                "{} holds {} after the reorg (round {round})",
+                wallet.name,
+                wallet.total()
+            );
+            if let Some(current) = wallet.discovery_publication() {
+                if current != *stale && wallet.publication_state(current.0, &current.1) == Some(1) {
+                    return current;
+                }
+            }
+        }
+        panic!(
+            "{}'s discovery never accepted a publication replacing the one ending at {} \
+             (states there {:?})",
+            wallet.name,
+            stale.0,
+            wallet.publication_states_at(stale.0)
+        );
+    }
+
     /// Quotes an incoming swap on `wallet`, syncing while restored addresses are still
     /// being checked, as a user would retry.
     fn quote_incoming(&mut self, wallet: &Wallet, deadline_in: i64) -> IncomingSwap {
@@ -1101,12 +1137,20 @@ fn a_reorg_replacing_the_publications_last_block_waits_for_a_republish() {
     let b = Wallet::import("B", &a.mnemonic, birthday);
     // Without a republish, B begins against the publication the reorg made stale.
     b.sync(&world.stack);
-    assert!(
-        !b.publication_states_at(anchor).contains(&1),
+    let stale = b.discovery_publication().expect("B began discovery");
+    assert_eq!(stale.0, anchor, "B began against the stale publication");
+    let replacement = world.accepted_replacement(&b, &stale, 15);
+    assert_eq!(
+        b.publication_state(stale.0, &stale.1),
+        Some(2),
         "B's scan stored another block at the stale publication's last height"
     );
+    eprintln!(
+        "B's discovery accepted the replacement ending at {}",
+        replacement.0
+    );
     assert!(
-        world.sync_until(&b, PAYOUT, 15),
+        world.sync_until(&b, PAYOUT, 5),
         "discovery finds the payout once the directory republishes (holds {})",
         b.total()
     );
@@ -1139,18 +1183,17 @@ fn a_reorg_below_an_accepted_publication_keeps_the_payout_once() {
     );
 
     world.stack.reorg(anchor - 1);
-    for round in 0..6 {
-        if round > 0 {
-            world.stack.mine(1);
-        }
-        world.sync(&b);
-        assert_eq!(b.total(), PAYOUT, "B holds the payout once (round {round})");
-    }
-    assert_ne!(
+    let replacement = world.accepted_replacement(&b, &(anchor, hash.clone()), 10);
+    assert_eq!(
         b.publication_state(anchor, &hash),
-        Some(1),
-        "the rescan no longer accepts the publication whose last block the reorg replaced"
+        Some(2),
+        "the rescan rejects the publication whose last block the reorg replaced"
     );
+    eprintln!(
+        "B's discovery accepted the replacement ending at {}",
+        replacement.0
+    );
+    assert_eq!(b.total(), PAYOUT, "B holds the payout once");
     assert_eq!(b.one_time_notes(), 1, "B counts the payout once");
     world.spend_all(&b);
 }
