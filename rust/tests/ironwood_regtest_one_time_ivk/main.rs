@@ -301,7 +301,7 @@ enum Sibling {
 }
 
 /// Serializes the tests, which share one regtest stack, and prints Vizor's warnings,
-/// such as a deferred restore sweep, to standard error (`E2E_LOG=info` for more).
+/// such as deferred discovery, to standard error (`E2E_LOG=info` for more).
 fn lock() -> MutexGuard<'static, ()> {
     static LOGGER: StderrLogger = StderrLogger;
     let level = match std::env::var("E2E_LOG").as_deref() {
@@ -365,6 +365,10 @@ fn incoming_payout_is_found_live_and_by_a_later_restore() {
     assert!(
         world.directory.lookups() > lookups,
         "B looked the payout up in the directory"
+    );
+    assert!(
+        b.discovery_accepted(),
+        "B's discovery accepted the publication it looked the payout up in"
     );
     world.spend_all(&b);
 }
@@ -532,6 +536,10 @@ fn refund_is_found_live_and_by_a_later_restore() {
         b.total(),
         a.total()
     );
+    assert!(
+        b.discovery_accepted(),
+        "B's discovery accepted the publication it found the refund in"
+    );
     world.spend_all(&b);
 }
 
@@ -663,6 +671,10 @@ fn a_zero_value_refund_marker_restores_the_key() {
         b.refund_key_indices().contains(&swap.index),
         "B recovered the refund key from the zero-value marker"
     );
+    assert!(
+        b.discovery_accepted(),
+        "B's discovery accepted the publication it found the refund in"
+    );
     world.spend_all(&b);
 }
 
@@ -773,6 +785,11 @@ fn two_accounts_in_one_wallet_keep_their_swaps_apart() {
         b2.total(),
         a2.total()
     );
+    assert!(b.discovery_accepted(), "B's discovery looked for A's swaps");
+    assert!(
+        b2.discovery_accepted(),
+        "B2's discovery looked for A2's swaps"
+    );
     let next = [world.quote_refund(&a, HOUR), world.quote_refund(&a2, HOUR)];
     assert_eq!(
         (next[0].index, next[1].index),
@@ -839,6 +856,10 @@ fn turning_swap_privacy_off_mid_swap_keeps_finding_its_funds() {
         "B, restored with swap privacy off, finds both (holds {}, A holds {})",
         b.total(),
         a.total()
+    );
+    assert!(
+        b.discovery_accepted(),
+        "B's discovery looked for both payments with swap privacy off"
     );
     world.spend_all(&b);
     sync_api::set_near_swap_privacy_enabled(true);
@@ -961,6 +982,10 @@ fn a_restore_after_two_payouts_in_one_transaction_were_spent_holds_nothing() {
         "B counts A's spend of both payouts"
     );
     assert_eq!(b.total(), 0, "B holds nothing A already spent");
+    assert!(
+        b.discovery_accepted(),
+        "B's discovery looked for both payouts"
+    );
 }
 
 /// A ZEC-to-X swap whose deposit NEAR reports as INCOMPLETE_DEPOSIT, which is not final.
@@ -1019,9 +1044,100 @@ fn an_underpaid_swap_refunded_weeks_after_its_deadline_is_found_live() {
     world.spend_all(&b);
 }
 
-/// A restore made while the receiver directory is unreachable recovers the refund key
-/// from the funding memo but cannot find the refund, which only the key's directory
-/// sweep looks for. The sweep waits, and finds the refund once the directory is back.
+/// A wallet whose incoming swap NEAR paid out two days ago, found and settled, so a
+/// restore of its seed from `birthday` has one payout to find. Returns the wallet and
+/// `birthday`.
+fn settled_payout(world: &mut World) -> (Wallet, u32) {
+    let a = world.wallet("A");
+    let birthday = world.stack.tip();
+    let swap = world.quote_incoming(&a, HOUR);
+    world.stack.advance(20 * MINUTE);
+    world.pay(&swap.address, PAYOUT);
+    assert!(
+        world.sync_until(&a, PAYOUT, 3),
+        "A finds the payout while scanning"
+    );
+    a.observe_incoming(&world.stack, &swap, "SUCCESS", PAYOUT);
+    world.stack.mine(12);
+    world.sync(&a);
+    world.stack.advance(2 * DAY);
+    world.stack.mine(1);
+    (a, birthday)
+}
+
+/// A restore begins against a publication whose last block a reorg replaced before the
+/// directory republished. The scan stores the new branch's block at that height, so the
+/// wallet never accepts the publication, and discovery finds the payout once the
+/// directory republishes on the new chain, counted once.
+#[test]
+#[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
+fn a_reorg_replacing_the_publications_last_block_waits_for_a_republish() {
+    let _guard = lock();
+    let mut world = World::start();
+    let (a, birthday) = settled_payout(&mut world);
+    world.publish();
+    let anchor = world.stack.tip() - 2;
+    world.stack.reorg(anchor - 1);
+    let b = Wallet::import("B", &a.mnemonic, birthday);
+    // Without a republish, B begins against the publication the reorg made stale.
+    b.sync(&world.stack);
+    assert!(
+        !b.publication_states_at(anchor).contains(&1),
+        "B's scan stored another block at the stale publication's last height"
+    );
+    assert!(
+        world.sync_until(&b, PAYOUT, 15),
+        "discovery finds the payout once the directory republishes (holds {})",
+        b.total()
+    );
+    assert_eq!(b.one_time_notes(), 1, "B counts the payout once");
+    world.spend_all(&b);
+}
+
+/// A restore's discovery accepts its publication and finds the payout, then a reorg
+/// replaces blocks between the payout and the publication's last block. The rewind
+/// makes the publication provisional again, and the rescan stores another block at its
+/// last height, so the wallet no longer trusts it. The payout, below the fork, stays
+/// counted once, and B can spend it.
+#[test]
+#[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
+fn a_reorg_below_an_accepted_publication_keeps_the_payout_once() {
+    let _guard = lock();
+    let mut world = World::start();
+    let (a, birthday) = settled_payout(&mut world);
+    let b = Wallet::import("B", &a.mnemonic, birthday);
+    assert!(
+        world.sync_until(&b, PAYOUT, 10),
+        "B, restored from A's seed, finds the payout (holds {})",
+        b.total()
+    );
+    let (anchor, hash) = b.discovery_publication().expect("B began discovery");
+    assert_eq!(
+        b.publication_state(anchor, &hash),
+        Some(1),
+        "B's discovery accepted its publication"
+    );
+
+    world.stack.reorg(anchor - 1);
+    for round in 0..6 {
+        if round > 0 {
+            world.stack.mine(1);
+        }
+        world.sync(&b);
+        assert_eq!(b.total(), PAYOUT, "B holds the payout once (round {round})");
+    }
+    assert_ne!(
+        b.publication_state(anchor, &hash),
+        Some(1),
+        "the rescan no longer accepts the publication whose last block the reorg replaced"
+    );
+    assert_eq!(b.one_time_notes(), 1, "B counts the payout once");
+    world.spend_all(&b);
+}
+
+/// A restore made while the receiver directory is unreachable finds everything but the
+/// refund, which only discovery finds. Discovery waits for the directory, then recovers
+/// the refund key from the funding memo and finds the refund.
 #[test]
 #[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
 fn a_restore_during_a_directory_outage_finds_the_refund_once_it_returns() {
@@ -1057,19 +1173,23 @@ fn a_restore_during_a_directory_outage_finds_the_refund_once_it_returns() {
         "B never reached the directory"
     );
     assert!(
-        b.refund_key_indices().contains(&swap.index),
-        "B recovered the refund key from the funding memo"
+        b.discovery_publication().is_none(),
+        "B's discovery cannot begin a pass without the directory"
     );
     assert_eq!(
         b.total(),
         a.total() - ZEC / 2,
-        "B holds everything but the refund, which waits for the sweep"
+        "B holds everything but the refund, which waits for discovery"
     );
     assert!(
         world.sync_until(&b, a.total(), 4),
         "B finds the refund once the directory is back (holds {}, A holds {})",
         b.total(),
         a.total()
+    );
+    assert!(
+        b.refund_key_indices().contains(&swap.index),
+        "B's discovery recovered the refund key from the funding memo"
     );
     world.spend_all(&b);
 }

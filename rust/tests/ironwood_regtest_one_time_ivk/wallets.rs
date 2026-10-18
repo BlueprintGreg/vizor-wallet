@@ -217,6 +217,64 @@ impl Wallet {
             .expect("the one-time-key note count")
     }
 
+    /// Whether one of the wallet's discovery passes uses a publication its scan
+    /// accepted, so discovery itself looked the account's payments up.
+    pub fn discovery_accepted(&self) -> bool {
+        self.read_only()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM ironwood_one_time_discovery d
+                 JOIN ironwood_one_time_publications p
+                   ON p.height = d.publication_height AND p.hash = d.publication_hash
+                 WHERE p.state = 1)",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the discovery state")
+    }
+
+    /// The publication the wallet's first discovery pass uses, if one began: its last
+    /// height and block hash.
+    pub fn discovery_publication(&self) -> Option<(u32, Vec<u8>)> {
+        use rusqlite::OptionalExtension as _;
+        self.read_only()
+            .query_row(
+                "SELECT publication_height, publication_hash FROM ironwood_one_time_discovery
+                 ORDER BY account_id LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .expect("the discovery publication")
+    }
+
+    /// The state of the publication ending at `height` with block `hash`, if the wallet
+    /// recorded it: 0 until the scan stores that block, then 1 if it matched or 2 if it
+    /// did not.
+    pub fn publication_state(&self, height: u32, hash: &[u8]) -> Option<u8> {
+        use rusqlite::OptionalExtension as _;
+        self.read_only()
+            .query_row(
+                "SELECT state FROM ironwood_one_time_publications WHERE height = ?1 AND hash = ?2",
+                rusqlite::params![height, hash],
+                |r| r.get(0),
+            )
+            .optional()
+            .expect("the publication state")
+    }
+
+    /// The states of every publication the wallet recorded ending at `height`.
+    pub fn publication_states_at(&self, height: u32) -> Vec<u8> {
+        let conn = self.read_only();
+        let mut statement = conn
+            .prepare("SELECT state FROM ironwood_one_time_publications WHERE height = ?1")
+            .expect("a query");
+        statement
+            .query_map([height], |r| r.get(0))
+            .expect("the publication states")
+            .collect::<Result<_, _>>()
+            .expect("the publication states")
+    }
+
     /// Whether the key behind one-time `receiver` stopped scanning.
     pub fn key_closed(&self, receiver: &[u8; 43]) -> bool {
         self.read_only()
