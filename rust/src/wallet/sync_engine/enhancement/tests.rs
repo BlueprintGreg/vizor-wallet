@@ -1541,9 +1541,8 @@ mod tests {
     #[tokio::test]
     async fn policy_transition_withholds_remaining_public_status_work() {
         use zakura_transaction_status::StatusObservation;
-        use zcash_client_backend::data_api::{
-            status::{PublicTransactionStatusRequest, TransactionStatusWork},
-            transparent_ledger::TransparentLedgerMode,
+        use zcash_client_backend::data_api::status::{
+            PublicTransactionStatusRequest, TransactionStatusWork,
         };
         let (file, mut db, private_txid) = private_status_work_db();
         let path = file.path().to_str().unwrap().to_owned();

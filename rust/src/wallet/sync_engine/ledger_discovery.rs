@@ -1261,7 +1261,6 @@ mod tests {
 
     #[tokio::test]
     async fn transition_during_discovery_withholds_every_later_request() {
-        use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
         let (_dir, path, id, mut db, _) = ledger_fixture();
         let mut rpc = FakeRpc {
             histories: Default::default(),
