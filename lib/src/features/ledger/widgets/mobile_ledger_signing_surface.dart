@@ -11,11 +11,15 @@ class MobileLedgerSigningSurface extends StatefulWidget {
     required this.child,
     required this.onBack,
     required this.canLeave,
+    this.onPrevious,
     this.title = 'Ledger',
     super.key,
   });
   final Widget child;
   final VoidCallback onBack;
+
+  /// Returns to the previous step; dismissal still uses [onBack].
+  final VoidCallback? onPrevious;
   final bool canLeave;
   final String title;
 
@@ -44,11 +48,17 @@ class _MobileLedgerSigningSurfaceState
     widget.onBack();
   }
 
+  void _previous() {
+    if (!widget.canLeave || _closing) return;
+    _closing = true;
+    (widget.onPrevious ?? widget.onBack)();
+  }
+
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: false,
     onPopInvokedWithResult: (didPop, _) {
-      if (!didPop) _dismiss();
+      if (!didPop) _previous();
     },
     child: Stack(
       fit: StackFit.expand,
@@ -73,7 +83,11 @@ class _MobileLedgerSigningSurfaceState
                   _dismiss();
                 }
               },
-              child: MobileModalCard(child: widget.child),
+              child: MobileModalCard(
+                onBack: widget.onPrevious == null ? null : _previous,
+                backEnabled: widget.canLeave && !_closing,
+                child: widget.child,
+              ),
             ),
           ),
         ),

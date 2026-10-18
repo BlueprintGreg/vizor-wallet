@@ -67,8 +67,11 @@ use zcash_client_backend::data_api::{
         AccountLifecycle, RecoveryBlocker, TransparentAddressWatchSet, TransparentLedgerMode,
         TransparentLedgerRead, TransparentLedgerWrite,
     },
-    Account as _, WalletRead,
+    WalletRead,
 };
+// The test modules call `Account` methods through `use super::*`.
+#[cfg(test)]
+use zcash_client_backend::data_api::Account as _;
 use zcash_client_sqlite::{error::SqliteClientError, AccountUuid};
 
 use super::enhancement::{may_raise, EnhancementPolicy};

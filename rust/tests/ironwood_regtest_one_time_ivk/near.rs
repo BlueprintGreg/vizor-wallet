@@ -2,7 +2,7 @@
 //! when, and in which role.
 
 use zakura_one_time_ivk::swap::RESTORE_WATCH_SECS;
-use zakura_pir_receiver::receiver_directory::{snapshot::ProviderSet, Receiver};
+use zakura_pir_receiver::receiver_directory::{snapshot::ProviderSet, ReceiverBytes};
 
 use super::chain::{DAY, MINUTE};
 
@@ -84,14 +84,12 @@ impl Near {
 }
 
 /// `receivers` without repeats, in first-seen order.
-fn dedup(receivers: impl Iterator<Item = [u8; 43]>) -> Vec<Receiver> {
-    let mut out: Vec<[u8; 43]> = Vec::new();
+fn dedup(receivers: impl Iterator<Item = [u8; 43]>) -> Vec<ReceiverBytes> {
+    let mut out: Vec<ReceiverBytes> = Vec::new();
     for receiver in receivers {
         if !out.contains(&receiver) {
             out.push(receiver);
         }
     }
-    out.into_iter()
-        .map(|r| Receiver::from_bytes(r).expect("a valid receiver"))
-        .collect()
+    out
 }

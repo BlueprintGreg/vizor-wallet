@@ -61,7 +61,7 @@ pub(crate) mod mempool;
 mod private_recovery_reorg_tests;
 mod retry_progress;
 mod swap_private;
-pub(crate) use swap_private::fetch_seen;
+pub(crate) use swap_private::{current_seen, fetch_seen};
 #[cfg(test)]
 pub(crate) mod test_lwd;
 mod tip_cache;
@@ -96,7 +96,7 @@ pub enum SyncEventKind {
     /// ephemeral address checks report it again when they change wallet data.
     Completed,
     /// A post-sync follow-up (private transparent recovery, transparent
-    /// details, one-time key restore sweeps) changed wallet data after
+    /// details, one-time key discovery) changed wallet data after
     /// completion was reported. The sync stays complete; its stream, and the
     /// running guard, end only once every follow-up has.
     FollowupUpdated,
@@ -3154,17 +3154,6 @@ async fn run_sync_impl(
         with_wallet_db_write_lock("sync_engine.open_db", || open_db(db_data_path, network))?;
     let mut enhancement = EnhancementSession::new(network, db_data_path);
     let one_time_ivks = crate::wallet::one_time_ivk::supported(network);
-    // One-time IVK maintenance runs only at sync start, and never stops sync. Run after
-    // an Enhance reply, it would register a refund key from the memo that reply
-    // retrieved, and the key's restore sweep would follow in the same sync, so requests
-    // would depend on reply content. Such a key waits for the next sync.
-    if one_time_ivks {
-        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.prepare", || {
-            crate::wallet::one_time_ivk::maintain_recovery(&mut db)
-        }) {
-            log::warn!("One-time IVK maintenance deferred: {e}");
-        }
-    }
     // The main-phase rewind budget also covers a reorg detected by the
     // initial tip response, before the scan queue has been created.
     let mut main_rewinds_this_run: u32 = 0;
@@ -3253,6 +3242,20 @@ async fn run_sync_impl(
     log::info!("[{}] sync: chain tip = {}", elapsed(), current_tip_height);
     // A new block lets work that failed on content count, and be asked, again.
     enhancement::content_failures::at_tip(db_data_path, current_tip_height);
+    // One-time key discovery runs after the tip update, since the wallet refuses a
+    // publication above its chain tip, and before the first scan batch, so its lookups
+    // become scan hints this sync scans. It never fails the sync (see
+    // [`swap_private::discover`]). Background preparation syncs skip it, as they skip
+    // the transparent follow-ups.
+    if one_time_ivks && running_mode != 2 && !should_exit() {
+        swap_private::discover(
+            &mut db,
+            network,
+            swap_private::BEFORE_SCAN_BUDGET,
+            &should_exit,
+        )
+        .await;
+    }
 
     // Retained send-lock expiry requires a usable target height.
     crate::wallet::sync::recover_orphaned_send_locks(db_data_path, network)
@@ -3892,7 +3895,6 @@ async fn run_sync_impl(
                     {
                         return Ok(());
                     }
-                    // No one-time IVK maintenance here (see sync start).
                     if one_time_ivks {
                         let verified_tip =
                             block_height_from_u64(current_tip_height, "verified chain tip")?;
@@ -5026,16 +5028,20 @@ async fn run_sync_impl(
         }
     }
 
-    // Restore sweeps of one-time keys are the last follow-up: they reach the receiver
-    // directory under a three-minute budget, so neither completion nor the work above
-    // waits for them. They run under the same cancellation and never fail the sync
-    // (see [`swap_private::run`]). A finished sweep may have stored payments, so it
-    // reports `FollowupUpdated`; its rescan runs next sync. Background preparation
-    // syncs skip the sweeps, as they skip the transparent follow-ups.
+    // Discovery runs again as the last follow-up, for late payments and lookups the
+    // scan made due, under its own budget, so neither completion nor the work above
+    // waits for it. A run with work due may have stored payments, so it reports
+    // `FollowupUpdated`; scan hints it adds are scanned next sync.
     if one_time_ivks
         && running_mode != 2
         && !should_exit()
-        && swap_private::run(&mut db, network, &should_exit).await
+        && swap_private::discover(
+            &mut db,
+            network,
+            swap_private::AFTER_SYNC_BUDGET,
+            &should_exit,
+        )
+        .await
     {
         progress_fn(followup_updated_event((
             final_scanned_height,

@@ -7,13 +7,13 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-# The receiver client is not published yet, so it comes from the wallet-libraries
-# commit the published rc9 crates were released from (see `[patch.crates-io]`).
-zakura-pir-receiver = { git = "https://github.com/zakura-core/wallet-libraries", rev = "d08e55d5249d8a42153533d7f2c998151e44344c", features = ["wallet"] }
+# The receiver client is not published yet, so it comes from wallet-libraries
+# (see `[patch.crates-io]` for which commit and why).
+zakura-pir-receiver = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c", features = ["wallet"] }
 zakura-one-time-ivk = { version = "=0.0.1-rc0" }
 zakura-near-intents = { version = "=0.0.1-rc0" }
-zakura-pir-status = { version = "=0.0.1-rc1" }
-zakura-transaction-status = { version = "=0.0.1-rc2" }
+zakura-pir-status = { version = "=0.0.1-rc2" }
+zakura-transaction-status = { version = "=0.0.1-rc3" }
 zcash_note_encryption = { package = "zakura-note-encryption", version = "=3.0.0" }
 flutter_rust_bridge = "=2.11.1"
 
@@ -171,13 +171,14 @@ default-features = false
 features = ["std"]
 
 [dependencies.zakura-pir-enhance]
-version = "=0.0.1-rc3"
+version = "=0.0.1-rc4"
 default-features = false
 features = ["wallet"]
 
-# Transparent PIR recovery adapter from the published Common v3 wallet family.
+# Transparent PIR recovery adapter, from the same wallet-libraries commit as the
+# rest of the wallet family (see `[patch.crates-io]`).
 [dependencies.zakura-pir-transparent]
-version = "=0.0.1-rc1"
+version = "=0.0.1-rc2"
 default-features = false
 # `sqlite` applies a batch to the wallet and acknowledges it in one call.
 features = ["sqlite"]
@@ -208,10 +209,18 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "
 # with the library's own expression. Already in the graph.
 regex = "1"
 # The Ironwood regtest one-time IVK tests serve a receiver directory over loopback
-# HTTP, with the wallet-pir crates at the tag the receiver client resolves.
+# HTTP, built from the receiver crates of the receiver client's wallet-libraries
+# commit. They are not published, so they come from git.
 axum = "0.7"
-receiver-pir = { git = "https://github.com/valargroup/wallet-pir", tag = "transparent-v0.1.0-rc.7", features = ["server"] }
-receiver-pir-server = { git = "https://github.com/valargroup/wallet-pir", tag = "transparent-v0.1.0-rc.7" }
+zakura-receiver-pir = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c", features = ["server"] }
+zakura-receiver-directory = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-receiver-crypto = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+
+# The Ironwood regtest one-time IVK tests' payer proves with the bundled parameters.
+[dev-dependencies.zcash_proofs]
+package = "zakura-proofs"
+version = "=3.0.0"
+features = ["local-prover", "bundled-prover"]
 
 # Builds wallets through real private recovery for the history mapping tests.
 [dev-dependencies.zcash_client_sqlite]
@@ -233,7 +242,7 @@ features = ["test-fixtures"]
 # process, with the wallet-pir crates it publishes with. Keep the version
 # aligned with the runtime dependency above.
 [dev-dependencies.zakura-pir-transparent]
-version = "=0.0.1-rc1"
+version = "=0.0.1-rc2"
 default-features = false
 features = ["sqlite", "testing"]
 
@@ -275,14 +284,24 @@ opt-level = 3
 [profile.dev.package."*"]
 opt-level = 3
 
-# The git receiver client pulls these wallet-libraries crates from its own commit;
-# patching the published ones to it keeps one copy of each. Their sources at that
-# commit are the published releases'.
+# Temporary pin: a Common 3 branch of wallet-libraries that carries the
+# one-time IVK discovery and issuance work from its main branch, which has
+# moved to Common 4. Return to published releases once the voting crates move
+# to Common 4. Every wallet-libraries crate in the graph is patched to this one
+# commit so it keeps one copy of each.
 [patch.crates-io]
-zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "d08e55d5249d8a42153533d7f2c998151e44344c" }
-zakura-one-time-ivk = { git = "https://github.com/zakura-core/wallet-libraries", rev = "d08e55d5249d8a42153533d7f2c998151e44344c" }
-zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "d08e55d5249d8a42153533d7f2c998151e44344c" }
-zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "d08e55d5249d8a42153533d7f2c998151e44344c" }
+zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-one-time-ivk = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pir-enhance-types = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pir-enhance = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pir-native = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-wallet-lib = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pir-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-transaction-status = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-pir-transparent = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
+zakura-near-intents = { git = "https://github.com/zakura-core/wallet-libraries", rev = "9ce1a820b16352ee6c2c5c0706b09e0ee641cf7c" }
 
 # Receiver PIR uses the same published math family as Private queries.
 [patch."https://github.com/valargroup/ipir-sp.git"]

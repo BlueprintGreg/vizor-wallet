@@ -4,7 +4,7 @@
 
 use zakura_near_intents::NearStatus;
 use zcash_client_backend::data_api::{
-    one_time_ivk::restore::OneTimeIvkRestoreWrite as _, Account as _, WalletRead,
+    one_time_ivk::restore::OneTimeIvkRestoreRead as _, Account as _, WalletRead,
 };
 use zcash_client_sqlite::{wallet::one_time_ivk::OneTimeKey, AccountUuid};
 use zcash_keys::address::{Address, UnifiedAddress};
@@ -37,8 +37,8 @@ fn regtest_e2e(network: WalletNetwork) -> bool {
 
 /// Whether `network` runs one-time IVKs at all: wherever Private queries could (see
 /// [`EnhancementPolicy`]), whatever the switches say, or in a regtest end-to-end run
-/// (see [`regtest_e2e`]). Restore sweeps, key maintenance and provider statuses need
-/// nothing more; new addresses do (see [`require_new_address`]).
+/// (see [`regtest_e2e`]). Discovery, key closing and provider statuses need nothing
+/// more; new addresses do (see [`require_new_address`]).
 pub(crate) fn supported(network: WalletNetwork) -> bool {
     regtest_e2e(network) || EnhancementPolicy::for_preference(network, true).is_private()
 }
@@ -172,16 +172,19 @@ pub(crate) fn mark_fresh(path: &str, network: WalletNetwork, uuid: &str) {
     }
 }
 
-/// Keeps every software account's one-time key recovery current, under the wallet write
-/// lock. Sync calls it only at its start (see `run_sync_impl`), and only where
-/// [`supported`]; it runs with both privacy switches off, since only new address
-/// issuance is opt-in.
-pub(crate) fn maintain_recovery(db: &mut WalletDatabase) -> Result<(), String> {
+/// Whether any software account's swap history check is unfinished: its discovery is
+/// incomplete, or has lookups or late payments left. Sync runs discovery until it is not.
+pub(crate) fn history_pending(db: &WalletDatabase) -> Result<bool, String> {
+    let now = now()?;
     for account in software_accounts(db)? {
-        db.maintain_one_time_ivks(account)
+        let status = db
+            .one_time_discovery(account, now)
             .map_err(|e| e.to_string())?;
+        if status.is_some_and(|s| !s.complete || !s.lookups.is_empty() || !s.witnesses.is_empty()) {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Stops scanning finished one-time keys, under the wallet write lock, once sync has
@@ -200,81 +203,25 @@ pub(crate) fn close_finished_keys(db: &mut WalletDatabase, tip: BlockHeight) -> 
 mod tests {
     use super::*;
     use secrecy::SecretVec;
+    use zakura_one_time_ivk::{KeyId, Purpose};
     use zcash_client_backend::data_api::{one_time_ivk::OneTimeIvkRead as _, WalletWrite};
-    use zcash_client_sqlite::wallet::one_time_ivk::swap::RECEIVE_GAP_LIMIT;
+    use zcash_client_sqlite::wallet::one_time_ivk::swap::{ProviderSeen, ReservationPolicy};
 
-    #[test]
-    fn restore_prepares_pir_discovery_with_both_settings_off() {
-        assert!(!crate::api::sync::enhance_pir_enabled());
-        assert!(!crate::api::sync::near_swap_privacy_enabled());
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let path = path.to_str().unwrap();
-        let network = WalletNetwork::Regtest;
-        super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
-        super::super::keys::init_db_and_create_account(
-            path,
-            network,
-            &SecretVec::new(vec![0; 32]),
-            Some(100),
-            "POC",
-        )
-        .unwrap();
-        // The count of registered swap keys, and of those that advance allocation.
-        let keys = || -> (u64, u64) {
-            rusqlite::Connection::open(path)
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*), COALESCE(SUM(advances_allocation), 0)
-                     FROM ironwood_one_time_keys",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap()
-        };
-        let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
-        db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
-        maintain_recovery(&mut db).unwrap();
-        assert_eq!(keys(), (0, 0));
-        // Model completed ordinary scanning. Real note discovery and replay are
-        // exercised by the shared library's compact-block recovery tests.
-        let conn = rusqlite::Connection::open(path).unwrap();
-        conn.execute_batch(
-            "INSERT INTO blocks(height,hash,time,sapling_tree) VALUES(110,zeroblob(32),0,X'000000');
-             DELETE FROM scan_queue;
-             INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
-        ).unwrap();
-        maintain_recovery(&mut db).unwrap();
-        // Restored lookahead keys wait for a directory sweep; they are not scanned.
-        assert_eq!(keys(), (RECEIVE_GAP_LIMIT, 0));
-        assert!(db.get_one_time_scanning_keys().unwrap().is_empty());
-        assert_eq!(
-            db.block_fully_scanned().unwrap().unwrap().block_height(),
-            BlockHeight::from_u32(110)
-        );
-        drop(db);
-        let mut reopened =
-            open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
-        maintain_recovery(&mut reopened).unwrap();
-        assert_eq!(keys(), (RECEIVE_GAP_LIMIT, 0));
-        let error = require_new_address(WalletNetwork::Main).unwrap_err();
-        assert!(error.contains("Enable Private queries"), "{error}");
+    /// A seen set fresh at `now` that holds no receiver.
+    fn unseen(now: i64) -> ProviderSeen<'static> {
+        fn none(receivers: &[[u8; 43]]) -> Vec<bool> {
+            vec![false; receivers.len()]
+        }
+        ProviderSeen {
+            since: 0,
+            until: now,
+            contains: &none,
+        }
     }
 
-    /// A refund memo that Enhance retrieves during sync S neither registers its key nor
-    /// queues work before S ends: S's restore sweep selects no refund key and no rescan is
-    /// queued. Maintenance at the start of S+1 registers the key, and S+1's sweep selects
-    /// it. Sync runs `maintain_recovery` at its start and `close_finished_keys` at the tip.
-    #[test]
-    fn a_refund_memo_found_during_a_sync_is_swept_the_next_sync() {
-        use std::num::NonZeroU32;
-        use zakura_one_time_ivk::{swap::RefundMemo, KeyId, Purpose};
-        use zcash_client_backend::data_api::transparent_ledger::ChainPoint;
-        use zcash_primitives::block::BlockHash;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let path = path.to_str().unwrap();
+    /// Creates a regtest wallet at `path` whose first account, from the zero seed, is
+    /// scanned through block 110, and returns that account.
+    fn scanned_wallet(path: &str) -> (WalletDatabase, AccountUuid) {
         let network = WalletNetwork::Regtest;
         super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
         let (uuid, _) = super::super::keys::init_db_and_create_account(
@@ -285,57 +232,82 @@ mod tests {
             "POC",
         )
         .unwrap();
-        let account = parse_account_uuid(&uuid).unwrap();
         let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
         db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
-        // Scanned through 110, with the change of a funding transaction mined at 105 whose
-        // memo compact scanning did not carry.
-        let conn = rusqlite::Connection::open(path).unwrap();
-        conn.execute_batch(
-            "INSERT INTO blocks(height,hash,time,sapling_tree) VALUES(110,zeroblob(32),0,X'000000');
-             DELETE FROM scan_queue;
-             INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);
-             INSERT INTO transactions(id_tx,txid,mined_height,min_observed_height)
-                 VALUES(1,randomblob(32),105,105);
-             INSERT INTO ironwood_received_notes(transaction_id,action_index,account_id,
-                 diversifier,value,rho,rseed,is_change,recipient_key_scope,note_version)
-                 SELECT 1,0,id,zeroblob(11),0,zeroblob(32),zeroblob(32),1,1,0 FROM accounts;",
-        )
-        .unwrap();
-        let through = ChainPoint {
-            height: BlockHeight::from_u32(110),
-            hash: BlockHash([0; 32]),
-        };
-        let refund = KeyId::new(Purpose::Refund, 7);
-        // Whether the restore sweep a sync ends with selects the refund key.
-        let swept = |db: &mut WalletDatabase| {
-            db.prepare_one_time_sweeps(account, through, now().unwrap(), NonZeroU32::MAX)
-                .unwrap()
-                .unwrap()
-                .iter()
-                .any(|work| work.key == refund)
-        };
-        let rescan_queued = |db: &WalletDatabase| !db.suggest_scan_ranges().unwrap().is_empty();
-
-        // Sync S starts, then its Enhance drain retrieves the memo.
-        maintain_recovery(&mut db).unwrap();
-        conn.execute(
-            "UPDATE ironwood_received_notes SET memo = ?1",
-            [RefundMemo::new(7).encode().as_slice()],
-        )
-        .unwrap();
-        close_finished_keys(&mut db, through.height).unwrap();
-        assert!(!swept(&mut db), "S's sweep waits");
-        assert!(!rescan_queued(&db), "S queues no rescan");
-
-        // Sync S+1 starts.
-        maintain_recovery(&mut db).unwrap();
-        assert!(swept(&mut db), "S+1's sweep selects the key");
-        assert!(!rescan_queued(&db), "its rescan follows that sweep");
+        // Model completed ordinary scanning.
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO blocks(height,hash,time,sapling_tree) VALUES(110,zeroblob(32),0,X'000000');
+                 DELETE FROM scan_queue;
+                 INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
+            )
+            .unwrap();
+        (db, parse_account_uuid(&uuid).unwrap())
     }
 
-    /// Accounts the app creates from a seed it generated start fresh, so no early restore
-    /// or restore sweep runs for them. A payment-link claim imports the link's seed, which
+    /// A restored account's swap history is unchecked until discovery runs, which needs
+    /// neither privacy switch, and new addresses wait for it.
+    #[test]
+    fn restored_accounts_wait_for_discovery_with_both_settings_off() {
+        assert!(!crate::api::sync::enhance_pir_enabled());
+        assert!(!crate::api::sync::near_swap_privacy_enabled());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let (mut db, account) = scanned_wallet(path.to_str().unwrap());
+        assert!(history_pending(&db).unwrap());
+        let now = now().unwrap();
+        let tip = BlockHeight::from_u32(110);
+        assert_eq!(
+            db.prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
+                .unwrap()
+                .err(),
+            Some(ReservationPolicy::Gap)
+        );
+        assert!(db.get_one_time_scanning_keys().unwrap().is_empty());
+        let error = require_new_address(WalletNetwork::Main).unwrap_err();
+        assert!(error.contains("Enable Private queries"), "{error}");
+    }
+
+    /// A fresh account has no history to check, so it issues at once, but only with a
+    /// seen set fresh at the caller's clock.
+    #[test]
+    fn fresh_accounts_issue_with_a_fresh_seen_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let (mut db, account) = scanned_wallet(path.to_str().unwrap());
+        db.mark_one_time_account_fresh(account).unwrap();
+        assert!(!history_pending(&db).unwrap());
+        let now = now().unwrap();
+        let tip = BlockHeight::from_u32(110);
+        assert_eq!(
+            db.prepare_receive_reservation(account, now, tip, None)
+                .unwrap()
+                .err(),
+            Some(ReservationPolicy::SeenUnavailable)
+        );
+        let stale = unseen(now - 3600);
+        assert_eq!(
+            db.reserve_refund_key(account, now, tip, Some(&stale))
+                .unwrap()
+                .err(),
+            Some(ReservationPolicy::SeenUnavailable)
+        );
+        let key = db
+            .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(key.key_id(), KeyId::new(Purpose::Receive, 0));
+        // The unquoted draft is resumed rather than another address reserved.
+        let again = db
+            .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.key_id(), key.key_id());
+    }
+
+    /// Accounts the app creates from a seed it generated start fresh, so no discovery
+    /// runs for them. A payment-link claim imports the link's seed, which
     /// is not fresh.
     #[test]
     fn created_accounts_are_fresh_but_a_claimed_seed_is_not() {
@@ -390,7 +362,6 @@ mod tests {
         use super::super::keys;
         use secrecy::ExposeSecret;
         use std::collections::HashSet;
-        use zakura_one_time_ivk::{KeyId, Purpose};
         use zcash_keys::keys::UnifiedSpendingKey;
 
         let dir = tempfile::tempdir().unwrap();
@@ -455,7 +426,7 @@ mod tests {
             assert!(require_software_account(&db, account).is_err());
         }
 
-        // Restore maintenance runs for both software accounts, as in the test above.
+        // A fresh added account issues its first address, as in the test above.
         db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
         rusqlite::Connection::open(path)
             .unwrap()
@@ -465,14 +436,18 @@ mod tests {
                  INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
             )
             .unwrap();
-        maintain_recovery(&mut db).unwrap();
+        db.mark_one_time_account_fresh(added).unwrap();
+        let now = now().unwrap();
+        db.prepare_receive_reservation(added, now, BlockHeight::from_u32(110), Some(&unseen(now)))
+            .unwrap()
+            .unwrap();
         let registered: u64 = rusqlite::Connection::open(path)
             .unwrap()
             .query_row("SELECT COUNT(*) FROM ironwood_one_time_keys", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(registered, 2 * RECEIVE_GAP_LIMIT);
+        assert_eq!(registered, 1);
         let first_receiver = |fvk: &orchard::keys::FullViewingKey| {
             KeyId::new(Purpose::Receive, 0)
                 .derive(fvk)

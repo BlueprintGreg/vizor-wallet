@@ -1,22 +1,23 @@
 //! The receiver directory: an indexer that reads the regtest chain the way the live one
-//! reads a Zakura node, publishing over the real receiver routes and PIR, served to
-//! Vizor over loopback HTTP.
+//! reads a Zakura node, publishing over the receiver routes and real PIR, served to
+//! Vizor over loopback HTTP. The routes answer as the receiver service does; the
+//! service's own router is tested against the same clients in wallet-pir.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
-use receiver_pir_server::{router_with_publications, Publication, Publications};
+use receiver_directory::{
+    snapshot::{Manifest, ProviderSet, Snapshot, PROFILE},
+    RawRecord,
+};
+use receiver_pir::{server::Server, MIN_ROWS};
 use rust_lib_zcash_wallet::wallet::network::WalletNetwork;
-use zakura_pir_receiver::{
-    receiver_directory::{
-        extract::Action,
-        snapshot::{Manifest, ProviderSet, Snapshot, PROFILE},
-        witness::WitnessSnapshot,
-        Payment, Receiver, Record,
-    },
-    receiver_pir::{server::Server, MIN_ROWS},
+use zakura_receiver_crypto::{
+    recovery::Action,
+    witness::{Publication as WitnessPublication, WitnessSnapshot},
+    Payment, Receiver, Record,
 };
 use zcash_primitives::block::Block;
 
@@ -100,18 +101,32 @@ impl Indexer {
             filters: Vec::new(),
             filters_sha256: [0; 32],
         };
-        let snapshot = Snapshot::build(manifest, &records, sets).expect("a valid publication");
+        // The publisher validated every record before writing its row slot.
+        let raw: Vec<RawRecord> = records
+            .iter()
+            .map(|r| {
+                let slot = r.encode().expect("a valid record");
+                RawRecord::decode(&slot)
+                    .expect("a row slot")
+                    .expect("a record")
+            })
+            .collect();
+        let snapshot = Snapshot::build(manifest, &raw, sets).expect("a valid publication");
         let positions: BTreeSet<u32> = records
             .iter()
             .map(|r| u32::try_from(r.payment.position).expect("a regtest position"))
             .collect();
         let witnesses = (!commitments.is_empty()).then(|| {
-            WitnessSnapshot::build(&snapshot.manifest, &commitments, &positions)
-                .expect("witnesses build")
-                .encode()
+            WitnessSnapshot::build(
+                &witness_publication(&snapshot.manifest),
+                &commitments,
+                &positions,
+            )
+            .expect("witnesses build")
+            .encode()
         });
         let server = Server::new(snapshot).expect("the PIR server prepares");
-        Publication::new(server, witnesses).expect("a publication")
+        Publication::new(server, witnesses)
     }
 
     /// Indexes the chain through `end`, reindexing from the lowest block a reorg replaced.
@@ -242,10 +257,81 @@ pub fn zero_ovk_receivers(
         .unwrap_or_default()
 }
 
+/// The fields of `manifest` its witness file binds to.
+fn witness_publication(manifest: &Manifest) -> WitnessPublication {
+    WitnessPublication {
+        genesis: manifest.genesis,
+        directory_revision: manifest.revision().expect("a valid manifest"),
+        end_height: manifest.end_height,
+        end_hash: manifest.end_hash,
+        start_position: manifest.start_position,
+        end_position: manifest.end_position,
+        records: manifest.records,
+    }
+}
+
+/// One publication's receiver routes, answered as the receiver service answers them:
+/// its manifest, PIR setup, filters and witnesses, and real PIR evaluation of each
+/// encrypted query. A session it does not serve is gone (410).
+pub struct Publication {
+    server: Server,
+    id: String,
+    witnesses: Option<Vec<u8>>,
+}
+
+impl Publication {
+    /// Serves `server`'s publication with its common witness file, if it has one.
+    fn new(server: Server, witnesses: Option<Vec<u8>>) -> Self {
+        Self {
+            id: hex::encode(server.id()),
+            server,
+            witnesses,
+        }
+    }
+
+    /// The status and body for `method` on `path`.
+    fn answer(&self, method: &http::Method, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
+        let route = path.strip_prefix("/v1/receiver/").unwrap_or(path);
+        if (method, route) == (&http::Method::POST, "query") {
+            return match self.server.respond(body) {
+                Ok(response) => (200, response),
+                Err(receiver_pir::Error::Revision) => (410, Vec::new()),
+                Err(receiver_pir::Error::Malformed) => (400, Vec::new()),
+                Err(_) => (500, Vec::new()),
+            };
+        }
+        if method != http::Method::GET {
+            return (404, Vec::new());
+        }
+        if route == "init" {
+            let manifest = serde_json::to_vec(self.server.manifest()).expect("a manifest");
+            return (200, manifest);
+        }
+        let Some((material, id)) = route.split_once('/') else {
+            return (404, Vec::new());
+        };
+        if hex::decode(id).ok().filter(|id| id.len() == 32).is_none() {
+            return (400, Vec::new());
+        }
+        if id != self.id {
+            return (410, Vec::new());
+        }
+        match material {
+            "public" => (200, self.server.public().to_vec()),
+            "filters" => (200, self.server.filters().to_vec()),
+            "witness" => match &self.witnesses {
+                Some(bytes) => (200, bytes.clone()),
+                None => (503, Vec::new()),
+            },
+            _ => (404, Vec::new()),
+        }
+    }
+}
+
 /// The directory's HTTP service on the loopback interface, which Vizor reaches through
 /// its debug-only loopback transport (see `swap_private`).
 pub struct DirectoryServer {
-    publications: Publications,
+    current: Arc<Mutex<Option<Arc<Publication>>>>,
     requests: Arc<Mutex<Vec<String>>>,
     origin: String,
     _runtime: tokio::runtime::Runtime,
@@ -259,23 +345,31 @@ impl DirectoryServer {
             .enable_all()
             .build()
             .expect("the directory runtime");
-        let publications = Publications::default();
+        let current: Arc<Mutex<Option<Arc<Publication>>>> = Arc::default();
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let log = requests.clone();
-        let router =
-            router_with_publications(publications.clone()).layer(axum::middleware::from_fn(
-                move |request: axum::extract::Request, next: axum::middleware::Next| {
-                    let log = log.clone();
-                    async move {
-                        log.lock().unwrap().push(format!(
-                            "{} {}",
-                            request.method(),
-                            request.uri().path()
-                        ));
-                        next.run(request).await
-                    }
-                },
-            ));
+        let (served, log) = (current.clone(), requests.clone());
+        let router = axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let (served, log) = (served.clone(), log.clone());
+            async move {
+                let method = request.method().clone();
+                let path = request.uri().path().to_owned();
+                log.lock().unwrap().push(format!("{method} {path}"));
+                let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .expect("a request body");
+                let publication = served.lock().unwrap().clone();
+                let (status, body) = match publication {
+                    Some(publication) => tokio::task::spawn_blocking(move || {
+                        publication.answer(&method, &path, &body)
+                    })
+                    .await
+                    .expect("the route answers"),
+                    // Nothing published yet.
+                    None => (503, Vec::new()),
+                };
+                (http::StatusCode::from_u16(status).expect("a status"), body)
+            }
+        });
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
             .expect("a loopback port");
@@ -286,7 +380,7 @@ impl DirectoryServer {
                 .expect("the directory serves")
         });
         Self {
-            publications,
+            current,
             requests,
             origin,
             _runtime: runtime,
@@ -298,17 +392,11 @@ impl DirectoryServer {
         &self.origin
     }
 
-    /// Replaces the served publication. The live indexer waits out the previous
-    /// revision's one-minute grace for sessions still using it. These tests sync one
-    /// wallet at a time, so no session spans a publish, and revoking first, as the indexer
-    /// does after a reorg, lets the new revision in at once.
+    /// Replaces the served publication. A session on the previous one is gone at once,
+    /// as after the live indexer revokes it. These tests sync one wallet at a time, so
+    /// no session spans a publish.
     pub fn publish(&self, publication: Publication) {
-        self.publications.revoke();
-        let epoch = self.publications.epoch();
-        assert!(
-            self.publications.publish(publication, epoch),
-            "the publication swaps in"
-        );
+        *self.current.lock().unwrap() = Some(Arc::new(publication));
     }
 
     /// Encrypted lookups served so far.

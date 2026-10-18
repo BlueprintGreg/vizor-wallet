@@ -214,6 +214,9 @@ class _LedgerBluetoothSessionState extends ConsumerState<LedgerBluetoothSession>
         message: message,
         label: label,
         busy: _busy,
+        ready: ready,
+        hasError: _error != null,
+        access: status,
         onAction:
             !widget.enabled ||
                 _busy ||
@@ -234,10 +237,16 @@ class LedgerBluetoothPresentation {
     required this.label,
     required this.busy,
     required this.onAction,
+    required this.ready,
+    required this.hasError,
+    required this.access,
   });
   final String title;
   final String message;
   final String label;
   final bool busy;
   final VoidCallback? onAction;
+  final bool ready;
+  final bool hasError;
+  final LedgerBluetoothAccessStatus? access;
 }

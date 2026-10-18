@@ -1,3 +1,4 @@
+import '../src/features/ledger/services/ledger_failure_guidance.dart';
 import 'desktop_welcome_capture.dart';
 import '../widgetbook/desktop_gift_onboarding_use_cases.dart';
 import '../widgetbook/desktop_gift_import_use_cases.dart';
@@ -577,6 +578,31 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-enabled',
+    description: 'Mobile welcome network settings with private queries on',
+    builder: buildMobileWelcomePrivateQueriesEnabled,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-changing',
+    description: 'Mobile welcome network settings while saving private queries',
+    builder: buildMobileWelcomePrivateQueriesChanging,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-welcome-private-queries-failed',
+    description:
+        'Mobile welcome network settings after private queries save fails',
+    builder: buildMobileWelcomePrivateQueriesFailed,
+    renderShadows: true,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-welcome-network-connecting',
     description: 'Mobile welcome network settings: connecting',
     builder: buildMobileWelcomeNetworkConnecting,
@@ -761,6 +787,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'ledger-searching-devices',
     description: 'Ledger discovery with selectable devices',
     builder: buildLedgerSearchingDevicesCapture,
+    allowPointer: true,
     desktop: true,
     mobile: true,
   ),
@@ -768,6 +795,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'ledger-device-selection',
     description: 'Ledger select before Bluetooth interaction',
     builder: buildLedgerDeviceSelectionCapture,
+    allowPointer: true,
     desktop: true,
     mobile: true,
   ),
@@ -783,6 +811,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'ledger-known-device-connecting',
     description: 'Saved Ledger connection without viewing-key approval',
     builder: buildLedgerKnownDeviceConnectingCapture,
+    allowPointer: true,
     desktop: true,
     mobile: true,
   ),
@@ -797,6 +826,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'ledger-request-declined',
     description: 'Request declined after selecting the saved Ledger',
     builder: buildLedgerRequestDeclinedCapture,
+    allowPointer: true,
     desktop: true,
     mobile: true,
   ),
@@ -917,6 +947,32 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     description: 'Ledger signing: finishing',
     builder: _buildLedgerSigningFinishing,
     mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-signing-proofs-pending',
+    description: 'Ledger signing: approved while Vizor finishes preparation',
+    builder: _buildLedgerSigningProofsPending,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-signing-declined',
+    description: 'Desktop Ledger rejection retains completed preparation',
+    builder: _buildLedgerSigningDeclined,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-signing-tex-declined',
+    description: 'Desktop Ledger rejection retains TEX approval one',
+    builder: _buildLedgerSigningTexDeclined,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-signing-save-failed',
+    description: 'Desktop Ledger checkpoint retry without approval',
+    builder: _buildLedgerSigningSaveFailed,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-signing-cancelling',
+    description: 'Desktop Ledger cancellation drains pending device work',
+    builder: _buildLedgerSigningCancelling,
   ),
   FigmaCompareScenario(
     id: 'ledger-signing-memo-hash-update',
@@ -1079,6 +1135,27 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'gift-card-claim-checking',
     description: 'Gift Card uncertain claim outcome',
     builder: buildClaimCheckingUseCase,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-face-id',
+    description: 'Mobile unlock offering Face ID for the next unlock',
+    builder: buildMobileUnlockFaceIdOptInUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-touch-id',
+    description: 'Mobile unlock offering Touch ID for the next unlock',
+    builder: buildMobileUnlockTouchIdOptInUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-unlock-opt-in-fingerprint',
+    description: 'Mobile unlock offering fingerprint for the next unlock',
+    builder: buildMobileUnlockFingerprintOptInUseCase,
+    desktop: false,
     mobile: true,
   ),
   FigmaCompareScenario(
@@ -3168,6 +3245,22 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     mobile: true,
   ),
   FigmaCompareScenario(
+    id: 'mobile-receive-request-compose-expanded-message',
+    description: 'Mobile request sheet with a two-line memo editor',
+    builder: buildRequestMobileComposeExpandedMessageUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-receive-request-compose-expanded-message-keyboard',
+    description:
+        'Mobile two-line memo editor with Gboard-sized keyboard insets',
+    builder: buildRequestMobileComposeExpandedMessageKeyboardUseCase,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-receive-request-compose-error',
     description: 'Mobile request sheet step one with an invalid amount',
     builder: buildRequestMobileComposeAmountErrorUseCase,
@@ -3311,6 +3404,13 @@ Widget _buildLedgerSigningFinishing(BuildContext context) =>
       mobile: kAppFormFactor == AppFormFactor.mobile,
     );
 
+Widget _buildLedgerSigningProofsPending(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.finishing,
+      signingStage: LedgerSigningStage.finishing,
+      mobile: kAppFormFactor == AppFormFactor.mobile,
+    );
+
 Widget _buildLedgerSigningMemoHashUpdate(BuildContext context) =>
     buildLedgerSigningPreview(
       phase: LedgerSigningModalPhase.failed,
@@ -3369,4 +3469,50 @@ Widget _mobileTransparentSentPrivateRecorded(BuildContext context) =>
       kind: 'sent',
       private: true,
       recordedSend: true,
+    );
+
+Widget _buildLedgerSigningDeclined(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.failed,
+      failureOverride: const LedgerSigningFailurePresentation(
+        title: 'Ledger signing failed',
+        statusLabel: 'Action needed',
+        message: 'Signing was declined on Ledger. Try again when you’re ready.',
+        showDeviceAppPrompt: false,
+        actionLabel: 'Try again',
+        requestFailure: LedgerRequestFailure.declined,
+      ),
+    );
+Widget _buildLedgerSigningTexDeclined(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.failed,
+      roundNumber: 2,
+      roundCount: 2,
+      failureOverride: const LedgerSigningFailurePresentation(
+        title: 'Ledger signing failed',
+        statusLabel: 'Action needed',
+        message: 'Signing was declined on Ledger. Try again when you’re ready.',
+        showDeviceAppPrompt: false,
+        actionLabel: 'Try again',
+        requestFailure: LedgerRequestFailure.declined,
+      ),
+    );
+Widget _buildLedgerSigningSaveFailed(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.failed,
+      canLeaveOverride: false,
+      failureOverride: const LedgerSigningFailurePresentation(
+        title: 'Could not save signed transaction',
+        statusLabel: 'Signature preserved',
+        message:
+            'Keep Vizor open and try again. No new Ledger approval needed.',
+        showDeviceAppPrompt: false,
+        actionLabel: 'Try again',
+      ),
+    );
+Widget _buildLedgerSigningCancelling(BuildContext context) =>
+    buildLedgerSigningPreview(
+      phase: LedgerSigningModalPhase.awaitingDevice,
+      cancelling: true,
+      canLeaveOverride: false,
     );

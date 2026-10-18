@@ -148,8 +148,8 @@ impl Wallet {
         }
     }
 
-    /// One foreground sync, as the app runs it: scanning, the follow-ups, then the one
-    /// restore sweep run the receiver directory gets per sync.
+    /// One foreground sync, as the app runs it: one-time key discovery, scanning, the
+    /// follow-ups, then discovery again.
     pub fn sync(&self, stack: &Stack) {
         sync_api::run_full_sync_blocking(
             self.db.clone(),
@@ -504,9 +504,10 @@ impl Wallet {
         .unwrap_or_else(|e| panic!("{} records {status}: {e}", self.name));
     }
 
-    /// Queues Check swap history for the next sync.
+    /// Starts Check swap history: ends the wallet's discovery passes, so the next sync
+    /// starts new ones.
     pub fn check_swap_history(&self) {
-        swap_api::recheck_swap_history(self.db.clone(), NETWORK.into())
+        swap_api::check_swap_history(self.db.clone(), NETWORK.into())
             .unwrap_or_else(|e| panic!("{} checks swap history: {e}", self.name));
     }
 }

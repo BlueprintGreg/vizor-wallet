@@ -1478,7 +1478,9 @@ mod tests {
         use crate::wallet::db::{open_wallet_db_with_timeout, WALLET_DB_BUSY_TIMEOUT};
         use secrecy::SecretVec;
         use std::cell::RefCell;
-        use zcash_client_backend::data_api::WalletWrite;
+        use zakura_one_time_ivk::{KeyId, Purpose};
+        use zcash_client_backend::data_api::{Account as _, WalletRead as _, WalletWrite};
+        use zcash_client_sqlite::wallet::one_time_ivk::swap::ProviderSeen;
 
         crate::wallet::network::configure_regtest_nu6_3_activation_height(100).unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -1493,7 +1495,7 @@ mod tests {
             "swap",
         )
         .unwrap();
-        // Restore maintenance registers incoming keys, as in the swap receiving tests.
+        // Issue the account's first incoming address, as a fresh account can at once.
         let tip = BlockHeight::from_u32(110);
         let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
         db.update_chain_tip(tip).unwrap();
@@ -1504,30 +1506,38 @@ mod tests {
              INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
         )
         .unwrap();
-        crate::wallet::one_time_ivk::maintain_recovery(&mut db).unwrap();
-        drop(db);
-        // The receiver of the incoming key whose big-endian index is `index_hex`.
-        let receiver = |index_hex: &str| -> orchard::Address {
-            let bytes: Vec<u8> = conn
-                .query_row(
-                    &format!(
-                        "SELECT receiver FROM ironwood_one_time_keys
-                         WHERE purpose = 1 AND key_index = X'{index_hex}'"
-                    ),
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            orchard::Address::from_raw_address_bytes(&bytes.try_into().unwrap()).unwrap()
+        let account_id = crate::wallet::keys::parse_account_uuid(&account).unwrap();
+        db.mark_one_time_account_fresh(account_id).unwrap();
+        let now = crate::wallet::one_time_ivk::now().unwrap();
+        fn none(receivers: &[[u8; 43]]) -> Vec<bool> {
+            vec![false; receivers.len()]
+        }
+        let unseen = ProviderSeen {
+            since: 0,
+            until: now,
+            contains: &none,
         };
-        // Open the first key, as issuing it on this device does. The others wait for a
-        // directory sweep, so, as in block scanning, a payout to one stays unmatched.
-        conn.execute(
-            "UPDATE ironwood_one_time_keys SET active_from = 111
-             WHERE purpose = 1 AND key_index = X'0000000000000000'",
-            [],
-        )
-        .unwrap();
+        db.prepare_receive_reservation(account_id, now, tip, Some(&unseen))
+            .unwrap()
+            .unwrap();
+        let fvk = db
+            .get_account(account_id)
+            .unwrap()
+            .unwrap()
+            .ufvk()
+            .unwrap()
+            .orchard()
+            .unwrap()
+            .clone();
+        drop(db);
+        // The receiver of the incoming key at `index`. Only the first is registered, so,
+        // as in block scanning, a payout to the second stays unmatched.
+        let receiver = |index: u64| -> orchard::Address {
+            KeyId::new(Purpose::Receive, index)
+                .derive(&fvk)
+                .unwrap()
+                .address_at(0u32, orchard::keys::Scope::External)
+        };
 
         let events = RefCell::new(Vec::new());
         let mut seen = TxidSeenCache::new(8);
@@ -1545,9 +1555,9 @@ mod tests {
                 &|event| events.borrow_mut().push(event),
             )
         };
-        handle(&ironwood_payment(receiver("0000000000000001"), 50_000));
+        handle(&ironwood_payment(receiver(1), 50_000));
         assert!(events.borrow().is_empty());
-        let payout = ironwood_payment(receiver("0000000000000000"), 100_000);
+        let payout = ironwood_payment(receiver(0), 100_000);
         handle(&payout);
 
         let events = events.into_inner();

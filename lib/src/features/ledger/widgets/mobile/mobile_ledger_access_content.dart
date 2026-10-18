@@ -106,6 +106,25 @@ class MobileLedgerAccessContent extends ConsumerWidget {
         return MobileLedgerSheetContent(
           title: title,
           onClose: onClose,
+          action: c.busy
+              ? null
+              : MobileLedgerAction(
+                  switch (c.stage) {
+                    LedgerPairingStage.ready => 'Continue signing',
+                    LedgerPairingStage.mismatch => 'Choose another Ledger',
+                    LedgerPairingStage.devices => 'Search again',
+                    LedgerPairingStage.failed when !c.pairingInvalid =>
+                      c.failureRetryable
+                          ? 'Try again'
+                          : 'Choose another Ledger',
+                    _ => 'Find my Ledger',
+                  },
+                  onPressed: c.invalidated
+                      ? null
+                      : c.stage == LedgerPairingStage.ready
+                      ? c.continueSigning
+                      : c.scan,
+                ),
           children: [
             MobileLedgerMessage(message),
             if (choosing && c.devices.isNotEmpty) ...[
@@ -183,7 +202,7 @@ class MobileLedgerAccessContent extends ConsumerWidget {
               const SizedBox(height: AppSpacing.sm),
               MobileLedgerMessage(c.error!),
             ],
-            if (c.busy)
+            if (c.busy && !(choosing && c.devices.isNotEmpty))
               MobileLedgerStatus(switch (c.stage) {
                 LedgerPairingStage.scanning =>
                   c.devices.isEmpty
@@ -195,23 +214,7 @@ class MobileLedgerAccessContent extends ConsumerWidget {
                       : 'Follow the prompts on your Ledger',
                 LedgerPairingStage.saving => 'Saving connection…',
                 _ => 'Opening Bluetooth settings…',
-              })
-            else
-              MobileLedgerAction(
-                switch (c.stage) {
-                  LedgerPairingStage.ready => 'Continue signing',
-                  LedgerPairingStage.mismatch => 'Choose another Ledger',
-                  LedgerPairingStage.devices => 'Search again',
-                  LedgerPairingStage.failed when !c.pairingInvalid =>
-                    c.failureRetryable ? 'Try again' : 'Choose another Ledger',
-                  _ => 'Find my Ledger',
-                },
-                onPressed: c.invalidated
-                    ? null
-                    : c.stage == LedgerPairingStage.ready
-                    ? c.continueSigning
-                    : c.scan,
-              ),
+              }),
           ],
         );
       },
