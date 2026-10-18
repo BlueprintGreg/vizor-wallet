@@ -1,5 +1,5 @@
 //! Private NEAR swap addresses over the wallet's one-time IVKs: reservations, quote
-//! records, provider statuses and history rechecks. Provider polling stays in Dart;
+//! records, provider statuses and swap history checks. Provider polling stays in Dart;
 //! allocation is durable in Rust.
 use super::sync::parse_network_and_migrate;
 use crate::wallet::db::{open_wallet_db_with_timeout, with_wallet_db_write_lock};
@@ -12,10 +12,25 @@ use zcash_client_sqlite::{
     wallet::one_time_ivk::swap::{OperationOutcome, ProviderSeen, ReservationPolicy},
 };
 
-/// A private swap failure. `message` is display text, never a parsing protocol.
+/// Why a private swap call failed, for the app to act on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveErrorKind {
+    /// Any failure the app only shows.
+    Other,
+    /// The provider's seen set could not be read fresh, so no new swap address can be
+    /// issued. Private swaps stay paused until it can, or until the user turns NEAR swap
+    /// privacy off.
+    SeenUnavailable,
+    /// The reservation expired or was retired: prepare a new address.
+    Stale,
+}
+
+/// A private swap failure. `message` is display text, never a parsing protocol; `kind`
+/// says what the app should do about it.
 #[derive(Clone, Debug)]
 pub struct ReceiveError {
     pub message: String,
+    pub kind: ReceiveErrorKind,
 }
 impl std::fmt::Display for ReceiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,7 +40,10 @@ impl std::fmt::Display for ReceiveError {
 impl std::error::Error for ReceiveError {}
 impl From<String> for ReceiveError {
     fn from(message: String) -> Self {
-        Self { message }
+        Self {
+            message,
+            kind: ReceiveErrorKind::Other,
+        }
     }
 }
 impl From<&str> for ReceiveError {
@@ -41,22 +59,34 @@ impl From<SqliteClientError> for ReceiveError {
 /// The wording Vizor shows for each reason issuance or an operation must wait.
 impl From<ReservationPolicy> for ReceiveError {
     fn from(policy: ReservationPolicy) -> Self {
-        match policy {
-            ReservationPolicy::Gap => {
+        let (message, kind) = match policy {
+            ReservationPolicy::Gap => (
                 "Restored swap addresses are still being checked. \
-                 Try again after the wallet finishes syncing."
-            }
-            ReservationPolicy::Limit => {
-                "No swap address is free. Wait for a swap in progress to finish."
-            }
-            ReservationPolicy::Stale => {
-                "This receive reservation is no longer available. Request a new quote."
-            }
-            ReservationPolicy::Coverage => {
-                "Finish syncing to the chain tip before requesting a quote."
-            }
+                 Try again after the wallet finishes syncing.",
+                ReceiveErrorKind::Other,
+            ),
+            ReservationPolicy::Limit => (
+                "No swap address is free. Wait for a swap in progress to finish.",
+                ReceiveErrorKind::Other,
+            ),
+            ReservationPolicy::Stale => (
+                "This swap address is no longer available. Request a new quote.",
+                ReceiveErrorKind::Stale,
+            ),
+            ReservationPolicy::Coverage => (
+                "Finish syncing to the chain tip before requesting a quote.",
+                ReceiveErrorKind::Other,
+            ),
+            ReservationPolicy::SeenUnavailable => (
+                "Private swaps are paused because we can't confirm which addresses \
+                 are free right now. Turn off private swap addresses to swap now.",
+                ReceiveErrorKind::SeenUnavailable,
+            ),
+        };
+        Self {
+            message: message.into(),
+            kind,
         }
-        .into()
     }
 }
 
@@ -91,7 +121,9 @@ pub struct ReceiveDeposit {
 /// key scans from the next unscanned block until it closes. Otherwise it reserves the
 /// next refund index (see `reserve_refund_key`), whose key starts scanning when the
 /// wallet stores the swap's funding transaction. `live_tip` is the chain tip the quote
-/// flow fetched. Does not start or restart ordinary wallet sync.
+/// flow fetched. Without a fresh seen set, only a quoted incoming draft can be resumed;
+/// anything else fails as [`ReceiveErrorKind::SeenUnavailable`]. Does not start or
+/// restart ordinary wallet sync.
 pub fn reserve_swap_address(
     db_path: String,
     network_name: String,
@@ -103,24 +135,16 @@ pub fn reserve_swap_address(
     one_time_ivk::require_new_address(network)?;
     let tip = one_time_ivk::network_tip(live_tip)?;
     // Fetched before taking the wallet lock, so a slow directory never holds it.
-    let seen = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("tokio: {e}"))?
-        .block_on(crate::wallet::sync_engine::fetch_seen(network));
-    let contains = |receivers: &[[u8; 43]]| {
-        seen.as_ref()
-            .map_or_else(|| vec![true; receivers.len()], |s| s.contains(receivers))
-    };
-    let view = seen.as_ref().map(|s| ProviderSeen {
-        since: s.since(),
-        until: s.until(),
-        contains: &contains,
-    });
-    let key = with_db(&db_path, network, &account_uuid, |db, a| {
-        one_time_ivk::require_software_account(db, a)?;
-        Ok::<_, ReceiveError>(if incoming {
-            db.prepare_receive_reservation(a, one_time_ivk::now()?, tip, view.as_ref())??
-        } else {
-            db.reserve_refund_key(a, tip, view.as_ref())??
+    let seen = runtime()?.block_on(crate::wallet::sync_engine::fetch_seen(network));
+    let key = with_seen(seen, |view| {
+        with_db(&db_path, network, &account_uuid, |db, a| {
+            one_time_ivk::require_software_account(db, a)?;
+            let now = one_time_ivk::now()?;
+            Ok::<_, ReceiveError>(if incoming {
+                db.prepare_receive_reservation(a, now, tip, view)??
+            } else {
+                db.reserve_refund_key(a, now, tip, view)??
+            })
         })
     })?;
     let index = key.key_id().index();
@@ -131,10 +155,38 @@ pub fn reserve_swap_address(
     })
 }
 
+/// A runtime for the receiver directory requests issuance makes.
+fn runtime() -> Result<tokio::runtime::Runtime, ReceiveError> {
+    Ok(tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?)
+}
+
+/// Runs `action` with `seen` as the library takes it, or with none if it could not be
+/// read. The library then refuses whatever needs a fresh set as `SeenUnavailable`.
+fn with_seen<T>(
+    seen: Result<std::sync::Arc<zakura_pir_receiver::Seen>, String>,
+    action: impl FnOnce(Option<&ProviderSeen<'_>>) -> T,
+) -> T {
+    let seen = seen.inspect_err(|e| log::warn!("{e}")).ok();
+    let contains = |receivers: &[[u8; 43]]| {
+        seen.as_ref()
+            .map_or_else(|| vec![true; receivers.len()], |s| s.contains(receivers))
+    };
+    let view = seen.as_ref().map(|s| ProviderSeen {
+        since: s.since(),
+        until: s.until(),
+        contains: &contains,
+    });
+    action(view.as_ref())
+}
+
 /// Persists an unknown outcome and scan watch just before a provider quote request
 /// leaves the device, and returns the request's identity. `reservation_index` is the
 /// incoming reservation [`reserve_swap_address`] returned, and `deadline_seconds` the
-/// deposit deadline the request sends.
+/// deposit deadline the request sends. A reservation's first request checks the seen
+/// set issuance read, if it is still current, or else a new one. Fails as
+/// [`ReceiveErrorKind::Stale`] once the reservation's latest quote has expired or it was
+/// retired, so the app prepares a new address, and as
+/// [`ReceiveErrorKind::SeenUnavailable`] when a first request has no fresh set.
 pub fn begin_receive_quote(
     db_path: String,
     network_name: String,
@@ -143,14 +195,19 @@ pub fn begin_receive_quote(
     deadline_seconds: i64,
 ) -> Result<String, ReceiveError> {
     let network = parse_network_and_migrate(&db_path, &network_name)?;
-    with_db(&db_path, network, &account_uuid, |db, a| {
-        one_time_ivk::require_new_address(network)?;
-        Ok(db.begin_receive_operation(
-            a,
-            reservation_index,
-            deadline_seconds,
-            one_time_ivk::now()?,
-        )??)
+    one_time_ivk::require_new_address(network)?;
+    let now = one_time_ivk::now()?;
+    let seen = runtime()?.block_on(crate::wallet::sync_engine::current_seen(network, now));
+    with_seen(seen, |view| {
+        with_db(&db_path, network, &account_uuid, |db, a| {
+            Ok(db.begin_receive_operation(
+                a,
+                reservation_index,
+                deadline_seconds,
+                one_time_ivk::now()?,
+                view,
+            )??)
+        })
     })
 }
 
@@ -268,16 +325,18 @@ pub fn observe_swap_status(
     })
 }
 
-/// Queues one receiver-directory sweep of every closed swap key for the next sync,
-/// which finds a second refund or a late payout that arrived after its key stopped
-/// scanning. Called when the user turns NEAR swap privacy on.
-pub fn recheck_swap_history(db_path: String, network_name: String) -> Result<(), ReceiveError> {
-    // Without a wallet there is nothing to recheck; do not create its database.
+/// "Check swap history": ends every software account's discovery pass, so the next
+/// sync starts a new one against the directory's current publication and finds a
+/// second refund or a late payout that arrived after its key stopped scanning. Once
+/// discovery is complete nothing else starts a pass. The caller then syncs, and
+/// [`is_swap_history_checking`] says when the check is done.
+pub fn check_swap_history(db_path: String, network_name: String) -> Result<(), ReceiveError> {
+    // Without a wallet there is nothing to check; do not create its database.
     if !keys::wallet_exists(&db_path) {
         return Ok(());
     }
     let network = parse_network_and_migrate(&db_path, &network_name)?;
-    // Only supported networks run restore sweeps.
+    // Only supported networks run discovery.
     if !one_time_ivk::supported(network) {
         return Ok(());
     }
@@ -288,4 +347,19 @@ pub fn recheck_swap_history(db_path: String, network_name: String) -> Result<(),
         }
         Ok(())
     })
+}
+
+/// Whether a swap history check, or a restored wallet's first one, is still running:
+/// some software account's discovery is incomplete or has lookups or late payments
+/// left. Sync continues it.
+pub fn is_swap_history_checking(db_path: String, network_name: String) -> Result<bool, ReceiveError> {
+    if !keys::wallet_exists(&db_path) {
+        return Ok(false);
+    }
+    let network = parse_network_and_migrate(&db_path, &network_name)?;
+    if !one_time_ivk::supported(network) {
+        return Ok(false);
+    }
+    let db = open_wallet_db_with_timeout(&db_path, network, WALLET_DB_BUSY_TIMEOUT)?;
+    Ok(one_time_ivk::history_pending(&db)?)
 }
