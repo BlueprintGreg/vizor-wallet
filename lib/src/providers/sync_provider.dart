@@ -1127,10 +1127,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   AppLifecycleListener? _lifecycleListener;
   Timer? _pollTimer;
   // The seed import window (see [_armSeedImportSyncWindow]): the account it
-  // belongs to, whether it waits for a sync to end, and its open timer.
+  // belongs to, whether it waits for a sync to end, its open timer, the ticks
+  // it has left, and whether a stop suspended it.
   String? _seedImportSyncAccountUuid;
   bool _seedImportSyncArmed = false;
   Timer? _seedImportSyncTimer;
+  int _seedImportSyncTicksLeft = 0;
+  bool _seedImportSyncSuspended = false;
   bool _pollCheckInFlight = false;
   bool _resumeTipCheckPending = false;
   int _sensitiveStateEpoch = 0;
@@ -2152,6 +2155,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _stopMempoolObserver();
     _isSyncing = false;
     _stopPolling();
+    _suspendSeedImportSyncWindow();
     final prev = state.value;
     final accountUuid = _getActiveAccountUuid();
     final scopedPrev = _previousScopedState(prev, accountUuid);
@@ -2514,6 +2518,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _stopMempoolObserver();
     _isSyncing = false;
     _stopPolling();
+    // Its quiet syncs would reach the network while the transport changes.
+    // Polling's restart below resumes it.
+    _suspendSeedImportSyncWindow();
     final prev = state.value;
     if (prev != null) {
       state = AsyncData(prev.withSyncActivityStopped());
@@ -2614,6 +2621,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       return;
     }
     if (!canRunAppProcessWork(isInForeground: _isInForeground)) return;
+    _resumeSeedImportSyncWindow();
     if (_resumeTipCheckPending &&
         !_pollCheckInFlight &&
         !_isSyncing &&
@@ -2641,7 +2649,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// quiet sync starts every [kSeedImportSyncInterval], so restore sweeps
   /// finish without waiting for blocks. The schedule depends only on the
   /// import; no sync result, recovery or reply state changes it. A lock,
-  /// hiding the app or another active account ends it.
+  /// hiding the app or another active account ends it. An explicit stop or a
+  /// transport restart suspends it until polling restarts.
   void _armSeedImportSyncWindow() {
     _stopSeedImportSyncWindow();
     final accountUuid = _getActiveAccountUuid();
@@ -2651,7 +2660,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   }
 
   /// Opens an armed seed import window; called whenever a foreground sync ends.
-  void _openSeedImportSyncWindowIfArmed() {
+  /// A resumed window passes the [ticksLeft] it had.
+  void _openSeedImportSyncWindowIfArmed({int? ticksLeft}) {
     if (!_seedImportSyncArmed) return;
     _seedImportSyncArmed = false;
     final accountUuid = _seedImportSyncAccountUuid;
@@ -2665,24 +2675,44 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _stopSeedImportSyncWindow();
       return;
     }
-    final ticks =
+    _seedImportSyncTicksLeft =
+        ticksLeft ??
         kSeedImportSyncWindow.inMicroseconds ~/
-        kSeedImportSyncInterval.inMicroseconds;
-    _seedImportSyncTimer = Timer.periodic(kSeedImportSyncInterval, (timer) {
+            kSeedImportSyncInterval.inMicroseconds;
+    _seedImportSyncTimer = Timer.periodic(kSeedImportSyncInterval, (_) {
       if (!mayRun()) {
         _stopSeedImportSyncWindow();
         return;
       }
-      if (timer.tick >= ticks) _stopSeedImportSyncWindow();
+      if (--_seedImportSyncTicksLeft <= 0) _stopSeedImportSyncWindow();
       _startQuietSync();
     });
   }
 
-  /// Ends the seed import window, armed or open.
+  /// Pauses an open seed import window, keeping the ticks it has left.
+  void _suspendSeedImportSyncWindow() {
+    if (_seedImportSyncTimer == null) return;
+    _seedImportSyncTimer!.cancel();
+    _seedImportSyncTimer = null;
+    _seedImportSyncSuspended = true;
+  }
+
+  /// Reopens a suspended seed import window for the ticks it had left, unless
+  /// the conditions that end it now hold.
+  void _resumeSeedImportSyncWindow() {
+    if (!_seedImportSyncSuspended) return;
+    _seedImportSyncSuspended = false;
+    _seedImportSyncArmed = true;
+    _openSeedImportSyncWindowIfArmed(ticksLeft: _seedImportSyncTicksLeft);
+  }
+
+  /// Ends the seed import window, armed, open or suspended.
   void _stopSeedImportSyncWindow() {
     _seedImportSyncTimer?.cancel();
     _seedImportSyncTimer = null;
     _seedImportSyncArmed = false;
+    _seedImportSyncSuspended = false;
+    _seedImportSyncTicksLeft = 0;
     _seedImportSyncAccountUuid = null;
   }
 
