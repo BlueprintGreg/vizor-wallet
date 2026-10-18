@@ -66,6 +66,7 @@ class _LedgerShieldSigningOverlayState
   Completer<bool>? _saplingParamsPromptCompleter;
   String? _error;
   LedgerFailureGuidance? _deviceGuidance;
+  LedgerRequestFailure? _requestFailure;
   List<int>? _pcztBytes;
   List<int>? _pcztWithProofs;
   SaplingParamsStatus? _saplingParams;
@@ -262,6 +263,7 @@ class _LedgerShieldSigningOverlayState
         _canRetry = false;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       try {
         await _broadcastCheckpointed();
@@ -282,6 +284,7 @@ class _LedgerShieldSigningOverlayState
         _phase = LedgerSigningModalPhase.preparing;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       await _prepareAndSign();
       return;
@@ -291,6 +294,7 @@ class _LedgerShieldSigningOverlayState
       _phase = LedgerSigningModalPhase.awaitingDevice;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
     try {
       final accountUuid = _accountUuid;
@@ -353,6 +357,7 @@ class _LedgerShieldSigningOverlayState
       _canRetry = false;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
 
     try {
@@ -467,6 +472,7 @@ class _LedgerShieldSigningOverlayState
       _canRetry = false;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
       _pcztBytes = null;
       _pcztWithProofs = null;
       _signedPczt = null;
@@ -546,6 +552,7 @@ class _LedgerShieldSigningOverlayState
   }
 
   String _friendlyError(Object error) {
+    _requestFailure = LedgerRequestFailure.fromError(error);
     final guidance = ledgerFailureGuidance(
       error,
       requestKind: LedgerRequestKind.shield,
@@ -605,6 +612,7 @@ class _LedgerShieldSigningOverlayState
   Widget build(BuildContext context) {
     final canLeave = !_isBroadcasting;
     final modal = LedgerSigningModal(
+      cancelling: _cancelled,
       connectionScope: _connectionScope,
       accountUuid: _accountUuid,
       roundNumber: _round,
@@ -615,6 +623,7 @@ class _LedgerShieldSigningOverlayState
       phase: _phase,
       failure: _phase == LedgerSigningModalPhase.failed
           ? LedgerSigningFailurePresentation(
+              requestFailure: _requestFailure,
               pairingInvalid: _deviceGuidance?.pairingInvalid ?? false,
               bluetoothRecovery: _deviceGuidance?.bluetoothRecovery ?? false,
               pairingRecovery: _deviceGuidance?.pairingRecovery ?? false,

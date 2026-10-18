@@ -1142,6 +1142,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ReceiveError dco_decode_receive_error(dynamic raw);
 
   @protected
+  ReceiveErrorKind dco_decode_receive_error_kind(dynamic raw);
+
+  @protected
   ResolvedVotingConfig dco_decode_resolved_voting_config(dynamic raw);
 
   @protected
@@ -2810,6 +2813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ReceiveError sse_decode_receive_error(SseDeserializer deserializer);
+
+  @protected
+  ReceiveErrorKind sse_decode_receive_error_kind(SseDeserializer deserializer);
 
   @protected
   ResolvedVotingConfig sse_decode_resolved_voting_config(
@@ -4849,6 +4855,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_receive_error(ReceiveError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_receive_error_kind(
+    ReceiveErrorKind self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_resolved_voting_config(

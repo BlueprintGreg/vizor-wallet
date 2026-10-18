@@ -6,7 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`, `fmt`, `from`, `from`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `runtime`, `with_seen`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`
 
 /// Reserves a swap address on a software account, skipping any the swap provider's seen
 /// set from the receiver directory holds, so an address another device of the same seed
@@ -15,7 +16,9 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// key scans from the next unscanned block until it closes. Otherwise it reserves the
 /// next refund index (see `reserve_refund_key`), whose key starts scanning when the
 /// wallet stores the swap's funding transaction. `live_tip` is the chain tip the quote
-/// flow fetched. Does not start or restart ordinary wallet sync.
+/// flow fetched. Without a fresh seen set, only a quoted incoming draft can be resumed;
+/// anything else fails as [`ReceiveErrorKind::SeenUnavailable`]. Does not start or
+/// restart ordinary wallet sync.
 Future<SwapAddress> reserveSwapAddress({
   required String dbPath,
   required String networkName,
@@ -33,7 +36,11 @@ Future<SwapAddress> reserveSwapAddress({
 /// Persists an unknown outcome and scan watch just before a provider quote request
 /// leaves the device, and returns the request's identity. `reservation_index` is the
 /// incoming reservation [`reserve_swap_address`] returned, and `deadline_seconds` the
-/// deposit deadline the request sends.
+/// deposit deadline the request sends. A reservation's first request checks the seen
+/// set issuance read, if it is still current, or else a new one. Fails as
+/// [`ReceiveErrorKind::Stale`] once the reservation's latest quote has expired or it was
+/// retired, so the app prepares a new address, and as
+/// [`ReceiveErrorKind::SeenUnavailable`] when a first request has no fresh set.
 Future<String> beginReceiveQuote({
   required String dbPath,
   required String networkName,
@@ -145,13 +152,26 @@ Future<bool> isSwapAddressScanning({
   address: address,
 );
 
-/// Queues one receiver-directory sweep of every closed swap key for the next sync,
-/// which finds a second refund or a late payout that arrived after its key stopped
-/// scanning. Called when the user turns NEAR swap privacy on.
-Future<void> recheckSwapHistory({
+/// "Check swap history": ends every software account's discovery pass, so the next
+/// sync starts a new one against the directory's current publication and finds a
+/// second refund or a late payout that arrived after its key stopped scanning. Once
+/// discovery is complete nothing else starts a pass. The caller then syncs, and
+/// [`is_swap_history_checking`] says when the check is done.
+Future<void> checkSwapHistory({
   required String dbPath,
   required String networkName,
-}) => RustLib.instance.api.crateApiOneTimeIvkRecheckSwapHistory(
+}) => RustLib.instance.api.crateApiOneTimeIvkCheckSwapHistory(
+  dbPath: dbPath,
+  networkName: networkName,
+);
+
+/// Whether a swap history check, or a restored wallet's first one, is still running:
+/// some software account's discovery is incomplete or has lookups or late payments
+/// left. Sync continues it.
+Future<bool> isSwapHistoryChecking({
+  required String dbPath,
+  required String networkName,
+}) => RustLib.instance.api.crateApiOneTimeIvkIsSwapHistoryChecking(
   dbPath: dbPath,
   networkName: networkName,
 );
@@ -182,21 +202,38 @@ class ReceiveDeposit {
           deadlineSeconds == other.deadlineSeconds;
 }
 
-/// A private swap failure. `message` is display text, never a parsing protocol.
+/// A private swap failure. `message` is display text, never a parsing protocol; `kind`
+/// says what the app should do about it.
 class ReceiveError implements FrbException {
   final String message;
+  final ReceiveErrorKind kind;
 
-  const ReceiveError({required this.message});
+  const ReceiveError({required this.message, required this.kind});
 
   @override
-  int get hashCode => message.hashCode;
+  int get hashCode => message.hashCode ^ kind.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ReceiveError &&
           runtimeType == other.runtimeType &&
-          message == other.message;
+          message == other.message &&
+          kind == other.kind;
+}
+
+/// Why a private swap call failed, for the app to act on.
+enum ReceiveErrorKind {
+  /// Any failure the app only shows.
+  other,
+
+  /// The provider's seen set could not be read fresh, so no new swap address can be
+  /// issued. Private swaps stay paused until it can, or until the user turns NEAR swap
+  /// privacy off.
+  seenUnavailable,
+
+  /// The reservation expired or was retired: prepare a new address.
+  stale,
 }
 
 /// A durably reserved swap address. A refund address carries its refund key index; an

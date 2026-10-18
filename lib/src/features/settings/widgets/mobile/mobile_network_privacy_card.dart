@@ -1,10 +1,8 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../../core/config/private_transparent_recovery_config.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_icon_hover_button.dart';
@@ -12,9 +10,9 @@ import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../providers/account_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
-import '../private_queries_turn_off.dart';
 import '../settings_sub_option.dart';
 import 'mobile_tor_control.dart';
+import 'mobile_private_queries_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
 
 const _rowHeight = 44.0;
@@ -31,7 +29,6 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
-    final enhancePirEnabled = ref.watch(privateQueriesControlEnabledProvider);
     // New swap addresses follow the private queries setting itself, which
     // the NEAR swap privacy switch also checks.
     final privateQueriesOn = ref.watch(enhancePirProvider);
@@ -39,9 +36,8 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
     final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
     final hardwareAccount =
         ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
-    final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
-    final recoveryTransition = ref.watch(enhancePirTransitionProvider);
-    final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
+    final changingRecovery =
+        ref.watch(enhancePirTransitionProvider) == kEnhancePirChangingMessage;
     return MobileSurfaceCard(
       cornerRadius: AppRadii.large,
       padding: const EdgeInsets.fromLTRB(
@@ -64,37 +60,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
           ),
           const SizedBox(height: AppSpacing.s),
           const MobileTorControl(),
-          if (enhancePirAvailable) const SizedBox(height: AppSpacing.md),
-          if (enhancePirAvailable)
-            _MobilePrivateQueriesControl(
-              label: 'Private queries',
-              keyPrefix: 'mobile_settings_enhance_pir',
-              enabled: enhancePirEnabled,
-              onToggle: changingRecovery
-                  ? null
-                  : () => unawaited(togglePrivateQueries(context, ref)),
-            ),
-          // Feedback for the user's own toggle only; recovery queue counts are
-          // deliberately not surfaced — see _EnhancePirPrivacyControl.
-          if (enhancePirAvailable && recoveryTransition != null)
-            Text(
-              recoveryTransition,
-              key: const ValueKey('mobile_settings_enhance_pir_transition'),
-              style: AppTypography.bodyMedium.copyWith(
-                color: colors.text.secondary,
-              ),
-            ),
-          if (enhancePirAvailable) const SizedBox(height: AppSpacing.sm),
-          if (enhancePirAvailable)
-            Text(
-              // iOS background migration tracking cannot run privately, so
-              // it stays off while this is on; say where confirmations happen.
-              privateQueriesMobileSettingsCopy(defaultTargetPlatform),
-              key: const ValueKey('mobile_settings_enhance_pir_description'),
-              style: AppTypography.bodyMedium.copyWith(
-                color: colors.text.secondary,
-              ),
-            ),
+          const MobilePrivateQueriesControl(),
           if (enhancePirServiceAvailable) ...[
             const SizedBox(height: AppSpacing.md),
             // An option of Private queries: its icon sits under the label
@@ -109,7 +75,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _MobilePrivateQueriesControl(
+                  _MobileToggleRow(
                     label: 'NEAR swap privacy',
                     keyPrefix: 'mobile_settings_near_swap_privacy',
                     enabled: nearSwapPrivacy,
@@ -148,8 +114,8 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
   }
 }
 
-class _MobilePrivateQueriesControl extends StatelessWidget {
-  const _MobilePrivateQueriesControl({
+class _MobileToggleRow extends StatelessWidget {
+  const _MobileToggleRow({
     required this.label,
     required this.keyPrefix,
     required this.enabled,

@@ -4,14 +4,27 @@ import '../src/core/config/rpc_endpoint_config.dart';
 import '../src/core/layout/mobile/app_mobile_sheet.dart';
 import '../src/core/theme/app_theme.dart';
 import '../src/features/settings/widgets/mobile/mobile_tor_control.dart';
+import '../src/features/settings/widgets/mobile/mobile_private_queries_control.dart';
 import '../src/features/onboarding/mobile/mobile_network_settings_sheet.dart';
 import '../src/features/onboarding/mobile/mobile_welcome_screen.dart';
 import '../src/providers/network_privacy_provider.dart';
+import '../src/providers/enhance_pir_provider.dart';
 import '../src/providers/rpc_endpoint_provider.dart';
 import 'mobile_welcome_preview_scope.dart';
 
 Widget buildMobileWelcomeNetworkOff(BuildContext context) =>
     _preview(const NetworkPrivacyState.off());
+Widget buildMobileWelcomePrivateQueriesEnabled(BuildContext context) =>
+    _preview(const NetworkPrivacyState.off(), privateQueriesEnabled: true);
+Widget buildMobileWelcomePrivateQueriesChanging(BuildContext context) =>
+    _preview(
+      const NetworkPrivacyState.off(),
+      privateQueriesTransition: kEnhancePirChangingMessage,
+    );
+Widget buildMobileWelcomePrivateQueriesFailed(BuildContext context) => _preview(
+  const NetworkPrivacyState.off(),
+  privateQueriesTransition: kEnhancePirUnchangedMessage,
+);
 Widget buildMobileWelcomeNetworkConnecting(BuildContext context) => _preview(
   const NetworkPrivacyState(
     torEnabled: true,
@@ -76,10 +89,14 @@ Widget _preview(
   NetworkPrivacyState state, {
   Object? rpcError,
   bool rpcPending = false,
+  bool privateQueriesEnabled = false,
+  String? privateQueriesTransition,
 }) => mobileWelcomePreviewScope(
   // This preview already owns an inline modal; the scope keeps Welcome's
   // startup presentation from stacking another one on top of the scene.
   state: state,
+  privateQueriesEnabled: privateQueriesEnabled,
+  privateQueriesTransition: privateQueriesTransition,
   child: _Preview(rpcPending: rpcPending, rpcError: rpcError),
 );
 
@@ -114,6 +131,9 @@ class _PreviewState extends State<_Preview> {
               torControl: MobileTorControl(
                 enabled: !widget.rpcPending,
                 useGeneralDescription: true,
+              ),
+              privateQueriesControl: MobilePrivateQueriesControl(
+                enabled: !widget.rpcPending,
               ),
               current: defaultRpcEndpointConfig('main'),
               controller: _controller,

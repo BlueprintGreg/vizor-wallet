@@ -35,8 +35,11 @@ use zcash_client_backend::data_api::{
         TransparentLedgerBalance, TransparentLedgerMode, TransparentLedgerRead,
         TransparentLedgerSnapshot,
     },
-    Account as _, Balance, WalletRead, WalletWrite,
+    Balance, WalletRead, WalletWrite,
 };
+// The test modules call `Account` methods through `use super::*`.
+#[cfg(test)]
+use zcash_client_backend::data_api::Account as _;
 use zcash_client_sqlite::{wallet::history::TransactionSummary, AccountUuid};
 use zcash_primitives::transaction::TxId;
 #[cfg(test)]

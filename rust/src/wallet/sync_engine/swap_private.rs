@@ -1,13 +1,17 @@
-//! Restore sweeps of swap keys through the receiver directory. The sweep's rules, chain
-//! acceptance and note mutation live in `zakura_pir_receiver` and the wallet library;
-//! this module supplies Vizor's routed transport, service origin, write lock and run
-//! budget.
+//! One-time key discovery and swap provider seen sets through the receiver directory.
+//! Discovery's rules, chain acceptance and note mutation live in `zakura_pir_receiver`
+//! and the wallet library; this module supplies Vizor's routed transport, service
+//! origin, write lock and run budgets.
 use super::enhancement::transport::{RoutedHttpError, RoutedTransport};
 use super::WalletDatabase;
 use crate::wallet::{db::with_wallet_db_write_lock, network::WalletNetwork};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use zakura_pir_receiver::{DirectoryError, Transport, WriteLock, MAINNET_GENESIS};
-use zcash_client_backend::data_api::{transparent_ledger::ChainPoint, WalletRead};
+use zakura_one_time_ivk::swap::provider_read_is_current;
+use zakura_pir_receiver::{DirectoryError, Seen, Transport, WriteLock, MAINNET_GENESIS};
+use zcash_client_backend::data_api::one_time_ivk::restore::{
+    DiscoveryStatus, OneTimeIvkRestoreRead as _,
+};
 
 /// The receiver directory's default origin. Use explicit HTTPS origins and never follow
 /// service redirects.
@@ -16,8 +20,11 @@ const DEFAULT_RECEIVER_ORIGIN: &str = "https://receiver-pir.valargroup.dev";
 /// `VIZOR_ENHANCE_PIR_URL`. Release builds never read it.
 #[cfg(debug_assertions)]
 const RECEIVER_ORIGIN_ENV: &str = "VIZOR_RECEIVER_PIR_URL";
-/// Time one recovery run may take. Sweeps it does not reach wait for a later sync.
-const RUN_BUDGET: Duration = Duration::from_secs(180);
+/// Time discovery may take before the scan's first batch. What it does not reach runs
+/// after the sync.
+pub(super) const BEFORE_SCAN_BUDGET: Duration = Duration::from_secs(60);
+/// Time discovery may take after a sync. What it does not reach runs next sync.
+pub(super) const AFTER_SYNC_BUDGET: Duration = Duration::from_secs(180);
 /// Time the seen set download before an issuance may take.
 const SEEN_BUDGET: Duration = Duration::from_secs(20);
 /// The receiver directory's origin: [`DEFAULT_RECEIVER_ORIGIN`], or in a debug build
@@ -71,105 +78,118 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
             .map_err(receiver_error)
     }
 }
-/// Holds the wallet write lock for each of a sweep's writes.
+/// Holds the wallet write lock for each of discovery's writes.
 struct WalletWriteLock;
 impl WriteLock for WalletWriteLock {
     fn write<T>(&self, label: &'static str, write: impl FnOnce() -> T) -> T {
         with_wallet_db_write_lock(label, write)
     }
 }
-fn error(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
 
-/// The receiver directory's swap provider seen sets, which incoming and refund issuance
-/// check (see `prepare_receive_reservation` and `reserve_refund_key`), over the restore
-/// sweep's transport. `None` where one-time IVKs are not `supported`, or when the
-/// directory does not answer within [`SEEN_BUDGET`]. Incoming issuance then counts every
-/// quote as seen, and refund issuance skips only the indexes funding memos recover.
-pub(crate) async fn fetch_seen(network: WalletNetwork) -> Option<zakura_pir_receiver::Seen> {
+/// The last seen sets [`fetch_seen`] downloaded, with the network and origin they came
+/// from, so a quote request soon after an issuance checks the same sets.
+static LAST_SEEN: Mutex<Option<(WalletNetwork, String, Arc<Seen>)>> = Mutex::new(None);
+
+/// Downloads the receiver directory's swap provider seen sets, which issuance checks
+/// (see `prepare_receive_reservation` and `reserve_refund_key`). Fails where one-time
+/// IVKs are not `supported`, or when the directory does not answer within
+/// [`SEEN_BUDGET`]. The caller then passes no set, and the wallet refuses whatever
+/// needs one as `SeenUnavailable`.
+pub(crate) async fn fetch_seen(network: WalletNetwork) -> Result<Arc<Seen>, String> {
     if !crate::wallet::one_time_ivk::supported(network) {
-        return None;
+        return Err("Private swaps are not available on this network".into());
     }
     let should_exit = || false;
     let transport = SwapTransport::new(&should_exit);
     let origin = receiver_origin();
     let fetch = zakura_pir_receiver::fetch_seen(&origin, &transport, MAINNET_GENESIS);
-    match tokio::time::timeout(SEEN_BUDGET, fetch).await {
-        Ok(Ok(seen)) => Some(seen),
-        Ok(Err(e)) => {
-            log::warn!("Swap seen set unavailable: {e}");
-            None
-        }
-        Err(_) => {
-            log::warn!("Swap seen set unavailable: timed out");
-            None
-        }
+    let seen = match tokio::time::timeout(SEEN_BUDGET, fetch).await {
+        Ok(Ok(seen)) => Arc::new(seen),
+        Ok(Err(e)) => return Err(format!("Swap seen set unavailable: {e}")),
+        Err(_) => return Err("Swap seen set unavailable: timed out".into()),
+    };
+    if let Ok(mut last) = LAST_SEEN.lock() {
+        *last = Some((network, origin, seen.clone()));
+    }
+    Ok(seen)
+}
+
+/// The seen sets [`fetch_seen`] last downloaded for `network`, if the wallet still
+/// counts them as current at `now`, or else a new download.
+pub(crate) async fn current_seen(network: WalletNetwork, now: i64) -> Result<Arc<Seen>, String> {
+    let origin = receiver_origin();
+    let cached = LAST_SEEN.lock().ok().and_then(|last| {
+        last.as_ref()
+            .filter(|(n, o, s)| *n == network && *o == origin && provider_read_is_current(s.until(), now))
+            .map(|(_, _, s)| s.clone())
+    });
+    match cached {
+        Some(seen) => Ok(seen),
+        None => fetch_seen(network).await,
     }
 }
 
-/// Runs pending restore sweeps for at most [`RUN_BUDGET`], returning whether one
-/// finished. Sync runs it as its last follow-up after reporting completion, so sends
-/// never wait for the directory, and only where one-time IVKs are `supported`.
-/// Failures are logged and retried on a later sync.
-pub(super) async fn run(
+/// Whether a discovery run for an account in `status` would do anything: the same test
+/// `zakura_pir_receiver::discover` makes before its first request.
+fn due(status: &Option<DiscoveryStatus>) -> bool {
+    status.as_ref().is_some_and(|s| {
+        s.publication.is_none()
+            || s.enumeration.is_some()
+            || !s.lookups.is_empty()
+            || !s.witnesses.is_empty()
+    })
+}
+
+/// Runs discovery once for every software account, for at most `budget`, and returns
+/// whether any account had work due, so wallet data may have changed. Sync runs it
+/// before the scan's first batch, so lookups become scan hints, and again after the
+/// sync, for late payments, and only where one-time IVKs are `supported`. An account
+/// with nothing due makes no request. Every step commits on its own, so stopping at the
+/// budget or on `should_exit` is safe; failures are logged and retried on a later run.
+pub(super) async fn discover(
     db: &mut WalletDatabase,
     network: WalletNetwork,
+    budget: Duration,
     should_exit: &impl Fn() -> bool,
 ) -> bool {
-    let tip = match db.block_fully_scanned() {
-        Ok(Some(tip)) => tip,
-        Ok(None) => return false,
-        Err(e) => {
-            log::warn!("Swap recovery deferred: {e}");
-            return false;
-        }
-    };
-    let through = ChainPoint {
-        height: tip.block_height(),
-        hash: tip.block_hash(),
-    };
-    // Stopping at any await is safe (see `zakura_pir_receiver`).
     let result = tokio::select! {
         biased;
         _ = super::watch_for_exit(should_exit) => return false,
-        result = tokio::time::timeout(RUN_BUDGET, run_inner(db, network, through, should_exit)) => {
+        result = tokio::time::timeout(budget, discover_accounts(db, network, should_exit)) => {
             result.unwrap_or_else(|_| Err("time budget reached".to_owned()))
         }
     };
     match result {
-        Ok(finished) => finished,
+        Ok(worked) => worked,
         Err(e) => {
-            log::warn!("Swap recovery deferred: {e}");
-            false
+            log::warn!("One-time key discovery deferred: {e}");
+            true
         }
     }
 }
 
-/// Runs recovery at `through`, the fully scanned block, if it is also the chain tip, and
-/// returns whether a sweep finished. Refund keys from funding memos that this sync's
-/// enhancement retrieved are swept next sync (see `run_sync_impl`). Each
-/// software account gets one `sweep`, which sweeps at most one batch of its due keys;
-/// the rest wait for a later sync. An account whose run fails does not stop the others.
-async fn run_inner(
+/// The body of [`discover`]. An account whose run fails does not stop the others.
+async fn discover_accounts(
     db: &mut WalletDatabase,
     network: WalletNetwork,
-    through: ChainPoint,
     should_exit: &impl Fn() -> bool,
 ) -> Result<bool, String> {
-    if Some(through.height) != db.chain_height().map_err(error)? {
-        return Ok(false);
-    }
     let transport = SwapTransport::new(should_exit);
     let origin = receiver_origin();
-    let now = crate::wallet::one_time_ivk::now()?;
-    let mut finished = false;
+    let mut worked = false;
     for account in crate::wallet::one_time_ivk::software_accounts(db)? {
-        let swept = zakura_pir_receiver::sweep(
+        let now = crate::wallet::one_time_ivk::now()?;
+        let status = db
+            .one_time_discovery(account, now)
+            .map_err(|e| e.to_string())?;
+        if !due(&status) {
+            continue;
+        }
+        worked = true;
+        let found = zakura_pir_receiver::discover(
             db,
             &network,
             account,
-            through,
             MAINNET_GENESIS,
             &origin,
             &transport,
@@ -177,27 +197,29 @@ async fn run_inner(
             now,
         )
         .await;
-        match swept {
-            Ok(swept) => {
+        match found {
+            Ok(found) => {
                 // Keys identify the wallet's swaps, so only the reasons are logged.
-                for (_, e) in &swept.deferred {
-                    log::warn!("Private swap recovery work deferred: {e}");
+                for (_, e) in &found.failed {
+                    log::warn!("One-time key lookup deferred: {e}");
                 }
-                if swept.pending {
-                    log::warn!("Swap recovery deferred: restore sweeps remain pending");
+                if !found.complete || found.lookups > 0 || found.witnesses > 0 {
+                    log::info!(
+                        "One-time key discovery continues: {} lookups, {} late payments left",
+                        found.lookups,
+                        found.witnesses
+                    );
                 }
-                finished |= swept.finished > 0;
             }
-            Err(e) => log::warn!("Swap recovery deferred: {e}"),
+            Err(e) => log::warn!("One-time key discovery deferred: {e}"),
         }
     }
-    Ok(finished)
+    Ok(worked)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zakura_pir_receiver::receiver_pir::{transport::DirectoryClient, AcceptedCoverage};
 
     #[test]
     fn receiver_overload_is_retryable_and_conflicts_mean_a_new_publication() {
@@ -212,7 +234,9 @@ mod tests {
             ));
         }
     }
-    /// Reads the live directory's seen sets, as issuance does.
+
+    /// Reads the live directory's seen sets, as issuance does, and reuses them while
+    /// they are current.
     #[tokio::test]
     #[ignore = "requires the live receiver directory"]
     async fn issuance_reads_the_live_seen_sets() {
@@ -220,72 +244,7 @@ mod tests {
         let seen = fetch_seen(WalletNetwork::Main).await.unwrap();
         assert!(seen.since() < seen.until());
         assert_eq!(seen.contains(&[[0; 43]]).len(), 1);
-    }
-
-    /// Uses only a public zero-OVK chain fixture and independently checked RPC anchors.
-    #[tokio::test]
-    #[ignore = "requires the isolated PIR services and VIZOR_SWAP_PUBLIC_ANCHORS"]
-    async fn public_refund_round_trips_the_vizor_dependency_graph() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let anchors: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(std::env::var("VIZOR_SWAP_PUBLIC_ANCHORS").unwrap()).unwrap(),
-        )
-        .unwrap();
-        fn hash(v: &serde_json::Value) -> [u8; 32] {
-            let mut b = hex::decode(v.as_str().unwrap()).unwrap();
-            b.reverse();
-            b.try_into().unwrap()
-        }
-        let accepted = AcceptedCoverage {
-            genesis: hash(&anchors["genesis"]),
-            required_start: 3428143,
-            height: anchors["directory"]["height"].as_u64().unwrap() as u32,
-            hash: hash(&anchors["directory"]["hash"]),
-        };
-        let should_exit = || false;
-        let transport = SwapTransport::new(&should_exit);
-        let manifest = DirectoryClient::fetch_manifest(&receiver_origin(), &&transport)
-            .await
-            .unwrap();
-        let mut client = DirectoryClient::connect_manifest(
-            &receiver_origin(),
-            &transport,
-            accepted,
-            manifest,
-            0,
-        )
-        .await
-        .unwrap();
-        let proofs = client.witnesses().await.unwrap();
-        assert_eq!(
-            hex::encode(proofs.root()),
-            anchors["directory"]["root"].as_str().unwrap()
-        );
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/swap-zero-ovk-action.json"
-        ))
-        .unwrap();
-        fn field<const N: usize>(v: &serde_json::Value, k: &str) -> [u8; N] {
-            hex::decode(v["action"][k].as_str().unwrap())
-                .unwrap()
-                .try_into()
-                .unwrap()
-        }
-        let action = zakura_pir_receiver::receiver_directory::extract::Action {
-            cv: field(&fixture, "cv"),
-            nullifier: field(&fixture, "nullifier"),
-            cmx: field(&fixture, "cmx"),
-            ephemeral_key: field(&fixture, "ephemeralKey"),
-            enc_ciphertext: field(&fixture, "encCiphertext"),
-            out_ciphertext: field(&fixture, "outCiphertext"),
-        };
-        let receiver = action.recover_receiver().unwrap().unwrap();
-        let found = client.lookup(receiver, accepted).await.unwrap();
-        let payment = found.iter().find(|p| p.position == 610503).unwrap();
-        assert_eq!(payment.height, 3496114);
-        proofs.path(610503, action.cmx).unwrap();
-        println!(
-            "Vizor dependencies verified receiver PIR and the common witness at position 610503"
-        );
+        let again = current_seen(WalletNetwork::Main, seen.until()).await.unwrap();
+        assert!(Arc::ptr_eq(&seen, &again));
     }
 }
