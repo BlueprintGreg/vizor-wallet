@@ -243,18 +243,28 @@ impl World {
             Sibling::OwnChangeBefore => (false, 1),
             Sibling::EarlierBlock => (true, 0),
         };
-        for _ in 0..12 {
-            let base = self.indexer.tree_size(&self.stack, self.stack.tip());
-            if (base % 2 == 1) != base_odd {
-                // A three-action transaction moves the next block's tree size to the other
-                // parity.
-                let own = self.payer.own_addresses(2);
-                let padding: Vec<(&str, u64)> =
-                    own.iter().map(|a| (a.as_str(), ZEC / 100)).collect();
-                self.payer.pay(&self.stack, &padding, OvkPolicy::Sender);
-                self.stack.mine(1);
-                continue;
+        let mut base = self.indexer.tree_size(&self.stack, self.stack.tip());
+        for _ in 0..4 {
+            if (base % 2 == 1) == base_odd {
+                break;
             }
+            // A three-action transaction moves the next block's tree size to the other
+            // parity.
+            let own = self.payer.own_addresses(2);
+            let padding: Vec<(&str, u64)> = own.iter().map(|a| (a.as_str(), ZEC / 100)).collect();
+            self.payer.pay(&self.stack, &padding, OvkPolicy::Sender);
+            self.stack.mine(1);
+            base = self.indexer.tree_size(&self.stack, self.stack.tip());
+        }
+        assert_eq!(
+            base % 2 == 1,
+            base_odd,
+            "padding set the tree size's parity"
+        );
+        // The builder shuffles the two actions with system randomness the test cannot
+        // seed, so each draw has the wanted order half the time. A draw that misses
+        // leaves the chain as it was.
+        for _ in 0..40 {
             // Built in a copy of the payer's wallet, so a draw in the wrong order leaves
             // nothing behind to resubmit.
             let tx = self
