@@ -619,6 +619,41 @@ class _BindingReceiveReservationStore extends Fake
   }
 }
 
+/// Incoming reservation records that refuse the first reservation as stale, as
+/// the wallet does once its latest quote expired.
+class _StaleFirstReservationStore extends Fake
+    implements ReceiveReservationStore {
+  final begun = <BigInt>[];
+
+  @override
+  Future<String> begin(BigInt reservation, DateTime deadline) async {
+    begun.add(reservation);
+    if (reservation == BigInt.one) {
+      throw const ReceiveError(
+        message: 'This swap address is no longer available.',
+        kind: ReceiveErrorKind.stale,
+      );
+    }
+    return 'request-$reservation';
+  }
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) async {}
+}
+
+/// Runs each quote request's send hook before quoting, as the NEAR adapter does.
+class _SendHookSwapProvider extends _FakeSwapProvider {
+  _SendHookSwapProvider() : super(zecDepositMemo: null);
+
+  @override
+  Future<SwapQuote> quote(SwapQuoteRequest request) async {
+    await request.beforeSend?.call(
+      DateTime.now().add(const Duration(hours: 1)),
+    );
+    return super.quote(request);
+  }
+}
+
 /// Quotes with a new address-only ZEC deposit address each time, as NEAR does.
 class _NewDepositPerQuoteSwapProvider extends _FakeSwapProvider {
   _NewDepositPerQuoteSwapProvider() : super(zecDepositMemo: null);
