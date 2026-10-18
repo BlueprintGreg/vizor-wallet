@@ -73,6 +73,7 @@ class LedgerPairingSessionState extends ConsumerState<LedgerPairingSession> {
   List<LedgerBleDevice> _devices = const [];
   StreamSubscription<LedgerDiscoveryUpdate>? _subscription;
   int _generation = 0;
+  bool _stoppedForConnectionChange = false;
   ValueListenable<bool>? _pairingEvidence;
   late final LedgerMobileBleService _mobile;
   late final LedgerOperationCanceller _cancel;
@@ -173,6 +174,7 @@ class LedgerPairingSessionState extends ConsumerState<LedgerPairingSession> {
     unawaited(_subscription?.cancel());
     if ((_stage == LedgerPairingStage.scanning ||
             _stage == LedgerPairingStage.devices) &&
+        !_stoppedForConnectionChange &&
         widget.selectionRequest?.discoveryStopped != true) {
       unawaited(_stopQuietly());
     }
@@ -181,6 +183,25 @@ class LedgerPairingSessionState extends ConsumerState<LedgerPairingSession> {
       unawaited(_cancelQuietly());
     }
     super.dispose();
+  }
+
+  /// Drain discovery before the host replaces this picker with transport options.
+  Future<void> stopSearch() async {
+    _generation++;
+    final subscription = _subscription;
+    _subscription = null;
+    try {
+      // A discovery stream may finish cancellation only after the native scan
+      // stops. Observe and drain both before enabling a new connection.
+      await Future.wait<void>([
+        subscription?.cancel() ?? Future<void>.value(),
+        widget.selectionRequest?.stop() ?? _mobile.stopDiscovery(),
+      ], eagerError: true);
+      _stoppedForConnectionChange = true;
+    } catch (_) {
+      if (mounted) setState(() => _invalidated = true);
+      rethrow;
+    }
   }
 
   Future<void> _cancelQuietly() async {
@@ -290,9 +311,9 @@ class LedgerPairingSessionState extends ConsumerState<LedgerPairingSession> {
         },
         onError: (Object error) => _fail(generation, error),
         onDone: () {
-          if (mounted &&
-              generation == _generation &&
-              _stage == LedgerPairingStage.scanning) {
+          if (!mounted || generation != _generation) return;
+          _subscription = null;
+          if (_stage == LedgerPairingStage.scanning) {
             setState(() => _stage = LedgerPairingStage.devices);
             _notifyBusy();
           }

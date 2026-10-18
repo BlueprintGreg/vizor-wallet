@@ -5,11 +5,12 @@ import 'package:flutter/widgets.dart';
 import '../../ledger/ledger_device_label.dart';
 import '../../ledger/services/ledger_bluetooth_access.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_bluetooth_content.dart';
+import '../../ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../core/theme/app_theme.dart';
-import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
+import '../../../core/widgets/app_button.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
 
 Future<LedgerBleDevice?> showMobileLedgerDeviceSheet({
@@ -219,7 +220,7 @@ class _MobileLedgerDeviceSheetState extends State<MobileLedgerDeviceSheet> {
         _state == _DiscoveryState.failed &&
         _bluetoothRecovery &&
         widget.service is LedgerBluetoothAccess;
-    return PopScope<LedgerBleDevice>(
+    return PopScope<Object?>(
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) _abandonConnection();
       },
@@ -230,75 +231,69 @@ class _MobileLedgerDeviceSheetState extends State<MobileLedgerDeviceSheet> {
               onRetry: () => unawaited(_startDiscovery()),
               onClose: _close,
               retryLabel: 'Find my Ledger',
+              purpose: 'continue',
             )
-          : MobileModalScaffold(
+          : MobileLedgerSheetContent(
               key: const ValueKey('mobile_ledger_device_sheet'),
-              title: 'Select your Ledger',
+              title: 'Add Ledger account',
               onClose: _close,
-              constrainBody: true,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Unlock your Ledger, turn on Bluetooth, and keep it nearby.',
-                      style: AppTypography.bodyMedium.copyWith(
-                        color: colors.text.secondary,
+              action:
+                  _state == _DiscoveryState.empty ||
+                      _state == _DiscoveryState.failed
+                  ? MobileLedgerAction(
+                      'Try again',
+                      key: const ValueKey('mobile_ledger_discovery_retry'),
+                      onPressed: busy
+                          ? null
+                          : () => unawaited(_startDiscovery()),
+                    )
+                  : null,
+              children: [
+                Text(
+                  _devices.isNotEmpty
+                      ? 'Select your Ledger.'
+                      : 'Unlock Ledger, turn on Bluetooth, and keep it nearby.',
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: colors.text.secondary,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                if (_devices.isNotEmpty)
+                  ..._devices.map(
+                    (device) => Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                      child: _LedgerDeviceRow(
+                        device: device,
+                        connecting: _connectingDeviceId == device.id,
+                        enabled: !busy,
+                        onTap: () => unawaited(_connect(device)),
                       ),
                     ),
-                    const SizedBox(height: AppSpacing.sm),
-                    if (_devices.isNotEmpty)
-                      ..._devices.map(
-                        (device) => Padding(
-                          padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                          child: _LedgerDeviceRow(
-                            device: device,
-                            connecting: _connectingDeviceId == device.id,
-                            enabled: !busy,
-                            onTap: () => unawaited(_connect(device)),
-                          ),
-                        ),
-                      )
-                    else if (_state == _DiscoveryState.requestingPermission ||
-                        _state == _DiscoveryState.scanning)
-                      const _StatusMessage(
-                        key: ValueKey('mobile_ledger_scanning'),
-                        iconName: AppIcons.loader,
-                        title: 'Scanning for Ledger devices',
-                        message: 'This can take a few seconds.',
-                      )
-                    else if (_state == _DiscoveryState.empty)
-                      const _StatusMessage(
-                        key: ValueKey('mobile_ledger_empty'),
-                        iconName: AppIcons.search,
-                        title: 'No Ledger devices found',
-                        message:
-                            'Check that your Ledger is unlocked and try again.',
-                      ),
-                    if (_state == _DiscoveryState.failed)
-                      _StatusMessage(
-                        key: const ValueKey('mobile_ledger_discovery_error'),
-                        iconName: AppIcons.warningCircle,
-                        title: 'Could not connect to your Ledger',
-                        message: _error ?? 'Try again.',
-                      ),
-
-                    if (_state == _DiscoveryState.empty ||
-                        _state == _DiscoveryState.failed) ...[
-                      const SizedBox(height: AppSpacing.sm),
-                      AppButton(
-                        key: const ValueKey('mobile_ledger_discovery_retry'),
-                        onPressed: busy
-                            ? null
-                            : () => unawaited(_startDiscovery()),
-                        variant: AppButtonVariant.secondary,
-                        child: const Text('Try again'),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
+                  )
+                else if (_state == _DiscoveryState.requestingPermission ||
+                    _state == _DiscoveryState.scanning)
+                  const _StatusMessage(
+                    key: ValueKey('mobile_ledger_scanning'),
+                    iconName: AppIcons.loader,
+                    title: 'Searching for Ledger devices…',
+                    message: 'This can take a few seconds.',
+                  )
+                else if (_state == _DiscoveryState.empty)
+                  const _StatusMessage(
+                    key: ValueKey('mobile_ledger_empty'),
+                    iconName: AppIcons.search,
+                    title: 'No Ledger devices found',
+                    message:
+                        'Check that your Ledger is unlocked and try again.',
+                  ),
+                if (_state == _DiscoveryState.failed)
+                  _StatusMessage(
+                    key: const ValueKey('mobile_ledger_discovery_error'),
+                    iconName: AppIcons.warningCircle,
+                    title: 'Could not connect to your Ledger',
+                    message: _error ?? 'Try again.',
+                  ),
+              ],
             ),
     );
   }
@@ -323,47 +318,36 @@ class _LedgerDeviceRow extends StatelessWidget {
     return Semantics(
       button: true,
       enabled: enabled,
-      label: ledgerDeviceLabel(device),
-      child: GestureDetector(
+      child: AppButton(
         key: ValueKey('mobile_ledger_device_${device.id}'),
-        behavior: HitTestBehavior.opaque,
-        onTap: enabled ? onTap : null,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 52),
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.sm,
-            vertical: AppSpacing.xs,
+        onPressed: enabled ? onTap : null,
+        variant: AppButtonVariant.secondary,
+        height: 52,
+        borderRadius: BorderRadius.circular(AppRadii.medium),
+        enabledBackgroundColor: colors.background.neutralSubtleOpacity,
+        enabledBorderColor: const Color(0x00000000),
+        expand: true,
+        growWithContent: true,
+        constrainContent: true,
+        leading: ExcludeSemantics(
+          child: AppIcon(
+            connecting ? AppIcons.loader : AppIcons.ledger,
+            animated: connecting,
+            size: 20,
           ),
-          decoration: BoxDecoration(
-            color: colors.background.neutralSubtleOpacity,
-            borderRadius: BorderRadius.circular(AppRadii.medium),
-          ),
-          child: Row(
-            children: [
-              AppIcon(
-                connecting ? AppIcons.loader : AppIcons.ledger,
-                animated: connecting,
-                size: 20,
-                color: colors.icon.regular,
-              ),
-              const SizedBox(width: AppSpacing.xs),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      connecting
-                          ? 'Connecting to ${ledgerDeviceLabel(device)}'
-                          : ledgerDeviceLabel(device),
-                      style: AppTypography.bodyMediumStrong.copyWith(
-                        color: colors.text.accent,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const AppIcon(AppIcons.chevronForward, size: 20),
-            ],
+        ),
+        trailing: const ExcludeSemantics(
+          child: AppIcon(AppIcons.chevronForward, size: 20),
+        ),
+        child: Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: Text(
+            connecting
+                ? 'Connecting to ${ledgerDeviceLabel(device)}'
+                : ledgerDeviceLabel(device),
+            style: AppTypography.bodyMediumStrong.copyWith(
+              color: colors.text.accent,
+            ),
           ),
         ),
       ),

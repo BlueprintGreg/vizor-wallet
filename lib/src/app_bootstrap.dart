@@ -251,6 +251,7 @@ Future<AppBootstrapState> loadAppBootstrap({
       StorageBootstrapStage.started,
     );
     await ensureIosSecureStoreAccessibilityMigrated();
+    await storage.encodeLegacyLinuxKeyringValues();
     await storage.ensureWalletDbName();
     await _applyE2eBootstrapOverrides(storage);
     var passwordRotationRecoveryFailed = false;

@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Scrollbar;
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/layout/mobile/app_mobile_sheet.dart';
@@ -6,29 +7,64 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_icon.dart';
 
 /// Mobile-only content. The host owns the scrim and MobileModalCard.
-class MobileLedgerSheetContent extends StatelessWidget {
+class MobileLedgerSheetContent extends StatefulWidget {
   const MobileLedgerSheetContent({
     required this.title,
     required this.onClose,
     required this.children,
+    this.action,
     super.key,
   });
   final String title;
   final VoidCallback? onClose;
   final List<Widget> children;
+  final Widget? action;
 
   @override
-  Widget build(BuildContext context) => MobileModalScaffold(
-    title: title,
-    titleMaxLines: 3,
-    showClose: onClose != null,
-    onClose: onClose ?? () {},
-    constrainBody: true,
-    child: SingleChildScrollView(
+  State<MobileLedgerSheetContent> createState() =>
+      _MobileLedgerSheetContentState();
+}
+
+class _MobileLedgerSheetContentState extends State<MobileLedgerSheetContent> {
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    explicitChildNodes: true,
+    child: MobileModalScaffold(
+      title: widget.title,
+      titleMaxLines: 3,
+      showClose: widget.onClose != null,
+      onClose: widget.onClose ?? () {},
+      constrainBody: true,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: children,
+        children: [
+          Flexible(
+            child: Scrollbar(
+              controller: _scrollController,
+              thumbVisibility: true,
+              thickness: 3,
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: widget.children,
+                ),
+              ),
+            ),
+          ),
+          if (widget.action != null) widget.action!,
+        ],
       ),
     ),
   );
@@ -84,11 +120,16 @@ class MobileLedgerStatus extends StatelessWidget {
 }
 
 class MobileLedgerIdentity extends StatelessWidget {
-  const MobileLedgerIdentity(this.label, {super.key});
+  const MobileLedgerIdentity(
+    this.label, {
+    this.topPadding = AppSpacing.md,
+    super.key,
+  });
   final String label;
+  final double topPadding;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: AppSpacing.md),
+    padding: EdgeInsets.only(top: topPadding),
     child: Row(
       children: [
         AppIcon(AppIcons.ledger, size: 20, color: context.colors.icon.regular),

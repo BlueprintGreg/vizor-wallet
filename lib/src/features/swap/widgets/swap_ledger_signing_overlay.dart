@@ -56,6 +56,7 @@ class _SwapLedgerSigningOverlayState
   Completer<bool>? _saplingParamsPromptCompleter;
   String? _error;
   LedgerFailureGuidance? _deviceGuidance;
+  LedgerRequestFailure? _requestFailure;
   SwapHardwareSigningService? _signingService;
   SwapHardwarePcztDraft? _draft;
   List<int>? _pcztWithProofs;
@@ -231,6 +232,7 @@ class _SwapLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.saving;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       try {
         var pendingResult = _pendingBroadcastResult;
@@ -266,6 +268,7 @@ class _SwapLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.preparing;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
       await _prepareAndSign();
       return;
@@ -275,6 +278,7 @@ class _SwapLedgerSigningOverlayState
       _phase = LedgerSigningModalPhase.awaitingDevice;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
     try {
       final accountUuid = widget.intent.accountUuid!;
@@ -346,6 +350,7 @@ class _SwapLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.broadcasting;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
     }
     late final LedgerSignedOperationBroadcastResult result;
@@ -432,6 +437,7 @@ class _SwapLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.saving;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
     }
     final draft = _draft;
@@ -464,6 +470,7 @@ class _SwapLedgerSigningOverlayState
         _phase = LedgerSigningModalPhase.saving;
         _error = null;
         _deviceGuidance = null;
+        _requestFailure = null;
       });
     }
     final draft = _draft;
@@ -554,6 +561,7 @@ class _SwapLedgerSigningOverlayState
       _phase = LedgerSigningModalPhase.saving;
       _error = null;
       _deviceGuidance = null;
+      _requestFailure = null;
     });
     _cancelled = true;
     await _cancelLedgerOperationSafely();
@@ -646,6 +654,7 @@ class _SwapLedgerSigningOverlayState
   }
 
   String _friendlyError(Object error) {
+    _requestFailure = LedgerRequestFailure.fromError(error);
     _deviceGuidance = ledgerFailureGuidance(
       error,
       requestKind: widget.intent.payMode
@@ -697,11 +706,13 @@ class _SwapLedgerSigningOverlayState
         pendingBroadcastResult?.status ==
             SwapDepositBroadcastStatus.broadcastedStorageFailed;
     final modal = LedgerSigningModal(
+      cancelling: _cancelled,
       connectionScope: _connectionScope,
       accountUuid: widget.intent.accountUuid,
       phase: _phase,
       failure: _phase == LedgerSigningModalPhase.failed
           ? LedgerSigningFailurePresentation(
+              requestFailure: _requestFailure,
               pairingInvalid: _deviceGuidance?.pairingInvalid ?? false,
               pairingRecovery:
                   !postBroadcastRecovery &&

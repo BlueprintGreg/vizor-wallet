@@ -156,6 +156,10 @@ void main() {
           incomingUris.emit('zcash:u1recipient');
           await tester.pumpAndSettle();
           expect(find.byType(PaymentRequestSurface), findsOneWidget);
+          await tester.tap(
+            find.byKey(const ValueKey('payment_request_link_details')),
+          );
+          await tester.pumpAndSettle();
           await tester.tap(find.widgetWithText(AppButton, 'Enter amount'));
           await tester.pumpAndSettle();
           expect(find.text('send-destination'), findsOneWidget);

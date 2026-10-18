@@ -230,6 +230,18 @@ class WidgetbookApp extends StatelessWidget {
                       builder: buildMobileWelcomeNetworkOff,
                     ),
                     WidgetbookUseCase(
+                      name: 'Private queries on',
+                      builder: buildMobileWelcomePrivateQueriesEnabled,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Private queries changing',
+                      builder: buildMobileWelcomePrivateQueriesChanging,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Private queries save failed',
+                      builder: buildMobileWelcomePrivateQueriesFailed,
+                    ),
+                    WidgetbookUseCase(
                       name: 'Connecting',
                       builder: buildMobileWelcomeNetworkConnecting,
                     ),
@@ -320,6 +332,18 @@ class WidgetbookApp extends StatelessWidget {
                     WidgetbookUseCase(
                       name: 'Fingerprint',
                       builder: buildMobileUnlockFingerprintUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Use Face ID next time',
+                      builder: buildMobileUnlockFaceIdOptInUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Use Touch ID next time',
+                      builder: buildMobileUnlockTouchIdOptInUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Use fingerprint next time',
+                      builder: buildMobileUnlockFingerprintOptInUseCase,
                     ),
                     WidgetbookUseCase(
                       name: 'Forgot passcode',
