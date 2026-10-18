@@ -111,7 +111,8 @@ pub(crate) fn encode_address(key: &OneTimeKey, network: WalletNetwork) -> Result
 
 /// Whether the wallet still scans `account`'s one-time key behind swap address
 /// `address`, as [`encode_address`] encodes it. False once the key closed, as when an
-/// unpaid reservation is reclaimed, and for an address that is not such a key's.
+/// unpaid reservation is reclaimed, and for an address that is not such a key's. Another
+/// account's open key with the same purpose and index does not count.
 pub(crate) fn is_address_scanning(
     db: &WalletDatabase,
     network: WalletNetwork,
@@ -134,7 +135,7 @@ pub(crate) fn is_address_scanning(
         .get_one_time_scanning_keys()
         .map_err(|e| e.to_string())?
         .iter()
-        .any(|scanning| scanning.key_id() == key.key_id()))
+        .any(|scanning| *scanning.account_id() == account && scanning.key_id() == key.key_id()))
 }
 
 /// The current Unix time in seconds, as the library's lifecycle takes it.
@@ -349,6 +350,61 @@ mod tests {
             )
             .unwrap();
         assert!(!scanning(&db, &address));
+    }
+
+    /// Every account numbers its keys from zero, so one account's open key does not keep
+    /// another account's closed key with the same index scanning.
+    #[test]
+    fn a_closed_swap_address_stays_closed_while_another_account_reuses_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let path = path.to_str().unwrap();
+        let network = WalletNetwork::Regtest;
+        let (_, first) = scanned_wallet(path);
+        let other = parse_account_uuid(
+            &super::super::keys::add_account(
+                path,
+                network,
+                "Added",
+                &SecretVec::new(vec![1; 32]),
+                Some(100),
+            )
+            .unwrap()
+            .0,
+        )
+        .unwrap();
+        // The added account's birthday range counts as scanned too.
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(
+                "DELETE FROM scan_queue;
+                 INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
+            )
+            .unwrap();
+        let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
+        let now = now().unwrap();
+        let tip = BlockHeight::from_u32(110);
+        let address = |db: &mut WalletDatabase, account| {
+            db.mark_one_time_account_fresh(account).unwrap();
+            let key = db
+                .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
+                .unwrap()
+                .unwrap();
+            assert_eq!(key.key_id(), KeyId::new(Purpose::Receive, 0));
+            encode_address(&key, network).unwrap()
+        };
+        let first_address = address(&mut db, first);
+        let other_address = address(&mut db, other);
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE ironwood_one_time_keys SET closed_at = 1
+                 WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)",
+                [first.expose_uuid()],
+            )
+            .unwrap();
+        assert!(!is_address_scanning(&db, network, first, &first_address).unwrap());
+        assert!(is_address_scanning(&db, network, other, &other_address).unwrap());
     }
 
     /// Accounts the app creates from a seed it generated start fresh, so no discovery
