@@ -17,7 +17,9 @@ class SwapHistoryApi {
   });
 
   /// Ends every software account's discovery pass, so the next sync starts a
-  /// new one against the receiver directory.
+  /// new one against the receiver directory. The wallet first stops a
+  /// discovery run in progress and waits for it, so that run cannot restore
+  /// the old pass.
   final Future<void> Function() begin;
 
   /// Whether that pass, or a restored wallet's first one, is still running.
