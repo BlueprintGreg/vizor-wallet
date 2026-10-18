@@ -689,10 +689,11 @@ fn a_zero_value_refund_marker_restores_the_key() {
 }
 
 /// Two software accounts in one Vizor wallet, the second added from another seed, quote
-/// swaps whose keys sit at the same indices. NEAR pays both incoming addresses in one
-/// transaction and refunds both swaps in another, with distinct values. Each account
-/// receives only its own funds, a restore of each seed on its own finds that account's
-/// funds and can spend them, and each account's next address advances independently.
+/// swaps whose keys sit at the same indices, barring a seen-filter false positive. NEAR
+/// pays both incoming addresses in one transaction and refunds both swaps in another,
+/// with distinct values. Each account receives only its own funds, a restore of each seed
+/// on its own finds that account's funds and can spend them, and each account's next
+/// address advances independently.
 #[test]
 #[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
 fn two_accounts_in_one_wallet_keep_their_swaps_apart() {
@@ -718,12 +719,10 @@ fn two_accounts_in_one_wallet_keep_their_swaps_apart() {
         world.quote_incoming(&a, HOUR),
         world.quote_incoming(&a2, HOUR),
     ];
+    // Each account's first refund key is normally index 0, but issuance skips an index
+    // whose receiver is a false positive in NEAR's seen filter, so the indices are not
+    // pinned here.
     let refunds = [world.quote_refund(&a, HOUR), world.quote_refund(&a2, HOUR)];
-    assert_eq!(
-        (refunds[0].index, refunds[1].index),
-        (0, 0),
-        "both accounts' refund keys are their first"
-    );
     assert_ne!(incoming[0].address, incoming[1].address);
     assert_ne!(refunds[0].address, refunds[1].address);
     a.fund_swap(&world.stack, &refunds[0], ZEC / 4);
@@ -801,11 +800,22 @@ fn two_accounts_in_one_wallet_keep_their_swaps_apart() {
         "B2's discovery looked for A2's swaps"
     );
     let next = [world.quote_refund(&a, HOUR), world.quote_refund(&a2, HOUR)];
-    assert_eq!(
-        (next[0].index, next[1].index),
-        (1, 1),
-        "each account's next refund address advances on its own"
-    );
+    // Issuance takes the lowest index above the account's last that the account has not
+    // registered, registering any index it skips. So every index below each quote, other
+    // than the account's earlier quote, is one the account itself registered.
+    for (wallet, first, next) in [(&a, &refunds[0], &next[0]), (&a2, &refunds[1], &next[1])] {
+        let registered = wallet.account_refund_indices();
+        assert!(
+            next.index > first.index
+                && (0..next.index)
+                    .filter(|i| *i != first.index)
+                    .all(|i| registered.contains(&i)),
+            "{}'s refund indices {} then {} advance on its own (it registered {registered:?})",
+            wallet.name,
+            first.index,
+            next.index
+        );
+    }
     world.spend_all(&b);
     world.spend_all(&b2);
 }

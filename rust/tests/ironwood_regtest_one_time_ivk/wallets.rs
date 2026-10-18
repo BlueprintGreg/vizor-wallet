@@ -541,6 +541,28 @@ impl Wallet {
         indices
     }
 
+    /// The indices of every refund key registered to this wallet's own account, issued or
+    /// only registered, such as an index issuance skipped because the seen set held it.
+    pub fn account_refund_indices(&self) -> Vec<u64> {
+        let account = parse_account_uuid(&self.account).expect("an account UUID");
+        let conn = self.read_only();
+        let mut statement = conn
+            .prepare(
+                "SELECT k.key_index FROM ironwood_one_time_keys k
+                 JOIN accounts a ON a.id = k.account_id
+                 WHERE a.uuid = ?1 AND k.purpose = 0",
+            )
+            .expect("the account's refund key query");
+        let indices = statement
+            .query_map([account.expose_uuid().as_bytes().as_slice()], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .expect("refund keys")
+            .map(|index| u64::from_be_bytes(index.expect("an index").try_into().expect("8 bytes")))
+            .collect();
+        indices
+    }
+
     /// Records NEAR's `status` for a ZEC-to-X swap's refund side.
     pub fn observe_refund(&self, stack: &Stack, swap: &RefundSwap, status: &str, refunded: u64) {
         swap_api::observe_swap_status(
