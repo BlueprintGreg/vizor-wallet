@@ -178,9 +178,11 @@ Each found payout or refund is then spent with the app's send-max flow, and the
 test checks that the node mined the spend. The refund tests also check that the
 funding pays exactly the quoted deposit, that a restore recovers the refund key
 from its marker on spent change and from a zero-value marker, that a restore
-during a directory outage finds the refund once the directory returns, and that
-a refund key which starts scanning partway through a scan batch rescans the
-blocks it missed. Others cover two accounts in one wallet, NEAR swap privacy turned off mid-swap, two swaps that
+during a directory outage finds the refund once the directory returns (the
+zero-value and outage tests place the refund key past the indices discovery
+checks against the directory's filters, so only the marker can register it),
+and that a refund key which starts scanning partway through a scan batch
+rescans the blocks it missed. Others cover two accounts in one wallet, NEAR swap privacy turned off mid-swap, two swaps that
 share a deposit address with different memos, a restore after another device
 spent two payouts from one transaction, and an underpaid swap refunded three
 weeks after its deadline.

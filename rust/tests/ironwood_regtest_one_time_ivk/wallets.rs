@@ -468,6 +468,21 @@ impl Wallet {
         })
     }
 
+    /// Reserves the next refund key as the quote flow does, but never records a quote or
+    /// tells NEAR, as for a quote abandoned before its request left the device. Returns
+    /// its index, or why it cannot be reserved yet.
+    pub fn reserve_refund_index(&self, stack: &Stack) -> Result<u64, String> {
+        let reserved = swap_api::reserve_swap_address(
+            self.db.clone(),
+            NETWORK.into(),
+            self.account.clone(),
+            false,
+            u64::from(stack.tip()),
+        )
+        .map_err(|e| e.message)?;
+        Ok(reserved.refund_index.expect("a refund index"))
+    }
+
     /// Funds a ZEC-to-X swap through Vizor's send flow, which puts the refund memo on its
     /// Ironwood change, and broadcasts it. Returns the fee and the txid.
     pub fn fund_swap(&self, stack: &Stack, swap: &RefundSwap, amount: u64) -> (u64, String) {

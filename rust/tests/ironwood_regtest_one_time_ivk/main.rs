@@ -25,10 +25,17 @@ use chain::{internal_hash, Stack, DAY, HOUR, MINUTE, ZEC};
 use directory::{zero_ovk_receivers, DirectoryServer, Indexer};
 use near::Near;
 use wallets::{broadcast, receiver_of, zero_ovk, IncomingSwap, Payer, RefundSwap, Wallet};
+use zakura_pir_receiver::{FIRST_WINDOW, GAP};
 
 static STACK: Mutex<()> = Mutex::new(());
 
 const PAYOUT: u64 = ZEC / 4;
+
+/// A refund index a restore's discovery never checks against the directory's filters
+/// while every index used below it is near zero: past [`FIRST_WINDOW`] by three [`GAP`]s,
+/// so even a seen-filter false positive or two below it cannot stretch the checks that
+/// far. Only the funding memo can register its key on a restore.
+const SPARSE_REFUND_INDEX: u64 = FIRST_WINDOW + 3 * GAP;
 
 /// The chain, the directory serving it, NEAR, and NEAR's payer, for one test.
 struct World {
@@ -189,6 +196,32 @@ impl World {
             }
         }
         panic!("{} never quotes", wallet.name);
+    }
+
+    /// Quotes a ZEC-to-X swap on `wallet` at a refund index of at least
+    /// [`SPARSE_REFUND_INDEX`], after reserving every index below it without telling NEAR,
+    /// as quotes abandoned before their request left the device would.
+    fn quote_sparse_refund(&mut self, wallet: &Wallet, deadline_in: i64) -> RefundSwap {
+        let mut refusals = 0;
+        loop {
+            match wallet.reserve_refund_index(&self.stack) {
+                Ok(index) if index + 1 >= SPARSE_REFUND_INDEX => break,
+                Ok(_) => refusals = 0,
+                Err(e) => {
+                    refusals += 1;
+                    assert!(refusals < 4, "{} never reserves: {e}", wallet.name);
+                    self.stack.mine(1);
+                    self.sync(wallet);
+                }
+            }
+        }
+        let swap = self.quote_refund(wallet, deadline_in);
+        assert!(
+            swap.index >= SPARSE_REFUND_INDEX,
+            "the swap's refund key, index {}, is past the restore's filter checks",
+            swap.index
+        );
+        swap
     }
 
     /// Spends everything `wallet` holds with the app's send-max flow and checks that the
@@ -591,9 +624,11 @@ fn refund_is_found_live_and_by_a_later_restore() {
 
 /// A ZEC-to-X swap whose refund key is not the account's first. A refund index bound to
 /// another deposit is refused before anything is sent, the funding pays exactly the
-/// quoted deposit and fee, and a seed restore recovers the key from the marker on the
-/// funding change even after that change is spent. The restored wallet finds the
-/// refund, spends it, and its next refund address skips every index the seed used.
+/// quoted deposit and fee, and a seed restore registers the key before NEAR refunds, even
+/// after the funding change that carries its marker is spent. The restored wallet finds
+/// the refund, spends it, and its next refund address skips every index the seed used.
+/// The key's low index is in NEAR's recent set, so discovery's filters also register it
+/// and watch for the refund.
 #[test]
 #[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
 fn refund_funding_is_exact_and_a_restore_recovers_its_key_from_spent_change() {
@@ -606,11 +641,15 @@ fn refund_funding_is_exact_and_a_restore_recovers_its_key_from_spent_change() {
         .pay(&world.stack, &[(&a.address, 2 * ZEC)], OvkPolicy::Sender);
     world.stack.mine(10);
     world.sync(&a);
-    // Two quotes A never funds take indices 0 and 1, so the funded key is index 2.
+    // Two quotes A never funds take indices 0 and 1, so the funded key is normally index
+    // 2, unless issuance skips a seen-filter false positive.
     let unfunded = world.quote_refund(&a, HOUR);
     world.quote_refund(&a, HOUR);
     let swap = world.quote_refund(&a, HOUR);
-    assert_eq!(swap.index, 2, "the funded swap's refund key is index 2");
+    assert!(
+        swap.index >= 2,
+        "the funded swap's refund key follows the unfunded ones"
+    );
     let mismatched = sync_api::propose_swap_funding(
         a.db.clone(),
         chain::NETWORK.into(),
@@ -674,8 +713,8 @@ fn refund_funding_is_exact_and_a_restore_recovers_its_key_from_spent_change() {
 
 /// A swap funded with everything the wallet holds leaves a zero-value change note that
 /// still carries the refund marker. The refund lands before the seed is restored, and the
-/// restore recovers the key from that marker, finds the refund through the receiver
-/// directory and can spend it.
+/// restore recovers the key from that marker, the only way at an index past its filter
+/// checks, finds the refund through the receiver directory and can spend it.
 #[test]
 #[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
 fn a_zero_value_refund_marker_restores_the_key() {
@@ -688,7 +727,7 @@ fn a_zero_value_refund_marker_restores_the_key() {
         .pay(&world.stack, &[(&a.address, 2 * ZEC)], OvkPolicy::Sender);
     world.stack.mine(10);
     world.sync(&a);
-    let swap = world.quote_refund(&a, HOUR);
+    let swap = world.quote_sparse_refund(&a, HOUR);
     let (amount, _, txid) = a.fund_swap_with_everything(&world.stack, &swap);
     world.stack.mine(1);
     world.check_funding(&txid, &swap.deposit, amount);
@@ -1200,7 +1239,8 @@ fn a_reorg_below_an_accepted_publication_keeps_the_payout_once() {
 
 /// A restore made while the receiver directory is unreachable finds everything but the
 /// refund, which only discovery finds. Discovery waits for the directory, then recovers
-/// the refund key from the funding memo and finds the refund.
+/// the refund key from the funding memo, the only way at an index past its filter
+/// checks, and finds the refund.
 #[test]
 #[ignore = "requires the Dockerized Ironwood zcashd/lightwalletd regtest stack"]
 fn a_restore_during_a_directory_outage_finds_the_refund_once_it_returns() {
@@ -1213,7 +1253,7 @@ fn a_restore_during_a_directory_outage_finds_the_refund_once_it_returns() {
         .pay(&world.stack, &[(&a.address, 2 * ZEC)], OvkPolicy::Sender);
     world.stack.mine(10);
     world.sync(&a);
-    let swap = world.quote_refund(&a, HOUR);
+    let swap = world.quote_sparse_refund(&a, HOUR);
     a.fund_swap(&world.stack, &swap, ZEC / 2);
     world.stack.mine(1);
     world.pay(&swap.address, ZEC / 2);
