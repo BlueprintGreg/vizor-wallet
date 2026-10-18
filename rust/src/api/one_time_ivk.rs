@@ -2,7 +2,7 @@
 //! records, provider statuses and swap history checks. Provider polling stays in Dart;
 //! allocation is durable in Rust.
 use super::sync::parse_network_and_migrate;
-use crate::wallet::db::{open_wallet_db_with_timeout, with_wallet_db_write_lock};
+use crate::wallet::db::open_wallet_db_with_timeout;
 use crate::wallet::one_time_ivk::{self, with_db};
 use crate::wallet::{db::WALLET_DB_BUSY_TIMEOUT, keys};
 use zakura_near_intents::near_observation;
@@ -328,7 +328,8 @@ pub fn observe_swap_status(
 /// "Check swap history": ends every software account's discovery pass, so the next
 /// sync starts a new one against the directory's current publication and finds a
 /// second refund or a late payout that arrived after its key stopped scanning. Once
-/// discovery is complete nothing else starts a pass. The caller then syncs, and
+/// discovery is complete nothing else starts a pass. A discovery run in progress is
+/// stopped first, and the call waits for it. The caller then syncs, and
 /// [`is_swap_history_checking`] says when the check is done.
 pub fn check_swap_history(db_path: String, network_name: String) -> Result<(), ReceiveError> {
     // Without a wallet there is nothing to check; do not create its database.
@@ -340,13 +341,7 @@ pub fn check_swap_history(db_path: String, network_name: String) -> Result<(), R
     if !one_time_ivk::supported(network) {
         return Ok(());
     }
-    with_wallet_db_write_lock("one_time_ivk.recheck", || {
-        let mut db = open_wallet_db_with_timeout(&db_path, network, WALLET_DB_BUSY_TIMEOUT)?;
-        for account in one_time_ivk::software_accounts(&db)? {
-            db.recheck_one_time_key_history(account)?;
-        }
-        Ok(())
-    })
+    Ok(one_time_ivk::recheck_history(&db_path, network)?)
 }
 
 /// Whether a swap history check, or a restored wallet's first one, is still running:

@@ -17,7 +17,7 @@ use super::{
     },
     keys::parse_account_uuid,
     network::WalletNetwork,
-    sync_engine::enhancement::EnhancementPolicy,
+    sync_engine::{enhancement::EnhancementPolicy, exclusive_of_discovery},
 };
 
 /// Whether `network` runs one-time IVKs at all: wherever Private queries could (see
@@ -161,6 +161,23 @@ pub(crate) fn history_pending(db: &WalletDatabase) -> Result<bool, String> {
     Ok(false)
 }
 
+/// Ends every software account's discovery pass, as "Check swap history" asks (see
+/// `check_swap_history`), once no discovery run holds the wallet at `path`. A run in
+/// progress is asked to stop first, so it cannot write the old pass back (see
+/// [`exclusive_of_discovery`]).
+pub(crate) fn recheck_history(path: &str, network: WalletNetwork) -> Result<(), String> {
+    exclusive_of_discovery(path, || {
+        with_wallet_db_write_lock("one_time_ivk.recheck", || {
+            let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT)?;
+            for account in software_accounts(&db)? {
+                db.recheck_one_time_key_history(account)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+    })
+}
+
 /// Stops scanning finished one-time keys, under the wallet write lock, once sync has
 /// scanned to `tip`, the chain tip it revalidated this session. Sync calls it only where
 /// [`supported`].
@@ -218,6 +235,67 @@ mod tests {
             )
             .unwrap();
         (db, parse_account_uuid(&uuid).unwrap())
+    }
+
+    /// A swap history check waits for a discovery run in progress, after asking it to
+    /// stop, so a pass the run writes before it stops cannot outlive the reset and
+    /// report the check done.
+    #[test]
+    fn a_running_discovery_cannot_restore_a_rechecked_pass() {
+        use zcash_client_backend::data_api::one_time_ivk::restore::{
+            EnumerationCursor, OneTimeIvkRestoreWrite as _, PublicationEnd,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
+        let (mut db, account) = scanned_wallet(&path);
+        let now = now().unwrap();
+        let publication = PublicationEnd {
+            height: BlockHeight::from_u32(110),
+            hash: [0; 32],
+            tree_size: 0,
+        };
+        // Whether the account has a pass whose filter checks are done.
+        let checked = |db: &WalletDatabase| {
+            db.one_time_discovery(account, now)
+                .unwrap()
+                .unwrap()
+                .enumeration
+                .is_none()
+        };
+
+        // A run is in flight, between reading the pass and writing its filter checks.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let run = runtime.block_on(crate::wallet::sync_engine::DiscoveryRun::start(&path));
+        let recheck = std::thread::spawn({
+            let path = path.clone();
+            move || recheck_history(&path, WalletNetwork::Regtest)
+        });
+        while !run.preempted() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!recheck.is_finished());
+
+        // Its last write lands before the reset rather than after it.
+        for purpose in [Purpose::Receive, Purpose::Refund] {
+            assert!(with_wallet_db_write_lock("test", || db
+                .record_one_time_filter_checks(
+                    account,
+                    publication,
+                    purpose,
+                    &[],
+                    EnumerationCursor::default(),
+                    true,
+                    now,
+                )
+                .unwrap()));
+        }
+        assert!(checked(&db));
+        drop(run);
+        recheck.join().unwrap().unwrap();
+        assert!(!checked(&db));
+        assert!(history_pending(&db).unwrap());
     }
 
     /// A restored account's swap history is unchecked until discovery runs, which needs

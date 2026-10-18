@@ -61,7 +61,9 @@ pub(crate) mod mempool;
 mod private_recovery_reorg_tests;
 mod retry_progress;
 mod swap_private;
-pub(crate) use swap_private::{current_seen, fetch_seen};
+#[cfg(test)]
+pub(crate) use swap_private::DiscoveryRun;
+pub(crate) use swap_private::{current_seen, exclusive_of_discovery, fetch_seen};
 #[cfg(test)]
 pub(crate) mod test_lwd;
 mod tip_cache;
@@ -3250,6 +3252,7 @@ async fn run_sync_impl(
     if one_time_ivks && running_mode != 2 && !should_exit() {
         swap_private::discover(
             &mut db,
+            db_data_path,
             network,
             swap_private::BEFORE_SCAN_BUDGET,
             &should_exit,
@@ -5037,6 +5040,7 @@ async fn run_sync_impl(
         && !should_exit()
         && swap_private::discover(
             &mut db,
+            db_data_path,
             network,
             swap_private::AFTER_SYNC_BUDGET,
             &should_exit,
