@@ -110,9 +110,6 @@ void main() {
         enhancePirBackgroundSinkProvider.overrideWithValue((_) async {}),
         transparentOptOutStoreProvider.overrideWithValue(_OptOut()),
         transparentPolicyReconcilerProvider.overrideWithValue(_reconcile),
-        swapHistoryRecheckProvider.overrideWithValue(
-          () async => api.events.add('recheck'),
-        ),
       ],
     );
     addTearDown(container.dispose);
@@ -140,9 +137,10 @@ void main() {
     await pending;
     expect(store.value, isTrue);
     expect(c.read(nearSwapPrivacyProvider), isTrue);
-    // Turning the setting on rechecks closed swap keys once and syncs to run it.
-    expect(api.events, ['swap:true', 'recheck']);
-    expect(sync.starts, 1);
+    // Turning the setting on only allows new addresses: swap history is
+    // checked on request, so nothing else runs.
+    expect(api.events, ['swap:true']);
+    expect(sync.starts, 0);
   });
   test('turning off Private queries durably clears the child first', () async {
     final store = _Store()..value = true;
@@ -171,7 +169,7 @@ void main() {
     expect(c.read(nearSwapPrivacyProvider), isFalse);
     expect(api.events, isEmpty);
   });
-  test('turning the setting off neither rechecks nor syncs', () async {
+  test('turning the setting off does not sync', () async {
     final store = _Store()..value = true;
     final sync = _Sync()..gate.complete();
     final c = setup(store, sync, private: true, swap: true);
