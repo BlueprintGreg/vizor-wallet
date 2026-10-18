@@ -352,7 +352,10 @@ pub fn check_swap_history(db_path: String, network_name: String) -> Result<(), R
 /// Whether a swap history check, or a restored wallet's first one, is still running:
 /// some software account's discovery is incomplete or has lookups or late payments
 /// left. Sync continues it.
-pub fn is_swap_history_checking(db_path: String, network_name: String) -> Result<bool, ReceiveError> {
+pub fn is_swap_history_checking(
+    db_path: String,
+    network_name: String,
+) -> Result<bool, ReceiveError> {
     if !keys::wallet_exists(&db_path) {
         return Ok(false);
     }

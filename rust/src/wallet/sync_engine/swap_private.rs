@@ -120,7 +120,9 @@ pub(crate) async fn current_seen(network: WalletNetwork, now: i64) -> Result<Arc
     let origin = receiver_origin();
     let cached = LAST_SEEN.lock().ok().and_then(|last| {
         last.as_ref()
-            .filter(|(n, o, s)| *n == network && *o == origin && provider_read_is_current(s.until(), now))
+            .filter(|(n, o, s)| {
+                *n == network && *o == origin && provider_read_is_current(s.until(), now)
+            })
             .map(|(_, _, s)| s.clone())
     });
     match cached {
@@ -244,7 +246,9 @@ mod tests {
         let seen = fetch_seen(WalletNetwork::Main).await.unwrap();
         assert!(seen.since() < seen.until());
         assert_eq!(seen.contains(&[[0; 43]]).len(), 1);
-        let again = current_seen(WalletNetwork::Main, seen.until()).await.unwrap();
+        let again = current_seen(WalletNetwork::Main, seen.until())
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&seen, &again));
     }
 }
