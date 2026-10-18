@@ -13,7 +13,8 @@ import '../../../providers/enhance_pir_provider.dart';
 import '../../../providers/network_privacy_provider.dart';
 import '../../../providers/rpc_endpoint_failover_provider.dart';
 import '../../../providers/sync_provider.dart';
-import '../../../rust/api/one_time_ivk.dart' show ReceiveError;
+import '../../../rust/api/one_time_ivk.dart'
+    show ReceiveError, ReceiveErrorKind;
 import 'swap_activity_tracker.dart';
 import 'swap_deposit_sender.dart';
 import 'swap_failure_policy.dart';
@@ -67,9 +68,12 @@ SwapQuoteMode _inputQuoteModeForDirection(SwapDirection direction) =>
 
 class SwapNotifier extends Notifier<SwapState> {
   var _quoteGeneration = 0;
-  Future<SwapZecStagingAddress>? _reviewStagingAddress;
-  String? _reviewStagingAccount;
-  SwapDirection? _reviewStagingDirection;
+
+  /// Swap addresses prepared for review, per account and direction, so amount
+  /// edits, cancels, direction switches and quote errors reuse one reservation
+  /// (see [_prepareReviewAddress]).
+  final _reviewStagingAddresses =
+      <(String, SwapDirection), Future<SwapZecStagingAddress>>{};
   var _pricingLoadGeneration = 0;
   var _accountScopeGeneration = 0;
   var _payEntryGeneration = 0;
@@ -101,7 +105,7 @@ class SwapNotifier extends Notifier<SwapState> {
     ref.listen<bool>(nearSwapPrivacyProvider, (previous, next) {
       if (previous == next) return;
       _quoteGeneration++;
-      _reviewStagingAddress = null;
+      _reviewStagingAddresses.clear();
       if (state.reviewVisible || state.quoteLoading) {
         state = state.copyWith(
           reviewVisible: false,
@@ -757,32 +761,45 @@ class SwapNotifier extends Notifier<SwapState> {
     }
   }
 
+  /// The swap address `direction` quotes with on `accountUuid`: the one cached
+  /// for them, or a new preparation, cached before it is awaited so edits during
+  /// preparation do not allocate another key. An incoming address stays cached
+  /// until NEAR swap privacy changes, its reservation goes stale, or its swap
+  /// starts; the wallet also resumes its draft until the latest quote expires.
+  /// A refund address serves one quote (see [showReview]).
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
   ) async {
-    if (_reviewStagingAccount != accountUuid ||
-        _reviewStagingDirection != direction) {
-      _reviewStagingAddress = null;
-    }
-    _reviewStagingAccount = accountUuid;
-    _reviewStagingDirection = direction;
-    // Cache the reservation before awaiting it so edits during preparation do
-    // not allocate another key. Incoming attempts are also persisted before quoting.
-    final pending = _reviewStagingAddress ??= ref
+    final key = (accountUuid, direction);
+    final pending = _reviewStagingAddresses[key] ??= ref
         .read(swapZecStagingAddressServiceProvider)
         .prepareForQuote(accountUuid: accountUuid, direction: direction);
     try {
       return await pending;
     } catch (_) {
-      if (identical(_reviewStagingAddress, pending)) {
-        _reviewStagingAddress = null;
+      if (identical(_reviewStagingAddresses[key], pending)) {
+        _reviewStagingAddresses.remove(key);
       }
       rethrow;
     }
   }
 
-  Future<void> showReview({bool preserveCurrentReview = false}) async {
+  /// Drops the swap address cached for `accountUuid` and `direction`, so the
+  /// next quote prepares another.
+  void _dropReviewAddress(String accountUuid, SwapDirection direction) {
+    _reviewStagingAddresses.remove((accountUuid, direction));
+  }
+
+  Future<void> showReview({bool preserveCurrentReview = false}) =>
+      _showReview(preserveCurrentReview: preserveCurrentReview, retry: true);
+
+  /// Quotes for review. A reservation that went stale is dropped and, when
+  /// `retry` is set, quoted once more with a new address.
+  Future<void> _showReview({
+    required bool preserveCurrentReview,
+    required bool retry,
+  }) async {
     if (!state.canReviewQuote) return;
 
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
@@ -825,7 +842,6 @@ class SwapNotifier extends Notifier<SwapState> {
       if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
         return;
       }
-      final staging = _reviewStagingAddress;
       final addressPlan = stagingAddress.toAddressPlan(
         direction: direction,
         externalAsset: externalAsset,
@@ -850,9 +866,8 @@ class SwapNotifier extends Notifier<SwapState> {
           );
       // The quote bound the refund key to its deposit, so the next quote, a
       // refresh included, reserves another key.
-      if (quote.swapRefundIndex != null &&
-          identical(_reviewStagingAddress, staging)) {
-        _reviewStagingAddress = null;
+      if (quote.swapRefundIndex != null) {
+        _dropReviewAddress(accountUuid, direction);
       }
       if (generation != _quoteGeneration) {
         return;
@@ -872,15 +887,27 @@ class SwapNotifier extends Notifier<SwapState> {
       );
     } catch (e) {
       if (generation != _quoteGeneration) return;
-      // A swap address failure drops the cached address. Preparing again
-      // resumes an incoming draft, or reserves a new refund key.
-      if (e is ReceiveError) {
-        _reviewStagingAddress = null;
+      final receiveError = _receiveError(e);
+      final stale = receiveError?.kind == ReceiveErrorKind.stale;
+      // A refund key failure drops it, as one key serves one quote. An
+      // incoming reservation survives other errors and is dropped only once
+      // stale, when the next attempt needs another address.
+      if (stale || (receiveError != null && direction.sendsZec)) {
+        _dropReviewAddress(accountUuid, direction);
+      }
+      if (stale && retry) {
+        state = state.copyWith(quoteLoading: false);
+        return _showReview(
+          preserveCurrentReview: preserveCurrentReview,
+          retry: false,
+        );
       }
       state = state.copyWith(
         reviewVisible: false,
         quoteLoading: false,
         quoteError: _friendlyQuoteError(e),
+        privateSwapsPaused:
+            receiveError?.kind == ReceiveErrorKind.seenUnavailable,
         clearReview: true,
       );
     }
@@ -981,6 +1008,11 @@ class SwapNotifier extends Notifier<SwapState> {
         'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
         'error=$e',
       );
+      // A reservation another request started, or whose deposit deadline
+      // passed, cannot be quoted again.
+      if (_receiveError(e)?.kind == ReceiveErrorKind.stale) {
+        _dropReviewAddress(accountUuid, quote.direction);
+      }
       state = state.copyWith(
         startSubmitting: false,
         quoteLoading: false,
@@ -1003,7 +1035,8 @@ class SwapNotifier extends Notifier<SwapState> {
       intent = intent.copyWith(nextAction: nextAction);
     }
     _quoteGeneration++;
-    _reviewStagingAddress = null;
+    // The swap started on this address, so the next swap prepares another.
+    _dropReviewAddress(accountUuid, quote.direction);
     if (activeAccountIsHardware && quote.direction.sendsZec) {
       if (hardwareSignerKind == HardwareSignerKind.ledger) {
         // The provider intent already exists at this point. Persist it before
@@ -1834,12 +1867,13 @@ class SwapNotifier extends Notifier<SwapState> {
   }
 
   void _clearReviewState() {
-    // An address NEAR quoted is in its seen set and never used again, so the
-    // next quote gets another; a rejected or pending one, or the wallet's
-    // ordinary address, is kept.
+    // A refund key serves one quote, so the next quote reserves another. An
+    // incoming address is kept: the wallet resumes its draft until the latest
+    // quote expires, then refuses it as stale.
     final quote = state.reviewQuote;
-    if (quote?.swapRefundIndex != null || quote?.receiveRequestId != null) {
-      _reviewStagingAddress = null;
+    final account = state.reviewAccountUuid;
+    if (quote != null && quote.swapRefundIndex != null && account != null) {
+      _dropReviewAddress(account, quote.direction);
     }
     _quoteGeneration++;
     state = state.copyWith(
@@ -1853,7 +1887,6 @@ class SwapNotifier extends Notifier<SwapState> {
   }
 
   void _clearAccountScopedTransientState() {
-    _reviewStagingAddress = null;
     _quoteGeneration++;
     _accountScopeGeneration++;
     _payEntryGeneration++;
@@ -2253,8 +2286,19 @@ class SwapNotifier extends Notifier<SwapState> {
     return intent.depositAddress ?? intent.id;
   }
 
+  /// The wallet's swap address failure behind `error`, if any, whether thrown
+  /// directly or while preparing the address.
+  ReceiveError? _receiveError(Object error) => switch (error) {
+    final ReceiveError e => e,
+    SwapZecStagingAddressUnavailableException(:final ReceiveError cause) =>
+      cause,
+    _ => null,
+  };
+
   String _friendlyQuoteError(Object error) {
-    if (error is ReceiveError) return error.message;
+    if (_receiveError(error) case final receiveError?) {
+      return receiveError.message;
+    }
     if (error is SwapZecStagingAddressUnavailableException) {
       return error.toString();
     }

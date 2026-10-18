@@ -64,6 +64,7 @@ class SwapState {
     this.quoteLoading = false,
     this.quoteExpired = false,
     this.quoteError,
+    this.privateSwapsPaused = false,
     this.statusRefreshing = false,
     this.statusError,
     this.startSubmitting = false,
@@ -104,6 +105,11 @@ class SwapState {
   final bool quoteLoading;
   final bool quoteExpired;
   final String? quoteError;
+
+  /// Whether [quoteError] says private swaps are paused because the wallet
+  /// cannot read the provider's seen set, so the UI offers the NEAR swap
+  /// privacy setting.
+  final bool privateSwapsPaused;
   final bool statusRefreshing;
   final String? statusError;
   final bool startSubmitting;
@@ -310,6 +316,7 @@ class SwapState {
     bool? quoteLoading,
     bool? quoteExpired,
     String? quoteError,
+    bool? privateSwapsPaused,
     bool? statusRefreshing,
     String? statusError,
     bool? startSubmitting,
@@ -366,6 +373,11 @@ class SwapState {
       quoteLoading: quoteLoading ?? this.quoteLoading,
       quoteExpired: clearReview ? false : quoteExpired ?? this.quoteExpired,
       quoteError: clearQuoteError ? null : quoteError ?? this.quoteError,
+      // A new or cleared quote error drops the pause unless it says so again.
+      privateSwapsPaused: clearQuoteError
+          ? false
+          : privateSwapsPaused ??
+                (quoteError != null ? false : this.privateSwapsPaused),
       statusRefreshing: statusRefreshing ?? this.statusRefreshing,
       statusError: clearStatusError ? null : statusError ?? this.statusError,
       startSubmitting: startSubmitting ?? this.startSubmitting,
