@@ -1680,6 +1680,7 @@ Widget buildMobileAccountsManyUseCase(BuildContext context) {
 Widget buildMobileAdaptiveHomeUseCase(
   BuildContext context, {
   bool closed = false,
+  bool openAccountsSheet = false,
 }) {
   final size = MediaQuery.sizeOf(context);
   final geometry = closed
@@ -1697,6 +1698,7 @@ Widget buildMobileAdaptiveHomeUseCase(
     data: MediaQuery.of(context).copyWith(padding: insets, viewPadding: insets),
     child: _buildMobileHomeUseCase(
       adaptive: true,
+      openAccountsSheet: openAccountsSheet,
       geometryService: _PreviewMobileGeometry(geometry),
       constrainToPreviewFrame: false,
       votingVisible: false,
@@ -1709,6 +1711,9 @@ Widget buildMobileAdaptiveHomeUseCase(
     ),
   );
 }
+
+Widget buildMobileAdaptiveAccountsModalUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, openAccountsSheet: true);
 
 Widget buildMobileAdaptiveHomeClosedUseCase(BuildContext context) =>
     buildMobileAdaptiveHomeUseCase(context, closed: true);
@@ -4182,85 +4187,99 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
   @override
   void initState() {
     super.initState();
+    final routes = [
+      for (final entry in {
+        '/setup/education/intro': GiftEducationPage.intro,
+        '/setup/education/address-types': GiftEducationPage.addressTypes,
+        '/setup/education/things-to-know': GiftEducationPage.thingsToKnow,
+      }.entries)
+        GoRoute(
+          path: entry.key,
+          builder: (_, state) => MobileGiftEducationScreen(
+            page: entry.value,
+            accountUuid: state.extra as String?,
+          ),
+        ),
+      GoRoute(
+        path: '/setup/backup',
+        builder: (_, state) => MobileSeedPhraseScreen(
+          accountUuid: state.extra as String?,
+          showBackupIntro: true,
+          screenshotStream: const Stream.empty(),
+          privacyOverlayController: _privacyController,
+          birthdayHeightLoader: (_) async => 3000000,
+          birthdayBlockTimeLoader: (_) async =>
+              DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
+        ),
+      ),
+      GoRoute(
+        path: '/home',
+        builder: (context, _) => AppMobileShell(
+          body: _MobileHomeBody(openAccountsSheet: widget.openAccountsSheet),
+          tabBar: AppMobileTabBar(
+            axis:
+                MobileNavigationScope.maybeOf(context)?.mode ==
+                    MobileNavigationMode.systemSideTabs
+                ? Axis.vertical
+                : Axis.horizontal,
+            items: _mobileHomeTabItems,
+            currentIndex: 0,
+            onSelect: (_) {},
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/send',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/send'),
+      ),
+      GoRoute(
+        path: '/receive',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/receive'),
+      ),
+      GoRoute(
+        path: '/swap',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/swap'),
+      ),
+      GoRoute(
+        path: '/activity',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/activity'),
+      ),
+      GoRoute(
+        path: '/activity/tx/:txid',
+        builder: (_, state) => _PreviewRoutePlaceholder(
+          label: '/activity/tx/${state.pathParameters['txid']}',
+        ),
+      ),
+      GoRoute(
+        path: '/settings',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/settings'),
+      ),
+      GoRoute(
+        path: '/accounts',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/accounts'),
+      ),
+      GoRoute(
+        path: '/add-account',
+        builder: (_, _) =>
+            const _PreviewRoutePlaceholder(label: '/add-account'),
+      ),
+    ];
     _router = GoRouter(
       initialLocation: widget.initialLocation,
-      routes: [
-        for (final entry in {
-          '/setup/education/intro': GiftEducationPage.intro,
-          '/setup/education/address-types': GiftEducationPage.addressTypes,
-          '/setup/education/things-to-know': GiftEducationPage.thingsToKnow,
-        }.entries)
-          GoRoute(
-            path: entry.key,
-            builder: (_, state) => MobileGiftEducationScreen(
-              page: entry.value,
-              accountUuid: state.extra as String?,
-            ),
-          ),
-        GoRoute(
-          path: '/setup/backup',
-          builder: (_, state) => MobileSeedPhraseScreen(
-            accountUuid: state.extra as String?,
-            showBackupIntro: true,
-            screenshotStream: const Stream.empty(),
-            privacyOverlayController: _privacyController,
-            birthdayHeightLoader: (_) async => 3000000,
-            birthdayBlockTimeLoader: (_) async =>
-                DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
-          ),
-        ),
-        GoRoute(
-          path: '/home',
-          builder: (context, _) => AppMobileShell(
-            body: _MobileHomeBody(openAccountsSheet: widget.openAccountsSheet),
-            tabBar: AppMobileTabBar(
-              axis:
-                  MobileNavigationScope.maybeOf(context)?.mode ==
-                      MobileNavigationMode.systemSideTabs
-                  ? Axis.vertical
-                  : Axis.horizontal,
-              items: _mobileHomeTabItems,
-              currentIndex: 0,
-              onSelect: (_) {},
-            ),
-          ),
-        ),
-        GoRoute(
-          path: '/send',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/send'),
-        ),
-        GoRoute(
-          path: '/receive',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/receive'),
-        ),
-        GoRoute(
-          path: '/swap',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/swap'),
-        ),
-        GoRoute(
-          path: '/activity',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/activity'),
-        ),
-        GoRoute(
-          path: '/activity/tx/:txid',
-          builder: (_, state) => _PreviewRoutePlaceholder(
-            label: '/activity/tx/${state.pathParameters['txid']}',
-          ),
-        ),
-        GoRoute(
-          path: '/settings',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/settings'),
-        ),
-        GoRoute(
-          path: '/accounts',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/accounts'),
-        ),
-        GoRoute(
-          path: '/add-account',
-          builder: (_, _) =>
-              const _PreviewRoutePlaceholder(label: '/add-account'),
-        ),
-      ],
+      routes: widget.adaptive
+          ? [
+              ShellRoute(
+                pageBuilder: (context, state, child) => NoTransitionPage(
+                  key: state.pageKey,
+                  child: MobileAdaptiveFrame(
+                    router: GoRouter.of(context),
+                    child: child,
+                  ),
+                ),
+                routes: routes,
+              ),
+            ]
+          : routes,
     );
   }
 
@@ -4273,10 +4292,7 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
 
   @override
   Widget build(BuildContext context) {
-    final rawRouter = Router.withConfig(config: _router);
-    final router = widget.adaptive
-        ? MobileAdaptiveFrame(router: _router, child: rawRouter)
-        : rawRouter;
+    final router = Router.withConfig(config: _router);
     if (!widget.showStaticIronwoodAnnouncement) {
       return router;
     }

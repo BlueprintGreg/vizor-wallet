@@ -13,7 +13,8 @@ import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_shell.dart';
-import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_sheet.dart';
+import 'package:zcash_wallet/src/features/accounts/widgets/mobile/mobile_accounts_sheet.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_tab_bar.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_top_nav_account.dart';
 import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
@@ -22,6 +23,7 @@ import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.d
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_routes.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_destinations.dart';
 import 'package:zcash_wallet/src/core/profile_pictures.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/activity/screens/mobile/mobile_activity_screen.dart';
@@ -45,6 +47,7 @@ import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 
 import '../../fakes/fake_sync_notifier.dart';
+import '../../support/go_route_descendants.dart';
 import '../../features/swap/support/static_near_intents_swap_provider.dart';
 
 class _NativeGeometryFixture extends NativeMobileNavigationGeometry {
@@ -97,7 +100,6 @@ GoRouter _router() => GoRouter(
 Widget _app(
   GoRouter router, {
   bool swapFeatureEnabled = true,
-  bool adaptive = false,
   SyncState? initialSyncState,
   List<Override> overrides = const [],
 }) => ProviderScope(
@@ -121,12 +123,7 @@ Widget _app(
   ],
   child: MaterialApp.router(
     routerConfig: router,
-    builder: (_, child) => AppTheme(
-      data: AppThemeData.dark,
-      child: adaptive
-          ? MobileAdaptiveFrame(router: router, child: child!)
-          : child!,
-    ),
+    builder: (_, child) => AppTheme(data: AppThemeData.dark, child: child!),
   ),
 );
 
@@ -135,7 +132,20 @@ LocalKey? _sendPageKey(WidgetTester tester) =>
             as Page<dynamic>)
         .key;
 
+Iterable<GoRoute> _leafRoutes() =>
+    goRouteDescendants(buildMobileRoutes(entryRoutes: const []));
+
 void main() {
+  setUp(() {
+    final view = TestWidgetsFlutterBinding.ensureInitialized()
+        .platformDispatcher
+        .views
+        .first;
+    view.devicePixelRatio = 1;
+    view.physicalSize = const Size(393, 852);
+    addTearDown(view.resetDevicePixelRatio);
+    addTearDown(view.resetPhysicalSize);
+  });
   testWidgets(
     'closed native side placement changes only tabs and retains the home header',
     (tester) async {
@@ -167,7 +177,6 @@ void main() {
       await tester.pumpWidget(
         _app(
           router,
-          adaptive: true,
           swapFeatureEnabled: false,
           overrides: [
             mobileNavigationGeometryServiceProvider.overrideWithValue(native),
@@ -226,7 +235,6 @@ void main() {
       await tester.pumpWidget(
         _app(
           router,
-          adaptive: true,
           swapFeatureEnabled: false,
           overrides: [
             mobileSidebarRouteObserverProvider.overrideWithValue(observer),
@@ -286,7 +294,6 @@ void main() {
       await tester.pumpWidget(
         _app(
           router,
-          adaptive: true,
           swapFeatureEnabled: false,
           overrides: [
             mobileSidebarRouteObserverProvider.overrideWithValue(observer),
@@ -312,7 +319,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(settings().onPressed, isNull);
+      expect(settings().onPressed, isNotNull);
+      settings().onPressed!();
+      await tester.pump();
+      expect(router.routeInformationProvider.value.uri.path, '/home');
       router.pop();
       await tester.pumpAndSettle();
       expect(settings().onPressed, isNotNull);
@@ -334,26 +344,122 @@ void main() {
     },
   );
 
+  testWidgets(
+    'profile modal covers the window and preserves sidebar across resize',
+    (tester) async {
+      tester.view.physicalSize = const Size(982, 654);
+      final observer = MobileSidebarRouteObserver();
+      final router = GoRouter(
+        initialLocation: '/home',
+        observers: [observer],
+        routes: buildMobileRoutes(entryRoutes: const []),
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        _app(
+          router,
+          swapFeatureEnabled: false,
+          overrides: [
+            mobileSidebarRouteObserverProvider.overrideWithValue(observer),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final sidebar = find.byType(MobileWalletSidebar);
+      final sidebarElement = tester.element(sidebar);
+      final sidebarRect = tester.getRect(sidebar);
+      final home = tester.element(find.byType(MobileHomeScreen));
+      final settingsPoint = tester.getCenter(
+        find.descendant(of: sidebar, matching: find.text('Settings')),
+      );
+      final buttons = tester
+          .widgetList<AppButton>(
+            find.descendant(of: sidebar, matching: find.byType(AppButton)),
+          )
+          .toList();
+      Future<void> open() async {
+        await tester.tap(
+          find.descendant(of: sidebar, matching: find.text('Account1')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(MobileAccountsSheet), findsOneWidget);
+        expect(
+          tester.getRect(find.byType(ModalBarrier).last),
+          const Rect.fromLTWH(0, 0, 982, 654),
+        );
+        expect(tester.getSize(find.byType(MobileModalCard)).width, 440);
+      }
+
+      await open();
+      expect(tester.element(sidebar), same(sidebarElement));
+      expect(tester.getRect(sidebar), sidebarRect);
+      final after = tester
+          .widgetList<AppButton>(
+            find.descendant(of: sidebar, matching: find.byType(AppButton)),
+          )
+          .toList();
+      for (var i = 0; i < buttons.length; i++) {
+        expect(after[i].onPressed, isNotNull);
+        expect(
+          after[i].enabledBackgroundColor,
+          buttons[i].enabledBackgroundColor,
+        );
+        expect(after[i].enabledLabelColor, buttons[i].enabledLabelColor);
+      }
+      // A sidebar tap hits the root barrier, dismissing without navigating.
+      await tester.tapAt(settingsPoint);
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileAccountsSheet), findsNothing);
+      expect(router.routeInformationProvider.value.uri.path, '/home');
+      await open();
+      final sheet = tester.element(find.byType(MobileAccountsSheet));
+      tester.view.physicalSize = const Size(393, 852);
+      await tester.pumpAndSettle();
+      expect(tester.element(find.byType(MobileAccountsSheet)), same(sheet));
+      expect(
+        tester.getRect(find.byType(ModalBarrier).last),
+        const Rect.fromLTWH(0, 0, 393, 852),
+      );
+      expect(tester.getSize(find.byType(MobileModalCard)).width, 393);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpAndSettle();
+      expect(
+        tester.getRect(find.byType(MobileAccountsSheet)).bottom,
+        lessThanOrEqualTo(852 - 280),
+      );
+      tester.view.viewInsets = const FakeViewPadding();
+      tester.view.physicalSize = const Size(982, 654);
+      await tester.pumpAndSettle();
+      expect(tester.element(find.byType(MobileHomeScreen)), same(home));
+      // The root modal retains GoRouter context for account management.
+      await tester.tap(find.text('Manage accounts'));
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileAccountsSheet), findsNothing);
+      expect(mobileVisiblePath(router), '/accounts');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
+  );
+
   test('registers the mobile payment-link intake route', () {
-    final paths = buildMobileRoutes(
-      entryRoutes: const [],
-    ).whereType<GoRoute>().map((route) => route.path);
+    final paths = _leafRoutes().map((route) => route.path);
 
     expect(paths, contains('/payment-links'));
   });
 
   test('does not register the removed private review route', () {
-    final paths = buildMobileRoutes(
-      entryRoutes: const [],
-    ).whereType<GoRoute>().map((route) => route.path);
+    final paths = _leafRoutes().map((route) => route.path);
 
     expect(paths, isNot(contains('/migration/private/review')));
   });
 
   test('registers the complete mobile coinholder voting route tree', () {
-    final paths = buildMobileRoutes(
-      entryRoutes: const [],
-    ).whereType<GoRoute>().map((route) => route.path).toSet();
+    final paths = _leafRoutes().map((route) => route.path).toSet();
 
     expect(
       paths,
@@ -369,9 +475,7 @@ void main() {
   });
 
   test('shows migration options while guarding private-only routes', () {
-    final routes = buildMobileRoutes(
-      entryRoutes: const [],
-    ).whereType<GoRoute>();
+    final routes = _leafRoutes();
     final options = routes.singleWhere(
       (route) => route.path == '/migration/options',
     );
@@ -432,6 +536,9 @@ void main() {
   testWidgets('home error shortcut switches to the settings tab', (
     tester,
   ) async {
+    // This long failure label needs a larger phone viewport (the previous
+    // harness used an 800-point viewport without the adaptive shell).
+    tester.view.physicalSize = const Size(568, 852);
     final router = _router();
     await tester.pumpWidget(
       _app(

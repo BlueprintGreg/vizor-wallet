@@ -106,6 +106,15 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     platform: TargetPlatform.iOS,
   ),
   FigmaCompareScenario(
+    id: 'mobile-adaptive-accounts-modal',
+    description: 'Full-window accounts modal over the adaptive mobile shell',
+    builder: buildMobileAdaptiveAccountsModalUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
     id: 'mobile-adaptive-home-closed',
     description:
         'Closed system-side layout preserving the existing mobile Home',

@@ -23,7 +23,6 @@ import 'src/core/navigation/mobile_exit_back_guard.dart';
 import 'src/core/navigation/mobile_onboarding_routes.dart';
 import 'src/core/navigation/mobile_routes.dart';
 import 'src/core/navigation/mobile_sidebar_route_observer.dart';
-import 'src/core/layout/mobile/mobile_adaptive_frame.dart';
 import 'src/core/navigation/incoming_link_dispatch.dart';
 import 'src/core/navigation/incoming_link_entry_policy.dart';
 import 'src/core/navigation/external_action_guard_provider.dart';
@@ -1899,14 +1898,7 @@ class ZcashWalletApp extends ConsumerWidget {
                                             router: router,
                                             child: AppReviewHost(
                                               router: router,
-                                              child:
-                                                  kAppFormFactor ==
-                                                      AppFormFactor.mobile
-                                                  ? MobileAdaptiveFrame(
-                                                      router: router,
-                                                      child: child!,
-                                                    )
-                                                  : child!,
+                                              child: child!,
                                             ),
                                           ),
                                         ),

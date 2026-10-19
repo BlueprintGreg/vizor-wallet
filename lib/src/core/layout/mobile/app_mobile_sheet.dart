@@ -76,6 +76,7 @@ Future<T?> showAppMobileSheet<T>({
       barrierOnTapHint: localizations.scrimOnTapHint(
         localizations.bottomSheetLabel,
       ),
+      constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
       canDismiss: canDismiss,
       isDismissible: isDismissible,
       enableDrag: enableDrag,
@@ -90,6 +91,7 @@ Future<T?> showAppMobileSheet<T>({
   if (canDismiss != null) {
     final navigator = Navigator.of(context, rootNavigator: true);
     final route = ControlledModalSheetRoute<T>(
+      constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
       canDismiss: canDismiss,
       capturedThemes: InheritedTheme.capture(
         from: context,
@@ -115,6 +117,8 @@ Future<T?> showAppMobileSheet<T>({
 
   return showModalBottomSheet<T>(
     context: context,
+    // Constrain the floating card, never the root modal barrier.
+    constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
     isDismissible: isDismissible,
     enableDrag: enableDrag,
     isScrollControlled: true,
@@ -159,6 +163,9 @@ class MobileModalCard extends StatelessWidget {
     this.backEnabled = true,
     super.key,
   });
+
+  /// Includes outer margins; shared by route-based sheets and custom dialogs.
+  static const double maxWidth = 440;
 
   final Widget child;
 
@@ -237,45 +244,56 @@ class MobileModalCard extends StatelessWidget {
     // is already its own card and owns its horizontal sizing, so only the
     // bottom gap applies there.
     final double sideMargin = transparentBackground ? 0 : AppSpacing.sm;
-    return Padding(
-      padding:
-          margin ??
-          EdgeInsets.only(
-            left: sideMargin,
-            right: sideMargin,
-            bottom: bottomGapFor(context),
-          ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (onBack != null) ...[
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: Semantics(
-                container: true,
-                button: true,
-                enabled: backEnabled,
-                label: 'Back',
-                child: AppButton(
-                  key: const ValueKey('mobile_modal_back_button'),
-                  variant: AppButtonVariant.secondary,
-                  minWidth: 44,
-                  height: 44,
-                  contentPadding: EdgeInsets.zero,
-                  enabledBackgroundColor: colors.background.base,
-                  onPressed: backEnabled ? onBack : null,
-                  child: const ExcludeSemantics(
-                    child: AppIcon(AppIcons.arrowBack, size: 20),
+    return Align(
+      alignment: Alignment.bottomCenter,
+      widthFactor: 1,
+      heightFactor: 1,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: maxWidth),
+        child: Padding(
+          padding:
+              margin ??
+              EdgeInsets.only(
+                left: sideMargin,
+                right: sideMargin,
+                bottom: bottomGapFor(context),
+              ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (onBack != null) ...[
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    enabled: backEnabled,
+                    label: 'Back',
+                    child: AppButton(
+                      key: const ValueKey('mobile_modal_back_button'),
+                      variant: AppButtonVariant.secondary,
+                      minWidth: 44,
+                      height: 44,
+                      contentPadding: EdgeInsets.zero,
+                      enabledBackgroundColor: colors.background.base,
+                      onPressed: backEnabled ? onBack : null,
+                      child: const ExcludeSemantics(
+                        child: AppIcon(AppIcons.arrowBack, size: 20),
+                      ),
+                    ),
                   ),
                 ),
+                const SizedBox(height: AppSpacing.xs),
+              ],
+              // Revealing Back must preserve stateful device/approval owners.
+              Flexible(
+                key: const ValueKey('mobile_modal_content'),
+                child: card,
               ),
-            ),
-            const SizedBox(height: AppSpacing.xs),
-          ],
-          // Revealing Back must preserve stateful device/approval owners.
-          Flexible(key: const ValueKey('mobile_modal_content'), child: card),
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }

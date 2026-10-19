@@ -58,6 +58,7 @@ import '../../features/swap/screens/mobile/mobile_swap_screen.dart';
 import '../../features/voting/screens/mobile/mobile_voting_screens.dart';
 import '../config/swap_feature_config.dart';
 import '../layout/mobile/app_mobile_shell.dart';
+import '../layout/mobile/mobile_adaptive_frame.dart';
 import '../layout/mobile/app_mobile_tab_bar.dart';
 import '../layout/mobile/mobile_navigation_scope.dart';
 import 'mobile_destinations.dart';
@@ -75,6 +76,21 @@ import 'payload_page_key.dart';
 List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
   return [
     ...entryRoutes,
+    // Keep the root Navigator/Overlay window-sized. Only the nested wallet
+    // Navigator is constrained to the mobile content pane; root modals cover
+    // the sidebar and all surrounding space as well.
+    ShellRoute(
+      pageBuilder: (context, state, child) => NoTransitionPage(
+        key: state.pageKey,
+        child: MobileAdaptiveFrame(router: GoRouter.of(context), child: child),
+      ),
+      routes: _walletRoutes(),
+    ),
+  ];
+}
+
+List<RouteBase> _walletRoutes() {
+  return [
     StatefulShellRoute.indexedStack(
       pageBuilder: (context, state, navigationShell) => CupertinoPage(
         key: state.pageKey,

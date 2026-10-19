@@ -25,8 +25,8 @@ import 'mobile_navigation_scope.dart';
 import 'mobile_wallet_sidebar.dart';
 import 'mobile_window_layout.dart';
 
-/// Stable parent of the Router: resizing changes rectangles, never Navigator
-/// identity, branch history, or the state of the active form/scroll position.
+/// Wallet route shell below the full-window root Navigator. Resizing changes
+/// pane rectangles without replacing the nested Navigator or its state.
 class MobileAdaptiveFrame extends ConsumerStatefulWidget {
   const MobileAdaptiveFrame({
     required this.router,
@@ -145,8 +145,9 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
         !ref
             .read(externalActionGuardProvider)
             .blocks(ExternalAction.navigation);
+    // A root modal barrier blocks interaction without changing sidebar styles.
+    // Keep click-time popup protection for callbacks captured before a push.
     final enabled =
-        !observer.hasPopup &&
         allowsMobileSidebarNavigation(path) &&
         !guard.blocks(ExternalAction.navigation);
     final wide = layout.mode == MobileNavigationMode.sidebar;
@@ -209,14 +210,6 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
                         ? null
                         : () {
                             if (!canNavigate()) return;
-                            final context = widget
-                                .router
-                                .routerDelegate
-                                .navigatorKey
-                                .currentState
-                                ?.overlay
-                                ?.context;
-                            if (context == null) return;
                             unawaited(
                               ref
                                   .read(externalActionGuardProvider.notifier)
