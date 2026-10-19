@@ -2,6 +2,8 @@ import '../src/core/navigation/mobile_shield_page.dart';
 import '../figma_compare/ledger_shield_capture.dart';
 import '../figma_compare/keystone_shield_capture.dart';
 import '../src/features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
+import '../src/features/settings/widgets/viewing_key_content.dart';
+import '../src/rust/api/wallet.dart' show AccountViewingKeys;
 import '../src/features/onboarding/import/desktop_import_method_selection_screen.dart';
 import '../src/features/onboarding/import/desktop_hardware_selection_screen.dart';
 import '../src/providers/enhance_pir_provider.dart';
@@ -123,6 +125,16 @@ bool _previewMnemonicValidator(String mnemonic) => mnemonic.isNotEmpty;
 /// wrapping, but not a real bech32-encoded UFVK.
 const _previewUfvk =
     'uview1qthqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
+    'previewonly';
+
+const _previewUivk =
+    'uivk1qthqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
     'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
     'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
     'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'
@@ -619,10 +631,17 @@ Widget buildMobileSecretPassphraseProtectedUseCase(BuildContext context) {
   return const _MobileSecretPassphraseProtectedPreview();
 }
 
-Widget buildMobileSettingsViewingKeyRevealUseCase(BuildContext context) {
-  return const _MobilePreviewFrame(
-    child: IgnorePointer(
-      child: MobileViewingKeyRevealPreview(ufvk: _previewUfvk),
+Widget buildMobileSettingsViewingKeyRevealUseCase(
+  BuildContext context, {
+  ViewingKeyType? type = ViewingKeyType.full,
+  ViewingKeyFormat format = ViewingKeyFormat.qr,
+}) {
+  return _MobilePreviewFrame(
+    child: MobileViewingKeyRevealPreview(
+      viewingKeys: AccountViewingKeys(ufvk: _previewUfvk, uivk: _previewUivk),
+      account: _accountsDesignState.activeAccount!,
+      initialType: type,
+      initialFormat: format,
     ),
   );
 }
@@ -1444,10 +1463,19 @@ Widget buildSettingsViewingKeyGateUseCase(BuildContext context) {
   );
 }
 
-Widget buildSettingsViewingKeyRevealUseCase(BuildContext context) {
+Widget buildSettingsViewingKeyRevealUseCase(
+  BuildContext context, {
+  ViewingKeyType? type = ViewingKeyType.full,
+  ViewingKeyFormat format = ViewingKeyFormat.qr,
+}) {
   return _buildSettingsSubScreenUseCase(
     '/settings/viewing-key',
-    const SettingsViewingKeyRevealPreview(ufvk: _previewUfvk),
+    SettingsViewingKeyRevealPreview(
+      viewingKeys: AccountViewingKeys(ufvk: _previewUfvk, uivk: _previewUivk),
+      account: _accountsDesignState.activeAccount!,
+      initialType: type,
+      initialFormat: format,
+    ),
   );
 }
 
@@ -6942,3 +6970,54 @@ Widget buildMobileGiftHomeReviewUseCase(
     swapEnabled: false,
   );
 }
+
+Widget buildMobileSettingsViewingKeyQrUseCase(BuildContext context) =>
+    buildMobileSettingsViewingKeyRevealUseCase(
+      context,
+      format: ViewingKeyFormat.qr,
+    );
+Widget buildMobileSettingsIncomingViewingKeyUseCase(BuildContext context) =>
+    buildMobileSettingsViewingKeyRevealUseCase(
+      context,
+      type: ViewingKeyType.incoming,
+      format: ViewingKeyFormat.text,
+    );
+Widget buildMobileSettingsIncomingViewingKeyQrUseCase(BuildContext context) =>
+    buildMobileSettingsViewingKeyRevealUseCase(
+      context,
+      type: ViewingKeyType.incoming,
+      format: ViewingKeyFormat.qr,
+    );
+
+Widget buildSettingsViewingKeyQrUseCase(BuildContext context) =>
+    buildSettingsViewingKeyRevealUseCase(context, format: ViewingKeyFormat.qr);
+Widget buildSettingsIncomingViewingKeyUseCase(BuildContext context) =>
+    buildSettingsViewingKeyRevealUseCase(
+      context,
+      type: ViewingKeyType.incoming,
+      format: ViewingKeyFormat.text,
+    );
+Widget buildSettingsIncomingViewingKeyQrUseCase(BuildContext context) =>
+    buildSettingsViewingKeyRevealUseCase(
+      context,
+      type: ViewingKeyType.incoming,
+      format: ViewingKeyFormat.qr,
+    );
+
+Widget buildSettingsViewingKeyTextUseCase(BuildContext context) =>
+    buildSettingsViewingKeyRevealUseCase(
+      context,
+      format: ViewingKeyFormat.text,
+    );
+
+Widget buildMobileSettingsViewingKeyTextUseCase(BuildContext context) =>
+    buildMobileSettingsViewingKeyRevealUseCase(
+      context,
+      format: ViewingKeyFormat.text,
+    );
+
+Widget buildSettingsViewingKeyChoiceUseCase(BuildContext context) =>
+    buildSettingsViewingKeyRevealUseCase(context, type: null);
+
+Widget buildMobileSettingsViewingKeyChoiceUseCase(BuildContext context) =>
+    buildMobileSettingsViewingKeyRevealUseCase(context, type: null);
