@@ -3353,7 +3353,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
   ),
   FigmaCompareScenario(
     id: 'receive-desktop-shielded',
-    description: 'Desktop receive pane with the request entry beside copy',
+    description: 'Desktop receive pane with copy/share and a labelled request',
     builder: buildReceiveDesktopRequestEntryUseCase,
     desktop: true,
     mobile: false,
