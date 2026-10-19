@@ -186,11 +186,20 @@ class _ViewingKeyContentState extends State<ViewingKeyContent> {
                           : 'Full viewing key QR code',
                       image: true,
                       child: ExcludeSemantics(
-                        child: Center(
-                          child: RequestQrSurface(
-                            data: value,
-                            size: 200,
-                            padding: AppSpacing.xs,
+                        child: LayoutBuilder(
+                          builder: (context, constraints) => Center(
+                            child: RequestQrSurface(
+                              data: value,
+                              size: (constraints.maxWidth - AppSpacing.xs * 2)
+                                  .clamp(
+                                    0.0,
+                                    kAppFormFactor == AppFormFactor.mobile
+                                        ? 240.0
+                                        : 200.0,
+                                  )
+                                  .toDouble(),
+                              padding: AppSpacing.xs,
+                            ),
                           ),
                         ),
                       ),
@@ -640,7 +649,7 @@ class _ViewingKeyFormatTabs extends StatelessWidget {
     return Align(
       alignment: Alignment.center,
       child: SizedBox(
-        width: 200,
+        width: kAppFormFactor == AppFormFactor.mobile ? 248 : 200,
         child: Row(
           children: [
             for (final format in [ViewingKeyFormat.qr, ViewingKeyFormat.text])
@@ -664,7 +673,7 @@ class _ViewingKeyFormatTabs extends StatelessWidget {
                         ? colors.text.accent
                         : colors.text.secondary,
                     size: AppButtonSize.small,
-                    height: kAppFormFactor == AppFormFactor.mobile ? 44 : 32,
+                    height: kAppFormFactor == AppFormFactor.mobile ? 48 : 32,
                     expand: true,
                     constrainContent: true,
                     growWithContent: true,

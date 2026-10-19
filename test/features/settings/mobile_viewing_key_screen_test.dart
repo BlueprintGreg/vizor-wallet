@@ -195,6 +195,29 @@ void main() {
     },
   );
 
+  testWidgets('QR and format controls fit within the mobile content margins', (
+    tester,
+  ) async {
+    for (final width in [280.0, 320.0, 393.0]) {
+      for (final type in ViewingKeyType.values) {
+        await _pumpRevealLayout(tester, size: Size(width, 852), type: type);
+        final qr = tester.getRect(
+          find.byKey(const ValueKey('request_qr_surface')),
+        );
+        expect(qr.width, closeTo(qr.height, 0.01));
+        for (final rect in [
+          qr,
+          tester.getRect(find.byKey(const ValueKey('viewing_key_format_qr'))),
+          tester.getRect(find.byKey(const ValueKey('viewing_key_format_text'))),
+        ]) {
+          expect(rect.left, greaterThanOrEqualTo(AppSpacing.sm));
+          expect(rect.right, lessThanOrEqualTo(width - AppSpacing.sm));
+        }
+        expect(tester.takeException(), isNull);
+      }
+    }
+  });
+
   for (final format in ViewingKeyFormat.values) {
     testWidgets(
       'bottom actions remain reachable at 320px and 200% in $format',
