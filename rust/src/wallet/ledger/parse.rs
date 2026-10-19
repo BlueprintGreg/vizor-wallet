@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use ff::PrimeField;
 use orchard::{
     bundle::BundleVersion,
     note::{NoteVersion, Rho},

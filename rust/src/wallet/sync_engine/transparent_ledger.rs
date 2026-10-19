@@ -547,9 +547,15 @@ impl<S: RecoverySource> Run<'_, S> {
             if should_exit() {
                 return Ok(AccountOutcome::Stop(RunOutcome::Exited));
             }
+            // The plan owns transport-neutral hashes. Preserve their bytes when
+            // binding the source request to the wallet's block-hash type.
+            let wallet_watch = plan
+                .watch()
+                .clone()
+                .map_block_hash(|hash| zcash_primitives::block::BlockHash(hash.0));
             let request = SourceRequest {
                 account,
-                watch: plan.watch(),
+                watch: &wallet_watch,
                 should_exit: &pass_exit,
             };
             let answer = tokio::time::timeout(PASS_BACKSTOP, self.source.recover(request)).await;

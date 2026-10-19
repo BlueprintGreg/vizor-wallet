@@ -59,9 +59,7 @@ impl PrivateWork {
         let mut work = Self::default();
         for item in enhancement {
             match item {
-                TransactionEnhancementWork::Private(
-                    EnhancePirWork::Query(request) | EnhancePirWork::Waiting { request, .. },
-                ) => {
+                TransactionEnhancementWork::Private(EnhancePirWork::Query(request)) => {
                     work.queries.insert(request);
                 }
                 TransactionEnhancementWork::Private(EnhancePirWork::Rediscover(request)) => {
@@ -83,9 +81,7 @@ impl PrivateWork {
     /// Whether `work` is part of this snapshot; suspended work is never asked.
     pub(crate) fn contains(&self, work: &EnhancePirWork) -> bool {
         match work {
-            EnhancePirWork::Query(request) | EnhancePirWork::Waiting { request, .. } => {
-                self.queries.contains(request)
-            }
+            EnhancePirWork::Query(request) => self.queries.contains(request),
             EnhancePirWork::Rediscover(request) => self.rediscovery.contains(request),
             EnhancePirWork::Suspended(_) => true,
         }
@@ -186,7 +182,7 @@ pub(crate) fn may_ask(db_path: &str, work: &EnhancePirWork) -> bool {
         return true;
     };
     match work {
-        EnhancePirWork::Query(request) | EnhancePirWork::Waiting { request, .. } => {
+        EnhancePirWork::Query(request) => {
             !at_tip.failed.contains(request) && !at_tip.unlocked.contains(work)
         }
         EnhancePirWork::Rediscover(_) => !at_tip.unlocked.contains(work),
