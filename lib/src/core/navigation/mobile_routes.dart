@@ -59,7 +59,8 @@ import '../../features/voting/screens/mobile/mobile_voting_screens.dart';
 import '../config/swap_feature_config.dart';
 import '../layout/mobile/app_mobile_shell.dart';
 import '../layout/mobile/app_mobile_tab_bar.dart';
-import '../widgets/app_icon.dart';
+import '../layout/mobile/mobile_navigation_scope.dart';
+import 'mobile_destinations.dart';
 import 'payload_page_key.dart';
 
 /// The mobile route tree: the shared entry/onboarding routes, a
@@ -698,37 +699,69 @@ class _MobileTab {
 
 /// Branch order and tab-bar order derive from this single list so their
 /// indices can never drift apart.
-const List<_MobileTab> _allMobileTabs = [
-  _MobileTab(
-    path: '/home',
-    item: AppMobileTabItem(iconName: AppIcons.home, label: 'Home'),
-    screen: MobileHomeScreen(),
-  ),
-  _MobileTab(
-    path: '/swap',
-    item: AppMobileTabItem(iconName: AppIcons.swapArrows, label: 'Swap'),
-    screen: MobileSwapScreen(),
-  ),
-  _MobileTab(
-    path: '/activity',
-    item: AppMobileTabItem(iconName: AppIcons.history, label: 'Activity'),
-    screen: MobileActivityScreen(),
-  ),
-  _MobileTab(
-    path: '/settings',
-    item: AppMobileTabItem(iconName: AppIcons.cog, label: 'Settings'),
-    screen: MobileSettingsScreen(),
-  ),
+final List<_MobileTab> _allMobileTabs = [
+  for (var i = 0; i < mobileDestinations.length; i++)
+    _MobileTab(
+      path: mobileDestinations[i].path,
+      item: mobileDestinations[i].item,
+      screen: switch (mobileDestinations[i].path) {
+        '/home' => const MobileHomeScreen(),
+        '/swap' => const MobileSwapScreen(),
+        '/activity' => const MobileActivityScreen(),
+        '/settings' => const MobileSettingsScreen(),
+        _ => throw StateError('Missing mobile destination screen'),
+      },
+    ),
 ];
 
-class _MobileTabShell extends ConsumerWidget {
+class _MobileTabShell extends ConsumerStatefulWidget {
   const _MobileTabShell({required this.navigationShell, required this.tabs});
 
   final StatefulNavigationShell navigationShell;
   final List<_MobileTab> tabs;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_MobileTabShell> createState() => _MobileTabShellState();
+}
+
+class _MobileTabShellState extends ConsumerState<_MobileTabShell> {
+  MobileBranchNavigation? _navigation;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final navigation = MobileNavigationScope.maybeOf(context)?.navigation;
+    if (!identical(navigation, _navigation)) {
+      _navigation?.detach(this);
+      _navigation = navigation;
+    }
+    _navigation?.attach(this, _selectPath);
+  }
+
+  void _selectPath(String path) {
+    if (!mounted) return;
+    final index = widget.tabs.indexWhere((tab) => tab.path == path);
+    if (index < 0) return;
+    if (index != widget.navigationShell.currentIndex && path != '/home') {
+      expectAppReviewVisit(ref, path);
+    }
+    widget.navigationShell.goBranch(
+      index,
+      initialLocation: index == widget.navigationShell.currentIndex,
+    );
+  }
+
+  @override
+  void dispose() {
+    _navigation?.detach(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tabs = widget.tabs;
+    final navigationShell = widget.navigationShell;
+
     final swapFeatureEnabled = ref.watch(swapFeatureEnabledProvider);
     final visibleTabs = [
       for (final tab in tabs)
@@ -747,21 +780,15 @@ class _MobileTabShell extends ConsumerWidget {
     return AppMobileShell(
       body: navigationShell,
       tabBar: AppMobileTabBar(
+        axis:
+            MobileNavigationScope.maybeOf(context)?.mode ==
+                MobileNavigationMode.systemSideTabs
+            ? Axis.vertical
+            : Axis.horizontal,
         items: [for (final tab in visibleTabs) tab.item],
         currentIndex: tabBarCurrentIndex,
         onSelect: (index) {
-          final targetTab = visibleTabs[index];
-          final targetBranchIndex = tabs.indexOf(targetTab);
-          if (targetBranchIndex != currentBranchIndex &&
-              targetTab.path != '/home') {
-            expectAppReviewVisit(ref, targetTab.path);
-          }
-          navigationShell.goBranch(
-            targetBranchIndex,
-            // Re-selecting the active tab resets that tab to its root,
-            // the platform-conventional behavior.
-            initialLocation: targetBranchIndex == currentBranchIndex,
-          );
+          _selectPath(visibleTabs[index].path);
         },
       ),
     );

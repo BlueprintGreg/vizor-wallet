@@ -1,3 +1,4 @@
+import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -355,12 +356,12 @@ class _MobileSwapScreenState extends ConsumerState<MobileSwapScreen> {
                 child: SingleChildScrollView(
                   // The ticket sits flush under the top nav — Figma
                   // 4686:101436 has no gap above the swap widget.
-                  padding: const EdgeInsets.fromLTRB(
+                  padding: EdgeInsets.fromLTRB(
                     AppSpacing.sm,
                     0,
                     AppSpacing.sm,
                     // Clears the floating tab bar.
-                    96,
+                    MobileNavigationScope.bottomClearanceOf(context, 96),
                   ),
                   child: Column(
                     children: [

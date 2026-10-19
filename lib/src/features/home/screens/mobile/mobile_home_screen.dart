@@ -17,6 +17,8 @@ import '../../../../core/formatting/zec_amount.dart';
 import '../../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../../core/layout/mobile/app_mobile_tab_bar.dart';
 import '../../../../core/layout/mobile/mobile_top_nav_account.dart';
+import '../../../../core/layout/mobile/mobile_top_nav.dart';
+import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import '../../../../core/layout/mobile/mobile_top_scroll_fade.dart';
 import '../../../../core/privacy/privacy_mask.dart';
 import '../../../../core/theme/app_theme.dart';
@@ -102,10 +104,13 @@ class MobileHomeScreen extends ConsumerWidget {
               children: [
                 const SizedBox(height: AppSpacing.s),
                 Builder(
-                  builder: (context) => MobileTopNavAccount(
-                    showSyncStatus: !isImporting,
-                    onAccountTap: () => showMobileAccountsSheet(context),
-                  ),
+                  builder: (context) =>
+                      MobileNavigationScope.isSidebarOf(context)
+                      ? const MobileTopNav.back(title: 'Home')
+                      : MobileTopNavAccount(
+                          showSyncStatus: !isImporting,
+                          onAccountTap: () => showMobileAccountsSheet(context),
+                        ),
                 ),
                 Expanded(
                   // VZR-74: dissolve scrolled content under the top nav
@@ -1134,11 +1139,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     ];
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         AppSpacing.sm,
         AppSpacing.sm,
         AppSpacing.sm,
-        kMobileTabBarHeight + AppSpacing.lg,
+        MobileNavigationScope.bottomClearanceOf(
+          context,
+          kMobileTabBarHeight + AppSpacing.lg,
+        ),
       ),
       children: [
         if (sync.failure?.kind == SyncFailureKind.privateStatusCoverage) ...[
@@ -2524,11 +2532,11 @@ class _ImportingView extends StatelessWidget {
     );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         _horizontalPadding,
         _topGap,
         _horizontalPadding,
-        _bottomClearance,
+        MobileNavigationScope.bottomClearanceOf(context, _bottomClearance),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {

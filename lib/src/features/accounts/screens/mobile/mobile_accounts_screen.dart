@@ -1,3 +1,4 @@
+import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -144,7 +145,10 @@ class _MobileAccountsScreenState extends ConsumerState<MobileAccountsScreen> {
     // row, a UFVK never grants spend authority, so hardware accounts get
     // it too); each extra row costs the same fixed 34 (26 item + 8 gap).
     final menuHeight = baseMenuHeight + 34 + (account.isHardware ? 0 : 34);
-    const bottomNavClearance = kMobileTabBarHeight + AppSpacing.lg;
+    final bottomNavClearance = MobileNavigationScope.bottomClearanceOf(
+      context,
+      kMobileTabBarHeight + AppSpacing.lg,
+    );
     final colors = context.colors;
     final appTheme = AppTheme.of(context);
     final menuMaxTop = math.max(
@@ -564,11 +568,14 @@ class _MobileAccountsScreenState extends ConsumerState<MobileAccountsScreen> {
               ),
               Expanded(
                 child: ListView(
-                  padding: const EdgeInsets.fromLTRB(
+                  padding: EdgeInsets.fromLTRB(
                     AppSpacing.sm,
                     AppSpacing.s,
                     AppSpacing.sm,
-                    kMobileTabBarHeight + AppSpacing.lg,
+                    MobileNavigationScope.bottomClearanceOf(
+                      context,
+                      kMobileTabBarHeight + AppSpacing.lg,
+                    ),
                   ),
                   children: [
                     if (active != null)

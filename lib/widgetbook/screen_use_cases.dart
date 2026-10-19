@@ -1,3 +1,7 @@
+import '../src/core/layout/mobile/mobile_adaptive_frame.dart';
+import '../src/core/layout/mobile/mobile_navigation_scope.dart';
+import '../src/services/native_mobile_navigation_geometry.dart';
+import '../src/providers/sync_display_progress_provider.dart';
 import '../src/features/onboarding/import/desktop_import_method_selection_screen.dart';
 import '../src/features/onboarding/import/desktop_hardware_selection_screen.dart';
 import '../src/providers/enhance_pir_provider.dart';
@@ -1672,6 +1676,54 @@ Widget buildMobileAccountsManyUseCase(BuildContext context) {
   return _buildMobileAccountsUseCase(_accountsManyState);
 }
 
+/// Full adaptive shell with deterministic production Home data for captures.
+Widget buildMobileAdaptiveHomeUseCase(
+  BuildContext context, {
+  bool closed = false,
+}) {
+  final size = MediaQuery.sizeOf(context);
+  final geometry = closed
+      ? MobileNavigationGeometry(
+          edge: MobileNavigationEdge.right,
+          viewSize: size,
+          safeRect: Rect.fromLTWH(0, 0, size.width - 84, size.height),
+          occlusions: [Rect.fromLTWH(size.width - 84, 0, 84, 180)],
+        )
+      : null;
+  final insets = closed
+      ? const EdgeInsets.only(right: 84)
+      : const EdgeInsets.only(top: 24, bottom: 24);
+  return MediaQuery(
+    data: MediaQuery.of(context).copyWith(padding: insets, viewPadding: insets),
+    child: _buildMobileHomeUseCase(
+      adaptive: true,
+      geometryService: _PreviewMobileGeometry(geometry),
+      constrainToPreviewFrame: false,
+      votingVisible: false,
+      accountState: _accountsDesignState,
+      syncState: _homeSyncedState().copyWith(
+        isSyncing: true,
+        isSyncComplete: false,
+        percentage: 0.04,
+      ),
+    ),
+  );
+}
+
+Widget buildMobileAdaptiveHomeClosedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, closed: true);
+
+class _PreviewMobileGeometry extends NativeMobileNavigationGeometry {
+  const _PreviewMobileGeometry(this.geometry);
+  final MobileNavigationGeometry? geometry;
+  @override
+  bool get supportedHost => true;
+  @override
+  Future<MobileNavigationGeometry?> read() async => geometry;
+  @override
+  Stream<MobileNavigationGeometry?> get changes => const Stream.empty();
+}
+
 Widget buildMobileHomeDefaultUseCase(
   BuildContext context, {
   bool votingVisible = true,
@@ -3331,6 +3383,8 @@ Widget buildMobileHomeVotingHiddenUseCase(BuildContext context) =>
     buildMobileHomeDefaultUseCase(context, votingVisible: false);
 
 Widget _buildMobileHomeUseCase({
+  bool adaptive = false,
+  NativeMobileNavigationGeometry? geometryService,
   String initialLocation = '/home',
   Widget? previewChild,
   Map<String, String>? etaLabels,
@@ -3355,12 +3409,18 @@ Widget _buildMobileHomeUseCase({
   NetworkPrivacyState? networkPrivacyState,
 }) {
   final harness = _MobileHomeHarness(
+    adaptive: adaptive,
     initialLocation: initialLocation,
     openAccountsSheet: openAccountsSheet,
     showStaticIronwoodAnnouncement: showStaticIronwoodAnnouncement,
   );
   return ProviderScope(
     overrides: [
+      if (adaptive) syncDisplayWholePercentageProvider.overrideWithValue(4),
+      if (geometryService != null)
+        mobileNavigationGeometryServiceProvider.overrideWithValue(
+          geometryService,
+        ),
       if (etaLabels != null) ...[
         activityEtaLabelsProvider.overrideWithValue(etaLabels),
         swapActivityRecordsProvider.overrideWith((ref, account) async => []),
@@ -3423,6 +3483,7 @@ Widget _buildMobileHomeUseCase({
     ],
     child: _MobilePreviewFrame(
       constrainToDesignSize: constrainToPreviewFrame,
+      preserveWindowPadding: adaptive,
       child: previewChild ?? harness,
     ),
   );
@@ -4099,6 +4160,7 @@ class _MobileAccountsHarnessState extends State<_MobileAccountsHarness> {
 
 class _MobileHomeHarness extends StatefulWidget {
   const _MobileHomeHarness({
+    this.adaptive = false,
     this.initialLocation = '/home',
     required this.openAccountsSheet,
     required this.showStaticIronwoodAnnouncement,
@@ -4106,6 +4168,7 @@ class _MobileHomeHarness extends StatefulWidget {
 
   final String initialLocation;
   final bool openAccountsSheet;
+  final bool adaptive;
   final bool showStaticIronwoodAnnouncement;
 
   @override
@@ -4148,9 +4211,14 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
         ),
         GoRoute(
           path: '/home',
-          builder: (_, _) => AppMobileShell(
+          builder: (context, _) => AppMobileShell(
             body: _MobileHomeBody(openAccountsSheet: widget.openAccountsSheet),
             tabBar: AppMobileTabBar(
+              axis:
+                  MobileNavigationScope.maybeOf(context)?.mode ==
+                      MobileNavigationMode.systemSideTabs
+                  ? Axis.vertical
+                  : Axis.horizontal,
               items: _mobileHomeTabItems,
               currentIndex: 0,
               onSelect: (_) {},
@@ -4205,7 +4273,10 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
 
   @override
   Widget build(BuildContext context) {
-    final router = Router.withConfig(config: _router);
+    final rawRouter = Router.withConfig(config: _router);
+    final router = widget.adaptive
+        ? MobileAdaptiveFrame(router: _router, child: rawRouter)
+        : rawRouter;
     if (!widget.showStaticIronwoodAnnouncement) {
       return router;
     }
@@ -4972,10 +5043,12 @@ class _MobilePreviewFrame extends StatelessWidget {
   const _MobilePreviewFrame({
     required this.child,
     this.constrainToDesignSize = true,
+    this.preserveWindowPadding = false,
   });
 
   final Widget child;
   final bool constrainToDesignSize;
+  final bool preserveWindowPadding;
 
   static const size = Size(393, 852);
   static const safeAreaPadding = EdgeInsets.only(top: 55, bottom: 24);
@@ -4988,8 +5061,10 @@ class _MobilePreviewFrame extends StatelessWidget {
       child: MediaQuery(
         data: mediaQuery.copyWith(
           size: frameSize,
-          padding: safeAreaPadding,
-          viewPadding: safeAreaPadding,
+          padding: preserveWindowPadding ? mediaQuery.padding : safeAreaPadding,
+          viewPadding: preserveWindowPadding
+              ? mediaQuery.viewPadding
+              : safeAreaPadding,
         ),
         child: MobileOnboardingProgressScope(
           setupMode: OnboardingSetupMode.createPasscode,

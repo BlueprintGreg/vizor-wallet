@@ -91,6 +91,24 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'mobile-adaptive-home-wide',
+    description:
+        'Wide mobile window with persistent mobile sidebar and sync footer',
+    builder: buildMobileAdaptiveHomeUseCase,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-closed',
+    description:
+        'Closed system-side layout preserving the existing mobile Home',
+    builder: buildMobileAdaptiveHomeClosedUseCase,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
     id: 'ironwood-label-audit-desktop-activity',
     description:
         'Ordinary Ironwood sends and receives in desktop Home activity',

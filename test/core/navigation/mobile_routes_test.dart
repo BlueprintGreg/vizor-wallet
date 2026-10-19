@@ -13,6 +13,14 @@ import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_shell.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_tab_bar.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_top_nav_account.dart';
+import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.dart';
+import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
+import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_routes.dart';
 import 'package:zcash_wallet/src/core/profile_pictures.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
@@ -38,6 +46,22 @@ import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 
 import '../../fakes/fake_sync_notifier.dart';
 import '../../features/swap/support/static_near_intents_swap_provider.dart';
+
+class _NativeGeometryFixture extends NativeMobileNavigationGeometry {
+  _NativeGeometryFixture(this.value);
+  MobileNavigationGeometry value;
+  final events = StreamController<MobileNavigationGeometry?>.broadcast();
+  @override
+  bool get supportedHost => true;
+  @override
+  Future<MobileNavigationGeometry?> read() async => value;
+  @override
+  Stream<MobileNavigationGeometry?> get changes => events.stream;
+  void change(MobileNavigationGeometry next) {
+    value = next;
+    events.add(next);
+  }
+}
 
 const _accountState = AccountState(
   accounts: [
@@ -73,6 +97,7 @@ GoRouter _router() => GoRouter(
 Widget _app(
   GoRouter router, {
   bool swapFeatureEnabled = true,
+  bool adaptive = false,
   SyncState? initialSyncState,
   List<Override> overrides = const [],
 }) => ProviderScope(
@@ -96,7 +121,12 @@ Widget _app(
   ],
   child: MaterialApp.router(
     routerConfig: router,
-    builder: (_, child) => AppTheme(data: AppThemeData.dark, child: child!),
+    builder: (_, child) => AppTheme(
+      data: AppThemeData.dark,
+      child: adaptive
+          ? MobileAdaptiveFrame(router: router, child: child!)
+          : child!,
+    ),
   ),
 );
 
@@ -106,6 +136,204 @@ LocalKey? _sendPageKey(WidgetTester tester) =>
         .key;
 
 void main() {
+  testWidgets(
+    'closed native side placement changes only tabs and retains the home header',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(492, 720);
+      tester.view.padding = const FakeViewPadding(right: 84);
+      tester.view.viewPadding = const FakeViewPadding(right: 84);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewPadding);
+      const closed = MobileNavigationGeometry(
+        edge: MobileNavigationEdge.right,
+        viewSize: Size(492, 720),
+        safeRect: Rect.fromLTWH(0, 0, 408, 720),
+        occlusions: [Rect.fromLTWH(408, 0, 84, 180)],
+      );
+      final native = _NativeGeometryFixture(
+        const MobileNavigationGeometry(
+          edge: MobileNavigationEdge.none,
+          viewSize: Size(492, 720),
+          safeRect: Rect.fromLTWH(0, 0, 408, 720),
+          occlusions: [],
+        ),
+      );
+      addTearDown(native.events.close);
+      final router = _router();
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        _app(
+          router,
+          adaptive: true,
+          swapFeatureEnabled: false,
+          overrides: [
+            mobileNavigationGeometryServiceProvider.overrideWithValue(native),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final home = tester.element(find.byType(MobileHomeScreen));
+      final header = tester.getRect(find.byType(MobileTopNavAccount));
+      final list = tester.widget<ListView>(find.byType(ListView).first);
+      expect(
+        tester.widget<AppMobileTabBar>(find.byType(AppMobileTabBar)).axis,
+        Axis.horizontal,
+      );
+      native.change(closed);
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester.widget<AppMobileTabBar>(find.byType(AppMobileTabBar)).axis,
+        Axis.vertical,
+      );
+      expect(
+        tester.getRect(find.byType(AppMobileTabBar)).left,
+        greaterThanOrEqualTo(408),
+      );
+      expect(
+        tester.getRect(find.byType(AppMobileTabBar)).bottom,
+        closeTo(712, 0.01),
+      );
+      expect(tester.getRect(find.byType(MobileTopNavAccount)), header);
+      expect(
+        tester.widget<ListView>(find.byType(ListView).first).padding,
+        list.padding,
+      );
+      expect(tester.element(find.byType(MobileHomeScreen)), same(home));
+      expect(find.byType(MobileWalletSidebar), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'adaptive frame preserves branch state and pushed pages through resizing',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(900, 720);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final observer = MobileSidebarRouteObserver();
+      final router = GoRouter(
+        initialLocation: '/home',
+        observers: [observer],
+        routes: buildMobileRoutes(entryRoutes: const []),
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        _app(
+          router,
+          adaptive: true,
+          swapFeatureEnabled: false,
+          overrides: [
+            mobileSidebarRouteObserverProvider.overrideWithValue(observer),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      final home = tester.element(find.byType(MobileHomeScreen));
+      final navigator = router.routerDelegate.navigatorKey.currentState;
+      final sidebar = find.byType(MobileWalletSidebar);
+      await tester.tap(
+        find.descendant(of: sidebar, matching: find.text('Activity')),
+      );
+      await tester.pumpAndSettle();
+      expect(router.routeInformationProvider.value.uri.path, '/activity');
+      await tester.tap(
+        find.descendant(of: sidebar, matching: find.text('Home')),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.element(find.byType(MobileHomeScreen)), same(home));
+      router.push('/receive');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      final receive = tester.element(find.byType(MobileReceiveScreen));
+      tester.view.physicalSize = const Size(393, 852);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(find.byType(MobileWalletSidebar), findsNothing);
+      expect(tester.element(find.byType(MobileReceiveScreen)), same(receive));
+      expect(router.routerDelegate.navigatorKey.currentState, same(navigator));
+      tester.view.physicalSize = const Size(900, 720);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      expect(tester.element(find.byType(MobileReceiveScreen)), same(receive));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'sidebar navigation cannot bypass a popup or protected send flow',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(900, 720);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final observer = MobileSidebarRouteObserver();
+      final router = GoRouter(
+        initialLocation: '/home',
+        observers: [observer],
+        routes: buildMobileRoutes(entryRoutes: const []),
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        _app(
+          router,
+          adaptive: true,
+          swapFeatureEnabled: false,
+          overrides: [
+            mobileSidebarRouteObserverProvider.overrideWithValue(observer),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final sidebar = find.byType(MobileWalletSidebar);
+      AppButton settings() => tester.widget<AppButton>(
+        find
+            .ancestor(
+              of: find.descendant(of: sidebar, matching: find.text('Settings')),
+              matching: find.byType(AppButton),
+            )
+            .first,
+      );
+      final context =
+          router.routerDelegate.navigatorKey.currentState!.overlay!.context;
+      unawaited(
+        showDialog<void>(
+          context: context,
+          builder: (_) => const AlertDialog(content: Text('Modal')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(settings().onPressed, isNull);
+      router.pop();
+      await tester.pumpAndSettle();
+      expect(settings().onPressed, isNotNull);
+      final container = ProviderScope.containerOf(tester.element(sidebar));
+      final hold = container
+          .read(externalActionGuardProvider.notifier)
+          .tryProtect()!;
+      await tester.pump();
+      expect(settings().onPressed, isNull);
+      hold.release();
+      await tester.pump();
+      router.push('/send');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      expect(settings().onPressed, isNull);
+      expect(tester.widget<MobileWalletSidebar>(sidebar).onAccountTap, isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   test('registers the mobile payment-link intake route', () {
     final paths = buildMobileRoutes(
       entryRoutes: const [],
