@@ -15,6 +15,7 @@ class MobileWindowLayout {
     this.sidebar,
     this.rail,
     this.contentSafeRect,
+    this.navigationViewport,
   });
   final MobileNavigationMode mode;
   final Rect body;
@@ -23,6 +24,10 @@ class MobileWindowLayout {
 
   /// Foreground safety remains pane-local while wide surfaces reach the bottom.
   final Rect? contentSafeRect;
+  final Rect? navigationViewport;
+
+  /// Page transitions include the surrounding space; content keeps [body].
+  Rect get viewport => navigationViewport ?? body;
 
   static MobileWindowLayout resolve({
     required MediaQueryData media,
@@ -75,10 +80,17 @@ class MobileWindowLayout {
           );
           if (bodyArea != null) {
             final width = math.min(440.0, bodyArea.width);
+            final viewport = _largest(
+              _freeRects(
+                Rect.fromLTRB(sidebar.right + 16, 0, full.right, full.bottom),
+                divisions,
+              ).where((rect) => rect.intersect(bodyArea) == bodyArea).toList(),
+            )!;
             return MobileWindowLayout(
               mode: MobileNavigationMode.sidebar,
               sidebar: sidebar,
               contentSafeRect: safe,
+              navigationViewport: viewport,
               body: Rect.fromLTWH(
                 bodyArea.center.dx - width / 2,
                 bodyArea.top,

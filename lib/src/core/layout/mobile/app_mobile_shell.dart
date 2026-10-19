@@ -38,6 +38,9 @@ class AppMobileShell extends StatelessWidget {
       // Desktop hosts toasts inside AppDesktopPane; the mobile shell is
       // the equivalent surface, so it hosts them for all tab content.
       body: AppToastHost(
+        overlayBounds: mode == MobileNavigationMode.sidebar
+            ? navigation?.contentRect
+            : null,
         child: Stack(
           fit: StackFit.expand,
           children: [

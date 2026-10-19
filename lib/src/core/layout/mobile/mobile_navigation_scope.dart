@@ -34,11 +34,15 @@ class MobileNavigationScope extends InheritedWidget {
     required this.navigation,
     required super.child,
     this.railRect,
+    this.contentRect,
     super.key,
   });
 
   final MobileNavigationMode mode;
   final Rect? railRect;
+
+  /// Content bounds in the wallet Navigator's coordinates, before animations.
+  final Rect? contentRect;
   final MobileBranchNavigation navigation;
 
   static MobileNavigationScope? maybeOf(BuildContext context) =>
@@ -58,5 +62,6 @@ class MobileNavigationScope extends InheritedWidget {
   bool updateShouldNotify(MobileNavigationScope oldWidget) =>
       mode != oldWidget.mode ||
       railRect != oldWidget.railRect ||
+      contentRect != oldWidget.contentRect ||
       navigation != oldWidget.navigation;
 }

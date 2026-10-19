@@ -20,6 +20,8 @@ import 'package:zcash_wallet/src/core/layout/mobile/mobile_top_nav_account.dart'
 import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_sync_status.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_page_viewport.dart';
+import 'package:zcash_wallet/src/core/widgets/app_toast.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.dart';
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
@@ -272,6 +274,73 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
+  );
+  testWidgets(
+    'wide transitions include both margins and back swipes can cancel or complete',
+    (tester) async {
+      tester.view.physicalSize = const Size(951, 669);
+      tester.view.padding = const FakeViewPadding(right: 84, bottom: 34);
+      tester.view.viewPadding = const FakeViewPadding(right: 84, bottom: 34);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewPadding);
+      final router = _router();
+      addTearDown(router.dispose);
+      await tester.pumpWidget(_app(router));
+      await tester.pumpAndSettle();
+      final sidebar = tester.getRect(find.byType(MobileWalletSidebar));
+      final home = find.byType(MobileHomeScreen);
+      final homeRect = tester.getRect(home);
+      expect(homeRect.width, 440);
+      showAppToast(tester.element(home), 'Pane toast');
+      await tester.pump();
+      expect(tester.getCenter(find.byType(AppToast)).dx, homeRect.center.dx);
+      final pushed = router.push<void>('/receive');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final receive = find.byType(MobileReceiveScreen);
+      final page = find
+          .ancestor(of: receive, matching: find.byType(MobilePageViewport))
+          .first;
+      final navigator = Navigator.of(tester.element(receive));
+      final viewport = tester.getRect(find.byWidget(navigator.widget));
+      expect(viewport.width, greaterThan(homeRect.width));
+      expect(viewport.right, 951);
+      expect(tester.getRect(page).size, viewport.size);
+      expect(tester.getRect(page).left, greaterThan(viewport.left));
+      expect(tester.getRect(page).left, lessThan(viewport.right));
+      expect(tester.getRect(receive).width, homeRect.width);
+      expect(tester.getRect(find.byType(MobileWalletSidebar)), sidebar);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(tester.getRect(receive), homeRect);
+      final start = Offset(viewport.left + 2, viewport.center.dy);
+      var drag = await tester.startGesture(start);
+      await drag.moveBy(Offset(viewport.width * .25, 0));
+      await tester.pump(const Duration(milliseconds: 400));
+      final route = ModalRoute.of(tester.element(receive))!;
+      expect(route.animation!.value, inExclusiveRange(0, 1));
+      expect(tester.getRect(page).left, greaterThan(viewport.left));
+      await drag.up();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      expect(receive, findsOneWidget);
+      expect(tester.getRect(receive), homeRect);
+      drag = await tester.startGesture(start);
+      await drag.moveBy(Offset(viewport.width * .75, 0));
+      await tester.pump(const Duration(milliseconds: 400));
+      await drag.up();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      await pushed;
+      expect(receive, findsNothing);
+      expect(tester.getRect(home), homeRect);
+      expect(tester.getRect(find.byType(MobileWalletSidebar)), sidebar);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
   );
   testWidgets(
     'adaptive frame preserves branch state and pushed pages through resizing',

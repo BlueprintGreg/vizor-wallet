@@ -61,6 +61,7 @@ import '../layout/mobile/app_mobile_shell.dart';
 import '../layout/mobile/mobile_adaptive_frame.dart';
 import '../layout/mobile/app_mobile_tab_bar.dart';
 import '../layout/mobile/mobile_navigation_scope.dart';
+import '../layout/mobile/mobile_page_viewport.dart';
 import 'mobile_destinations.dart';
 import 'payload_page_key.dart';
 
@@ -76,9 +77,8 @@ import 'payload_page_key.dart';
 List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
   return [
     ...entryRoutes,
-    // Keep the root Navigator/Overlay window-sized. Only the nested wallet
-    // Navigator is constrained to the mobile content pane; root modals cover
-    // the sidebar and all surrounding space as well.
+    // Root modals cover the full window. The wallet Navigator covers the
+    // right pane; each opaque page constrains only its foreground content.
     ShellRoute(
       pageBuilder: (context, state, child) => NoTransitionPage(
         key: state.pageKey,
@@ -92,8 +92,9 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
 List<RouteBase> _walletRoutes() {
   return [
     StatefulShellRoute.indexedStack(
-      pageBuilder: (context, state, navigationShell) => CupertinoPage(
+      pageBuilder: (context, state, navigationShell) => _mobilePage(
         key: state.pageKey,
+        constrainContent: false,
         child: _MobileTabShell(
           navigationShell: navigationShell,
           tabs: _allMobileTabs,
@@ -105,8 +106,10 @@ List<RouteBase> _walletRoutes() {
             routes: [
               GoRoute(
                 path: tab.path,
-                pageBuilder: (context, state) =>
-                    NoTransitionPage(key: state.pageKey, child: tab.screen),
+                pageBuilder: (context, state) => NoTransitionPage(
+                  key: state.pageKey,
+                  child: MobilePageViewport(child: tab.screen),
+                ),
                 // Settings detail screens push over the shell (top-level
                 // routes below) so the bottom tab bar is hidden while
                 // they're open; nothing extra nests inside a branch.
@@ -116,7 +119,7 @@ List<RouteBase> _walletRoutes() {
               if (tab.path == '/home')
                 GoRoute(
                   path: '/accounts',
-                  pageBuilder: (context, state) => CupertinoPage(
+                  pageBuilder: (context, state) => _mobilePage(
                     key: state.pageKey,
                     child: const MobileAccountsScreen(),
                   ),
@@ -136,7 +139,7 @@ List<RouteBase> _walletRoutes() {
     }.entries)
       GoRoute(
         path: entry.key,
-        pageBuilder: (context, state) => CupertinoPage(
+        pageBuilder: (context, state) => _mobilePage(
           key: state.pageKey,
           child: MobileGiftEducationScreen(
             page: entry.value,
@@ -146,7 +149,7 @@ List<RouteBase> _walletRoutes() {
       ),
     GoRoute(
       path: '/setup/backup',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileSeedPhraseScreen(
           accountUuid: state.extra is String ? state.extra as String : null,
@@ -156,7 +159,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/settings/seed-phrase',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileSeedPhraseScreen(
           accountUuid: state.extra is String ? state.extra as String : null,
@@ -165,7 +168,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/settings/viewing-key',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileViewingKeyScreen(
           accountUuid: state.extra is String ? state.extra as String : null,
@@ -174,30 +177,26 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/settings/address-book',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileAddressBookScreen(),
       ),
     ),
     GoRoute(
       path: '/settings/endpoint',
-      pageBuilder: (context, state) => CupertinoPage(
-        key: state.pageKey,
-        child: const MobileEndpointScreen(),
-      ),
+      pageBuilder: (context, state) =>
+          _mobilePage(key: state.pageKey, child: const MobileEndpointScreen()),
     ),
     GoRoute(
       path: '/settings/explorer',
-      pageBuilder: (context, state) => CupertinoPage(
-        key: state.pageKey,
-        child: const MobileExplorerScreen(),
-      ),
+      pageBuilder: (context, state) =>
+          _mobilePage(key: state.pageKey, child: const MobileExplorerScreen()),
     ),
     // The Set New Passcode frames also drop the tab bar — same
     // full-screen push pattern.
     GoRoute(
       path: '/settings/change-password',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileChangePasscodeScreen(),
       ),
@@ -211,7 +210,7 @@ List<RouteBase> _walletRoutes() {
         // request opens on the amount step even when it asks the payer to
         // supply the amount. Bare recipient strings still open address entry.
         final prefill = extra is SendPrefillArgs ? extra : null;
-        return CupertinoPage(
+        return _mobilePage(
           // `_MobileSendScreenState` seeds every `initial*` field in
           // `initState` and has no `didUpdateWidget`, so the page has to
           // change identity with the prefill or a second request answered
@@ -240,7 +239,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/payment-links',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: PaymentLinksScreen(
           initialReceivedCardAddress: state.uri.queryParameters['received'],
@@ -257,7 +256,7 @@ List<RouteBase> _walletRoutes() {
         final child = extra is MobileSendAmountArgs
             ? MobileSendAmountScreen(args: extra)
             : const MobileSendScreen(useRouteSteps: true);
-        return CupertinoPage(key: state.pageKey, child: child);
+        return _mobilePage(key: state.pageKey, child: child);
       },
     ),
     GoRoute(
@@ -265,7 +264,7 @@ List<RouteBase> _walletRoutes() {
       pageBuilder: (context, state) {
         final extra = state.extra;
         final draft = extra is MobileSendReviewDraftArgs ? extra : null;
-        return CupertinoPage(
+        return _mobilePage(
           // `MobileSendReviewScreen` is a keyless pass-through to the same
           // `MobileSendScreen` state, so the draft's identity is what keeps a
           // second request from being confirmed against the first one.
@@ -292,12 +291,12 @@ List<RouteBase> _walletRoutes() {
           SendReviewArgs() => MobileSendStatusScreen(args: extra),
           _ => const MobileSendScreen(useRouteSteps: true),
         };
-        return CupertinoPage(key: state.pageKey, child: child);
+        return _mobilePage(key: state.pageKey, child: child);
       },
     ),
     GoRoute(
       path: '/swap/review',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileSwapReviewScreen(),
       ),
@@ -310,7 +309,7 @@ List<RouteBase> _walletRoutes() {
         final child = MobileSwapKeystoneSignScreen(
           args: state.extra as MobileSwapKeystoneSignArgs,
         );
-        return CupertinoPage(key: state.pageKey, child: child);
+        return _mobilePage(key: state.pageKey, child: child);
       },
     ),
     GoRoute(
@@ -334,7 +333,7 @@ List<RouteBase> _walletRoutes() {
       path: '/pay/review',
       pageBuilder: (context, state) {
         final extra = state.extra;
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileSwapReviewScreen(
             payMode: true,
@@ -345,7 +344,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/pay/submitted/:intentId',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobilePaySubmittedScreen(
           intentId: state.pathParameters['intentId'] ?? '',
@@ -356,7 +355,7 @@ List<RouteBase> _walletRoutes() {
       path: '/pay',
       pageBuilder: (context, state) {
         final args = state.extra;
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobilePayScreen(
             preservePreparedComposer:
@@ -378,7 +377,7 @@ List<RouteBase> _walletRoutes() {
                 txidHex: state.pathParameters['txid'] ?? '',
                 txKind: state.uri.queryParameters['kind'],
               );
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileTransactionStatusScreen(args: args),
         );
@@ -388,7 +387,7 @@ List<RouteBase> _walletRoutes() {
       path: '/activity/swap/:swapId',
       pageBuilder: (context, state) {
         final swapId = state.pathParameters['swapId'] ?? '';
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileSwapActivityDetailScreen(
             swapIntentId: swapId,
@@ -404,7 +403,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/send/keystone-sign',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileKeystoneSignScreen(args: state.extra! as SendReviewArgs),
       ),
@@ -427,21 +426,21 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/home/keystone-shield',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileKeystoneShieldScreen(),
       ),
     ),
     GoRoute(
       path: '/voting',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileVotingAccountGuard(child: MobileVotingPollsScreen()),
       ),
     ),
     GoRoute(
       path: '/voting/poll/:roundId',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileVotingAccountGuard(
           child: MobileVotingProposalDetailScreen(
@@ -452,7 +451,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/voting/poll/:roundId/review',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileVotingAccountGuard(
           child: MobileVotingReviewScreen(
@@ -463,7 +462,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/voting/poll/:roundId/status',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileVotingAccountGuard(
           child: MobileVotingStatusScreen(
@@ -475,7 +474,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/voting/poll/:roundId/submitted',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileVotingAccountGuard(
           child: MobileVotingSubmissionConfirmationScreen(
@@ -487,7 +486,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/voting/poll/:roundId/results',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileVotingAccountGuard(
           child: MobileVotingResultsScreen(
@@ -509,11 +508,11 @@ List<RouteBase> _walletRoutes() {
     GoRoute(
       path: '/receive',
       pageBuilder: (context, state) =>
-          CupertinoPage(key: state.pageKey, child: const MobileReceiveScreen()),
+          _mobilePage(key: state.pageKey, child: const MobileReceiveScreen()),
     ),
     GoRoute(
       path: '/migration',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.intro,
@@ -522,7 +521,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/migration/intro',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.intro,
@@ -531,7 +530,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/migration/how-it-works',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.howItWorks,
@@ -540,7 +539,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/migration/options',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.options,
@@ -550,7 +549,7 @@ List<RouteBase> _walletRoutes() {
     GoRoute(
       path: '/migration/private/notifications',
       redirect: _redirectUnsupportedPrivateMigration,
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.notifications,
@@ -564,7 +563,7 @@ List<RouteBase> _walletRoutes() {
     GoRoute(
       path: '/migration/private/start',
       redirect: _redirectUnsupportedPrivateMigration,
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileIronwoodMigrationStartScreen(
           approvedPlan: switch (state.extra) {
@@ -579,7 +578,7 @@ List<RouteBase> _walletRoutes() {
     // surface before the finished phase resolves.
     GoRoute(
       path: '/migration/complete',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationCompleteScreen(),
       ),
@@ -593,7 +592,7 @@ List<RouteBase> _walletRoutes() {
             MobileIronwoodMigrationStatusEntry(approvedPlan: plan),
           _ => null,
         };
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileIronwoodMigrationPrivateStatusScreen(
             approvedPlan: entry?.approvedPlan,
@@ -603,14 +602,14 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/migration/private/schedule',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationScheduleScreen(),
       ),
     ),
     GoRoute(
       path: '/migration/private/preparation-schedule',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationPreparationScheduleScreen(),
       ),
@@ -626,7 +625,7 @@ List<RouteBase> _walletRoutes() {
           List<rust_sync.MigrationScheduledTransfer> schedule => schedule,
           _ => entry?.approvedSchedule ?? const [],
         };
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileIronwoodMigrationKeystoneCombinedSignScreen(
             approvedSchedule: approvedSchedule,
@@ -647,7 +646,7 @@ List<RouteBase> _walletRoutes() {
           List<rust_sync.MigrationScheduledTransfer> schedule => schedule,
           _ => entry?.approvedSchedule ?? const [],
         };
-        return CupertinoPage(
+        return _mobilePage(
           key: state.pageKey,
           child: MobileIronwoodMigrationKeystoneDenominationSignScreen(
             approvedSchedule: approvedSchedule,
@@ -659,7 +658,7 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/migration/private/keystone/batch/sign',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationKeystoneBatchSignScreen(),
       ),
@@ -670,7 +669,7 @@ List<RouteBase> _walletRoutes() {
           state.extra is rust_sync.OrchardMigrationImmediatePlan
           ? null
           : '/migration/fast/review',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: MobileIronwoodMigrationKeystoneImmediateSignScreen(
           approvedPlan: state.extra! as rust_sync.OrchardMigrationImmediatePlan,
@@ -681,7 +680,7 @@ List<RouteBase> _walletRoutes() {
     // directly from the production option picker.
     GoRoute(
       path: '/migration/fast/review',
-      pageBuilder: (context, state) => CupertinoPage(
+      pageBuilder: (context, state) => _mobilePage(
         key: state.pageKey,
         child: const MobileIronwoodMigrationFlowScreen(
           step: MobileIronwoodMigrationStep.fastReview,
@@ -691,10 +690,19 @@ List<RouteBase> _walletRoutes() {
     GoRoute(
       path: '/about',
       pageBuilder: (context, state) =>
-          CupertinoPage(key: state.pageKey, child: const MobileAboutScreen()),
+          _mobilePage(key: state.pageKey, child: const MobileAboutScreen()),
     ),
   ];
 }
+
+CupertinoPage<dynamic> _mobilePage({
+  required LocalKey key,
+  required Widget child,
+  bool constrainContent = true,
+}) => CupertinoPage(
+  key: key,
+  child: MobilePageViewport(constrainContent: constrainContent, child: child),
+);
 
 String? _redirectUnsupportedPrivateMigration(
   BuildContext context,

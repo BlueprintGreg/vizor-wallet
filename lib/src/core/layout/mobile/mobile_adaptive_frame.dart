@@ -157,6 +157,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
       child: MobileNavigationScope(
         mode: layout.mode,
         railRect: layout.rail,
+        contentRect: wide ? layout.body.shift(-layout.viewport.topLeft) : null,
         navigation: _navigation,
         child: ColoredBox(
           color: context.colors.background.window,
@@ -164,11 +165,11 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
             fit: StackFit.expand,
             children: [
               Positioned.fromRect(
-                rect: layout.body,
+                rect: layout.viewport,
                 child: MediaQuery(
                   data: mobilePaneMedia(
                     media,
-                    layout.body,
+                    layout.viewport,
                     safeRect: layout.contentSafeRect,
                   ),
                   child: widget.child,

@@ -27,6 +27,7 @@ void main() {
     final layout = MobileWindowLayout.resolve(media: media);
     expect(layout.mode, MobileNavigationMode.bottomTabs);
     expect(layout.body, Offset.zero & media.size);
+    expect(layout.viewport, layout.body);
     expect(mobilePaneMedia(media, layout.body), media);
   });
   for (final left in [false, true]) {
@@ -45,6 +46,7 @@ void main() {
       final layout = MobileWindowLayout.resolve(media: media, native: native);
       expect(layout.mode, MobileNavigationMode.systemSideTabs);
       expect(layout.body, Offset.zero & size);
+      expect(layout.viewport, layout.body);
       expect(mobilePaneMedia(media, layout.body), media);
       expect(layout.rail!.overlaps(native.occlusions.first), isFalse);
       expect(layout.rail!.width, greaterThanOrEqualTo(52));
@@ -134,6 +136,8 @@ void main() {
     );
     expect(layout.mode, MobileNavigationMode.sidebar);
     expect(layout.body.bottom, size.height);
+    expect(layout.viewport, const Rect.fromLTWH(288, 0, 663, 669));
+    expect(layout.viewport.width, greaterThan(layout.body.width));
     expect(layout.sidebar!.top, 16);
     expect(size.height - layout.sidebar!.bottom, 16);
     expect(
@@ -207,6 +211,7 @@ void main() {
     expect(layout.mode, MobileNavigationMode.sidebar);
     expect(layout.body.overlaps(hinge), isFalse);
     expect(layout.sidebar!.overlaps(hinge), isFalse);
+    expect(layout.viewport.overlaps(hinge), isFalse);
   });
   test('horizontal hinge gives the content one contiguous usable pane', () {
     const hinge = Rect.fromLTWH(0, 340, 900, 20);
@@ -225,6 +230,7 @@ void main() {
     expect(layout.mode, MobileNavigationMode.sidebar);
     expect(layout.body.overlaps(hinge), isFalse);
     expect(layout.sidebar!.overlaps(hinge), isFalse);
+    expect(layout.viewport.overlaps(hinge), isFalse);
   });
   test('flat zero-width fold does not split the window', () {
     final layout = MobileWindowLayout.resolve(
