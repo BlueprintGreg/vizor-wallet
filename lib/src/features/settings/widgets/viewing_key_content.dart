@@ -488,8 +488,7 @@ class _ViewingKeyChoice extends StatelessWidget {
           type: ViewingKeyType.incoming,
           title: 'Incoming only',
           icon: AppIcons.arrowBottomLeft,
-          description:
-              'Past and future incoming payments. No balance or outgoing activity.',
+          description: 'Incoming transactions only.',
           onPressed: () => onSelected(ViewingKeyType.incoming),
         ),
         const SizedBox(height: AppSpacing.s),
@@ -497,8 +496,7 @@ class _ViewingKeyChoice extends StatelessWidget {
           type: ViewingKeyType.full,
           title: 'Full viewing key',
           icon: AppIcons.history,
-          description:
-              'Balance and all incoming and outgoing transactions, past and future.',
+          description: 'Balance, incoming and outgoing transactions.',
           onPressed: () => onSelected(ViewingKeyType.full),
         ),
         const SizedBox(height: AppSpacing.md),
@@ -519,24 +517,11 @@ class _ViewingKeyChoice extends StatelessWidget {
               ),
               const SizedBox(width: AppSpacing.s),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      viewingKeyChoiceSharingWarning,
-                      style: AppTypography.bodySmall.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: colors.text.primary,
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      'Neither key can spend your ZEC.',
-                      style: AppTypography.bodySmall.copyWith(
-                        color: colors.text.secondary,
-                      ),
-                    ),
-                  ],
+                child: Text(
+                  viewingKeyChoiceSharingWarning,
+                  style: AppTypography.bodySmall.copyWith(
+                    color: colors.text.primary,
+                  ),
                 ),
               ),
             ],

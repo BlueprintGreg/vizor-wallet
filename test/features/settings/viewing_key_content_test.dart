@@ -140,8 +140,9 @@ void main() {
     await _pump(tester, type: null);
     expect(find.byType(RequestQrSurface), findsNothing);
     expect(find.byKey(_copy), findsNothing);
-    expect(find.text('Neither key can spend your ZEC.'), findsOneWidget);
+    expect(find.text(viewingKeyChoiceSharingWarning), findsOneWidget);
     await _select(tester, true);
+    expect(find.text(viewingKeyChoiceSharingWarning), findsNothing);
     expect(find.text('Incoming key'), findsOneWidget);
     expect(find.byKey(const ValueKey('viewing_key_choose_full')), findsNothing);
     await tester.tap(find.byKey(const ValueKey('test_back')));
