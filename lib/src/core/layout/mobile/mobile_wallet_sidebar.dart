@@ -83,15 +83,6 @@ class MobileWalletSidebar extends StatelessWidget {
                                   style: AppTypography.bodyMediumStrong,
                                 ),
                               ),
-                              const SizedBox(width: AppSpacing.xs),
-                              RotatedBox(
-                                quarterTurns: 1,
-                                child: AppIcon(
-                                  AppIcons.chevronForward,
-                                  size: 16,
-                                  color: colors.icon.muted,
-                                ),
-                              ),
                             ],
                           ),
                         ),
