@@ -69,6 +69,7 @@ class FigmaCompareScenario {
     this.allowFocus = false,
     this.allowPointer = false,
     this.renderShadows = false,
+    this.outsideScaffold = false,
     this.platform,
   });
 
@@ -81,6 +82,10 @@ class FigmaCompareScenario {
   final bool allowFocus;
   final bool allowPointer;
   final bool renderShadows;
+
+  /// App-level surfaces must receive the same fallback text style as the
+  /// production MaterialApp.builder, without a capture-only Material ancestor.
+  final bool outsideScaffold;
   final TargetPlatform? platform;
 }
 
@@ -97,6 +102,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     builder: buildMobileAdaptiveHomeUseCase,
     desktop: false,
     mobile: true,
+    outsideScaffold: true,
     platform: TargetPlatform.iOS,
   ),
   FigmaCompareScenario(
@@ -106,6 +112,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     builder: buildMobileAdaptiveHomeClosedUseCase,
     desktop: false,
     mobile: true,
+    outsideScaffold: true,
     platform: TargetPlatform.iOS,
   ),
   FigmaCompareScenario(

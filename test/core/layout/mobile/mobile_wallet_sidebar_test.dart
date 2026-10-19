@@ -16,18 +16,107 @@ const status = SyncStatusLabel(
   label: '4% Syncing...',
   semanticsLabel: '4% Syncing',
 );
-Widget harness(Widget child, {double scale = 1}) => MaterialApp(
-  builder: (_, navigator) => AppTheme(
-    data: AppThemeData.light,
-    child: MediaQuery(
-      data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-      child: navigator!,
-    ),
-  ),
-  home: Scaffold(body: Center(child: child)),
-);
+Widget harness(Widget child, {double scale = 1, AppThemeData? theme}) =>
+    MaterialApp(
+      // Like MaterialApp.router.builder in production: the sidebar is a sibling
+      // of the router, outside its Scaffold/Material default text styles.
+      builder: (context, navigator) => AppTheme(
+        data: theme ?? AppThemeData.light,
+        child: MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(scale)),
+          child: Stack(
+            children: [
+              navigator!,
+              Center(child: child),
+            ],
+          ),
+        ),
+      ),
+      home: const Scaffold(),
+    );
 
 void main() {
+  for (final dark in [false, true]) {
+    for (final enabled in [false, true]) {
+      for (final kind in SyncStatusKind.values) {
+        testWidgets('sidebar resets inherited text decoration '
+            '(dark=$dark, enabled=$enabled, sync=$kind)', (tester) async {
+          final theme = dark ? AppThemeData.dark : AppThemeData.light;
+          final label = switch (kind) {
+            SyncStatusKind.syncing => '4% Syncing...',
+            SyncStatusKind.synced => 'Vizor is synced',
+            SyncStatusKind.failed => 'Syncing failed',
+          };
+          await tester.pumpWidget(
+            harness(
+              SizedBox(
+                width: 200,
+                height: 600,
+                child: MobileWalletSidebar(
+                  accountName: 'Account probe',
+                  avatar: const SizedBox(width: 40, height: 40),
+                  status: SyncStatusLabel(
+                    kind: kind,
+                    label: label,
+                    semanticsLabel: label,
+                  ),
+                  currentPath: '/home',
+                  swapEnabled: true,
+                  onSelect: enabled ? (_) {} : null,
+                  onAccountTap: enabled ? () {} : null,
+                ),
+              ),
+              theme: theme,
+            ),
+          );
+          TextStyle effectiveStyle(String label) =>
+              (tester
+                          .widget<RichText>(
+                            find.descendant(
+                              of: find.text(label),
+                              matching: find.byType(RichText),
+                            ),
+                          )
+                          .text
+                      as TextSpan)
+                  .style!;
+          for (final text in [
+            'Account probe',
+            'Home',
+            'Swap',
+            'Activity',
+            'Settings',
+            label,
+          ]) {
+            final style = effectiveStyle(text);
+            expect(style.decoration, TextDecoration.none, reason: text);
+            final typography = text == label
+                ? AppTypography.bodySmall
+                : AppTypography.bodyMediumStrong;
+            expect(style.fontFamily, typography.fontFamily, reason: text);
+            expect(style.fontSize, typography.fontSize, reason: text);
+            expect(style.fontWeight, typography.fontWeight, reason: text);
+          }
+          final syncColor = switch (kind) {
+            SyncStatusKind.syncing => theme.colors.sync.textSyncing,
+            SyncStatusKind.synced => theme.colors.sync.text,
+            SyncStatusKind.failed => theme.colors.sync.textError,
+          };
+          expect(effectiveStyle(label).color, syncColor);
+          if (enabled) {
+            expect(
+              effectiveStyle('Home').color,
+              theme.colors.navPanel.activeIcon,
+            );
+          }
+          expect(tester.takeException(), isNull);
+        });
+      }
+    }
+  }
+
   testWidgets(
     'sidebar shows mobile destinations and sync, respects flag and disabled state',
     (tester) async {

@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Material, MaterialType;
 import 'package:flutter/widgets.dart';
 import '../../formatting/sync_status_label.dart';
 import '../../navigation/mobile_destinations.dart';
@@ -39,7 +40,7 @@ class MobileWalletSidebar extends StatelessWidget {
       for (final item in mobileDestinations)
         if (swapEnabled || item.path != '/swap') item,
     ];
-    return DecoratedBox(
+    final panel = DecoratedBox(
       decoration: BoxDecoration(
         color: colors.macosUtility.navPanel,
         borderRadius: BorderRadius.circular(AppRadii.large),
@@ -157,6 +158,17 @@ class MobileWalletSidebar extends StatelessWidget {
           },
         ),
       ),
+    );
+    // This surface also lives above the Router, outside its Material widgets.
+    // Establish a complete mobile text style instead of inheriting the
+    // MaterialApp fallback's yellow double underline.
+    return Material(
+      type: MaterialType.transparency,
+      textStyle: AppTypography.bodyMedium.copyWith(
+        color: colors.text.accent,
+        decoration: TextDecoration.none,
+      ),
+      child: panel,
     );
   }
 
