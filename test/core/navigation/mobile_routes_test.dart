@@ -267,7 +267,8 @@ void main() {
         of: sidebar,
         matching: find.byType(MobileSyncStatus),
       );
-      expect(tester.getRect(sync).bottom, 635);
+      // No native corner mock here: the 24pt fallback plus 16pt glow gap.
+      expect(tester.getRect(sync).bottom, 653 - AppRadii.large - AppSpacing.sm);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

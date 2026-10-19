@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_sidebar_surface.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_sync_status.dart';
+import 'package:zcash_wallet/src/core/formatting/sync_status_label.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/services/native_modal_corners.dart';
 
@@ -36,6 +39,7 @@ void main() {
     WidgetTester tester, {
     double left = 16,
     double top = 40,
+    Widget? panel,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(982, 654);
@@ -50,7 +54,8 @@ void main() {
               top: top,
               width: 256,
               height: 540,
-              child: const MobileSidebarSurface(child: SizedBox.expand()),
+              child:
+                  panel ?? const MobileSidebarSurface(child: SizedBox.expand()),
             ),
           ],
         ),
@@ -63,7 +68,13 @@ void main() {
     final decorated = tester.widget<DecoratedBox>(
       find.descendant(
         of: find.byType(MobileSidebarSurface),
-        matching: find.byType(DecoratedBox),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is DecoratedBox &&
+              widget.decoration is ShapeDecoration &&
+              (widget.decoration as ShapeDecoration).shape
+                  is RoundedSuperellipseBorder,
+        ),
       ),
     );
     final shape = (decorated.decoration as ShapeDecoration).shape;
@@ -95,6 +106,62 @@ void main() {
       expect(calls.last.arguments, containsPair('y', 64.0));
       await tester.pump();
       expect(calls.length, 2); // No per-frame requests from normal rebuilds.
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+  );
+
+  testWidgets(
+    'sync hugs the left edge and follows the exact native corner used by the panel',
+    (tester) async {
+      addTearDown(tester.view.reset);
+      Widget sidebar({double bottomInset = 18}) => MediaQuery(
+        data: MediaQueryData(padding: EdgeInsets.only(bottom: bottomInset)),
+        child: MobileWalletSidebar(
+          accountName: 'Test account',
+          avatar: const SizedBox(width: 40, height: 40),
+          status: const SyncStatusLabel(
+            kind: SyncStatusKind.synced,
+            label: 'Vizor is synced',
+            semanticsLabel: 'Vizor is synced',
+          ),
+          currentPath: '/home',
+          swapEnabled: true,
+          onSelect: (_) {},
+          onAccountTap: () {},
+        ),
+      );
+      void verify(double corner, double gap) {
+        final panel = tester.getRect(find.byType(MobileSidebarSurface));
+        final sync = tester.getRect(find.byType(MobileSyncStatus));
+        final bar = tester.getRect(
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is Container &&
+                widget.constraints?.maxWidth == 6 &&
+                widget.constraints?.maxHeight == 50,
+          ),
+        );
+        expect(outline(tester).bottomLeft.y, corner);
+        expect(bar.left, panel.left);
+        expect(panel.bottom - sync.bottom, gap);
+        expect(
+          tester.getRect(find.text('Vizor is synced')).left,
+          panel.left + 6 + AppSpacing.s,
+        );
+        expect(tester.takeException(), isNull);
+      }
+
+      await pump(tester, panel: sidebar());
+      verify(56, 56 + AppSpacing.sm);
+      reply = (_) async => {...radius, 'bottomLeft': 39.0};
+      await pump(tester, left: 32, panel: sidebar());
+      verify(39, 39 + AppSpacing.sm);
+      // Safety replaces the corner gap when larger; it is never added to it.
+      await pump(tester, left: 32, panel: sidebar(bottomInset: 80));
+      verify(39, 80);
+      reply = (_) async => null;
+      await pump(tester, left: 48, panel: sidebar());
+      verify(AppRadii.large, AppRadii.large + AppSpacing.sm);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.iOS),
   );

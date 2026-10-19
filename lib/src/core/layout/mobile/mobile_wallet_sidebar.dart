@@ -37,13 +37,16 @@ class MobileWalletSidebar extends StatelessWidget {
       for (final item in mobileDestinations)
         if (swapEnabled || item.path != '/swap') item,
     ];
-    final panel = MobileSidebarSurface(
-      child: Padding(
+    final panel = MobileSidebarSurface.builder(
+      builder: (context, corners) => Padding(
         padding: EdgeInsets.only(
           top: 16,
+          // The bar hugs the leading edge. Keep its lower glow above the same
+          // native corner used to paint and clip the panel, without stacking
+          // the remaining pane safe-area inset on top of that clearance.
           bottom: MediaQuery.paddingOf(
             context,
-          ).bottom.clamp(16, double.infinity),
+          ).bottom.clamp(corners.bottomLeft.y + AppSpacing.sm, double.infinity),
         ),
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -145,7 +148,7 @@ class MobileWalletSidebar extends StatelessWidget {
                       const Spacer(),
                       const SizedBox(height: AppSpacing.md),
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        padding: const EdgeInsets.only(right: 16),
                         child: MobileSyncStatus.fromStatus(
                           context: context,
                           status: status,

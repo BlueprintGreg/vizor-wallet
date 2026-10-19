@@ -10,8 +10,18 @@ typedef _PanelGeometry = ({Rect rect, Size viewSize, double scale});
 /// Owns one shared outline for the panel fill and clipping. Only iOS asks
 /// UIKit to resolve container-concentric corners at the panel's actual frame.
 class MobileSidebarSurface extends StatefulWidget {
-  const MobileSidebarSurface({required this.child, super.key});
-  final Widget child;
+  const MobileSidebarSurface({required Widget this.child, super.key})
+    : builder = null;
+
+  /// Shares the same resolved corners with content that hugs the panel edge.
+  const MobileSidebarSurface.builder({
+    required Widget Function(BuildContext context, BorderRadius corners)
+    this.builder,
+    super.key,
+  }) : child = null;
+
+  final Widget? child;
+  final Widget Function(BuildContext context, BorderRadius corners)? builder;
 
   @override
   State<MobileSidebarSurface> createState() => _MobileSidebarSurfaceState();
@@ -105,7 +115,7 @@ class _MobileSidebarSurfaceState extends State<MobileSidebarSurface>
           ),
           child: ClipPath(
             clipper: ShapeBorderClipper(shape: shape),
-            child: widget.child,
+            child: widget.builder?.call(context, _radius) ?? widget.child!,
           ),
         ),
       ),
