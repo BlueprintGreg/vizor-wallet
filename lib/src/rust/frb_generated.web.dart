@@ -16,15 +16,11 @@ import 'api/sync.dart';
 import 'api/voting.dart';
 import 'api/voting_session.dart';
 import 'api/wallet.dart';
-
 import 'dart:async';
 import 'dart:convert';
-
 import 'frb_generated.dart';
 import 'network_privacy.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
-
 import 'third_party/zcash_voting/config.dart';
 import 'third_party/zcash_voting/delegate.dart';
 import 'third_party/zcash_voting/share_policy.dart';
@@ -104,6 +100,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AccountInfo dco_decode_account_info(dynamic raw);
+
+  @protected
+  AccountViewingKeys dco_decode_account_viewing_keys(dynamic raw);
 
   @protected
   AddressValidationResult dco_decode_address_validation_result(dynamic raw);
@@ -1461,6 +1460,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AccountInfo sse_decode_account_info(SseDeserializer deserializer);
+
+  @protected
+  AccountViewingKeys sse_decode_account_viewing_keys(
+    SseDeserializer deserializer,
+  );
 
   @protected
   AddressValidationResult sse_decode_address_validation_result(
@@ -3206,6 +3210,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_account_info(AccountInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_account_viewing_keys(
+    AccountViewingKeys self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_address_validation_result(
