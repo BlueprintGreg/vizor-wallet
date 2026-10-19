@@ -102,10 +102,36 @@ void main() {
         native: geometry(size),
       );
       expect(layout.mode, MobileNavigationMode.sidebar);
-      expect(layout.sidebar!.width, 200);
+      expect(layout.sidebar!.width, 256);
       expect(layout.body.width, inInclusiveRange(320, 440));
       expect(layout.sidebar!.right, lessThan(layout.body.left));
       expect(layout.rail, isNull);
+    },
+  );
+  test('sidebar width yields to the minimum body at the wide breakpoint', () {
+    final layout = MobileWindowLayout.resolve(
+      media: const MediaQueryData(size: Size(600, 700)),
+    );
+    expect(layout.mode, MobileNavigationMode.sidebar);
+    expect(layout.sidebar!.width, 232);
+    expect(layout.body.width, 320);
+  });
+  test(
+    'an occlusion keeps compact sidebar available when expanded width fails',
+    () {
+      const hole = Rect.fromLTWH(224, 0, 56, 700);
+      final layout = MobileWindowLayout.resolve(
+        media: const MediaQueryData(size: Size(900, 700)),
+        native: const MobileNavigationGeometry(
+          edge: MobileNavigationEdge.none,
+          viewSize: Size(900, 700),
+          safeRect: Rect.fromLTWH(0, 0, 900, 700),
+          occlusions: [hole],
+        ),
+      );
+      expect(layout.mode, MobileNavigationMode.sidebar);
+      expect(layout.sidebar!.width, inInclusiveRange(200, 208));
+      expect(layout.body.overlaps(hole), isFalse);
     },
   );
   test('wide Android vertical hinge remains outside both panes', () {
@@ -158,7 +184,12 @@ void main() {
       ),
     );
     expect(layout.mode, MobileNavigationMode.sidebar);
-    expect(layout.body.width, 440);
+    final withoutFold = MobileWindowLayout.resolve(
+      media: const MediaQueryData(size: Size(740, 700)),
+    );
+    expect(layout.body, withoutFold.body);
+    expect(layout.body.left, lessThan(370));
+    expect(layout.body.right, greaterThan(370));
   });
   test(
     'stale native size is ignored and onboarding never gets wallet navigation',

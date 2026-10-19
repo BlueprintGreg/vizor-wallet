@@ -5,6 +5,8 @@ import '../../navigation/mobile_destinations.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_icon.dart';
+import 'mobile_sync_status.dart';
+import 'mobile_sidebar_surface.dart';
 
 /// A mobile component, intentionally independent of the desktop sidebar.
 /// Data is injected so window/typography/accessibility states can be captured
@@ -31,22 +33,13 @@ class MobileWalletSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final syncColor = switch (status.kind) {
-      SyncStatusKind.failed => colors.sync.textError,
-      SyncStatusKind.synced => colors.sync.text,
-      SyncStatusKind.syncing => colors.sync.textSyncing,
-    };
     final items = [
       for (final item in mobileDestinations)
         if (swapEnabled || item.path != '/swap') item,
     ];
-    final panel = DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.macosUtility.navPanel,
-        borderRadius: BorderRadius.circular(AppRadii.large),
-      ),
+    final panel = MobileSidebarSurface(
       child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.s),
+        padding: const EdgeInsets.symmetric(vertical: 16),
         child: LayoutBuilder(
           builder: (context, constraints) {
             // Footer stays at the bottom when space permits. At large text sizes
@@ -58,67 +51,87 @@ class MobileWalletSidebar extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      AppButton(
-                        variant: AppButtonVariant.ghost,
-                        onPressed: onAccountTap,
-                        height: 72,
-                        growWithContent: true,
-                        constrainContent: true,
-                        contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Column(
-                          children: [
-                            avatar,
-                            const SizedBox(height: AppSpacing.xs),
-                            Text(
-                              accountName,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: AppTypography.bodyMediumStrong,
-                            ),
-                          ],
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: AppButton(
+                          variant: AppButtonVariant.ghost,
+                          onPressed: onAccountTap,
+                          height: 72,
+                          growWithContent: true,
+                          constrainContent: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            children: [
+                              avatar,
+                              const SizedBox(width: AppSpacing.s),
+                              Expanded(
+                                child: Text(
+                                  accountName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppTypography.bodyMediumStrong,
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.xs),
+                              RotatedBox(
+                                quarterTurns: 1,
+                                child: AppIcon(
+                                  AppIcons.chevronForward,
+                                  size: 16,
+                                  color: colors.icon.muted,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       const SizedBox(height: AppSpacing.md),
                       for (final destination in items) ...[
-                        Semantics(
-                          selected: _selected(destination.path),
-                          child: AppButton(
-                            variant: AppButtonVariant.ghost,
-                            height: 52,
-                            growWithContent: true,
-                            expand: true,
-                            constrainContent: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 12,
-                            ),
-                            enabledBackgroundColor: _selected(destination.path)
-                                ? colors.navPanel.activeBg
-                                : null,
-                            enabledLabelColor: _selected(destination.path)
-                                ? colors.navPanel.activeIcon
-                                : null,
-                            onPressed: onSelect == null
-                                ? null
-                                : () => onSelect!(destination.path),
-                            child: Row(
-                              children: [
-                                AppIcon(
-                                  destination.item.iconName,
-                                  size: 24,
-                                  color: _selected(destination.path)
-                                      ? colors.navPanel.activeIcon
-                                      : colors.icon.muted,
-                                ),
-                                const SizedBox(width: AppSpacing.s),
-                                Expanded(
-                                  child: Text(
-                                    destination.item.label,
-                                    style: AppTypography.bodyMediumStrong,
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Semantics(
+                            selected: _selected(destination.path),
+                            child: AppButton(
+                              variant: AppButtonVariant.ghost,
+                              height: 52,
+                              growWithContent: true,
+                              expand: true,
+                              constrainContent: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 12,
+                              ),
+                              enabledBackgroundColor:
+                                  _selected(destination.path)
+                                  ? colors.navPanel.activeBg
+                                  : null,
+                              enabledLabelColor: _selected(destination.path)
+                                  ? colors.navPanel.activeIcon
+                                  : null,
+                              onPressed: onSelect == null
+                                  ? null
+                                  : () => onSelect!(destination.path),
+                              child: Row(
+                                children: [
+                                  AppIcon(
+                                    destination.item.iconName,
+                                    size: 24,
+                                    color: _selected(destination.path)
+                                        ? colors.navPanel.activeIcon
+                                        : colors.icon.muted,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: AppSpacing.s),
+                                  Expanded(
+                                    child: Text(
+                                      destination.item.label,
+                                      style: AppTypography.bodyMediumStrong,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -126,28 +139,13 @@ class MobileWalletSidebar extends StatelessWidget {
                       ],
                       const Spacer(),
                       const SizedBox(height: AppSpacing.md),
-                      Semantics(
-                        liveRegion: status.kind == SyncStatusKind.failed,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 4,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                color: syncColor,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                            const SizedBox(width: AppSpacing.s),
-                            Expanded(
-                              child: Text(
-                                status.label,
-                                style: AppTypography.bodySmall.copyWith(
-                                  color: syncColor,
-                                ),
-                              ),
-                            ),
-                          ],
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: MobileSyncStatus.fromStatus(
+                          context: context,
+                          status: status,
+                          leading: true,
+                          wrapLabel: true,
                         ),
                       ),
                     ],
@@ -159,7 +157,7 @@ class MobileWalletSidebar extends StatelessWidget {
         ),
       ),
     );
-    // This surface also lives above the Router, outside its Material widgets.
+    // Establish text defaults independently of surrounding route Material widgets.
     // Establish a complete mobile text style instead of inheriting the
     // MaterialApp fallback's yellow double underline.
     return Material(

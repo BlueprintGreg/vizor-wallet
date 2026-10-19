@@ -5,7 +5,7 @@ import 'package:flutter/widgets.dart';
 import '../../../services/native_mobile_navigation_geometry.dart';
 import 'mobile_navigation_scope.dart';
 
-/// Geometry in root-view coordinates. The sidebar needs 200 + 320 points for
+/// Geometry in root-view coordinates. The sidebar needs at least 200 + 320 points for
 /// navigation/content, with room for margins; this is a window breakpoint,
 /// independent of the device model or the operating system's fold state.
 class MobileWindowLayout {
@@ -41,40 +41,47 @@ class MobileWindowLayout {
     ];
     final blocked = [...divisions, ...?native?.occlusions];
     if (wallet && safe.width >= 600) {
-      final sidebarCandidates = _freeRects(
-        Rect.fromLTWH(
-          safe.left + 16,
-          safe.top + 16,
-          200,
-          math.max(0, safe.height - 32),
-        ),
-        blocked,
-      );
-      final sidebar = _largest(sidebarCandidates, minWidth: 200, minHeight: 96);
-      if (sidebar != null) {
-        final rightPane = Rect.fromLTRB(
-          sidebar.right + 16,
-          safe.top,
-          safe.right - 16,
-          safe.bottom,
+      final preferredWidth = math.min(256.0, safe.width - 320 - 48);
+      for (final sidebarWidth in {preferredWidth, 200.0}) {
+        final sidebarCandidates = _freeRects(
+          Rect.fromLTWH(
+            safe.left + 16,
+            safe.top + 16,
+            sidebarWidth,
+            math.max(0, safe.height - 32),
+          ),
+          blocked,
         );
-        final bodyArea = _largest(
-          _freeRects(rightPane, blocked),
-          minWidth: 320,
-          minHeight: 160,
+        final sidebar = _largest(
+          sidebarCandidates,
+          minWidth: 200,
+          minHeight: 96,
         );
-        if (bodyArea != null) {
-          final width = math.min(440.0, bodyArea.width);
-          return MobileWindowLayout(
-            mode: MobileNavigationMode.sidebar,
-            sidebar: sidebar,
-            body: Rect.fromLTWH(
-              bodyArea.center.dx - width / 2,
-              bodyArea.top,
-              width,
-              bodyArea.height,
-            ),
+        if (sidebar != null) {
+          final rightPane = Rect.fromLTRB(
+            sidebar.right + 16,
+            safe.top,
+            safe.right - 16,
+            safe.bottom,
           );
+          final bodyArea = _largest(
+            _freeRects(rightPane, blocked),
+            minWidth: 320,
+            minHeight: 160,
+          );
+          if (bodyArea != null) {
+            final width = math.min(440.0, bodyArea.width);
+            return MobileWindowLayout(
+              mode: MobileNavigationMode.sidebar,
+              sidebar: sidebar,
+              body: Rect.fromLTWH(
+                bodyArea.center.dx - width / 2,
+                bodyArea.top,
+                width,
+                bodyArea.height,
+              ),
+            );
+          }
         }
       }
     }

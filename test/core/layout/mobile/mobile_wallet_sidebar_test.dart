@@ -23,9 +23,10 @@ Widget harness(Widget child, {double scale = 1, AppThemeData? theme}) =>
       builder: (context, navigator) => AppTheme(
         data: theme ?? AppThemeData.light,
         child: MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: TextScaler.linear(scale)),
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(scale),
+            disableAnimations: true,
+          ),
           child: Stack(
             children: [
               navigator!,
@@ -93,7 +94,7 @@ void main() {
             final style = effectiveStyle(text);
             expect(style.decoration, TextDecoration.none, reason: text);
             final typography = text == label
-                ? AppTypography.bodySmall
+                ? AppTypography.labelMedium
                 : AppTypography.bodyMediumStrong;
             expect(style.fontFamily, typography.fontFamily, reason: text);
             expect(style.fontSize, typography.fontSize, reason: text);

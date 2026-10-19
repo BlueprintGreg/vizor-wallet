@@ -3408,3 +3408,27 @@ final class ModalCornerCacheTests: XCTestCase {
     XCTAssertNil(cache.radii(for: "1", limit: 201))
   }
 }
+
+
+final class SidebarCornerGeometryTests: XCTestCase {
+  func testIndependentCornersMustFitTheActualPanel() {
+    let panel = CGRect(x: 16, y: 40, width: 256, height: 600)
+    XCTAssertTrue(SidebarCornerGeometry.supports(panel, radii: [48, 24, 56, 24]))
+    XCTAssertFalse(SidebarCornerGeometry.supports(panel, radii: [240, 24, 56, 24]))
+    XCTAssertFalse(SidebarCornerGeometry.supports(panel, radii: [48, 24, .nan, 24]))
+    XCTAssertFalse(SidebarCornerGeometry.supports(panel, radii: [48, 24]))
+    XCTAssertFalse(SidebarCornerGeometry.supports(panel, radii: [23, 24, 24, 24]))
+  }
+
+  func testSidebarAndModalCachePoliciesRemainIndependent() {
+    let sidebar = ModalCornerCache(count: 4, minimum: 24)
+    let modal = ModalCornerCache()
+    sidebar.store([48, 24, 56, 24], for: "panel", limit: 300)
+    XCTAssertEqual(sidebar.radii(for: "panel", limit: 300), [48, 24, 56, 24])
+    XCTAssertNil(modal.radii(for: "panel", limit: 300))
+    sidebar.store([48, 56], for: "wrongCount", limit: 300)
+    XCTAssertNil(sidebar.radii(for: "wrongCount", limit: 300))
+    modal.store([46, 48], for: "modal", limit: 300)
+    XCTAssertEqual(modal.radii(for: "modal", limit: 300), [46, 48])
+  }
+}

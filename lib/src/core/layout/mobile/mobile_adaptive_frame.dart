@@ -180,7 +180,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
                           account?.profilePictureId ?? kDefaultProfilePictureId,
                       size: AppProfilePictureSize.navLarge,
                       hardwareSignerKind: account?.hardwareSignerKind,
-                      badgeRingColor: context.colors.background.window,
+                      badgeRingColor: context.colors.background.raised,
                     ),
                     status: SyncStatusLabel.from(
                       ref.watch(syncProvider).value ?? SyncState(),
