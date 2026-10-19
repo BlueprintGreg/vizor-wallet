@@ -39,7 +39,12 @@ class MobileWalletSidebar extends StatelessWidget {
     ];
     final panel = MobileSidebarSurface(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        padding: EdgeInsets.only(
+          top: 16,
+          bottom: MediaQuery.paddingOf(
+            context,
+          ).bottom.clamp(16, double.infinity),
+        ),
         child: LayoutBuilder(
           builder: (context, constraints) {
             // Footer stays at the bottom when space permits. At large text sizes
@@ -140,7 +145,7 @@ class MobileWalletSidebar extends StatelessWidget {
                       const Spacer(),
                       const SizedBox(height: AppSpacing.md),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: MobileSyncStatus.fromStatus(
                           context: context,
                           status: status,

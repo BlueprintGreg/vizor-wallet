@@ -116,6 +116,62 @@ void main() {
     expect(layout.sidebar!.width, 232);
     expect(layout.body.width, 320);
   });
+  test('wide surfaces reach the bottom while pane content retains safety', () {
+    const size = Size(951, 669);
+    const media = MediaQueryData(
+      size: size,
+      viewPadding: EdgeInsets.only(right: 84, bottom: 34),
+      padding: EdgeInsets.only(right: 84, bottom: 34),
+    );
+    final layout = MobileWindowLayout.resolve(
+      media: media,
+      native: const MobileNavigationGeometry(
+        edge: MobileNavigationEdge.right,
+        viewSize: size,
+        safeRect: Rect.fromLTWH(0, 0, 867, 635),
+        occlusions: [],
+      ),
+    );
+    expect(layout.mode, MobileNavigationMode.sidebar);
+    expect(layout.body.bottom, size.height);
+    expect(layout.sidebar!.top, 16);
+    expect(size.height - layout.sidebar!.bottom, 16);
+    expect(
+      mobilePaneMedia(
+        media,
+        layout.body,
+        safeRect: layout.contentSafeRect,
+      ).padding.bottom,
+      34,
+    );
+    expect(
+      mobilePaneMedia(
+        media,
+        layout.sidebar!,
+        safeRect: layout.contentSafeRect,
+      ).padding.bottom,
+      18,
+    );
+  });
+  test(
+    'native foreground insets survive missing Flutter padding and keyboard',
+    () {
+      const media = MediaQueryData(size: Size(951, 669));
+      const pane = Rect.fromLTWH(300, 0, 440, 669);
+      const safe = Rect.fromLTWH(0, 0, 867, 635);
+      final local = mobilePaneMedia(media, pane, safeRect: safe);
+      expect(local.padding.bottom, 34);
+      expect(local.viewPadding.bottom, 34);
+      final keyboard = mobilePaneMedia(
+        media.copyWith(viewInsets: const EdgeInsets.only(bottom: 300)),
+        pane,
+        safeRect: safe,
+      );
+      expect(keyboard.padding.bottom, 0);
+      expect(keyboard.viewPadding.bottom, 34);
+      expect(keyboard.viewInsets.bottom, 300);
+    },
+  );
   test(
     'an occlusion keeps compact sidebar available when expanded width fails',
     () {

@@ -166,58 +166,70 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
               Positioned.fromRect(
                 rect: layout.body,
                 child: MediaQuery(
-                  data: mobilePaneMedia(media, layout.body),
+                  data: mobilePaneMedia(
+                    media,
+                    layout.body,
+                    safeRect: layout.contentSafeRect,
+                  ),
                   child: widget.child,
                 ),
               ),
               if (wide)
                 Positioned.fromRect(
                   rect: layout.sidebar!,
-                  child: MobileWalletSidebar(
-                    accountName: account?.name ?? '',
-                    avatar: MobileAccountAvatar(
-                      profilePictureId:
-                          account?.profilePictureId ?? kDefaultProfilePictureId,
-                      size: AppProfilePictureSize.navLarge,
-                      hardwareSignerKind: account?.hardwareSignerKind,
-                      badgeRingColor: context.colors.background.raised,
+                  child: MediaQuery(
+                    data: mobilePaneMedia(
+                      media,
+                      layout.sidebar!,
+                      safeRect: layout.contentSafeRect,
                     ),
-                    status: SyncStatusLabel.from(
-                      ref.watch(syncProvider).value ?? SyncState(),
-                      displayWholePercentage: ref.watch(
-                        syncDisplayWholePercentageProvider,
+                    child: MobileWalletSidebar(
+                      accountName: account?.name ?? '',
+                      avatar: MobileAccountAvatar(
+                        profilePictureId:
+                            account?.profilePictureId ??
+                            kDefaultProfilePictureId,
+                        size: AppProfilePictureSize.navLarge,
+                        hardwareSignerKind: account?.hardwareSignerKind,
+                        badgeRingColor: context.colors.background.raised,
                       ),
-                      networkPrivacy: ref.watch(networkPrivacyProvider),
+                      status: SyncStatusLabel.from(
+                        ref.watch(syncProvider).value ?? SyncState(),
+                        displayWholePercentage: ref.watch(
+                          syncDisplayWholePercentageProvider,
+                        ),
+                        networkPrivacy: ref.watch(networkPrivacyProvider),
+                      ),
+                      currentPath: path,
+                      swapEnabled: swapEnabled,
+                      onSelect: !enabled
+                          ? null
+                          : (destination) {
+                              if (!canNavigate()) return;
+                              unawaited(
+                                ref
+                                    .read(externalActionGuardProvider.notifier)
+                                    .runNavigation(() async {
+                                      if (!_navigation.select(destination)) {
+                                        widget.router.go(destination);
+                                      }
+                                      await WidgetsBinding.instance.endOfFrame;
+                                    }),
+                              );
+                            },
+                      onAccountTap: !enabled
+                          ? null
+                          : () {
+                              if (!canNavigate()) return;
+                              unawaited(
+                                ref
+                                    .read(externalActionGuardProvider.notifier)
+                                    .runNavigation(
+                                      () => showMobileAccountsSheet(context),
+                                    ),
+                              );
+                            },
                     ),
-                    currentPath: path,
-                    swapEnabled: swapEnabled,
-                    onSelect: !enabled
-                        ? null
-                        : (destination) {
-                            if (!canNavigate()) return;
-                            unawaited(
-                              ref
-                                  .read(externalActionGuardProvider.notifier)
-                                  .runNavigation(() async {
-                                    if (!_navigation.select(destination)) {
-                                      widget.router.go(destination);
-                                    }
-                                    await WidgetsBinding.instance.endOfFrame;
-                                  }),
-                            );
-                          },
-                    onAccountTap: !enabled
-                        ? null
-                        : () {
-                            if (!canNavigate()) return;
-                            unawaited(
-                              ref
-                                  .read(externalActionGuardProvider.notifier)
-                                  .runNavigation(
-                                    () => showMobileAccountsSheet(context),
-                                  ),
-                            );
-                          },
                   ),
                 ),
             ],

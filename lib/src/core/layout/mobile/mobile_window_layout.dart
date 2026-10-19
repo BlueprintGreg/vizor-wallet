@@ -14,11 +14,15 @@ class MobileWindowLayout {
     required this.body,
     this.sidebar,
     this.rail,
+    this.contentSafeRect,
   });
   final MobileNavigationMode mode;
   final Rect body;
   final Rect? sidebar;
   final Rect? rail;
+
+  /// Foreground safety remains pane-local while wide surfaces reach the bottom.
+  final Rect? contentSafeRect;
 
   static MobileWindowLayout resolve({
     required MediaQueryData media,
@@ -48,7 +52,7 @@ class MobileWindowLayout {
             safe.left + 16,
             safe.top + 16,
             sidebarWidth,
-            math.max(0, safe.height - 32),
+            math.max(0, full.bottom - 16 - (safe.top + 16)),
           ),
           blocked,
         );
@@ -62,7 +66,7 @@ class MobileWindowLayout {
             sidebar.right + 16,
             safe.top,
             safe.right - 16,
-            safe.bottom,
+            full.bottom,
           );
           final bodyArea = _largest(
             _freeRects(rightPane, blocked),
@@ -74,6 +78,7 @@ class MobileWindowLayout {
             return MobileWindowLayout(
               mode: MobileNavigationMode.sidebar,
               sidebar: sidebar,
+              contentSafeRect: safe,
               body: Rect.fromLTWH(
                 bodyArea.center.dx - width / 2,
                 bodyArea.top,
@@ -207,7 +212,31 @@ List<Rect> _freeRects(Rect original, List<Rect> blocked) {
 
 /// The Navigator receives pane-local metrics; view/window metrics stay intact
 /// above the frame for native bridges and app-level security/overlay hosts.
-MediaQueryData mobilePaneMedia(MediaQueryData media, Rect pane) {
+MediaQueryData mobilePaneMedia(
+  MediaQueryData media,
+  Rect pane, {
+  Rect? safeRect,
+}) {
+  if (safeRect != null) {
+    // The native safe area may be stricter than Flutter's insets. Preserve it
+    // as foreground padding instead of shortening the painted viewport.
+    final safe = safeRect.intersect(Offset.zero & media.size);
+    final insets = EdgeInsets.fromLTRB(
+      math.max(media.viewPadding.left, safe.left),
+      math.max(media.viewPadding.top, safe.top),
+      math.max(media.viewPadding.right, media.size.width - safe.right),
+      math.max(media.viewPadding.bottom, media.size.height - safe.bottom),
+    );
+    media = media.copyWith(
+      viewPadding: insets,
+      padding: EdgeInsets.fromLTRB(
+        math.max(media.padding.left, insets.left - media.viewInsets.left),
+        math.max(media.padding.top, insets.top - media.viewInsets.top),
+        math.max(media.padding.right, insets.right - media.viewInsets.right),
+        math.max(media.padding.bottom, insets.bottom - media.viewInsets.bottom),
+      ),
+    );
+  }
   EdgeInsets project(EdgeInsets inset) => EdgeInsets.fromLTRB(
     math.max(0.0, inset.left - pane.left).clamp(0.0, pane.width),
     math.max(0.0, inset.top - pane.top).clamp(0.0, pane.height),

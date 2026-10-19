@@ -19,6 +19,7 @@ import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_tab_bar.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_top_nav_account.dart';
 import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_sync_status.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.dart';
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
@@ -218,6 +219,59 @@ void main() {
     },
   );
 
+  testWidgets(
+    'wide home scrolls to screen bottom and keeps foreground within native inset',
+    (tester) async {
+      tester.view.physicalSize = const Size(951, 669);
+      // Deliberately omit Flutter padding: native safety must still reach panes.
+      final native = _NativeGeometryFixture(
+        const MobileNavigationGeometry(
+          edge: MobileNavigationEdge.right,
+          viewSize: Size(951, 669),
+          safeRect: Rect.fromLTWH(0, 0, 867, 635),
+          occlusions: [],
+        ),
+      );
+      addTearDown(native.events.close);
+      final router = _router();
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        _app(
+          router,
+          overrides: [
+            mobileNavigationGeometryServiceProvider.overrideWithValue(native),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(MobileHomeScreen)).bottom, 669);
+      final homeList = find
+          .descendant(
+            of: find.byType(MobileHomeScreen),
+            matching: find.byType(ListView),
+          )
+          .first;
+      expect(tester.getRect(homeList).bottom, 669);
+      expect(
+        tester
+            .widget<ListView>(homeList)
+            .padding!
+            .resolve(TextDirection.ltr)
+            .bottom,
+        34,
+      );
+      final sidebar = find.byType(MobileWalletSidebar);
+      expect(tester.getRect(sidebar).top, 16);
+      expect(tester.getRect(sidebar).bottom, 653);
+      final sync = find.descendant(
+        of: sidebar,
+        matching: find.byType(MobileSyncStatus),
+      );
+      expect(tester.getRect(sync).bottom, 635);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets(
     'adaptive frame preserves branch state and pushed pages through resizing',
     (tester) async {

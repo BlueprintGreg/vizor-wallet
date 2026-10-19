@@ -50,7 +50,9 @@ class MobileNavigationScope extends InheritedWidget {
   // Only the expanded layout loses its bottom-bar clearance. The closed
   // system-side layout deliberately keeps the original content geometry.
   static double bottomClearanceOf(BuildContext context, double original) =>
-      isSidebarOf(context) ? 24 : original;
+      isSidebarOf(context)
+      ? MediaQuery.paddingOf(context).bottom.clamp(24, double.infinity)
+      : original;
 
   @override
   bool updateShouldNotify(MobileNavigationScope oldWidget) =>
