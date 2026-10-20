@@ -396,6 +396,23 @@ final nearSwapPrivacyPreferenceStoreProvider =
       ),
     );
 
+/// Applies the effective setting to an existing wallet without creating one.
+final swapRecoveryReconcilerProvider = Provider<Future<void> Function()>((ref) {
+  return () async {
+    final path = await getExistingWalletDbPath();
+    if (path != null) {
+      await rust_swap.reconcileSwapRecovery(
+        dbPath: path,
+        networkName: ref.read(appBootstrapProvider).network,
+      );
+    }
+  };
+});
+
+/// The preference is saved even if the wallet must retry applying it.
+const kSwapRecoveryPendingMessage =
+    'Setting saved. Wallet recovery will apply it on the next check.';
+
 /// Install-scoped opt-in for private addresses and automatic receiver recovery.
 class NearSwapPrivacyNotifier extends Notifier<bool> {
   @override
@@ -414,6 +431,7 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
     if (enabled == state) return;
     final transition = ref.read(enhancePirTransitionProvider.notifier);
     transition.update(kEnhancePirChangingMessage);
+    var reconciled = true;
     try {
       await ref
           .read(linuxKeyringCoordinatorProvider)
@@ -426,20 +444,19 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
                     .read(nearSwapPrivacyPreferenceStoreProvider)
                     .writeEnabled(enabled);
                 rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
-                final path = await getExistingWalletDbPath();
-                if (path != null)
-                  await rust_swap.reconcileSwapRecovery(
-                    dbPath: path,
-                    networkName: ref.read(appBootstrapProvider).network,
-                  );
                 state = enabled;
+                reconciled = await _reconcileRecovery();
               },
             ),
           );
-      transition.update(null);
+      transition.update(reconciled ? null : kSwapRecoveryPendingMessage);
     } catch (error) {
-      log('NEAR swap privacy setting unchanged: $error');
-      transition.update(kEnhancePirUnchangedMessage);
+      log('NEAR swap privacy transition stopped: $error');
+      transition.update(
+        state == enabled
+            ? kSwapRecoveryPendingMessage
+            : kEnhancePirUnchangedMessage,
+      );
     }
   }
 
@@ -448,13 +465,20 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
     if (!state) return;
     await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(false);
     rust_sync.setNearSwapPrivacyEnabled(enabled: false);
-    final path = await getExistingWalletDbPath();
-    if (path != null)
-      await rust_swap.reconcileSwapRecovery(
-        dbPath: path,
-        networkName: ref.read(appBootstrapProvider).network,
-      );
     state = false;
+    await _reconcileRecovery();
+  }
+
+  /// Leaves the applied preference visible when a short DB update needs retry.
+  Future<bool> _reconcileRecovery() async {
+    try {
+      await ref.read(swapRecoveryReconcilerProvider)();
+      return true;
+    } catch (error) {
+      // Every receiver round reconciles before reading work or issuing requests.
+      log('Swap recovery setting will be retried: $error');
+      return false;
+    }
   }
 
   Future<void> toggle() => set(!state);

@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -85,6 +86,7 @@ void main() {
     _Sync sync, {
     bool private = false,
     bool swap = false,
+    bool failReconcile = false,
   }) {
     final container = ProviderContainer(
       overrides: [
@@ -105,6 +107,9 @@ void main() {
           ),
         ),
         syncProvider.overrideWith(() => sync),
+        swapRecoveryReconcilerProvider.overrideWithValue(() async {
+          if (failReconcile) throw StateError('wallet unavailable');
+        }),
         nearSwapPrivacyPreferenceStoreProvider.overrideWithValue(store),
         enhancePirPreferenceStoreProvider.overrideWithValue(_Store()),
         enhancePirBackgroundSinkProvider.overrideWithValue((_) async {}),
@@ -137,8 +142,7 @@ void main() {
     await pending;
     expect(store.value, isTrue);
     expect(c.read(nearSwapPrivacyProvider), isTrue);
-    // Turning the setting on only allows new addresses: swap history is
-    // checked on request, so nothing else runs.
+    // Reconciliation does not start an ordinary block sync.
     expect(api.events, ['swap:true']);
     expect(sync.starts, 0);
   });
@@ -178,6 +182,38 @@ void main() {
     expect(api.events, ['swap:false']);
     expect(sync.starts, 0);
   });
+  test('reconcile failure keeps the saved opt-in visible', () async {
+    final store = _Store();
+    final c = setup(
+      store,
+      _Sync()..gate.complete(),
+      private: true,
+      failReconcile: true,
+    );
+    await c.read(nearSwapPrivacyProvider.notifier).set(true);
+    expect(store.value, isTrue);
+    expect(c.read(nearSwapPrivacyProvider), isTrue);
+    expect(api.events, ['swap:true']);
+    expect(c.read(enhancePirTransitionProvider), kSwapRecoveryPendingMessage);
+  });
+  test(
+    'reconcile failure does not leave an enabled child under an off parent',
+    () async {
+      final store = _Store()..value = true;
+      final c = setup(
+        store,
+        _Sync()..gate.complete(),
+        private: true,
+        swap: true,
+        failReconcile: true,
+      );
+      await c.read(enhancePirProvider.notifier).set(false);
+      expect(store.value, isFalse);
+      expect(c.read(nearSwapPrivacyProvider), isFalse);
+      expect(c.read(enhancePirProvider), isFalse);
+      expect(api.events, ['swap:false', 'private:false']);
+    },
+  );
   test('saved opt-in requires its saved parent at bootstrap', () {
     final c = setup(_Store(), _Sync(), swap: true);
     expect(c.read(nearSwapPrivacyProvider), isFalse);
