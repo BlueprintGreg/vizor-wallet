@@ -739,6 +739,82 @@ void main() {
     );
   });
 
+  testWidgets('Check swap history passes an entered bound, rejects zero and '
+      'resumes with it after pause', (tester) async {
+    final bounds = <BigInt?>[];
+    final polls = <Completer<bool>>[];
+    var paused = 0;
+    await tester.pumpWidget(
+      _settingsHarness(
+        extraOverrides: [
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (end) async => bounds.add(end),
+              cancel: () async => paused++,
+              isChecking: () {
+                final poll = Completer<bool>();
+                polls.add(poll);
+                return poll.future;
+              },
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    final field = find.descendant(
+      of: find.byKey(const ValueKey('settings_swap_history_bound')),
+      matching: find.byType(EditableText),
+    );
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    await tester.ensureVisible(field);
+    await tester.enterText(field, '0');
+    await tester.tap(start);
+    await tester.pump();
+    expect(bounds, isEmpty);
+    expect(find.text('Enter a positive address count.'), findsOneWidget);
+
+    await tester.enterText(field, '12');
+    await tester.tap(start);
+    await tester.pump();
+    expect(bounds, [BigInt.from(12)]);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+
+    final pause = find.byKey(const ValueKey('settings_cancel_swap_history'));
+    await tester.ensureVisible(pause);
+    await tester.tap(pause);
+    await tester.pumpAndSettle();
+    expect(paused, 1);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.paused),
+    );
+
+    final earlierPolls = polls.length;
+    await tester.ensureVisible(start);
+    await tester.tap(start);
+    await tester.pump();
+    expect(bounds, [BigInt.from(12), BigInt.from(12)]);
+    // The resumed check polls once its zero-length interval elapses.
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(polls.length, earlierPolls + 1);
+    for (final poll in polls) {
+      poll.complete(false);
+    }
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+  });
+
   testWidgets('NEAR swap privacy names the hardware account exception', (
     tester,
   ) async {
