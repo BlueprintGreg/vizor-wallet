@@ -966,6 +966,10 @@ class WidgetbookApp extends StatelessWidget {
                       builder: buildSettingsViewingKeyGateUseCase,
                     ),
                     WidgetbookUseCase(
+                      name: 'Viewing key · choose access',
+                      builder: buildSettingsViewingKeyChoiceUseCase,
+                    ),
+                    WidgetbookUseCase(
                       name: 'Viewing key reveal',
                       builder: buildSettingsViewingKeyRevealUseCase,
                     ),

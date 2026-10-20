@@ -1314,17 +1314,17 @@ pub fn get_receive_address_aliases(
     addresses::receive_address_aliases(&db, db_path, network, account_id, ufvk)
 }
 
-/// Export a single account's Unified Full Viewing Key (UFVK), encoded for
+/// Export a single account's full and incoming viewing keys, encoded for
 /// the given network. Works for every account source (`Derived`, software
 /// `Imported`, and hardware/Keystone `Imported`) — unlike
 /// `get_account_export_metadata`'s `hardware_ufvk` field, this is not gated
 /// on hardware detection, since any account's UFVK is safe to display back
 /// to the account's own owner regardless of how the key was derived.
-pub fn get_account_ufvk(
+pub fn get_account_viewing_keys(
     db_path: &str,
     network: WalletNetwork,
     account_uuid: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let db = open_wallet_db_for_read(db_path, network)?;
     let account_id = parse_account_uuid(account_uuid)?;
 
@@ -1335,7 +1335,10 @@ pub fn get_account_ufvk(
 
     let ufvk = account.ufvk().ok_or("Account does not have a UFVK")?;
 
-    Ok(ufvk.encode(&network))
+    Ok((
+        ufvk.encode(&network),
+        ufvk.to_unified_incoming_viewing_key().encode(&network),
+    ))
 }
 
 fn is_hardware_style_ufvk(ufvk: &UnifiedFullViewingKey) -> bool {
@@ -1677,28 +1680,27 @@ mod tests {
     }
 
     #[test]
-    fn test_get_account_ufvk_matches_derived_account() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db_path = temp_dir.path().join("wallet.db");
-        let db_path_str = db_path.to_str().unwrap();
-
-        let phrase = generate_mnemonic();
-        let seed = mnemonic_to_seed(&phrase).unwrap();
-
-        let (uuid, _address) =
-            init_db_and_create_account(db_path_str, WalletNetwork::Main, &seed, None, "test")
-                .unwrap();
-
-        let ufvk = get_account_ufvk(db_path_str, WalletNetwork::Main, &uuid).unwrap();
-
-        // Mainnet UFVKs use the "uview" HRP.
-        assert!(
-            ufvk.starts_with("uview"),
-            "Expected uview prefix, got: {ufvk}"
-        );
-
-        let expected = software_account_ufvk(WalletNetwork::Main, &seed, 0).unwrap();
-        assert_eq!(ufvk, expected.encode(&WalletNetwork::Main));
+    fn test_get_account_viewing_keys_matches_derived_account() {
+        for network in [WalletNetwork::Main, WalletNetwork::Test] {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let db_path = temp_dir.path().join("wallet.db");
+            let db_path_str = db_path.to_str().unwrap();
+            let seed = mnemonic_to_seed(&generate_mnemonic()).unwrap();
+            let (uuid, _) =
+                init_db_and_create_account(db_path_str, network, &seed, None, "test").unwrap();
+            let (ufvk, uivk) = get_account_viewing_keys(db_path_str, network, &uuid).unwrap();
+            let expected = software_account_ufvk(network, &seed, 0).unwrap();
+            assert_eq!(ufvk, expected.encode(&network));
+            assert_eq!(
+                uivk,
+                expected.to_unified_incoming_viewing_key().encode(&network)
+            );
+            assert!(uivk.starts_with(if network == WalletNetwork::Main {
+                "uivk1"
+            } else {
+                "uivktest1"
+            }));
+        }
     }
 
     #[test]
@@ -1722,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_account_ufvk_round_trips_hardware_account() {
+    fn test_get_account_viewing_keys_round_trips_hardware_account() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("wallet.db");
         let db_path_str = db_path.to_str().unwrap();
@@ -1730,15 +1732,7 @@ mod tests {
         let phrase = generate_mnemonic();
         let seed = mnemonic_to_seed(&phrase).unwrap();
         let account_index = zip32::AccountId::ZERO;
-        let usk = UnifiedSpendingKey::from_seed(
-            &WalletNetwork::Main,
-            seed.expose_secret(),
-            account_index,
-        )
-        .unwrap();
-        let ufvk_string = usk
-            .to_unified_full_viewing_key()
-            .encode(&WalletNetwork::Main);
+        let ufvk_string = hardware_style_ufvk(&seed, account_index);
         let seed_fingerprint = SeedFingerprint::from_seed(seed.expose_secret())
             .unwrap()
             .to_bytes();
@@ -1755,12 +1749,17 @@ mod tests {
         )
         .unwrap();
 
-        let exported = get_account_ufvk(db_path_str, WalletNetwork::Main, &uuid).unwrap();
-        assert_eq!(exported, ufvk_string);
+        let (full, incoming) =
+            get_account_viewing_keys(db_path_str, WalletNetwork::Main, &uuid).unwrap();
+        assert_eq!(full, ufvk_string);
+        let expected = UnifiedFullViewingKey::decode(&WalletNetwork::Main, &ufvk_string)
+            .unwrap()
+            .to_unified_incoming_viewing_key();
+        assert_eq!(incoming, expected.encode(&WalletNetwork::Main));
     }
 
     #[test]
-    fn test_get_account_ufvk_rejects_unknown_account() {
+    fn test_get_account_viewing_keys_rejects_unknown_account() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("wallet.db");
         let db_path_str = db_path.to_str().unwrap();
@@ -1770,7 +1769,7 @@ mod tests {
         init_db_and_create_account(db_path_str, WalletNetwork::Main, &seed, None, "test").unwrap();
 
         let unknown_uuid = uuid::Uuid::new_v4().to_string();
-        let result = get_account_ufvk(db_path_str, WalletNetwork::Main, &unknown_uuid);
+        let result = get_account_viewing_keys(db_path_str, WalletNetwork::Main, &unknown_uuid);
         assert!(result.is_err());
     }
 

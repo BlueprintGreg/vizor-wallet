@@ -375,13 +375,23 @@ Future<String?> findSoftwareAccountForMnemonic({
   zip32AccountIndex: zip32AccountIndex,
 );
 
-/// Export a single account's Unified Full Viewing Key (UFVK). Works for both
-/// software and hardware (Keystone) accounts.
+/// Export a single account's Unified Full Viewing Key (UFVK).
 Future<String> getAccountUfvk({
   required String dbPath,
   required String network,
   required String accountUuid,
 }) => RustLib.instance.api.crateApiWalletGetAccountUfvk(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+);
+
+/// Export full and incoming viewing keys for a software or hardware account.
+Future<AccountViewingKeys> getAccountViewingKeys({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+}) => RustLib.instance.api.crateApiWalletGetAccountViewingKeys(
   dbPath: dbPath,
   network: network,
   accountUuid: accountUuid,
@@ -534,6 +544,25 @@ class AccountInfo {
           isSeedAnchor == other.isSeedAnchor &&
           isHardware == other.isHardware &&
           hardwareSignerKind == other.hardwareSignerKind;
+}
+
+/// The full and incoming viewing keys for the same account and network.
+class AccountViewingKeys {
+  final String ufvk;
+  final String uivk;
+
+  const AccountViewingKeys({required this.ufvk, required this.uivk});
+
+  @override
+  int get hashCode => ufvk.hashCode ^ uivk.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountViewingKeys &&
+          runtimeType == other.runtimeType &&
+          ufvk == other.ufvk &&
+          uivk == other.uivk;
 }
 
 /// Chain upgrade activation state computed from a known chain tip height.

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -760,29 +761,29 @@ void main() {
     );
     final request = find.byKey(const ValueKey('receive_request_button'));
     expect(request, findsOneWidget);
-    // Icon only: the label lives in the tooltip, not on the pill.
-    expect(find.text('Request ZEC'), findsNothing);
-    expect(
-      find.ancestor(of: request, matching: find.byType(AppTooltip)),
-      findsOneWidget,
-    );
+    final share = find.byKey(const ValueKey('receive_share_button'));
+    expect(find.text('Request ZEC'), findsOneWidget);
+    expect(tester.getSize(request), const Size(298, 44));
+    expect(tester.getSize(copy), const Size(230, 44));
+    expect(tester.getSize(share), const Size(60, 44));
     expect(
       tester
           .widget<AppTooltip>(
-            find.ancestor(of: request, matching: find.byType(AppTooltip)).first,
+            find.ancestor(of: share, matching: find.byType(AppTooltip)),
           )
           .message,
-      'Request ZEC',
+      'Share shielded address',
     );
-    expect(tester.getSize(request), const Size(60, 44));
-    expect(tester.getSize(copy), const Size(230, 44));
-    // Beside the copy pill on one row, not under it.
     expect(
-      tester.getTopLeft(request).dy,
+      tester.getTopLeft(share).dy,
       moreOrLessEquals(tester.getTopLeft(copy).dy, epsilon: 0.1),
     );
     expect(
-      tester.getTopLeft(request).dx - tester.getTopRight(copy).dx,
+      tester.getTopLeft(share).dx - tester.getTopRight(copy).dx,
+      moreOrLessEquals(AppSpacing.xs, epsilon: 0.1),
+    );
+    expect(
+      tester.getTopLeft(request).dy - tester.getBottomLeft(copy).dy,
       moreOrLessEquals(AppSpacing.xs, epsilon: 0.1),
     );
 
@@ -792,6 +793,84 @@ void main() {
     expect(
       tester.getTopLeft(error).dy,
       greaterThan(tester.getBottomLeft(request).dy),
+    );
+  });
+
+  for (final pool in ['Shielded', 'Transparent']) {
+    testWidgets('shares the selected $pool address', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await tester.binding.setSurfaceSize(const Size(1512, 982));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final calls = <MethodCall>[];
+      const channel = MethodChannel('dev.fluttercommunity.plus/share');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        calls.add(call);
+        return 'dev.fluttercommunity.plus/share/success';
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(_receiveHarness());
+      await tester.pump();
+      await tester.pump();
+      if (pool == 'Transparent') {
+        await tester.tap(find.text('Transparent'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      final shareSemantics = tester.getSemantics(
+        find.bySemanticsLabel('Share ${pool.toLowerCase()} address'),
+      );
+      final canActivate = shareSemantics.getSemanticsData().hasAction(
+        ui.SemanticsAction.tap,
+      );
+      semantics.dispose();
+      expect(canActivate, isTrue);
+      await tester.tap(find.byKey(const ValueKey('receive_share_button')));
+      await tester.pump();
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'share');
+      expect(
+        (calls.single.arguments as Map<Object?, Object?>)['text'],
+        pool == 'Shielded' ? _shieldedAddress : _transparentAddress,
+      );
+    });
+  }
+
+  testWidgets('a failed address share leaves copy available', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1512, 982));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const channel = MethodChannel('dev.fluttercommunity.plus/share');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      _,
+    ) async {
+      throw PlatformException(code: 'share_failed');
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    await tester.pumpWidget(_receiveHarness());
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('receive_share_button')));
+    await tester.pump();
+    expect(
+      find.text("Couldn't share this address. Copy it instead."),
+      findsOneWidget,
+    );
+    expect(
+      find
+          .byKey(const ValueKey('receive_copy_shielded_address_button'))
+          .hitTestable(),
+      findsOneWidget,
     );
   });
 

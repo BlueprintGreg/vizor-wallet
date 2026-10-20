@@ -4,12 +4,12 @@
 /// was already doing and asks one question. So the card is hosted once, at the
 /// app level, above the router's content, rather than being a route of its own.
 /// That is also what makes "the card stays until it is answered" true across a
-/// route change, and what makes it disappear the instant
-/// `paymentRequestFlowProvider` clears.
+/// route change. Mobile retains the closing card only for its exit transition.
 library;
 
 import 'dart:async';
 
+import 'package:flutter/material.dart' show BottomSheet, Easing;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -20,7 +20,8 @@ import '../../../core/layout/app_form_factor.dart';
 import '../../../core/navigation/external_action_guard_provider.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_toast.dart';
-import '../../../providers/account_models.dart';
+import '../../../providers/account_provider.dart';
+import '../../../providers/app_security_provider.dart';
 import '../../../providers/payment_request_flow_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/zec_price_change_provider.dart';
@@ -53,16 +54,78 @@ class PaymentRequestHost extends ConsumerStatefulWidget {
   ConsumerState<PaymentRequestHost> createState() => _PaymentRequestHostState();
 }
 
-class _PaymentRequestHostState extends ConsumerState<PaymentRequestHost> {
+class _PaymentRequestHostState extends ConsumerState<PaymentRequestHost>
+    with SingleTickerProviderStateMixin {
   bool _scanning = false;
   bool _scanInFlight = false;
+  late final _sheetController = BottomSheet.createAnimationController(this);
+  late final _sheetAnimation = CurvedAnimation(
+    parent: _sheetController,
+    curve: Easing.legacyDecelerate,
+  );
+  PaymentRequestFlowState? _closingFlow;
+  String? _presentedAccountUuid;
   GoRouter get router => widget.router;
 
   bool get _isMobile => kAppFormFactor == AppFormFactor.mobile;
 
   @override
+  void initState() {
+    super.initState();
+    if (_isMobile) {
+      ref.listenManual(paymentRequestFlowProvider, (previous, next) {
+        if (next != null) {
+          _presentedAccountUuid = ref
+              .read(accountProvider)
+              .value
+              ?.activeAccountUuid;
+          _closingFlow = null;
+          _sheetController.forward();
+        } else if (ref.read(appSecurityProvider).requiresUnlock ||
+            ref.read(accountProvider).value?.activeAccountUuid !=
+                _presentedAccountUuid) {
+          _closingFlow = null;
+          _sheetController.value = 0;
+        } else {
+          _closingFlow = previous;
+          _sheetController.reverse().whenCompleteOrCancel(() {
+            if (mounted && _sheetController.isDismissed) {
+              setState(() => _closingFlow = null);
+            }
+          });
+        }
+      }, fireImmediately: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_isMobile) {
+      _sheetAnimation.dispose();
+      _sheetController.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final flow = ref.watch(paymentRequestFlowProvider);
+    final activeFlow = ref.watch(paymentRequestFlowProvider);
+    if (_isMobile) {
+      final requiresUnlock = ref.watch(
+        appSecurityProvider.select((state) => state.requiresUnlock),
+      );
+      final accountUuid = ref.watch(
+        accountProvider.select((state) => state.value?.activeAccountUuid),
+      );
+      // A dismissed flow no longer publishes updates. Its retained exit frame
+      // must still disappear when the security or account context changes.
+      if (requiresUnlock || accountUuid != _presentedAccountUuid) {
+        _closingFlow = null;
+      }
+    }
+    final flow =
+        activeFlow ??
+        (MediaQuery.disableAnimationsOf(context) ? null : _closingFlow);
     // [child] is the router's content, and it holds route-local state — a
     // half-typed Send form, a scroll offset, an expanded row. So it keeps one
     // position in the tree whether or not a card is up: always this `Stack`'s
@@ -124,22 +187,26 @@ class _PaymentRequestHostState extends ConsumerState<PaymentRequestHost> {
       children: [
         widget.child,
         _UnfocusWhenMounted(
-          child: PaymentRequestSurface.overlay(
-            key: const ValueKey('payment_request_host_surface'),
-            cardKey: ValueKey(flow.prefill.id),
-            request: request,
-            onContinue: _review,
-            onEdit: _edit,
-            onCancel: () {
-              // A drag-dismiss animation can finish before the host rebuilds
-              // for a newer link. Only the request that began closing may end.
-              if (ref.read(paymentRequestFlowProvider)?.prefill.id ==
-                  flow.prefill.id) {
-                notifier.dismiss();
-              }
-            },
-            onRecheck: notifier.recheck,
-            onScan: _scanOriginal,
+          child: IgnorePointer(
+            ignoring: activeFlow == null,
+            child: PaymentRequestSurface.overlay(
+              key: const ValueKey('payment_request_host_surface'),
+              animation: _isMobile ? _sheetAnimation : null,
+              cardKey: ValueKey(flow.prefill.id),
+              request: request,
+              onContinue: _review,
+              onEdit: _edit,
+              onCancel: () {
+                // A drag-dismiss animation can finish before the host rebuilds
+                // for a newer link. Only the request that began closing may end.
+                if (ref.read(paymentRequestFlowProvider)?.prefill.id ==
+                    flow.prefill.id) {
+                  notifier.dismiss();
+                }
+              },
+              onRecheck: notifier.recheck,
+              onScan: _scanOriginal,
+            ),
           ),
         ),
       ],

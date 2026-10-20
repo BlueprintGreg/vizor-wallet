@@ -29,6 +29,7 @@ import 'package:zcash_wallet/src/features/send/services/send_flow.dart';
 import 'package:zcash_wallet/src/features/send/widgets/payment_request_host.dart';
 import 'package:zcash_wallet/src/features/send/widgets/send_recipient_resolver.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
+import 'package:zcash_wallet/src/providers/app_security_provider.dart';
 import 'package:zcash_wallet/src/providers/migration_send_gate_provider.dart';
 import 'package:zcash_wallet/src/providers/payment_request_flow_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
@@ -94,6 +95,18 @@ class _FakeAccountNotifier extends AccountNotifier {
     accounts: [AccountInfo(uuid: 'account-1', name: 'Account 1', order: 0)],
     activeAccountUuid: 'account-1',
   );
+
+  void switchToOtherAccount() {
+    state = AsyncData(
+      state.requireValue.copyWith(
+        accounts: const [
+          AccountInfo(uuid: 'account-1', name: 'Account 1', order: 0),
+          AccountInfo(uuid: 'account-2', name: 'Account 2', order: 1),
+        ],
+        activeAccountUuid: 'account-2',
+      ),
+    );
+  }
 }
 
 final _discarded = <BigInt>[];
@@ -470,6 +483,152 @@ void main() {
       },
     );
   }
+
+  testWidgets('the request slides in and slides out when dismissed', (
+    tester,
+  ) async {
+    final harness = await _pumpHost(tester);
+    final notifier = harness.container.read(
+      paymentRequestFlowProvider.notifier,
+    );
+    await notifier.present(_request, source: PaymentRequestSource.link);
+    await tester.pump();
+    final title = find.text('Payment request');
+    final enteringTop = tester.getTopLeft(title).dy;
+    await tester.pump(const Duration(milliseconds: 80));
+    final middleTop = tester.getTopLeft(title).dy;
+    await tester.pumpAndSettle();
+    final restingTop = tester.getTopLeft(title).dy;
+    expect(enteringTop, greaterThan(middleTop));
+    expect(middleTop, greaterThan(restingTop));
+
+    // This is also the system-back path: state clears before the visual exits.
+    notifier.dismiss();
+    await tester.pump();
+    expect(harness.container.read(paymentRequestFlowProvider), isNull);
+    expect(title, findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(tester.getTopLeft(title).dy, greaterThan(restingTop));
+    await tester.pumpAndSettle();
+    expect(title, findsNothing);
+    expect(_discarded, [BigInt.from(11)]);
+  });
+
+  testWidgets('a new request reverses an in-progress exit', (tester) async {
+    final harness = await _pumpHost(tester);
+    final notifier = harness.container.read(
+      paymentRequestFlowProvider.notifier,
+    );
+    await notifier.present(_request, source: PaymentRequestSource.link);
+    await tester.pumpAndSettle();
+    final title = find.text('Payment request');
+    final restingTop = tester.getTopLeft(title).dy;
+    notifier.dismiss();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    final closingTop = tester.getTopLeft(title).dy;
+    await notifier.present(
+      const SendPrefillArgs(
+        id: 'replacement',
+        source: kPaymentUriPrefillSource,
+        address: _address,
+        amountText: '0.75',
+        label: 'Coffee shop',
+      ),
+      source: PaymentRequestSource.link,
+    );
+    await tester.pump();
+    expect(tester.getTopLeft(title).dy, closeTo(closingTop, 0.01));
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(title).dy, closeTo(restingTop, 0.01));
+    expect(
+      harness.container.read(paymentRequestFlowProvider)?.prefill.id,
+      'replacement',
+    );
+    expect(
+      harness.container.read(paymentRequestFlowProvider)?.prefill.amountText,
+      '0.75',
+    );
+  });
+
+  testWidgets('locking removes the request without retaining a closing card', (
+    tester,
+  ) async {
+    final harness = await _pumpHost(tester);
+    await harness.container
+        .read(paymentRequestFlowProvider.notifier)
+        .present(_request, source: PaymentRequestSource.link);
+    await tester.pumpAndSettle();
+    harness.container.read(appSecurityProvider.notifier).lock();
+    await tester.pump();
+    expect(harness.container.read(paymentRequestFlowProvider), isNull);
+    expect(find.text('Payment request'), findsNothing);
+    await tester.pumpAndSettle();
+  });
+
+  for (final change in ['lock', 'account switch']) {
+    testWidgets('$change removes a request that is already closing', (
+      tester,
+    ) async {
+      final harness = await _pumpHost(tester);
+      final notifier = harness.container.read(
+        paymentRequestFlowProvider.notifier,
+      );
+      await notifier.present(_request, source: PaymentRequestSource.link);
+      await tester.pumpAndSettle();
+      notifier.dismiss();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(find.text('Payment request'), findsOneWidget);
+      if (change == 'lock') {
+        harness.container.read(appSecurityProvider.notifier).lock();
+      } else {
+        (harness.container.read(accountProvider.notifier)
+                as _FakeAccountNotifier)
+            .switchToOtherAccount();
+      }
+      await tester.pump();
+      expect(find.text('Payment request'), findsNothing);
+      await tester.pumpAndSettle();
+    });
+  }
+
+  testWidgets('account switching clears an open request without an exit card', (
+    tester,
+  ) async {
+    final harness = await _pumpHost(tester);
+    await harness.container
+        .read(paymentRequestFlowProvider.notifier)
+        .present(_request, source: PaymentRequestSource.link);
+    await tester.pumpAndSettle();
+    (harness.container.read(accountProvider.notifier) as _FakeAccountNotifier)
+        .switchToOtherAccount();
+    await tester.pump();
+    expect(harness.container.read(paymentRequestFlowProvider), isNull);
+    expect(find.text('Payment request'), findsNothing);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('reduced motion shows and removes the request immediately', (
+    tester,
+  ) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final harness = await _pumpHost(tester);
+    final notifier = harness.container.read(
+      paymentRequestFlowProvider.notifier,
+    );
+    await notifier.present(_request, source: PaymentRequestSource.link);
+    await tester.pump();
+    final title = find.text('Payment request');
+    final initialTop = tester.getTopLeft(title).dy;
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(title).dy, initialTop);
+    notifier.dismiss();
+    await tester.pump();
+    expect(title, findsNothing);
+  });
 
   testWidgets('dragging the sheet down dismisses and releases its proposal', (
     tester,
