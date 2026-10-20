@@ -8,8 +8,10 @@ import '../feedback/app_review.dart';
 import '../../features/accounts/screens/mobile/mobile_accounts_screen.dart';
 import '../../features/activity/screens/mobile/mobile_activity_screen.dart';
 import '../../features/home/screens/mobile/mobile_home_screen.dart';
+import '../../features/home/screens/mobile/mobile_software_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_keystone_shield_screen.dart';
 import '../../features/home/screens/mobile/mobile_ledger_shield_screen.dart';
+import '../../features/home/widgets/mobile/shield/mobile_shield_backdrop.dart';
 import '../../features/migration/screens/mobile/mobile_ironwood_migration_flow_screen.dart';
 import '../../features/migration/models/mobile_ironwood_migration_status_entry.dart';
 import '../../features/migration/screens/ironwood_migration_flow_screen.dart'
@@ -65,6 +67,7 @@ import '../layout/mobile/mobile_page_viewport.dart';
 import 'mobile_destinations.dart';
 import 'route_owned_redirect.dart';
 import 'payload_page_key.dart';
+import 'mobile_shield_page.dart';
 
 /// The mobile route tree: the shared entry/onboarding routes, a
 /// stateful tab shell (home / swap / activity / settings), and
@@ -97,9 +100,11 @@ List<RouteBase> _walletRoutes() {
       pageBuilder: (context, state, navigationShell) => _mobilePage(
         key: state.pageKey,
         constrainContent: false,
-        child: _MobileTabShell(
-          navigationShell: navigationShell,
-          tabs: _allMobileTabs,
+        child: MobileShieldBackdropHost(
+          child: _MobileTabShell(
+            navigationShell: navigationShell,
+            tabs: _allMobileTabs,
+          ),
         ),
       ),
       branches: [
@@ -427,10 +432,25 @@ List<RouteBase> _walletRoutes() {
       },
     ),
     GoRoute(
-      path: '/home/keystone-shield',
-      pageBuilder: (context, state) => _mobilePage(
+      path: '/home/shield',
+      pageBuilder: (context, state) => MobileShieldPage(
         key: state.pageKey,
-        child: const MobileKeystoneShieldScreen(),
+        child: MobileSoftwareShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
+      ),
+    ),
+    GoRoute(
+      path: '/home/keystone-shield',
+      pageBuilder: (context, state) => MobileShieldPage(
+        key: state.pageKey,
+        child: MobileKeystoneShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
       ),
     ),
     GoRoute(
@@ -499,12 +519,13 @@ List<RouteBase> _walletRoutes() {
     ),
     GoRoute(
       path: '/home/ledger-shield',
-      pageBuilder: (context, state) => CustomTransitionPage(
+      pageBuilder: (context, state) => MobileShieldPage(
         key: state.pageKey,
-        opaque: false,
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
-        child: const MobileLedgerShieldScreen(),
+        child: MobileLedgerShieldScreen(
+          backdrop: state.extra is MobileShieldBackdrop
+              ? state.extra as MobileShieldBackdrop
+              : null,
+        ),
       ),
     ),
     GoRoute(
