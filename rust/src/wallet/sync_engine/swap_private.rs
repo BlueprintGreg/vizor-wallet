@@ -159,8 +159,9 @@ pub(crate) async fn recover(
             || crate::wallet::sync::proposal_locks::is_shutting_down()
     };
     let transport = SwapTransport::new(&stop);
-    tokio::time::timeout(
-        Duration::from_secs(45),
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    tokio::time::timeout_at(
+        deadline,
         recover_with_transport(
             path,
             network,
@@ -168,6 +169,7 @@ pub(crate) async fn recover(
             &receiver_origin(),
             &transport,
             generation,
+            deadline,
         ),
     )
     .await
@@ -184,6 +186,7 @@ async fn recover_with_transport<T: Transport>(
     origin: &str,
     transport: &T,
     generation: u64,
+    deadline: tokio::time::Instant,
 ) -> Result<(), String> {
     let accounts = wallet(path, network, generation, |db| {
         one_time_ivk::reconcile_enabled(db, network)?;
@@ -240,9 +243,14 @@ async fn recover_with_transport<T: Transport>(
     let mut client = None;
     let mut proofs = None;
     let mut failure = None;
-    let account_budget = Duration::from_secs(40).div_f64(active.len() as f64);
-    let hint_timeout = (account_budget / 4).min(Duration::from_secs(2));
-    for account in active {
+    let account_count = active.len();
+    for (index, account) in active.into_iter().enumerate() {
+        // Include a spare slice for commit/loop overhead. A slow earlier account
+        // cannot spend the time reserved for later accounts.
+        let account_budget = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .div_f64((account_count - index + 1) as f64);
+        let hint_timeout = (account_budget / 4).min(Duration::from_secs(2));
         let result = tokio::time::timeout(account_budget, async {
             let accepted_locally = wallet(path, network, generation, |db| {
                 db.begin_one_time_recovery(account, publication, false, one_time_ivk::now()?)
