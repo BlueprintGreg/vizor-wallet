@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use ff::PrimeField;
 use orchard::{
     bundle::BundleVersion,
     note::{NoteVersion, Rho},
@@ -524,7 +523,7 @@ fn convert_shielded_action(
             .ok_or("Shielded spend is missing rseed")?,
         alpha: spend
             .alpha()
-            .map(|alpha| alpha.to_repr())
+            .map(|alpha| alpha.to_bytes())
             .ok_or("Shielded spend is missing alpha")?,
         signing_path: derivation.signing_path,
         seed_fingerprint: derivation.seed_fingerprint,

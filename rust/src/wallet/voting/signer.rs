@@ -62,7 +62,7 @@ pub fn sign_delegation_request(
     )
     .ok_or_else(|| "delegation alpha is not a valid Pallas scalar".to_string())?;
     // Sign the request-specific sighash with the randomized spend auth key.
-    let rsk = ask.randomize(&alpha);
+    let rsk = ask.randomize(&voting_crypto_deps::spend_auth_randomizer(&alpha));
     let rng = voting_crypto_deps::rand::rngs::OsRng;
     let sig = rsk.sign(rng, &request.sighash);
     Ok(((&sig).into(), request.sighash))
@@ -102,7 +102,9 @@ mod tests {
 
         let (sig_bytes, returned_sighash) = sign_delegation_request(&seed, request).unwrap();
 
-        let verification_key = VerificationKey::from(&ask.randomize(&alpha));
+        let verification_key = VerificationKey::from(
+            &ask.randomize(&voting_crypto_deps::spend_auth_randomizer(&alpha)),
+        );
         verification_key
             .verify(&sighash, &Signature::<SpendAuth>::from(sig_bytes))
             .unwrap();
