@@ -34,6 +34,7 @@ import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration
 import 'package:zcash_wallet/src/features/migration/providers/ironwood_migration_coordinator_provider.dart';
 import 'package:zcash_wallet/src/features/migration/models/mobile_ironwood_migration_attention_state.dart';
 import 'package:zcash_wallet/src/features/migration/screens/ironwood_migration_flow_screen.dart';
+import 'package:zcash_wallet/src/features/migration/widgets/mobile/mobile_ironwood_keystone_signing_view.dart';
 import 'package:zcash_wallet/src/features/migration/screens/mobile/mobile_ironwood_migration_flow_screen.dart';
 import 'package:zcash_wallet/src/features/migration/services/ironwood_migration_background_credential_store.dart';
 import 'package:zcash_wallet/src/features/migration/services/ironwood_migration_service.dart';
@@ -58,11 +59,13 @@ class _RustApiFake implements RustLibApi {
   final encodedRequestIds = <String>[];
   final encodedMaxFragmentLengths = <BigInt>[];
   final decodedRequestIds = <String>[];
+  Completer<Uint32List>? pendingRoundCounts;
 
   void reset() {
     encodedRequestIds.clear();
     encodedMaxFragmentLengths.clear();
     decodedRequestIds.clear();
+    pendingRoundCounts = null;
   }
 
   @override
@@ -85,6 +88,11 @@ class _RustApiFake implements RustLibApi {
     required List<rust_keystone_wallet.ZcashBatchMessageInput> messages,
     required int maxMessages,
   }) async {
+    final pending = pendingRoundCounts;
+    if (pending != null) {
+      pendingRoundCounts = null;
+      return pending.future;
+    }
     final limit = math.min(maxMessages, 40);
     return Uint32List.fromList([
       for (var remaining = messages.length; remaining > 0; remaining -= limit)
@@ -1093,6 +1101,8 @@ IronwoodMigrationService _migrationService({
   Future<rust_sync.IronwoodMigrationResult> Function(String accountUuid)?
   onStartImmediate,
   Future<void> Function(String requestId)? onDiscardKeystoneRequest,
+  Future<rust_sync.KeystoneMigrationProofStatus> Function(String requestId)?
+  onProofStatus,
   bool ios = false,
   IronwoodMigrationNotificationAuthorizationStatusGetter?
   getNotificationAuthorizationStatus,
@@ -1256,12 +1266,14 @@ IronwoodMigrationService _migrationService({
             onCreatePrivateDraft?.call(accountUuid, approvedSchedule) ??
             Future.value('private-draft-run'),
     getKeystoneProofStatus: ({required requestId}) async =>
-        const rust_sync.KeystoneMigrationProofStatus(
-          readyCount: 1,
-          totalCount: 1,
-          isReady: true,
-          isFailed: false,
-        ),
+        onProofStatus != null
+        ? await onProofStatus(requestId)
+        : const rust_sync.KeystoneMigrationProofStatus(
+            readyCount: 1,
+            totalCount: 1,
+            isReady: true,
+            isFailed: false,
+          ),
     discardKeystoneMigrationRequest: ({required requestId}) async {
       await onDiscardKeystoneRequest?.call(requestId);
     },
@@ -1516,6 +1528,206 @@ void main() {
     _rustApiFake.reset();
     FlutterSecureStorage.setMockInitialValues({});
   });
+  testWidgets(
+    'Keystone cancel failure retains ownership and permits retry (mobile)',
+    (tester) async {
+      _useMobileViewport(tester, size: const Size(393, 852));
+      final firstDiscard = Completer<void>();
+      final lateProof = Completer<rust_sync.KeystoneMigrationProofStatus>();
+      var discardCalls = 0;
+      final discardedIds = <String>[];
+      var proofCalls = 0;
+      final service = _migrationService(
+        ios: true,
+        onProofStatus: (_) {
+          proofCalls++;
+          if (proofCalls == 1) return lateProof.future;
+          return Future.value(
+            const rust_sync.KeystoneMigrationProofStatus(
+              readyCount: 1,
+              totalCount: 1,
+              isReady: true,
+              isFailed: false,
+            ),
+          );
+        },
+        onDiscardKeystoneRequest: (id) async {
+          discardedIds.add(id);
+          discardCalls++;
+          if (discardCalls == 1) await firstDiscard.future;
+        },
+      );
+      final router = GoRouter(
+        initialLocation: '/sign',
+        routes: [
+          GoRoute(
+            path: '/sign',
+            builder: (_, _) =>
+                const MobileIronwoodMigrationKeystoneCombinedSignScreen(
+                  approvedSchedule: [],
+                ),
+          ),
+          GoRoute(
+            path: '/migration/private/review',
+            builder: (_, _) => const Text('Review route'),
+          ),
+          GoRoute(
+            path: '/migration/options',
+            builder: (_, _) => const Text('Review route'),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(_bootstrap(hardware: true)),
+            syncProvider.overrideWith(FakeSyncNotifier.new),
+            ironwoodMigrationServiceProvider.overrideWithValue(service),
+          ],
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: (_, child) =>
+                AppTheme(data: AppThemeData.light, child: child!),
+          ),
+        ),
+      );
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      VoidCallback cancel() => tester
+          .widget<MobileIronwoodKeystoneSigningView>(
+            find.byType(MobileIronwoodKeystoneSigningView),
+          )
+          .onCancel!;
+      final staleCancel = cancel();
+      staleCancel();
+      staleCancel();
+      await tester.pump();
+      expect(discardCalls, 1);
+      expect(find.text('Review route'), findsNothing);
+      expect(
+        tester
+            .widgetList<AbsorbPointer>(find.byType(AbsorbPointer))
+            .any((p) => p.absorbing),
+        isTrue,
+      );
+      firstDiscard.completeError(StateError('Injected cancellation failure'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Review route'), findsNothing);
+      expect(
+        find.text('Could not cancel the signing request. Try again.'),
+        findsOneWidget,
+      );
+      expect(
+        proofCalls,
+        2,
+        reason: 'Resume polling for the same owned request after failure',
+      );
+      lateProof.complete(
+        const rust_sync.KeystoneMigrationProofStatus(
+          readyCount: 0,
+          totalCount: 1,
+          isReady: false,
+          isFailed: true,
+          message: 'Obsolete proof failure',
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Obsolete proof failure'), findsNothing);
+      expect(proofCalls, 2);
+      cancel()();
+      await tester.pumpAndSettle();
+      expect(discardCalls, 2);
+      expect(discardedIds[1], discardedIds[0]);
+      expect(find.text('Review route'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(
+        discardCalls,
+        2,
+        reason: 'Successful cleanup must not run again in dispose',
+      );
+    },
+  );
+
+  testWidgets(
+    'Keystone cancel failure during QR preparation resumes the owned request',
+    (tester) async {
+      _useMobileViewport(tester);
+      final counts = Completer<Uint32List>();
+      _rustApiFake.pendingRoundCounts = counts;
+      final discard = Completer<void>();
+      final ids = <String>[];
+      final service = _migrationService(
+        ios: true,
+        onDiscardKeystoneRequest: (id) async {
+          ids.add(id);
+          if (ids.length == 1) await discard.future;
+        },
+      );
+      final router = GoRouter(
+        initialLocation: '/sign',
+        routes: [
+          GoRoute(
+            path: '/sign',
+            builder: (_, _) =>
+                const MobileIronwoodMigrationKeystoneCombinedSignScreen(
+                  approvedSchedule: [],
+                ),
+          ),
+          GoRoute(
+            path: '/migration/options',
+            builder: (_, _) => const Text('Review route'),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(_bootstrap(hardware: true)),
+            syncProvider.overrideWith(FakeSyncNotifier.new),
+            ironwoodMigrationServiceProvider.overrideWithValue(service),
+          ],
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: (_, child) =>
+                AppTheme(data: AppThemeData.light, child: child!),
+          ),
+        ),
+      );
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      final view = find.byType(MobileIronwoodKeystoneSigningView);
+      expect(
+        tester.widget<MobileIronwoodKeystoneSigningView>(view).state,
+        MobileIronwoodKeystoneSigningViewState.loading,
+      );
+      tester.widget<MobileIronwoodKeystoneSigningView>(view).onCancel!();
+      await tester.pump();
+      expect(ids, hasLength(1));
+      discard.completeError(StateError('Injected cancellation failure'));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(
+        tester.widget<MobileIronwoodKeystoneSigningView>(view).state,
+        MobileIronwoodKeystoneSigningViewState.ready,
+      );
+      expect(_rustApiFake.encodedRequestIds, [ids.single]);
+      counts.complete(Uint32List.fromList([1]));
+      await tester.pump();
+      expect(_rustApiFake.encodedRequestIds, [ids.single]);
+      tester.widget<MobileIronwoodKeystoneSigningView>(view).onCancel!();
+      await tester.pumpAndSettle();
+      expect(ids, [ids.first, ids.first]);
+      expect(find.text('Review route'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   for (final preparation in [false, true]) {
     for (final fast in [false, true]) {
