@@ -244,7 +244,11 @@ async fn recover_with_transport<T: Transport>(
                     .map_err(|e| e.to_string())
             })?;
             if !accepted_locally {
-                return Ok(());
+                return if manual.is_some() {
+                    Err("Swap history check has not started. Wait for wallet sync to catch up and try again.".into())
+                } else {
+                    Ok(())
+                };
             }
             if let Some(bound) = manual {
                 wallet(path, network, generation, |db| {
