@@ -703,6 +703,42 @@ void main() {
     );
   });
 
+  testWidgets('an interrupted history check still offers pause', (
+    tester,
+  ) async {
+    var paused = false;
+    await tester.pumpWidget(
+      _settingsHarness(
+        extraOverrides: [
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (_) async =>
+                  throw StateError('lookup failed after job was saved'),
+              cancel: () async {
+                paused = true;
+              },
+              isChecking: () async => true,
+            ),
+          ),
+        ],
+      ),
+    );
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    await tester.ensureVisible(start);
+    await tester.tap(start);
+    await tester.pumpAndSettle();
+    final pause = find.byKey(const ValueKey('settings_cancel_swap_history'));
+    expect(pause, findsOneWidget);
+    await tester.ensureVisible(pause);
+    await tester.tap(pause);
+    await tester.pumpAndSettle();
+    expect(paused, isTrue);
+    expect(
+      find.text(swapHistoryCheckStatus(SwapHistoryCheck.paused)),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('NEAR swap privacy names the hardware account exception', (
     tester,
   ) async {

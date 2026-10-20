@@ -16,7 +16,8 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.done => 'The selected swap history check is complete.',
   SwapHistoryCheck.continuing => 'The check will continue in the background.',
   SwapHistoryCheck.paused => 'Paused. Check again to resume.',
-  SwapHistoryCheck.failed => "Couldn't check swap history. Try again.",
+  SwapHistoryCheck.failed =>
+    'The check was interrupted. Saved work may continue. Pause or try again.',
 };
 
 /// The "Check swap history" button and its progress, under NEAR swap privacy
@@ -24,6 +25,7 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
 class SwapHistoryCheckControl extends ConsumerStatefulWidget {
   const SwapHistoryCheckControl({super.key});
 
+  /// Keeps the optional search bound while job status changes.
   @override
   ConsumerState<SwapHistoryCheckControl> createState() =>
       _SwapHistoryCheckControlState();
@@ -74,7 +76,8 @@ class _SwapHistoryCheckControlState
             child: const Text('Check swap history'),
           ),
           if (check == SwapHistoryCheck.checking ||
-              check == SwapHistoryCheck.continuing)
+              check == SwapHistoryCheck.continuing ||
+              check == SwapHistoryCheck.failed)
             AppButton(
               key: const ValueKey('settings_cancel_swap_history'),
               onPressed: () => unawaited(

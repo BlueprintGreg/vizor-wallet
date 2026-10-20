@@ -63,7 +63,7 @@ enum SwapHistoryCheck {
   /// The user paused the durable job.
   paused,
 
-  /// The wallet could not start the check.
+  /// A round failed. A previously saved job may still need pausing or resuming.
   failed,
 }
 
