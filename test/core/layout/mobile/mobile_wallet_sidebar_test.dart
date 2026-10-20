@@ -13,6 +13,8 @@ import 'package:zcash_wallet/src/core/layout/mobile/mobile_navigation_scope.dart
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_sidebar_surface.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_sync_status.dart';
 
 const status = SyncStatusLabel(
   kind: SyncStatusKind.syncing,
@@ -120,6 +122,190 @@ void main() {
       }
     }
   }
+
+  for (final theme in [AppThemeData.light, AppThemeData.dark]) {
+    testWidgets(
+      'full lock veils the panel and preserves sync and disabled input (${theme == AppThemeData.dark ? 'dark' : 'light'})',
+      (tester) async {
+        final semantics = tester.ensureSemantics();
+        try {
+          final visits = <String>[];
+          var accounts = 0;
+          Widget subject({
+            bool navigation = true,
+            bool account = true,
+            bool pending = false,
+            SyncStatusLabel sync = status,
+          }) => harness(
+            SizedBox(
+              width: 256,
+              height: 600,
+              child: MobileWalletSidebar(
+                accountName: 'Account probe',
+                avatar: const SizedBox.square(dimension: 40),
+                status: sync,
+                currentPath: '/home',
+                swapEnabled: true,
+                onSelect: navigation ? visits.add : null,
+                onAccountTap: account ? () => accounts++ : null,
+                inputBlocked: pending,
+              ),
+            ),
+            theme: theme,
+          );
+          List<Color?> fills() => tester
+              .widgetList<AnimatedContainer>(
+                find.descendant(
+                  of: find.byType(MobileWalletSidebar),
+                  matching: find.byType(AnimatedContainer),
+                ),
+              )
+              .map((w) => (w.decoration as ShapeDecoration).color)
+              .toList();
+          await tester.pumpWidget(subject());
+          final restingFills = fills();
+          final syncState = tester.state(find.byType(MobileSyncStatus));
+          final syncRect = tester.getRect(find.byType(MobileSyncStatus));
+          final syncColors = tester.widget<MobileSyncStatus>(
+            find.byType(MobileSyncStatus),
+          );
+          final focus = Focus.of(tester.element(find.text('Settings')));
+          focus.requestFocus();
+          await tester.pump();
+          await tester.pumpWidget(subject(navigation: false, account: false));
+          expect(fills(), restingFills); // No individual disabled pills.
+          expect(focus.hasFocus, isFalse);
+          await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+          await tester.tap(find.text('Settings'));
+          await tester.tap(find.text('Account probe'));
+          expect(visits, isEmpty);
+          expect(accounts, 0);
+          for (final label in [
+            'Account probe',
+            'Home',
+            'Swap',
+            'Activity',
+            'Settings',
+          ]) {
+            expect(
+              tester
+                  .getSemantics(find.text(label))
+                  .getSemanticsData()
+                  .hasAction(SemanticsAction.tap),
+              isFalse,
+            );
+          }
+          expect(tester.state(find.byType(MobileSyncStatus)), same(syncState));
+          expect(tester.getRect(find.byType(MobileSyncStatus)), syncRect);
+          final sync = tester.widget<MobileSyncStatus>(
+            find.byType(MobileSyncStatus),
+          );
+          expect(sync.baseColor, syncColors.baseColor);
+          expect(sync.indicatorColor, syncColors.indicatorColor);
+          expect(sync.animated, syncColors.animated);
+          final panel = tester.getRect(find.byType(MobileSidebarSurface));
+          final top = tester.getRect(
+            find.byKey(const ValueKey('mobile_sidebar_controls_veil')),
+          );
+          final bottom = tester.getRect(
+            find.byKey(const ValueKey('mobile_sidebar_footer_veil')),
+          );
+          expect(top.topLeft, panel.topLeft);
+          expect(top.width, panel.width);
+          expect(bottom.width, panel.width);
+          expect(top.bottom, bottom.top);
+          expect(bottom.bottomRight, panel.bottomRight);
+          final footerStack = tester.widget<Stack>(
+            find
+                .ancestor(
+                  of: find.byKey(
+                    const ValueKey('mobile_sidebar_sync_foreground'),
+                  ),
+                  matching: find.byType(Stack),
+                )
+                .first,
+          );
+          expect(
+            footerStack.children.last.key,
+            const ValueKey('mobile_sidebar_sync_foreground'),
+          );
+          expect(
+            footerStack.clipBehavior,
+            Clip.none,
+          ); // Preserve the upper glow.
+          await tester.pumpWidget(
+            subject(
+              navigation: false,
+              account: false,
+              sync: const SyncStatusLabel(
+                kind: SyncStatusKind.failed,
+                label: 'Syncing failed',
+                semanticsLabel: 'Syncing failed',
+              ),
+            ),
+          );
+          expect(find.text('Syncing failed'), findsOneWidget);
+          expect(
+            tester
+                .widget<MobileSyncStatus>(find.byType(MobileSyncStatus))
+                .liveRegion,
+            isTrue,
+          );
+          expect(tester.state(find.byType(MobileSyncStatus)), same(syncState));
+          await tester.pumpWidget(subject(account: false));
+          expect(
+            find.byKey(const ValueKey('mobile_sidebar_controls_veil')),
+            findsNothing,
+          );
+          expect(fills().first, theme.colors.button.disabled.bg);
+          await tester.tap(find.text('Settings'));
+          expect(visits, ['/settings']);
+          await tester.pumpWidget(subject(pending: true));
+          expect(
+            find.byKey(const ValueKey('mobile_sidebar_controls_veil')),
+            findsNothing,
+          );
+          await tester.pumpWidget(subject());
+          await tester.tap(find.text('Account probe'));
+          expect(accounts, 1);
+          expect(tester.takeException(), isNull);
+        } finally {
+          semantics.dispose();
+        }
+      },
+    );
+  }
+
+  testWidgets(
+    'locked short sidebar still scrolls to the readable sync footer',
+    (tester) async {
+      await tester.pumpWidget(
+        harness(
+          SizedBox(
+            width: 200,
+            height: 260,
+            child: MobileWalletSidebar(
+              accountName: 'Account probe',
+              avatar: const SizedBox.square(dimension: 40),
+              status: status,
+              currentPath: '/home',
+              swapEnabled: true,
+              onSelect: null,
+              onAccountTap: null,
+            ),
+          ),
+          scale: 2,
+        ),
+      );
+      await tester.ensureVisible(find.text('4% Syncing...'));
+      await tester.pump();
+      final sync = tester.getRect(find.byType(MobileSyncStatus));
+      final panel = tester.getRect(find.byType(MobileSidebarSurface));
+      expect(sync.bottom, lessThanOrEqualTo(panel.bottom));
+      expect(sync.top, greaterThanOrEqualTo(panel.top));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'temporary lock keeps paint and labels while blocking all input',

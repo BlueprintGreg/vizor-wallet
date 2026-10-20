@@ -1,3 +1,4 @@
+import '../src/core/navigation/external_action_guard_provider.dart';
 import '../src/core/layout/mobile/mobile_adaptive_frame.dart';
 import '../src/core/layout/mobile/mobile_navigation_scope.dart';
 import '../src/services/native_mobile_navigation_geometry.dart';
@@ -1681,6 +1682,8 @@ Widget buildMobileAdaptiveHomeUseCase(
   BuildContext context, {
   bool closed = false,
   bool openAccountsSheet = false,
+  bool locked = false,
+  bool synced = false,
 }) {
   final size = MediaQuery.sizeOf(context);
   final geometry = closed
@@ -1698,17 +1701,32 @@ Widget buildMobileAdaptiveHomeUseCase(
     data: MediaQuery.of(context).copyWith(padding: insets, viewPadding: insets),
     child: _buildMobileHomeUseCase(
       adaptive: true,
+      sidebarLocked: locked,
       openAccountsSheet: openAccountsSheet,
       geometryService: _PreviewMobileGeometry(geometry),
       constrainToPreviewFrame: false,
       votingVisible: false,
       accountState: _accountsDesignState,
       syncState: _homeSyncedState().copyWith(
-        isSyncing: true,
-        isSyncComplete: false,
-        percentage: 0.04,
+        isSyncing: !synced,
+        isSyncComplete: synced,
+        percentage: synced ? 1 : 0.04,
       ),
     ),
+  );
+}
+
+Widget buildMobileAdaptiveHomeLockedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, locked: true);
+
+Widget buildMobileAdaptiveHomeLockedSyncedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, locked: true, synced: true);
+
+/// Capture-only guard; no signing, storage, or wallet operation is started.
+class _PreviewLockedNavigationGuard extends ExternalActionGuardNotifier {
+  @override
+  ExternalActionGuardState build() => const ExternalActionGuardState(
+    blockedActions: {ExternalAction.navigation},
   );
 }
 
@@ -3389,6 +3407,7 @@ Widget buildMobileHomeVotingHiddenUseCase(BuildContext context) =>
 
 Widget _buildMobileHomeUseCase({
   bool adaptive = false,
+  bool sidebarLocked = false,
   NativeMobileNavigationGeometry? geometryService,
   String initialLocation = '/home',
   Widget? previewChild,
@@ -3421,6 +3440,10 @@ Widget _buildMobileHomeUseCase({
   );
   return ProviderScope(
     overrides: [
+      if (sidebarLocked)
+        externalActionGuardProvider.overrideWith(
+          _PreviewLockedNavigationGuard.new,
+        ),
       if (adaptive) syncDisplayWholePercentageProvider.overrideWithValue(4),
       if (geometryService != null)
         mobileNavigationGeometryServiceProvider.overrideWithValue(

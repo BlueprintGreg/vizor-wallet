@@ -33,31 +33,131 @@ class MobileWalletSidebar extends StatelessWidget {
 
   /// A temporary navigation lock preserves paint while blocking pointer,
   /// keyboard focus, and pointer-related accessibility actions. Null callbacks
-  /// still represent actual route restrictions and retain disabled styling.
+  /// still represent actual route restrictions. A full lock uses a panel veil;
+  /// a profile-only restriction retains the individual disabled style.
   final bool inputBlocked;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final fullyDisabled = onSelect == null && onAccountTap == null;
+    final veilColor = colors.background.window.withValues(alpha: 0.6);
     final items = [
       for (final item in mobileDestinations)
         if (swapEnabled || item.path != '/swap') item,
     ];
+    final controls = Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: AppButton(
+              variant: AppButtonVariant.ghost,
+              onPressed: onAccountTap,
+              disabledBackgroundColor: fullyDisabled
+                  ? colors.background.ground.withValues(alpha: 0)
+                  : null,
+              height: 72,
+              growWithContent: true,
+              constrainContent: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 4,
+                vertical: 8,
+              ),
+              child: Row(
+                children: [
+                  avatar,
+                  const SizedBox(width: AppSpacing.s),
+                  Expanded(
+                    child: Text(
+                      accountName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTypography.bodyMediumStrong.copyWith(
+                        color: fullyDisabled ? colors.button.ghost.label : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          for (final destination in items) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Semantics(
+                selected: _selected(destination.path),
+                child: AppButton(
+                  variant: AppButtonVariant.ghost,
+                  height: 52,
+                  growWithContent: true,
+                  expand: true,
+                  constrainContent: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
+                  disabledBackgroundColor: fullyDisabled
+                      ? (_selected(destination.path)
+                            ? colors.navPanel.activeBg
+                            : colors.background.ground.withValues(alpha: 0))
+                      : null,
+                  enabledBackgroundColor: _selected(destination.path)
+                      ? colors.navPanel.activeBg
+                      : null,
+                  enabledLabelColor: _selected(destination.path)
+                      ? colors.navPanel.activeIcon
+                      : null,
+                  onPressed: onSelect == null
+                      ? null
+                      : () => onSelect!(destination.path),
+                  child: Row(
+                    children: [
+                      AppIcon(
+                        destination.item.iconName,
+                        size: 24,
+                        color: _selected(destination.path)
+                            ? colors.navPanel.activeIcon
+                            : colors.icon.muted,
+                      ),
+                      const SizedBox(width: AppSpacing.s),
+                      Expanded(
+                        child: Text(
+                          destination.item.label,
+                          style: AppTypography.bodyMediumStrong.copyWith(
+                            color: fullyDisabled
+                                ? (_selected(destination.path)
+                                      ? colors.navPanel.activeIcon
+                                      : colors.button.ghost.label)
+                                : null,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+          ],
+          const Spacer(),
+          const SizedBox(height: AppSpacing.md),
+        ],
+      ),
+    );
     final panel = MobileSidebarSurface.builder(
-      builder: (context, corners) => Padding(
-        padding: EdgeInsets.only(
-          top: 16,
-          // The bar hugs the leading edge. Keep its lower glow above the same
-          // native corner used to paint and clip the panel, without stacking
-          // the remaining pane safe-area inset on top of that clearance.
-          bottom: MediaQuery.paddingOf(
-            context,
-          ).bottom.clamp(corners.bottomLeft.y + AppSpacing.sm, double.infinity),
-        ),
-        child: LayoutBuilder(
+      builder: (context, corners) {
+        final bottomClearance = MediaQuery.paddingOf(
+          context,
+        ).bottom.clamp(corners.bottomLeft.y + AppSpacing.sm, double.infinity);
+        return LayoutBuilder(
           builder: (context, constraints) {
-            // Footer stays at the bottom when space permits. At large text sizes
-            // or on a short window the whole sidebar scrolls, never clips controls.
+            // Both regions share one scroll layout. Their contiguous veils
+            // cover the entire panel, while the single sync widget paints last
+            // (including its glow). No duplicate footer or deferred measurement.
             return SingleChildScrollView(
               child: ConstrainedBox(
                 constraints: BoxConstraints(minHeight: constraints.maxHeight),
@@ -65,93 +165,57 @@ class MobileWalletSidebar extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: AppButton(
-                          variant: AppButtonVariant.ghost,
-                          onPressed: onAccountTap,
-                          height: 72,
-                          growWithContent: true,
-                          constrainContent: true,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 8,
-                          ),
-                          child: Row(
-                            children: [
-                              avatar,
-                              const SizedBox(width: AppSpacing.s),
-                              Expanded(
-                                child: Text(
-                                  accountName,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: AppTypography.bodyMediumStrong,
+                      Expanded(
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          fit: StackFit.passthrough,
+                          children: [
+                            Semantics(
+                              enabled: fullyDisabled ? false : null,
+                              child: controls,
+                            ),
+                            if (fullyDisabled)
+                              Positioned.fill(
+                                child: _SidebarVeil(
+                                  key: const ValueKey(
+                                    'mobile_sidebar_controls_veil',
+                                  ),
+                                  color: veilColor,
                                 ),
                               ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: AppSpacing.md),
-                      for (final destination in items) ...[
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Semantics(
-                            selected: _selected(destination.path),
-                            child: AppButton(
-                              variant: AppButtonVariant.ghost,
-                              height: 52,
-                              growWithContent: true,
-                              expand: true,
-                              constrainContent: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 12,
-                              ),
-                              enabledBackgroundColor:
-                                  _selected(destination.path)
-                                  ? colors.navPanel.activeBg
-                                  : null,
-                              enabledLabelColor: _selected(destination.path)
-                                  ? colors.navPanel.activeIcon
-                                  : null,
-                              onPressed: onSelect == null
-                                  ? null
-                                  : () => onSelect!(destination.path),
-                              child: Row(
-                                children: [
-                                  AppIcon(
-                                    destination.item.iconName,
-                                    size: 24,
-                                    color: _selected(destination.path)
-                                        ? colors.navPanel.activeIcon
-                                        : colors.icon.muted,
-                                  ),
-                                  const SizedBox(width: AppSpacing.s),
-                                  Expanded(
-                                    child: Text(
-                                      destination.item.label,
-                                      style: AppTypography.bodyMediumStrong,
-                                    ),
-                                  ),
-                                ],
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          if (fullyDisabled)
+                            Positioned.fill(
+                              child: _SidebarVeil(
+                                key: const ValueKey(
+                                  'mobile_sidebar_footer_veil',
+                                ),
+                                color: veilColor,
                               ),
                             ),
+                          Padding(
+                            key: const ValueKey(
+                              'mobile_sidebar_sync_foreground',
+                            ),
+                            // Keep the bar and its glow above the same native
+                            // bottom corner used to paint and clip the panel.
+                            padding: EdgeInsets.only(
+                              right: 16,
+                              bottom: bottomClearance,
+                            ),
+                            child: MobileSyncStatus.fromStatus(
+                              context: context,
+                              status: status,
+                              leading: true,
+                              wrapLabel: true,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: AppSpacing.xs),
-                      ],
-                      const Spacer(),
-                      const SizedBox(height: AppSpacing.md),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 16),
-                        child: MobileSyncStatus.fromStatus(
-                          context: context,
-                          status: status,
-                          leading: true,
-                          wrapLabel: true,
-                        ),
+                        ],
                       ),
                     ],
                   ),
@@ -159,8 +223,8 @@ class MobileWalletSidebar extends StatelessWidget {
               ),
             );
           },
-        ),
-      ),
+        );
+      },
     );
     // Establish text defaults independently of surrounding route Material widgets.
     // Establish a complete mobile text style instead of inheriting the
@@ -189,4 +253,15 @@ class MobileWalletSidebar extends StatelessWidget {
               currentPath.startsWith('/send') ||
               currentPath.startsWith('/receive') ||
               currentPath.startsWith('/migration')));
+}
+
+/// Visual treatment only: actual callbacks remain null, so pointer, keyboard,
+/// and accessibility activation stay disabled while read-only scrolling works.
+class _SidebarVeil extends StatelessWidget {
+  const _SidebarVeil({required this.color, super.key});
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) =>
+      IgnorePointer(child: ColoredBox(color: color));
 }

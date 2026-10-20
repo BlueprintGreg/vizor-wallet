@@ -279,10 +279,18 @@ void main() {
           );
           expect(
             _sidebarPaints(tester).last.label,
-            AppThemeData.dark.colors.button.disabled.label,
+            AppThemeData.dark.colors.button.ghost.label,
+          );
+          expect(
+            find.byKey(const ValueKey('mobile_sidebar_controls_veil')),
+            findsOneWidget,
           );
           hold.release();
           await tester.pump();
+          expect(
+            find.byKey(const ValueKey('mobile_sidebar_controls_veil')),
+            findsNothing,
+          );
           expect(_sidebarPaints(tester), paints);
           expect(
             tester
