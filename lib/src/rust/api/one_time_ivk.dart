@@ -6,19 +6,10 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `runtime`, `with_seen`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`
 
-/// Reserves a swap address on a software account, skipping any the swap provider's seen
-/// set from the receiver directory holds, so an address another device of the same seed
-/// gave the provider is not issued again. `incoming` resumes the account's draft or
-/// reserves the lowest eligible incoming index (see `prepare_receive_reservation`); its
-/// key scans from the next unscanned block until it closes. Otherwise it reserves the
-/// next refund index (see `reserve_refund_key`), whose key starts scanning when the
-/// wallet stores the swap's funding transaction. `live_tip` is the chain tip the quote
-/// flow fetched. Without a fresh seen set, only a quoted incoming draft can be resumed;
-/// anything else fails as [`ReceiveErrorKind::SeenUnavailable`]. Does not start or
-/// restart ordinary wallet sync.
+/// Reserves the lowest eligible receive slot or a refund key after funding history sync.
+/// Receive issuance uses the confirmed four-index window and performs no network request.
 Future<SwapAddress> reserveSwapAddress({
   required String dbPath,
   required String networkName,
@@ -33,14 +24,7 @@ Future<SwapAddress> reserveSwapAddress({
   liveTip: liveTip,
 );
 
-/// Persists an unknown outcome and scan watch just before a provider quote request
-/// leaves the device, and returns the request's identity. `reservation_index` is the
-/// incoming reservation [`reserve_swap_address`] returned, and `deadline_seconds` the
-/// deposit deadline the request sends. A reservation's first request checks the seen
-/// set issuance read, if it is still current, or else a new one. Fails as
-/// [`ReceiveErrorKind::Stale`] once the reservation's latest quote has expired or it was
-/// retired, so the app prepares a new address, and as
-/// [`ReceiveErrorKind::SeenUnavailable`] when a first request has no fresh set.
+/// Records request ownership before sending the quote, fencing expired or replaced requests.
 Future<String> beginReceiveQuote({
   required String dbPath,
   required String networkName,
@@ -136,39 +120,51 @@ Future<void> observeSwapStatus({
   checkedAtSeconds: checkedAtSeconds,
 );
 
-/// Whether the wallet still scans the one-time key behind `account_uuid`'s swap address
-/// `address`. False once the key closed, as when an unpaid incoming reservation is
-/// reclaimed, and for any other address. Lets the app stop polling a finished swap's
-/// status.
-Future<bool> isSwapAddressScanning({
+/// Applies the effective discovery setting immediately, fencing outstanding callbacks.
+Future<void> reconcileSwapRecovery({
   required String dbPath,
   required String networkName,
-  required String accountUuid,
-  required String address,
-}) => RustLib.instance.api.crateApiOneTimeIvkIsSwapAddressScanning(
+}) => RustLib.instance.api.crateApiOneTimeIvkReconcileSwapRecovery(
   dbPath: dbPath,
   networkName: networkName,
-  accountUuid: accountUuid,
-  address: address,
 );
 
-/// "Check swap history": ends every software account's discovery pass, so the next
-/// sync starts a new one against the directory's current publication and finds a
-/// second refund or a late payout that arrived after its key stopped scanning. Once
-/// discovery is complete nothing else starts a pass. A discovery run in progress is
-/// stopped first, and the call waits for it. The caller then syncs, and
-/// [`is_swap_history_checking`] says when the check is done.
+/// Stops the network worker. Durable manual and automatic progress remains resumable.
+void cancelSwapRecovery() =>
+    RustLib.instance.api.crateApiOneTimeIvkCancelSwapRecovery();
+
+/// Runs a bounded private recovery step independently of ordinary wallet sync.
+Future<void> runSwapRecovery({
+  required String dbPath,
+  required String networkName,
+}) => RustLib.instance.api.crateApiOneTimeIvkRunSwapRecovery(
+  dbPath: dbPath,
+  networkName: networkName,
+);
+
+/// Starts or resumes an explicit older-address PIR search. `receive_end` is exclusive.
+/// Refunds require known funding memos. A funding transaction before the wallet birthday
+/// requires lowering the birthday and rescanning before its refund can be recovered.
 Future<void> checkSwapHistory({
   required String dbPath,
   required String networkName,
+  BigInt? receiveEnd,
 }) => RustLib.instance.api.crateApiOneTimeIvkCheckSwapHistory(
+  dbPath: dbPath,
+  networkName: networkName,
+  receiveEnd: receiveEnd,
+);
+
+/// Cancels explicit history searches, retaining their cursors and automatic obligations.
+Future<void> cancelSwapHistory({
+  required String dbPath,
+  required String networkName,
+}) => RustLib.instance.api.crateApiOneTimeIvkCancelSwapHistory(
   dbPath: dbPath,
   networkName: networkName,
 );
 
-/// Whether a swap history check, or a restored wallet's first one, is still running:
-/// some software account's discovery is incomplete or has lookups or late payments
-/// left. Sync continues it.
+/// Whether any enabled account has unfinished seed recovery or a manual history job.
 Future<bool> isSwapHistoryChecking({
   required String dbPath,
   required String networkName,
@@ -228,11 +224,6 @@ enum ReceiveErrorKind {
   /// Any failure the app only shows.
   other,
 
-  /// The provider's seen set could not be read fresh, so no new swap address can be
-  /// issued. Private swaps stay paused until it can, or until the user turns NEAR swap
-  /// privacy off.
-  seenUnavailable,
-
   /// The reservation expired or was retired: prepare a new address.
   stale,
 }
@@ -264,7 +255,7 @@ class SwapAddress {
           reservationIndex == other.reservationIndex;
 }
 
-/// The NEAR 1Click status fields that decide when a swap key stops scanning.
+/// The NEAR 1Click fields used for quote ownership and expected receipts.
 /// Amounts are base-unit decimal strings, as the provider reports them.
 class SwapProviderStatus {
   final String status;
