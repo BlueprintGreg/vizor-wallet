@@ -76,6 +76,9 @@ class _MobileKeystoneShieldScreenState
   late final HardwareShieldingSession _session;
   bool _qrVisualReady = false;
   bool _closed = false;
+  // A failed release can be retried, but signing work from before cancellation
+  // must never resume once the exit has been accepted.
+  bool _cancellationStarted = false;
   int _scanGeneration = 0;
   bool _done = false;
   late final String _accountUuid;
@@ -138,7 +141,7 @@ class _MobileKeystoneShieldScreenState
     try {
       _requireOriginalAccount();
       final dbPath = await getWalletDbPath();
-      if (!mounted || _closed) return;
+      if (!mounted || _closed || _cancellationStarted) return;
       _requireOriginalAccount();
       final endpoint = ref.read(rpcEndpointFailoverProvider).current;
       final shieldPczt = await _session.prepare(
@@ -147,12 +150,13 @@ class _MobileKeystoneShieldScreenState
         network: endpoint.networkName,
       );
 
-      if (!mounted || _closed) return;
+      if (!mounted || _closed || _cancellationStarted) return;
       var saplingParams = await loadSaplingParamsStatus();
+      if (!mounted || _closed || _cancellationStarted) return;
       if (shieldPczt.needsSaplingParams && !saplingParams.complete) {
         final confirmed = await _confirmSaplingParamsDownload();
         if (!confirmed) {
-          if (!mounted || _closed) return;
+          if (!mounted || _closed || _cancellationStarted) return;
           await _cancel();
           return;
         }
@@ -163,15 +167,17 @@ class _MobileKeystoneShieldScreenState
         saplingParams = await loadSaplingParamsStatus();
       }
 
+      if (!mounted || _closed || _cancellationStarted) return;
       final redactedPczt = await rust_sync.redactPcztForSigner(
         pcztBytes: shieldPczt.pcztBytes,
       );
+      if (!mounted || _closed || _cancellationStarted) return;
       final urParts = await rust_keystone.encodePcztUrParts(
         pcztBytes: redactedPczt,
         maxFragmentLen: BigInt.from(140),
       );
 
-      if (!mounted || _closed) return;
+      if (!mounted || _closed || _cancellationStarted) return;
       setState(() {
         _stage = _ShieldSignStage.showQr;
         _saplingParams = saplingParams;
@@ -189,12 +195,13 @@ class _MobileKeystoneShieldScreenState
             ? saplingParams.outputPath
             : null,
       );
-      if (!mounted || _closed) return;
+      if (!mounted || _closed || _cancellationStarted) return;
       setState(() => _pcztWithProofs = pcztWithProofs);
     } catch (e, st) {
+      if (!mounted || _closed || _cancellationStarted) return;
       log('MobileKeystoneShield._preparePczt: ERROR: $e\n$st');
       await _session.close();
-      if (!mounted || _closed) return;
+      if (!mounted || _closed || _cancellationStarted) return;
       setState(() {
         if (_stage == _ShieldSignStage.showQr) {
           _proofsFailed = true;
@@ -230,7 +237,12 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _startScanning() {
-    if (_closed || _stage != _ShieldSignStage.showQr || !_qrVisualReady) return;
+    if (_closed ||
+        _cancellationStarted ||
+        _stage != _ShieldSignStage.showQr ||
+        !_qrVisualReady) {
+      return;
+    }
     _scanGeneration++;
     _scanController ??= MobileScannerController(
       facing: CameraFacing.back,
@@ -245,7 +257,12 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _backToQr() {
-    if (_closed || _decoding || _stage != _ShieldSignStage.scanning) return;
+    if (_closed ||
+        _cancellationStarted ||
+        _decoding ||
+        _stage != _ShieldSignStage.scanning) {
+      return;
+    }
     _scanGeneration++;
     setState(() {
       _stage = _ShieldSignStage.showQr;
@@ -255,7 +272,11 @@ class _MobileKeystoneShieldScreenState
   }
 
   Future<void> _openCameraSettings() async {
-    if (_closed || _stage != _ShieldSignStage.scanning) return;
+    if (_closed ||
+        _cancellationStarted ||
+        _stage != _ShieldSignStage.scanning) {
+      return;
+    }
     _restartCameraOnResume = true;
     final opened = await CameraPermissionSettings.open();
     if (!opened) {
@@ -265,7 +286,11 @@ class _MobileKeystoneShieldScreenState
   }
 
   Future<void> _restartCameraAfterSettings() async {
-    if (_closed || _stage != _ShieldSignStage.scanning) return;
+    if (_closed ||
+        _cancellationStarted ||
+        _stage != _ShieldSignStage.scanning) {
+      return;
+    }
     final scanController = _scanController;
     if (scanController == null ||
         scanController.value.isStarting ||
@@ -283,6 +308,7 @@ class _MobileKeystoneShieldScreenState
   bool _isActiveScan(int generation) =>
       mounted &&
       !_closed &&
+      !_cancellationStarted &&
       _stage == _ShieldSignStage.scanning &&
       generation == _scanGeneration;
 
@@ -330,7 +356,7 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _handleDecodeError(Object error) {
-    if (!mounted || _decoding) return;
+    if (!mounted || _closed || _cancellationStarted || _decoding) return;
     final message = error.toString().contains('Unexpected UR type')
         ? 'Open the signed shield QR on Keystone, then scan again.'
         : 'Keep the QR code steady and fully visible.';
@@ -343,7 +369,7 @@ class _MobileKeystoneShieldScreenState
     required Uint8List signatures,
     required SaplingParamsStatus saplingParams,
   }) async {
-    if (!mounted || _closed) return;
+    if (!mounted || _closed || _cancellationStarted) return;
     _scanGeneration++;
     setState(() {
       _stage = _ShieldSignStage.broadcasting;
@@ -427,6 +453,7 @@ class _MobileKeystoneShieldScreenState
 
   /// Sends the kept signature again.
   void _retryBroadcast() {
+    if (_closed || _cancellationStarted) return;
     final pcztWithProofs = _pcztWithProofs;
     final signatures = _retrySignatures;
     final saplingParams = _saplingParams;
@@ -458,27 +485,50 @@ class _MobileKeystoneShieldScreenState
     }
   }
 
-  Future<void> _cancel() async {
-    if (_closed || _stage == _ShieldSignStage.broadcasting) return;
+  /// Shared by Cancel and sidebar navigation; the caller owns any route change.
+  Future<bool> _prepareExit() async {
+    if (_closed || _stage == _ShieldSignStage.broadcasting) return false;
     setState(() {
       _closed = true;
+      _cancellationStarted = true;
       _scanGeneration++;
+      _restartCameraOnResume = false;
     });
     final released = await _session.close();
-    if (!mounted) return;
-    if (!released) {
-      setState(() {
-        _closed = false;
-        _stage = _ShieldSignStage.failed;
-        _error = 'Could not finish cancelling. Please try again.';
-      });
-      return;
-    }
-    final message = _statusMessage;
+    if (!mounted) return false;
+    if (!released) _showCancellationResult(released: false);
+    return released;
+  }
+
+  Future<bool> _prepareSidebarExit() async {
+    final released = await _prepareExit();
+    // If the sidebar's final route checks reject the pending navigation, leave
+    // a usable return action rather than a permanently absorbed signing view.
+    if (released && mounted) _showCancellationResult(released: true);
+    return released;
+  }
+
+  void _showCancellationResult({required bool released}) {
+    setState(() {
+      _closed = false;
+      _started = true;
+      _stage = _ShieldSignStage.failed;
+      _decoding = false;
+      _retrySignatures = null;
+      _statusMessage = null;
+      _error = released
+          ? 'Shielding was cancelled.'
+          : 'Could not finish cancelling. Please try again.';
+    });
+  }
+
+  Future<void> _cancel() async {
+    final message = _stage == _ShieldSignStage.broadcastWarning
+        ? _statusMessage
+        : null;
+    if (!await _prepareExit() || !mounted) return;
     context.pop(
-      _stage == _ShieldSignStage.broadcastWarning &&
-              message != null &&
-              message.isNotEmpty
+      message != null && message.isNotEmpty
           ? MobileKeystoneShieldResult.warning(message)
           : null,
     );
@@ -496,7 +546,7 @@ class _MobileKeystoneShieldScreenState
   }
 
   void _start() {
-    if (_closed || _started) return;
+    if (_closed || _cancellationStarted || _started) return;
     setState(() => _started = true);
     unawaited(_preparePczt());
   }
@@ -509,6 +559,7 @@ class _MobileKeystoneShieldScreenState
         _stage == _ShieldSignStage.broadcastWarning;
     return MobileSidebarExitScope(
       canNavigate: !_closed && _stage != _ShieldSignStage.broadcasting,
+      onExit: _prepareSidebarExit,
       child: AbsorbPointer(
         absorbing: _closed,
         child: MobileShieldScene(
@@ -548,7 +599,7 @@ class _MobileKeystoneShieldScreenState
             scannerBuilder: (constraints, morph) =>
                 _buildScanner(constraints, morph),
             onQrReadyChanged: (ready) {
-              if (mounted && _qrVisualReady != ready) {
+              if (mounted && !_cancellationStarted && _qrVisualReady != ready) {
                 setState(() => _qrVisualReady = ready);
               }
             },
