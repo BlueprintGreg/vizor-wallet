@@ -20,6 +20,9 @@ import 'package:zcash_wallet/src/features/onboarding/mobile/mobile_keystone_scre
 import 'package:zcash_wallet/src/features/onboarding/mobile/mobile_method_selection_screen.dart';
 import 'package:zcash_wallet/src/features/onboarding/mobile/mobile_wallet_link_screens.dart';
 import 'package:zcash_wallet/src/features/onboarding/mobile/mobile_welcome_backdrop.dart';
+import 'package:zcash_wallet/src/features/onboarding/mobile/mobile_welcome_screen.dart';
+import 'package:zcash_wallet/src/features/onboarding/shared/welcome_art_assets.dart';
+import 'package:zcash_wallet/src/features/payment_links/screens/gift_claim_screen.dart';
 import 'package:zcash_wallet/src/features/onboarding/shared/welcome_button_tokens.dart';
 import '../../figma_compare/figma_compare_font_loader.dart';
 
@@ -30,6 +33,7 @@ Widget _app({
   AppThemeData theme = AppThemeData.light,
   String network = 'main',
   TargetPlatform platform = TargetPlatform.iOS,
+  EdgeInsets padding = EdgeInsets.zero,
 }) {
   final router = GoRouter(
     initialLocation: initialLocation,
@@ -60,7 +64,11 @@ Widget _app({
     child: MaterialApp.router(
       routerConfig: router,
       builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(disableAnimations: true),
+        data: MediaQuery.of(context).copyWith(
+          disableAnimations: true,
+          padding: padding,
+          viewPadding: padding,
+        ),
         child: AppTheme(data: theme, child: child!),
       ),
     ),
@@ -437,6 +445,131 @@ void main() {
     );
     expect(poster, findsOneWidget);
     expect(tester.getSize(poster).width, 394);
+  });
+
+  for (final entry in ['/welcome', '/add-account']) {
+    testWidgets('$entry adapts its composition without replacing route state', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(466, 678));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(initialLocation: entry));
+      await tester.pumpAndSettle();
+      final welcomeState = tester.state(find.byType(MobileWelcomeScreen));
+      final originalButton = tester.getRect(
+        find.byKey(const ValueKey('mobile_welcome_get_started')),
+      );
+
+      await tester.binding.setSurfaceSize(const Size(951, 669));
+      await tester.pumpAndSettle();
+      expect(
+        tester.state(find.byType(MobileWelcomeScreen)),
+        same(welcomeState),
+      );
+      final image = tester.widget<Image>(find.byType(Image).first);
+      expect(
+        (image.image as AssetImage).assetName,
+        kLandscapeWelcomePosterAsset,
+      );
+      final art = tester.getSize(find.byWidget(image));
+      expect(art.height, 669);
+      expect(art.width / art.height, closeTo(16 / 9, 0.0001));
+      for (final key in [
+        'mobile_welcome_get_started',
+        'mobile_welcome_import',
+        'mobile_welcome_redeem_card',
+      ]) {
+        final rect = tester.getRect(find.byKey(ValueKey(key)));
+        expect(rect.width, closeTo(240, 1e-8));
+        expect(rect.right, lessThan(420));
+        expect(rect.bottom, lessThanOrEqualTo(669));
+        expect(rect.top, greaterThanOrEqualTo(0));
+      }
+      expect(tester.takeException(), isNull);
+
+      await tester.binding.setSurfaceSize(const Size(466, 678));
+      await tester.pumpAndSettle();
+      expect(
+        tester.state(find.byType(MobileWelcomeScreen)),
+        same(welcomeState),
+      );
+      expect(
+        tester.getRect(
+          find.byKey(const ValueKey('mobile_welcome_get_started')),
+        ),
+        originalButton,
+      );
+
+      // The expanded composition keeps the same onboarding entry and return.
+      await tester.binding.setSurfaceSize(const Size(951, 669));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('mobile_welcome_import')));
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileMethodSelectionScreen), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Back'));
+      await tester.pumpAndSettle();
+      expect(
+        GoRouterState.of(
+          tester.element(find.byType(MobileWelcomeScreen)),
+        ).uri.path,
+        entry,
+      );
+    });
+  }
+
+  testWidgets('wide short windows can scroll to the final welcome action', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(951, 320));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_app(initialLocation: '/add-account'));
+    await tester.pumpAndSettle();
+    final gift = find.byKey(const ValueKey('mobile_welcome_redeem_card'));
+    await tester.ensureVisible(gift);
+    await tester.pumpAndSettle();
+    expect(tester.getRect(gift).bottom, lessThanOrEqualTo(320));
+    expect(tester.takeException(), isNull);
+    await tester.tap(gift);
+    await tester.pumpAndSettle();
+    expect(
+      GoRouterState.of(
+        tester.element(find.byType(GiftClaimScreen)),
+      ).uri.queryParameters['addAccount'],
+      'true',
+    );
+  });
+
+  testWidgets('composition and corner controls honor available safe width', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(850, 669));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_app(padding: const EdgeInsets.only(right: 120)));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<MobileWelcomeBackdrop>(find.byType(MobileWelcomeBackdrop))
+          .landscape,
+      isFalse,
+    );
+
+    await tester.binding.setSurfaceSize(const Size(951, 669));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<MobileWelcomeBackdrop>(find.byType(MobileWelcomeBackdrop))
+          .landscape,
+      isTrue,
+    );
+    expect(
+      tester
+          .getRect(
+            find.byKey(const ValueKey('mobile_welcome_network_settings')),
+          )
+          .right,
+      lessThanOrEqualTo(951 - 120),
+    );
+    expect(tester.takeException(), isNull);
   });
 
   for (final theme in {
