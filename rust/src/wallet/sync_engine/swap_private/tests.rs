@@ -401,7 +401,13 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
         .unwrap(),
     )
     .encode(&NETWORK);
-    let amount = ordinary + 2_000_000;
+    // Send the maximum, which needs every recovered note including the 300,000
+    // refund: the receive notes and ordinary funds alone fall short.
+    let amount =
+        crate::wallet::sync::estimate_send_max(&phone.path, NETWORK, &account.uuid, &to, None)
+            .unwrap()
+            .amount_zatoshi;
+    assert!(amount > ordinary + 2_600_000, "max {amount}");
     let spend = crate::wallet::sync::propose_send(
         &phone.path,
         NETWORK,
@@ -418,8 +424,22 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
     chain.mine_tx(&spend_tx);
     chain.mine(3);
     phone.scan(&chain);
-    let spent_one_time = 2_900_000 - phone.one_time_unspent(&account);
-    assert!(spent_one_time >= 2_000_000, "spent {spent_one_time}");
+    assert_eq!(phone.one_time_unspent(&account), 0);
+    let refund_receipts = phone.refund_receipts(&account);
+    assert_eq!(refund_receipts.len(), 1);
+    let (refund_nf, refund_spent) = refund_receipts[0];
+    assert!(refund_spent, "the phone records its refund receipt spent");
+    let revealed: Vec<[u8; 32]> = spend_tx
+        .ironwood_bundle()
+        .unwrap()
+        .actions()
+        .iter()
+        .map(|action| action.nullifier().to_bytes())
+        .collect();
+    assert!(
+        revealed.contains(&refund_nf),
+        "the mined spend reveals the refund nullifier"
+    );
     assert_eq!(phone.balance(&account), before - amount - spend.fee_zatoshi);
     assert!(phone
         .history(&account)
@@ -458,6 +478,11 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
         "spent receipts stay spent"
     );
     assert_eq!(desktop.balance(&other), phone.balance(&account));
+    assert_eq!(
+        desktop.refund_receipts(&other),
+        [(refund_nf, true)],
+        "the refund spent on the phone is recovered as spent"
+    );
     let line = final_service
         .report("second-device restore: seed walk, memo-derived refund, pages and proofs");
     println!("receiver bytes enhancement: {enhanced} bytes of funding transaction for the refund memo; {line}");

@@ -783,6 +783,29 @@ impl Wallet {
         .unwrap()
     }
 
+    /// Each refund-key receipt of `account` as its nullifier and whether a mined
+    /// transaction spends it.
+    pub(super) fn refund_receipts(&self, account: &Account) -> Vec<([u8; 32], bool)> {
+        let conn = rusqlite::Connection::open(&self.path).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT n.nf, EXISTS(SELECT 1 FROM ironwood_received_note_spends s
+                     JOIN transactions t ON t.id_tx = s.transaction_id
+                     WHERE s.ironwood_received_note_id = n.id AND t.mined_height IS NOT NULL)
+                 FROM ironwood_received_notes n
+                 JOIN ironwood_one_time_keys k ON k.id = n.one_time_key_id
+                 JOIN accounts a ON a.id = n.account_id
+                 WHERE a.uuid = ?1 AND k.purpose = 0 ORDER BY n.id",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([account.id.expose_uuid().as_bytes()], |r| {
+                Ok((r.get::<_, [u8; 32]>(0)?, r.get::<_, bool>(1)?))
+            })
+            .unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    }
+
     /// The app's spendable plus pending total for `account`, as the home screen reads it.
     pub(super) fn balance(&self, account: &Account) -> u64 {
         crate::api::sync::get_balance(self.path.clone(), "main".into(), account.uuid.clone())
