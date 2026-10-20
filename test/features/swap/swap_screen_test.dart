@@ -8780,49 +8780,6 @@ void main() {
     expect(reservations, 2);
   });
 
-  testWidgets('a missing seen set pauses private swaps with a settings link', (
-    tester,
-  ) async {
-    await _setDesktopViewport(tester);
-    await tester.pumpWidget(
-      _routerHarness(
-        GoRouter(
-          initialLocation: '/swap',
-          routes: [_swapRoute(), _swapActivityRoute()],
-        ),
-        seedSwapActivityFixtures: false,
-        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
-        reserveSwapAddress: ({required accountUuid, required direction}) =>
-            throw const ReceiveError(
-              message: 'Private swaps are paused.',
-              kind: ReceiveErrorKind.seenUnavailable,
-            ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    final container = ProviderScope.containerOf(
-      tester.element(find.byType(SwapScreen)),
-    );
-    final notifier = container.read(swapStateProvider.notifier);
-    notifier.selectDirection(SwapDirection.externalToZec);
-    notifier.updateAmount('25');
-    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
-    await notifier.showReview();
-    await tester.pumpAndSettle();
-
-    final state = container.read(swapStateProvider);
-    expect(state.quoteError, 'Private swaps are paused.');
-    expect(state.privateSwapsPaused, isTrue);
-    expect(
-      find.byKey(const ValueKey('swap_private_swaps_paused_settings')),
-      findsOneWidget,
-    );
-    // Editing the amount clears the error and the pause with it.
-    notifier.updateAmount('30');
-    await tester.pumpAndSettle();
-    expect(container.read(swapStateProvider).privateSwapsPaused, isFalse);
-  });
-
   testWidgets('toggling NEAR swap privacy drops the cached review address', (
     tester,
   ) async {

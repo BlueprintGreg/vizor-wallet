@@ -476,7 +476,6 @@ class PaymentLinkClaimWallet {
       dbPath: dbPath,
       accountName: 'Payment link claim',
       // The seed came from the link, so it may have one-time key history.
-      fresh: false,
     );
     return (
       address: imported.unifiedAddress,

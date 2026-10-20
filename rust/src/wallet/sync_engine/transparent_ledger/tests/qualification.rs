@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use transparent::keys::TransparentKeyScope;
 use zcash_client_backend::data_api::{
     transparent_ledger::{AccountLifecycle, RecoveryBlocker, WatchOrigin},
-    wallet::decrypt_and_store_transaction_with_one_time_ivks,
+    wallet::decrypt_and_store_transaction,
 };
 use zcash_keys::encoding::AddressCodec;
 use zcash_primitives::transaction::Transaction;
@@ -103,7 +103,7 @@ fn store_publicly(
 }
 
 fn store_payload(db: &mut WalletDatabase, network: WalletNetwork, tx: &Transaction, height: u32) {
-    decrypt_and_store_transaction_with_one_time_ivks(
+    decrypt_and_store_transaction(
         &network,
         db,
         tx,

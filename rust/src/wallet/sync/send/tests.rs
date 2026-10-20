@@ -1127,18 +1127,10 @@ fn swap_funding_shortfall_asks_for_ironwood_funds() {
              INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
         )
         .unwrap();
-    // A fresh account reserves at once, with a seen set fresh at its clock.
-    db.mark_one_time_account_fresh(account_id).unwrap();
-    fn none(receivers: &[[u8; 43]]) -> Vec<bool> {
-        vec![false; receivers.len()]
-    }
-    let unseen = zcash_client_sqlite::wallet::one_time_ivk::swap::ProviderSeen {
-        since: 0,
-        until: 1_000_000,
-        contains: &none,
-    };
+    db.set_one_time_recovery_enabled(account_id, true, 1_000_000)
+        .unwrap();
     let refund_index = db
-        .reserve_refund_key(account_id, 1_000_000, tip, Some(&unseen))
+        .reserve_refund_key(account_id, 1_000_000, tip)
         .unwrap()
         .unwrap()
         .key_id()

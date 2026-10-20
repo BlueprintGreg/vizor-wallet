@@ -76,7 +76,6 @@ Future<void> expectFreshObserver(VizorPaymentLink link) async {
       bip39Passphrase: '',
       birthdayHeight: BigInt.from(link.birthdayHeight),
       network: 'regtest',
-      fresh: false,
       dbPath: db,
     );
     await rust_sync.runPaymentLinkClaimSync(
@@ -119,7 +118,6 @@ Future<void> submitCompetitor(
       bip39Passphrase: '',
       birthdayHeight: BigInt.from(session.link.birthdayHeight),
       network: 'regtest',
-      fresh: false,
       dbPath: dbPath,
     );
     await rust_sync.runPaymentLinkClaimSync(

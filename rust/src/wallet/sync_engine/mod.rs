@@ -9,7 +9,7 @@ use rusqlite::{params, OptionalExtension};
 use shardtree::error::{InsertionError, QueryError, ShardTreeError};
 use tonic::transport::Channel;
 use zcash_client_backend::data_api::{
-    chain::{self, error::Error as ChainError, scan_cached_blocks_with_one_time_ivks},
+    chain::{self, error::Error as ChainError, scan_cached_blocks},
     ll::LowLevelWalletWrite,
     scanning::{ScanPriority, ScanRange},
     wallet::ConfirmationsPolicy,
@@ -61,9 +61,7 @@ pub(crate) mod mempool;
 mod private_recovery_reorg_tests;
 mod retry_progress;
 mod swap_private;
-#[cfg(test)]
-pub(crate) use swap_private::DiscoveryRun;
-pub(crate) use swap_private::{current_seen, exclusive_of_discovery, fetch_seen};
+pub(crate) use swap_private::{recover, cancel_recovery};
 #[cfg(test)]
 pub(crate) mod test_lwd;
 mod tip_cache;
@@ -3035,7 +3033,7 @@ async fn run_payment_link_claim_sync_once(
             return Ok(());
         }
 
-        let scan_result = scan_cached_blocks_with_one_time_ivks(
+        let scan_result = scan_cached_blocks(
             &network,
             &block_source,
             &mut db,
@@ -3155,7 +3153,6 @@ async fn run_sync_impl(
     let mut db =
         with_wallet_db_write_lock("sync_engine.open_db", || open_db(db_data_path, network))?;
     let mut enhancement = EnhancementSession::new(network, db_data_path);
-    let one_time_ivks = crate::wallet::one_time_ivk::supported(network);
     // The main-phase rewind budget also covers a reorg detected by the
     // initial tip response, before the scan queue has been created.
     let mut main_rewinds_this_run: u32 = 0;
@@ -3244,22 +3241,6 @@ async fn run_sync_impl(
     log::info!("[{}] sync: chain tip = {}", elapsed(), current_tip_height);
     // A new block lets work that failed on content count, and be asked, again.
     enhancement::content_failures::at_tip(db_data_path, current_tip_height);
-    // One-time key discovery runs after the tip update, since the wallet refuses a
-    // publication above its chain tip, and before the first scan batch, so its lookups
-    // become scan hints this sync scans. It never fails the sync (see
-    // [`swap_private::discover`]). Background preparation syncs skip it, as they skip
-    // the transparent follow-ups.
-    if one_time_ivks && running_mode != 2 && !should_exit() {
-        swap_private::discover(
-            &mut db,
-            db_data_path,
-            network,
-            swap_private::BEFORE_SCAN_BUDGET,
-            &should_exit,
-        )
-        .await;
-    }
-
     // Retained send-lock expiry requires a usable target height.
     crate::wallet::sync::recover_orphaned_send_locks(db_data_path, network)
         .map_err(SyncError::db)?;
@@ -3898,16 +3879,6 @@ async fn run_sync_impl(
                     {
                         return Ok(());
                     }
-                    if one_time_ivks {
-                        let verified_tip =
-                            block_height_from_u64(current_tip_height, "verified chain tip")?;
-                        // A key that fails to close keeps scanning until a later sync.
-                        if let Err(e) = with_wallet_db_write_lock("one_time_ivk.close", || {
-                            crate::wallet::one_time_ivk::close_finished_keys(&mut db, verified_tip)
-                        }) {
-                            log::warn!("Closing finished one-time keys deferred: {e}");
-                        }
-                    }
                     let released = enhancement.take_ready_resubmission();
                     // This path completes without a post-batch pass, so a
                     // transaction released by a final status observation is
@@ -4172,7 +4143,7 @@ async fn run_sync_impl(
                 );
             }
             voting_scan_end = Some(end);
-            scan_cached_blocks_with_one_time_ivks(
+            scan_cached_blocks(
                 &network,
                 &block_source,
                 &mut db,
@@ -5029,28 +5000,6 @@ async fn run_sync_impl(
                 phase: String::new(),
             });
         }
-    }
-
-    // Discovery runs again as the last follow-up, for late payments and lookups the
-    // scan made due, under its own budget, so neither completion nor the work above
-    // waits for it. A run with work due may have stored payments, so it reports
-    // `FollowupUpdated`; scan hints it adds are scanned next sync.
-    if one_time_ivks
-        && running_mode != 2
-        && !should_exit()
-        && swap_private::discover(
-            &mut db,
-            db_data_path,
-            network,
-            swap_private::AFTER_SYNC_BUDGET,
-            &should_exit,
-        )
-        .await
-    {
-        progress_fn(followup_updated_event((
-            final_scanned_height,
-            final_tip_height,
-        )));
     }
 
     Ok(())

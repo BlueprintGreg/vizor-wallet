@@ -13,6 +13,7 @@ import '../core/layout/app_process_work_policy.dart';
 import '../core/lifecycle/app_shutdown_signal.dart';
 import '../core/storage/wallet_paths.dart';
 import '../rust/api/sync.dart' as rust_sync;
+import '../rust/api/one_time_ivk.dart' as rust_swap;
 import 'account_provider.dart';
 import 'public_details_loads_provider.dart';
 import 'pending_activity_evidence_provider.dart';
@@ -1102,6 +1103,115 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   ];
 
   final Future<String> Function() _walletDbPathResolver;
+  Future<void>? _swapRecovery;
+  int _swapRecoveryGeneration = 0;
+  int _swapRecoveryTransitions = 0;
+
+  /// Starts receiver work without occupying the ordinary sync lifecycle.
+  void _startSwapRecovery() {
+    if (_swapRecovery != null ||
+        _swapRecoveryTransitions > 0 ||
+        _requiresUnlock ||
+        _walletMutationPauseCount > 0 ||
+        !canRunAppProcessWork(isInForeground: _isInForeground) ||
+        _getActiveAccountUuid() == null)
+      return;
+    _swapRecovery = _runSwapRecovery(_swapRecoveryGeneration);
+  }
+
+  /// Holds admission until native work and the resulting display refresh have finished.
+  Future<void> _runSwapRecovery(
+    int generation, {
+    bool manual = false,
+    BigInt? receiveEnd,
+  }) async {
+    try {
+      final path = await _getDbPath();
+      if (!ref.mounted ||
+          generation != _swapRecoveryGeneration ||
+          _requiresUnlock ||
+          _walletMutationPauseCount > 0 ||
+          !canRunAppProcessWork(isInForeground: _isInForeground)) {
+        if (manual) throw StateError('Swap history check was cancelled.');
+        return;
+      }
+      final network = _endpointConfig.networkName;
+      if (manual) {
+        await rust_swap.checkSwapHistory(
+          dbPath: path,
+          networkName: network,
+          receiveEnd: receiveEnd,
+        );
+      } else {
+        await rust_swap.runSwapRecovery(dbPath: path, networkName: network);
+      }
+      if (ref.mounted && !_requiresUnlock && _walletMutationPauseCount == 0) {
+        await _onSyncFollowupUpdated();
+      }
+    } catch (error) {
+      if (manual) rethrow;
+      log('Swap recovery remains pending: $error');
+    } finally {
+      _swapRecovery = null;
+    }
+  }
+
+  /// Continues durable receiver work without starting or waiting for a block sync.
+  void continueSwapRecovery() => _startSwapRecovery();
+
+  /// Starts or resumes explicit history recovery, including a caller-selected index bound.
+  Future<void> checkSwapHistory({BigInt? receiveEnd}) async {
+    if (_swapRecoveryTransitions > 0) {
+      throw StateError('A swap history transition is already running.');
+    }
+    _swapRecoveryTransitions++;
+    try {
+      final generation = _swapRecoveryGeneration + 1;
+      await _stopSwapRecovery();
+      if (!ref.mounted ||
+          generation != _swapRecoveryGeneration ||
+          _requiresUnlock ||
+          _walletMutationPauseCount > 0) {
+        throw StateError('Swap history check was cancelled.');
+      }
+      final work = _runSwapRecovery(
+        generation,
+        manual: true,
+        receiveEnd: receiveEnd,
+      );
+      _swapRecovery = work;
+      await work;
+    } finally {
+      _swapRecoveryTransitions--;
+    }
+  }
+
+  /// Cancels network work and invalidates a worker still resolving its wallet path.
+  Future<void> _stopSwapRecovery() async {
+    ++_swapRecoveryGeneration;
+    rust_swap.cancelSwapRecovery();
+    try {
+      await _swapRecovery;
+    } catch (_) {
+      // The initiating manual caller receives its error. Draining must still allow
+      // locking, wallet mutations and durable cancellation to finish.
+    }
+  }
+
+  /// Pauses the manual job without erasing its durable cursor.
+  Future<void> cancelSwapHistory() async {
+    _swapRecoveryTransitions++;
+    try {
+      await _stopSwapRecovery();
+      await rust_swap.cancelSwapHistory(
+        dbPath: await _getDbPath(),
+        networkName: _endpointConfig.networkName,
+      );
+    } finally {
+      _swapRecoveryTransitions--;
+    }
+  }
+
   bool _isSyncing = false;
   bool _recoverySettingTransition = false;
   final RecoveryRestartGate _recoveryRestartGate = RecoveryRestartGate();
@@ -1267,6 +1377,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _syncStartDeferred = false;
       _deferredSyncLatestTipHeight = null;
       rust_sync.cancelFullSync();
+      ++_swapRecoveryGeneration;
+      rust_swap.cancelSwapRecovery();
       _syncSub?.cancel();
       _mempoolSub?.cancel();
       // Cancel the Rust-side observer too; cancelling the Dart
@@ -1546,6 +1658,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _isSyncing = false;
     _stopPolling();
     _stopSeedImportSyncWindow();
+    ++_swapRecoveryGeneration;
+    rust_swap.cancelSwapRecovery();
     rust_sync.cancelFullSync();
     _syncSub?.cancel();
     _syncSub = null;
@@ -2222,7 +2336,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   bool needsPauseForWalletMutation() =>
       _walletMutationSyncPauseSnapshot().hadWorkToPause ||
-      _recoveryStatusReadCount > 0;
+      _recoveryStatusReadCount > 0 ||
+      _swapRecovery != null;
 
   void clearCachedWalletDbPath() {
     _cachedDbPath = null;
@@ -2364,6 +2479,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     final pause = _walletMutationSyncPauseSnapshot();
 
     try {
+      await _stopSwapRecovery();
       if (pause.hadWorkToPause) {
         // The pause records whether to restart; a start queued behind the
         // stopped sync would otherwise outlive it.
@@ -2469,10 +2585,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     rust_sync.setSyncMode(mode: 0);
     rust_sync.cancelFullSync();
 
+    await _stopSwapRecovery();
     await _waitForRustTasksToStop(
       timeoutMs: 5000,
-      onSyncTimeout:
-          'SyncNotifier: timed out waiting for Rust sync to stop during sign-out',
+      onSyncTimeout: 'SyncNotifier: timed out waiting for Rust sync to stop during sign-out',
       onMempoolTimeout:
           'SyncNotifier: timed out waiting for mempool observer to stop during '
           'sign-out',
@@ -2608,6 +2724,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(false);
     ++_foregroundEpoch;
     if (!canRunAppProcessWork(isInForeground: _isInForeground)) {
+      ++_swapRecoveryGeneration;
+      rust_swap.cancelSwapRecovery();
       _stopPolling();
       _queuedSyncStart = null;
     }
@@ -2804,6 +2922,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         !hasAccounts) {
       return;
     }
+    _startSwapRecovery();
     _pollCheckInFlight = true;
     _resumeTipCheckPending = false;
     _stopPolling();
@@ -3068,6 +3187,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (!ref.mounted || _requiresUnlock) {
       return;
     }
+    _startSwapRecovery();
     final progressEventVersion = ++_progressEventVersion;
     final epoch = _sensitiveStateEpoch;
     if (event.scannedHeight != _lastLoggedHeight) {

@@ -363,8 +363,6 @@ class PayAmountStep extends StatelessWidget {
             SwapQuoteErrorText(
               message: quoteError,
               textKey: const ValueKey('pay_amount_error'),
-              privateSwapsPaused:
-                  state.privateSwapsPaused && quoteError == state.quoteError,
             ),
           ],
         ],

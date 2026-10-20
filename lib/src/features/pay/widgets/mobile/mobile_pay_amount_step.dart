@@ -93,10 +93,6 @@ class MobilePayAmountStep extends StatelessWidget {
                     message: balanceExceeded ? 'Not enough ZEC' : errorText!,
                     textKey: const ValueKey('mobile_pay_amount_error'),
                     maxLines: 2,
-                    privateSwapsPaused:
-                        !balanceExceeded &&
-                        state.privateSwapsPaused &&
-                        errorText == state.quoteError,
                   ),
                 ],
               ],

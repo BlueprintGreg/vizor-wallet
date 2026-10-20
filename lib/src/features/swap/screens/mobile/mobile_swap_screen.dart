@@ -320,9 +320,9 @@ class _MobileSwapScreenState extends ConsumerState<MobileSwapScreen> {
     final migrationSpendable = ref.watch(
       ironwoodMigrationAwareDisplaySpendableProvider(activeAccountUuid),
     );
-    final zecAvailableText = ZecAmount.fromZatoshi(
-      migrationSpendable,
-    ).pretty(denomStyle: ZecDenomStyle.upper).toString();
+    final zecAvailableText = ZecAmount.fromZatoshi(migrationSpendable)
+        .pretty(denomStyle: ZecDenomStyle.upper)
+        .toString();
 
     void openReview() {
       unawaited(() async {
@@ -419,9 +419,6 @@ class _MobileSwapScreenState extends ConsumerState<MobileSwapScreen> {
                           message: quoteError,
                           textKey: const ValueKey('swap_quote_error_message'),
                           maxLines: 2,
-                          privateSwapsPaused:
-                              swapState.privateSwapsPaused &&
-                              quoteError == swapState.quoteError,
                         ),
                       ],
                     ],

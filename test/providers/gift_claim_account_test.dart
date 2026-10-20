@@ -1860,7 +1860,6 @@ class _GiftAccountRustApi implements RustLibApi {
       network: network,
       dbPath: dbPath,
       accountName: firstAccountName,
-      fresh: false,
     );
     importedBip39Passphrase = bip39Passphrase;
     importedAdditionalAccount = additionalAccountIndices.contains(1);

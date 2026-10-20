@@ -8,7 +8,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 # Receiver adapter is unpublished; the remaining wallet family uses root patches.
-zakura-pir-receiver = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0", features = ["wallet"] }
+zakura-pir-receiver = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0", features = ["wallet"] }
 zakura-one-time-ivk = "=0.0.1-rc1"
 zakura-near-intents = "=0.0.1-rc1"
 zakura-pir-client = { version = "=0.0.1-rc0", default-features = false, features = ["enhance", "status", "transparent", "wallet", "sqlite", "lightwalletd"] }
@@ -248,16 +248,16 @@ opt-level = 3
 
 # Keep the wallet adapters and the voting facade on the same library source.
 [patch.crates-io]
-zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-wallet-lib = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
+zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-wallet-lib = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
 
-zakura-pir-client = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-pir-protocol = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-filters = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-receiver-crypto = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-receiver-directory = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-receiver-pir = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-one-time-ivk = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
-zakura-near-intents = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "2b12d6ebd4d0ed797aef389e4736efffbae14ea0" }
+zakura-pir-client = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-pir-protocol = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-filters = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-receiver-crypto = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-receiver-directory = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-receiver-pir = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-one-time-ivk = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }
+zakura-near-intents = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "d3bb177af13a39b15b8f6a8eda1984070ef3bae0" }

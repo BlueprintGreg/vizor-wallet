@@ -306,8 +306,6 @@ class _SwapComposerPanelState extends State<SwapComposerPanel> {
                 message: quoteError,
                 textKey: const ValueKey('swap_quote_error_message'),
                 maxLines: 2,
-                privateSwapsPaused:
-                    state.privateSwapsPaused && quoteError == state.quoteError,
               ),
             ],
           ],

@@ -15,25 +15,22 @@ void main() {
     service = SwapReceiveReservationService(store: (_) async => store);
   });
 
-  test(
-    'persists unknown request just before contacting provider and saves response',
-    () async {
-      final quote = await service.quote('account', BigInt.one, (
-        beforeSend,
-      ) async {
-        // Local validation and token lookups happen before anything is saved.
-        expect(store.events, isEmpty);
-        await beforeSend(_deadline);
-        expect(store.events, ['begin']);
-        store.events.add('network');
-        return _quote;
-      });
-      expect(quote.receiveRequestId, 'request-1');
-      expect(quote.depositInstruction, same(_quote.depositInstruction));
-      expect(store.events, ['begin', 'network', 'accept:request-1']);
-      expect(store.deadlines, [_deadline]);
-    },
-  );
+  test('persists unknown request just before contacting provider and saves response', () async {
+    final quote = await service.quote('account', BigInt.one, (
+      beforeSend,
+    ) async {
+      // Local validation and token lookups happen before anything is saved.
+      expect(store.events, isEmpty);
+      await beforeSend(_deadline);
+      expect(store.events, ['begin']);
+      store.events.add('network');
+      return _quote;
+    });
+    expect(quote.receiveRequestId, 'request-1');
+    expect(quote.depositInstruction, same(_quote.depositInstruction));
+    expect(store.events, ['begin', 'network', 'accept:request-1']);
+    expect(store.deadlines, [_deadline]);
+  });
 
   test(
     'explicit amount rejection releases its watch but timeout stays unknown',
@@ -288,12 +285,6 @@ class _Store implements ReceiveReservationStore {
   @override
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {
     events.add('refund:$refundIndex:${quote.depositInstruction.address}');
-  }
-
-  @override
-  Future<bool> isScanning(String address) async {
-    events.add('scanning:$address');
-    return true;
   }
 
   @override

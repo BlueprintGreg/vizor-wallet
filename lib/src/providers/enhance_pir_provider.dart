@@ -10,6 +10,7 @@ import '../core/storage/linux_keyring_coordinator.dart';
 import '../core/storage/wallet_paths.dart';
 import '../features/migration/services/ironwood_migration_background_credential_store.dart';
 import '../rust/api/sync.dart' as rust_sync;
+import '../rust/api/one_time_ivk.dart' as rust_swap;
 import 'account_provider.dart';
 import 'sync_provider.dart';
 
@@ -395,7 +396,7 @@ final nearSwapPrivacyPreferenceStoreProvider =
       ),
     );
 
-/// Install-scoped opt-in for new swap addresses. Recovery of existing keys is independent.
+/// Install-scoped opt-in for private addresses and automatic receiver recovery.
 class NearSwapPrivacyNotifier extends Notifier<bool> {
   @override
   bool build() {
@@ -419,13 +420,19 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
           .runMutation(
             () => ref.read(syncProvider.notifier).withRecoverySettingPaused(
               () async {
-        // Recheck after draining work so a new address cannot race its parent setting.
-        if (enabled && !ref.read(enhancePirProvider)) return;
-        await ref
-            .read(nearSwapPrivacyPreferenceStoreProvider)
-            .writeEnabled(enabled);
-        rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
-        state = enabled;
+                // Recheck after draining work so a new address cannot race its parent setting.
+                if (enabled && !ref.read(enhancePirProvider)) return;
+                await ref
+                    .read(nearSwapPrivacyPreferenceStoreProvider)
+                    .writeEnabled(enabled);
+                rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
+                final path = await getExistingWalletDbPath();
+                if (path != null)
+                  await rust_swap.reconcileSwapRecovery(
+                    dbPath: path,
+                    networkName: ref.read(appBootstrapProvider).network,
+                  );
+                state = enabled;
               },
             ),
           );
@@ -441,6 +448,12 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
     if (!state) return;
     await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(false);
     rust_sync.setNearSwapPrivacyEnabled(enabled: false);
+    final path = await getExistingWalletDbPath();
+    if (path != null)
+      await rust_swap.reconcileSwapRecovery(
+        dbPath: path,
+        networkName: ref.read(appBootstrapProvider).network,
+      );
     state = false;
   }
 

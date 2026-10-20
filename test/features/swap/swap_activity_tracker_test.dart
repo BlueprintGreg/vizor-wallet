@@ -36,9 +36,8 @@ void main() {
       expect(provider.statusRequests, ['unbroadcast']);
 
       provider.statusRequests.clear();
-      await SwapActivityStatusRefresher(
-        tracker: tracker,
-      ).refreshOpenActivities(accountUuid: 'account-1', force: true);
+      await SwapActivityStatusRefresher(tracker: tracker)
+          .refreshOpenActivities(accountUuid: 'account-1', force: true);
       expect(provider.statusRequests, ['unbroadcast']);
     },
   );
@@ -67,9 +66,8 @@ void main() {
       await tracker.saveIntents(accountUuid: 'account-1', intents: [intent]);
 
       // Home/Activity must also keep an unclaimed external deposit fresh.
-      await SwapActivityStatusRefresher(
-        tracker: tracker,
-      ).refreshOpenActivities(accountUuid: 'account-1');
+      await SwapActivityStatusRefresher(tracker: tracker)
+          .refreshOpenActivities(accountUuid: 'account-1');
       expect(provider.statusRequests, ['external']);
       final waiting = await tracker.loadIntents(accountUuid: 'account-1');
       expect(waiting.single.status, SwapIntentStatus.awaitingExternalDeposit);
@@ -169,9 +167,8 @@ void main() {
       depositAddress: 'unknown',
       status: SwapIntentStatus.complete,
     );
-    await SwapActivityStatusRefresher(
-      tracker: tracker,
-    ).refreshOpenActivities(accountUuid: 'account-1', force: true);
+    await SwapActivityStatusRefresher(tracker: tracker)
+        .refreshOpenActivities(accountUuid: 'account-1', force: true);
 
     expect(provider.statusRequests, ['unknown', 'unknown']);
     final completed = await tracker.loadIntents(accountUuid: 'account-1');
@@ -474,108 +471,35 @@ void main() {
     expect(provider.statusRequests, isEmpty);
   });
 
-  group('an incoming swap that expired unpaid', () {
-    final now = DateTime.now().toUtc();
-    SwapIntent expired({
-      required String id,
-      required DateTime deadline,
-      SwapDirection direction = SwapDirection.externalToZec,
-    }) =>
+  test('expired incoming swaps need no scan-watch reclaim polling', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+    );
+    await tracker.saveIntents(
+      accountUuid: 'account-1',
+      intents: [
         _intent(
-          id: id,
-          depositAddress: id,
+          id: 'expired',
+          depositAddress: 'expired',
           depositTxHash: null,
           status: SwapIntentStatus.expired,
         ).copyWith(
-          direction: direction,
-          oneClickRecipient: 'u1swap-$id',
-          depositDeadline: deadline,
-          lastStatusCheckedAt: deadline,
-        );
-
-    test('is polled until the wallet reclaims its swap key', () async {
-      final store = _MemorySwapActivityStore();
-      final provider = _StatusSwapProvider({
-        'reclaim': _snapshot(
-          id: 'reclaim',
-          depositAddress: 'reclaim',
-          status: SwapIntentStatus.awaitingExternalDeposit,
+          direction: SwapDirection.externalToZec,
+          oneClickRecipient: 'u1swap',
+          depositDeadline: DateTime.now().toUtc().subtract(
+            const Duration(days: 2),
+          ),
         ),
-      });
-      var scanning = true;
-      final checks = <String>[];
-      final recorded = <String>[];
-      final tracker = SwapActivityTracker(
-        activityStore: store,
-        swapProvider: provider,
-        onProviderSnapshot: (intent, _, _) async => recorded.add(intent.id),
-        isSwapAddressScanning: (intent) async {
-          checks.add(intent.oneClickRecipient!);
-          return scanning;
-        },
-      );
-      final refresher = SwapActivityStatusRefresher(tracker: tracker);
-      await tracker.saveIntents(
-        accountUuid: 'account-1',
-        intents: [
-          expired(
-            id: 'reclaim',
-            deadline: now.subtract(
-              swapReceiveReclaimGrace + const Duration(minutes: 1),
-            ),
-          ),
-          // Too early for the wallet to reclaim, and long past its key's scanning.
-          expired(id: 'early', deadline: now.subtract(const Duration(hours: 1))),
-          expired(
-            id: 'finished',
-            deadline: now.subtract(
-              swapKeyCompletionLimit + const Duration(days: 1),
-            ),
-          ),
-          expired(
-            id: 'outgoing',
-            deadline: now.subtract(const Duration(hours: 3)),
-            direction: SwapDirection.zecToExternal,
-          ),
-        ],
-      );
-      Future<void> refresh() => refresher.refreshOpenActivities(
-        accountUuid: 'account-1',
-        force: true,
-      );
-
-      // The status reaches the wallet, which reclaims with it.
-      await refresh();
-      expect(provider.statusRequests, ['reclaim']);
-      expect(recorded, ['reclaim']);
-      expect(checks, ['u1swap-reclaim']);
-      final polled = (await tracker.loadIntents(accountUuid: 'account-1'))
-          .firstWhere((intent) => intent.id == 'reclaim');
-      expect(polled.status, SwapIntentStatus.expired);
-
-      // Polls are spaced out.
-      await refresh();
-      expect(provider.statusRequests, ['reclaim']);
-
-      // Once the key closes, polling stops for good.
-      store.savedRecords = [
-        for (final record in store.savedRecords)
-          record.id == 'reclaim'
-              ? SwapIntentRecord.fromIntent(
-                  polled.copyWith(
-                    lastStatusCheckedAt: now.subtract(
-                      swapReclaimStatusInterval,
-                    ),
-                  ),
-                )
-              : record,
-      ];
-      scanning = false;
-      await refresh();
-      await refresh();
-      expect(provider.statusRequests, ['reclaim']);
-      expect(checks, ['u1swap-reclaim', 'u1swap-reclaim']);
-    });
+      ],
+    );
+    await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: [],
+    );
+    expect(provider.statusRequests, isEmpty);
   });
 
   test('status refresh over Tor names the blocked route', () async {
@@ -586,8 +510,7 @@ void main() {
         'NEAR Intents status failed (403): Request blocked',
         operation: 'status',
         statusCode: 403,
-        responseBody:
-            '<html><h1>Request blocked</h1><p>Generated by cloudfront</p></html>',
+        responseBody: '<html><h1>Request blocked</h1><p>Generated by cloudfront</p></html>',
       );
     };
     final tracker = SwapActivityTracker(

@@ -51,10 +51,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zcash_client_backend::{
-    data_api::{one_time_ivk::OneTimeIvkRead as _, WalletRead},
-    proto::service::RawTransaction,
-};
+use zcash_client_backend::{data_api::WalletRead, proto::service::RawTransaction};
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::{BlockHeight, BranchId};
 
@@ -935,35 +932,6 @@ fn trial_decrypt_account_uuids(
         tx,
         &ufvks,
     );
-    // Payouts to open swap keys, which have their own incoming viewing keys. These are
-    // the keys `decrypt_and_store_transaction_with_one_time_ivks` selects to store the
-    // payment.
-    let decrypted = if tx.ironwood_bundle().is_some() {
-        let receivers: Vec<_> = decrypted
-            .ironwood_outputs()
-            .iter()
-            .map(|output| output.note().0.recipient())
-            .collect();
-        let keys = db
-            .get_one_time_transaction_keys(tx.txid(), None, &receivers)
-            .map_err(|e| format!("get one-time keys: {e}"))?;
-        // With no keys, a second pass would repeat the first.
-        if keys.is_empty() {
-            decrypted
-        } else {
-            zcash_client_backend::decrypt_transaction_with_one_time_ivks(
-                &network,
-                None,
-                Some(chain_tip_height),
-                tx,
-                &ufvks,
-                keys,
-            )
-        }
-    } else {
-        decrypted
-    };
-
     let mut accounts = BTreeSet::new();
     for output in decrypted.sapling_outputs() {
         accounts.insert(output.account().expose_uuid().to_string());
@@ -1471,16 +1439,14 @@ mod tests {
         RawTransaction { data, height: 0 }
     }
 
-    /// The observer stores a mempool payout to an open swap key as pending, credited
-    /// to that key, through the same path that stores full transactions.
+    /// Mempool observation never discovers derived receiver payments, even for a reserved key.
     #[test]
-    fn payout_to_open_swap_key_is_stored_as_pending_with_its_key() {
+    fn receiver_payouts_wait_for_confirmed_pir_recovery() {
         use crate::wallet::db::{open_wallet_db_with_timeout, WALLET_DB_BUSY_TIMEOUT};
         use secrecy::SecretVec;
         use std::cell::RefCell;
         use zakura_one_time_ivk::{KeyId, Purpose};
         use zcash_client_backend::data_api::{Account as _, WalletRead as _, WalletWrite};
-        use zcash_client_sqlite::wallet::one_time_ivk::swap::ProviderSeen;
 
         crate::wallet::network::configure_regtest_nu6_3_activation_height(100).unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -1495,7 +1461,7 @@ mod tests {
             "swap",
         )
         .unwrap();
-        // Issue the account's first incoming address, as a fresh account can at once.
+        // Register the initial receive window.
         let tip = BlockHeight::from_u32(110);
         let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
         db.update_chain_tip(tip).unwrap();
@@ -1507,17 +1473,10 @@ mod tests {
         )
         .unwrap();
         let account_id = crate::wallet::keys::parse_account_uuid(&account).unwrap();
-        db.mark_one_time_account_fresh(account_id).unwrap();
         let now = crate::wallet::one_time_ivk::now().unwrap();
-        fn none(receivers: &[[u8; 43]]) -> Vec<bool> {
-            vec![false; receivers.len()]
-        }
-        let unseen = ProviderSeen {
-            since: 0,
-            until: now,
-            contains: &none,
-        };
-        db.prepare_receive_reservation(account_id, now, tip, Some(&unseen))
+        db.set_one_time_recovery_enabled(account_id, true, now)
+            .unwrap();
+        db.prepare_receive_reservation(account_id, now)
             .unwrap()
             .unwrap();
         let fvk = db
@@ -1530,8 +1489,6 @@ mod tests {
             .unwrap()
             .clone();
         drop(db);
-        // The receiver of the incoming key at `index`. Only the first is registered, so,
-        // as in block scanning, a payout to the second stays unmatched.
         let receiver = |index: u64| -> orchard::Address {
             KeyId::new(Purpose::Receive, index)
                 .derive(&fvk)
@@ -1560,21 +1517,14 @@ mod tests {
         let payout = ironwood_payment(receiver(0), 100_000);
         handle(&payout);
 
-        let events = events.into_inner();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].account_uuids, vec![account]);
-        let txid = Transaction::read(&payout.data[..], BranchId::Sapling)
-            .unwrap()
-            .txid();
-        let (mined_height, value, has_key): (Option<u32>, u64, bool) = conn
+        assert!(events.into_inner().is_empty());
+        let count: u32 = conn
             .query_row(
-                "SELECT t.mined_height, n.value, n.one_time_key_id IS NOT NULL
-                 FROM ironwood_received_notes n JOIN transactions t ON t.id_tx = n.transaction_id
-                 WHERE t.txid = ?1",
-                [txid.as_ref()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                "SELECT COUNT(*) FROM ironwood_received_notes WHERE one_time_key_id IS NOT NULL",
+                [],
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!((mined_height, value, has_key), (None, 100_000, true));
+        assert_eq!(count, 0);
     }
 }

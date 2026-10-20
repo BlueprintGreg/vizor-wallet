@@ -925,8 +925,6 @@ class SwapNotifier extends Notifier<SwapState> {
         reviewVisible: false,
         quoteLoading: false,
         quoteError: _friendlyQuoteError(e),
-        privateSwapsPaused:
-            receiveError?.kind == ReceiveErrorKind.seenUnavailable,
         clearReview: true,
       );
     }

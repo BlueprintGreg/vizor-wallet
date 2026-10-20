@@ -668,7 +668,8 @@ void main() {
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: () async => begun++,
+              begin: (_) async => begun++,
+              cancel: () async {},
               isChecking: () => checking.future,
               pollInterval: Duration.zero,
             ),

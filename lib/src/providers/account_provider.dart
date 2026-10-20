@@ -405,7 +405,6 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
           network: network,
           dbPath: dbPath,
           accountName: accountName,
-          fresh: true,
         );
         accountUuid = result.accountUuid;
         unifiedAddress = result.unifiedAddress;
@@ -542,7 +541,6 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
           network: network,
           dbPath: dbPath,
           accountName: accountName,
-          fresh: true,
         );
         createdUuid = created.accountUuid;
         createdAddress = created.unifiedAddress;

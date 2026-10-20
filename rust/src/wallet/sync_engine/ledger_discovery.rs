@@ -9,7 +9,7 @@ use transparent::keys::TransparentKeyScope;
 use zcash_client_backend::{
     data_api::{
         ll::LowLevelWalletWrite, transparent_ledger::TransparentLedgerRead,
-        wallet::decrypt_and_store_transaction_with_one_time_ivks, Account as _, WalletRead,
+        wallet::decrypt_and_store_transaction, Account as _, WalletRead,
     },
     proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, RawTransaction},
 };
@@ -632,7 +632,7 @@ async fn store_history(
             return Ok(None);
         }
         with_wallet_db_write_lock("ledger_discovery.transaction", || {
-            decrypt_and_store_transaction_with_one_time_ivks(
+            decrypt_and_store_transaction(
                 &network,
                 db,
                 &tx,

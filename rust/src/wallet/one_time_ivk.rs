@@ -3,10 +3,7 @@
 //! addresses.
 
 use zakura_near_intents::NearStatus;
-use zcash_client_backend::data_api::{
-    one_time_ivk::{restore::OneTimeIvkRestoreRead as _, OneTimeIvkRead as _},
-    Account as _, WalletRead,
-};
+use zcash_client_backend::data_api::{Account as _, WalletRead};
 use zcash_client_sqlite::{wallet::one_time_ivk::OneTimeKey, AccountUuid};
 use zcash_keys::address::{Address, UnifiedAddress};
 use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
@@ -18,12 +15,11 @@ use super::{
     },
     keys::parse_account_uuid,
     network::WalletNetwork,
-    sync_engine::{enhancement::EnhancementPolicy, exclusive_of_discovery},
+    sync_engine::enhancement::EnhancementPolicy,
 };
 
 /// Whether `network` runs one-time IVKs at all: wherever Private queries could (see
-/// [`EnhancementPolicy`]), whatever the switches say. Discovery, key closing and
-/// provider statuses need nothing more; new addresses do (see [`require_new_address`]).
+/// [`EnhancementPolicy`]). Discovery and issuance also require the effective opt-in.
 pub(crate) fn supported(network: WalletNetwork) -> bool {
     EnhancementPolicy::for_preference(network, true).is_private()
 }
@@ -109,35 +105,6 @@ pub(crate) fn encode_address(key: &OneTimeKey, network: WalletNetwork) -> Result
         .to_string())
 }
 
-/// Whether the wallet still scans `account`'s one-time key behind swap address
-/// `address`, as [`encode_address`] encodes it. False once the key closed, as when an
-/// unpaid reservation is reclaimed, and for an address that is not such a key's. Another
-/// account's open key with the same purpose and index does not count.
-pub(crate) fn is_address_scanning(
-    db: &WalletDatabase,
-    network: WalletNetwork,
-    account: AccountUuid,
-    address: &str,
-) -> Result<bool, String> {
-    let Some(Address::Unified(address)) = Address::decode(&network, address) else {
-        return Ok(false);
-    };
-    let Some(receiver) = address.orchard() else {
-        return Ok(false);
-    };
-    let Some(key) = db
-        .get_one_time_key_for_receiver(account, receiver)
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(false);
-    };
-    Ok(db
-        .get_one_time_scanning_keys()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|scanning| *scanning.account_id() == account && scanning.key_id() == key.key_id()))
-}
-
 /// The current Unix time in seconds, as the library's lifecycle takes it.
 pub(crate) fn now() -> Result<i64, String> {
     std::time::SystemTime::now()
@@ -162,62 +129,32 @@ pub(crate) fn with_db<T, E: From<String>>(
     })
 }
 
-/// Declares `uuid`'s account newly created from a seed generated for it, so it has no
-/// one-time payments to restore (see `WalletDb::mark_one_time_account_fresh`). Account
-/// creation calls it before returning, so before any sync sees the account. A failure
-/// leaves the account treated as restored, which costs only lookups.
-pub(crate) fn mark_fresh(path: &str, network: WalletNetwork, uuid: &str) {
-    let marked = with_db(path, network, uuid, |db, account| {
-        db.mark_one_time_account_fresh(account)
-            .map_err(|e| e.to_string())
-    });
-    if let Err(e) = marked {
-        log::warn!("one-time IVKs: could not mark a new account fresh: {e}");
+/// Mirrors the install setting into every eligible account before any recovery or issuance.
+pub(crate) fn reconcile_enabled(
+    db: &mut WalletDatabase,
+    network: WalletNetwork,
+) -> Result<(), String> {
+    let enabled = supported(network)
+        && EnhancementPolicy::current(network).is_private()
+        && crate::api::sync::near_swap_privacy_enabled();
+    for account in software_accounts(db)? {
+        db.set_one_time_recovery_enabled(account, enabled, now()?)
+            .map_err(|e| e.to_string())?;
     }
+    Ok(())
 }
 
-/// Whether any software account's swap history check is unfinished: its discovery is
-/// incomplete, or has lookups or late payments left. Sync runs discovery until it is not.
+/// Reports a durable manual job or an enabled account's unfinished seed walk.
 pub(crate) fn history_pending(db: &WalletDatabase) -> Result<bool, String> {
-    let now = now()?;
     for account in software_accounts(db)? {
-        let status = db
-            .one_time_discovery(account, now)
+        let state = db
+            .one_time_recovery(account, now()?)
             .map_err(|e| e.to_string())?;
-        if status.is_some_and(|s| !s.complete || !s.lookups.is_empty() || !s.witnesses.is_empty()) {
+        if state.enabled && (!state.restore_complete || state.manual.is_some_and(|m| m.active)) {
             return Ok(true);
         }
     }
     Ok(false)
-}
-
-/// Ends every software account's discovery pass, as "Check swap history" asks (see
-/// `check_swap_history`), once no discovery run holds the wallet at `path`. A run in
-/// progress is asked to stop first, so it cannot write the old pass back (see
-/// [`exclusive_of_discovery`]).
-pub(crate) fn recheck_history(path: &str, network: WalletNetwork) -> Result<(), String> {
-    exclusive_of_discovery(path, || {
-        with_wallet_db_write_lock("one_time_ivk.recheck", || {
-            let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT)?;
-            for account in software_accounts(&db)? {
-                db.recheck_one_time_key_history(account)
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        })
-    })
-}
-
-/// Stops scanning finished one-time keys, under the wallet write lock, once sync has
-/// scanned to `tip`, the chain tip it revalidated this session. Sync calls it only where
-/// [`supported`].
-pub(crate) fn close_finished_keys(db: &mut WalletDatabase, tip: BlockHeight) -> Result<(), String> {
-    let now = now()?;
-    for account in software_accounts(db)? {
-        db.close_finished_one_time_keys(account, now, tip)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -226,313 +163,6 @@ mod tests {
     use secrecy::SecretVec;
     use zakura_one_time_ivk::{KeyId, Purpose};
     use zcash_client_backend::data_api::WalletWrite;
-    use zcash_client_sqlite::wallet::one_time_ivk::swap::{ProviderSeen, ReservationPolicy};
-
-    /// A seen set fresh at `now` that holds no receiver.
-    fn unseen(now: i64) -> ProviderSeen<'static> {
-        fn none(receivers: &[[u8; 43]]) -> Vec<bool> {
-            vec![false; receivers.len()]
-        }
-        ProviderSeen {
-            since: 0,
-            until: now,
-            contains: &none,
-        }
-    }
-
-    /// Creates a regtest wallet at `path` whose first account, from the zero seed, is
-    /// scanned through block 110, and returns that account.
-    fn scanned_wallet(path: &str) -> (WalletDatabase, AccountUuid) {
-        let network = WalletNetwork::Regtest;
-        super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
-        let (uuid, _) = super::super::keys::init_db_and_create_account(
-            path,
-            network,
-            &SecretVec::new(vec![0; 32]),
-            Some(100),
-            "POC",
-        )
-        .unwrap();
-        let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
-        db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
-        // Model completed ordinary scanning.
-        rusqlite::Connection::open(path)
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO blocks(height,hash,time,sapling_tree) VALUES(110,zeroblob(32),0,X'000000');
-                 DELETE FROM scan_queue;
-                 INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
-            )
-            .unwrap();
-        (db, parse_account_uuid(&uuid).unwrap())
-    }
-
-    /// A swap history check waits for a discovery run in progress, after asking it to
-    /// stop, so a pass the run writes before it stops cannot outlive the reset and
-    /// report the check done.
-    #[test]
-    fn a_running_discovery_cannot_restore_a_rechecked_pass() {
-        use zcash_client_backend::data_api::one_time_ivk::restore::{
-            EnumerationCursor, OneTimeIvkRestoreWrite as _, PublicationEnd,
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
-        let (mut db, account) = scanned_wallet(&path);
-        let now = now().unwrap();
-        let publication = PublicationEnd {
-            height: BlockHeight::from_u32(110),
-            hash: [0; 32],
-            tree_size: 0,
-        };
-        // Whether the account has a pass whose filter checks are done.
-        let checked = |db: &WalletDatabase| {
-            db.one_time_discovery(account, now)
-                .unwrap()
-                .unwrap()
-                .enumeration
-                .is_none()
-        };
-
-        // A run is in flight, between reading the pass and writing its filter checks.
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let run = runtime.block_on(crate::wallet::sync_engine::DiscoveryRun::start(&path));
-        let recheck = std::thread::spawn({
-            let path = path.clone();
-            move || recheck_history(&path, WalletNetwork::Regtest)
-        });
-        while !run.preempted() {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!recheck.is_finished());
-
-        // Its last write lands before the reset rather than after it.
-        for purpose in [Purpose::Receive, Purpose::Refund] {
-            assert!(with_wallet_db_write_lock("test", || db
-                .record_one_time_filter_checks(
-                    account,
-                    publication,
-                    purpose,
-                    &[],
-                    EnumerationCursor::default(),
-                    true,
-                    now,
-                )
-                .unwrap()));
-        }
-        assert!(checked(&db));
-        drop(run);
-        recheck.join().unwrap().unwrap();
-        assert!(!checked(&db));
-        assert!(history_pending(&db).unwrap());
-    }
-
-    /// A restored account's swap history is unchecked until discovery runs, which needs
-    /// neither privacy switch, and new addresses wait for it.
-    #[test]
-    fn restored_accounts_wait_for_discovery_with_both_settings_off() {
-        assert!(!crate::api::sync::enhance_pir_enabled());
-        assert!(!crate::api::sync::near_swap_privacy_enabled());
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let (mut db, account) = scanned_wallet(path.to_str().unwrap());
-        assert!(history_pending(&db).unwrap());
-        let now = now().unwrap();
-        let tip = BlockHeight::from_u32(110);
-        assert_eq!(
-            db.prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
-                .unwrap()
-                .err(),
-            Some(ReservationPolicy::Gap)
-        );
-        assert!(db.get_one_time_scanning_keys().unwrap().is_empty());
-        let error = require_new_address(WalletNetwork::Main).unwrap_err();
-        assert!(error.contains("Enable Private queries"), "{error}");
-    }
-
-    /// A fresh account has no history to check, so it issues at once, but only with a
-    /// seen set fresh at the caller's clock.
-    #[test]
-    fn fresh_accounts_issue_with_a_fresh_seen_set() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let (mut db, account) = scanned_wallet(path.to_str().unwrap());
-        db.mark_one_time_account_fresh(account).unwrap();
-        assert!(!history_pending(&db).unwrap());
-        let now = now().unwrap();
-        let tip = BlockHeight::from_u32(110);
-        assert_eq!(
-            db.prepare_receive_reservation(account, now, tip, None)
-                .unwrap()
-                .err(),
-            Some(ReservationPolicy::SeenUnavailable)
-        );
-        let stale = unseen(now - 3600);
-        assert_eq!(
-            db.reserve_refund_key(account, now, tip, Some(&stale))
-                .unwrap()
-                .err(),
-            Some(ReservationPolicy::SeenUnavailable)
-        );
-        let key = db
-            .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(key.key_id(), KeyId::new(Purpose::Receive, 0));
-        // The unquoted draft is resumed rather than another address reserved.
-        let again = db
-            .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(again.key_id(), key.key_id());
-    }
-
-    /// A swap address counts as scanning while its key is open, and not once the key
-    /// closes, as reclaiming an unpaid reservation closes it.
-    #[test]
-    fn a_swap_address_scans_until_its_key_closes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let path = path.to_str().unwrap();
-        let network = WalletNetwork::Regtest;
-        let (mut db, account) = scanned_wallet(path);
-        // Issue the first incoming address, as a fresh account can at once.
-        db.mark_one_time_account_fresh(account).unwrap();
-        let now = now().unwrap();
-        let tip = BlockHeight::from_u32(110);
-        let key = db
-            .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
-            .unwrap()
-            .unwrap();
-        let address = encode_address(&key, network).unwrap();
-        let ordinary = super::super::keys::get_address_from_db(
-            path,
-            network,
-            Some(&account.expose_uuid().to_string()),
-        )
-        .unwrap();
-        let scanning = |db: &WalletDatabase, address: &str| {
-            is_address_scanning(db, network, account, address).unwrap()
-        };
-
-        assert!(scanning(&db, &address));
-        assert!(!scanning(&db, &ordinary), "not a swap address");
-        assert!(!scanning(&db, "not an address"));
-        rusqlite::Connection::open(path)
-            .unwrap()
-            .execute(
-                "UPDATE ironwood_one_time_keys SET closed_at = 1
-                 WHERE purpose = 1 AND key_index = X'0000000000000000'",
-                [],
-            )
-            .unwrap();
-        assert!(!scanning(&db, &address));
-    }
-
-    /// Every account numbers its keys from zero, so one account's open key does not keep
-    /// another account's closed key with the same index scanning.
-    #[test]
-    fn a_closed_swap_address_stays_closed_while_another_account_reuses_its_index() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.db");
-        let path = path.to_str().unwrap();
-        let network = WalletNetwork::Regtest;
-        let (_, first) = scanned_wallet(path);
-        let other = parse_account_uuid(
-            &super::super::keys::add_account(
-                path,
-                network,
-                "Added",
-                &SecretVec::new(vec![1; 32]),
-                Some(100),
-            )
-            .unwrap()
-            .0,
-        )
-        .unwrap();
-        // The added account's birthday range counts as scanned too.
-        rusqlite::Connection::open(path)
-            .unwrap()
-            .execute_batch(
-                "DELETE FROM scan_queue;
-                 INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
-            )
-            .unwrap();
-        let mut db = open_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
-        let now = now().unwrap();
-        let tip = BlockHeight::from_u32(110);
-        let address = |db: &mut WalletDatabase, account| {
-            db.mark_one_time_account_fresh(account).unwrap();
-            let key = db
-                .prepare_receive_reservation(account, now, tip, Some(&unseen(now)))
-                .unwrap()
-                .unwrap();
-            assert_eq!(key.key_id(), KeyId::new(Purpose::Receive, 0));
-            encode_address(&key, network).unwrap()
-        };
-        let first_address = address(&mut db, first);
-        let other_address = address(&mut db, other);
-        rusqlite::Connection::open(path)
-            .unwrap()
-            .execute(
-                "UPDATE ironwood_one_time_keys SET closed_at = 1
-                 WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)",
-                [first.expose_uuid()],
-            )
-            .unwrap();
-        assert!(!is_address_scanning(&db, network, first, &first_address).unwrap());
-        assert!(is_address_scanning(&db, network, other, &other_address).unwrap());
-    }
-
-    /// Accounts the app creates from a seed it generated start fresh, so no discovery
-    /// runs for them. A payment-link claim imports the link's seed, which
-    /// is not fresh.
-    #[test]
-    fn created_accounts_are_fresh_but_a_claimed_seed_is_not() {
-        use super::super::keys::generate_mnemonic;
-        use crate::api::wallet as api;
-
-        let dir = tempfile::tempdir().unwrap();
-        super::super::network::configure_regtest_nu6_3_activation_height(100).unwrap();
-        let fresh = |path: &str, uuid: &str| -> bool {
-            rusqlite::Connection::open(path)
-                .unwrap()
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM ironwood_one_time_fresh_accounts f
-                     JOIN accounts a ON a.id = f.account_id WHERE a.uuid = ?1)",
-                    [parse_account_uuid(uuid).unwrap().expose_uuid()],
-                    |r| r.get(0),
-                )
-                .unwrap()
-        };
-        let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
-        let created = api::create_wallet("regtest".into(), path.clone(), Some(100), None).unwrap();
-        let added = api::add_account(
-            path.clone(),
-            "regtest".into(),
-            "Added".into(),
-            generate_mnemonic(),
-            String::new(),
-            Some(100),
-        )
-        .unwrap();
-        assert!(fresh(&path, &created.account_uuid));
-        assert!(fresh(&path, &added.account_uuid));
-
-        let claim = dir.path().join("claim.db").to_str().unwrap().to_owned();
-        let claimed = api::import_wallet(
-            generate_mnemonic(),
-            String::new(),
-            Some(100),
-            "regtest".into(),
-            claim.clone(),
-            None,
-            false,
-        )
-        .unwrap();
-        assert!(!fresh(&claim, &claimed.account_uuid));
-    }
 
     /// One-time IVKs cover the first account and accounts added from another seed,
     /// whose swap notes Vizor can spend, but not hardware or view-only accounts.
@@ -605,7 +235,7 @@ mod tests {
             assert!(require_software_account(&db, account).is_err());
         }
 
-        // A fresh added account issues its first address, as in the test above.
+        // An enabled added account can issue within its initial four-index window.
         db.update_chain_tip(BlockHeight::from_u32(110)).unwrap();
         rusqlite::Connection::open(path)
             .unwrap()
@@ -615,18 +245,16 @@ mod tests {
                  INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
             )
             .unwrap();
-        db.mark_one_time_account_fresh(added).unwrap();
         let now = now().unwrap();
-        db.prepare_receive_reservation(added, now, BlockHeight::from_u32(110), Some(&unseen(now)))
-            .unwrap()
-            .unwrap();
+        db.set_one_time_recovery_enabled(added, true, now).unwrap();
+        db.prepare_receive_reservation(added, now).unwrap().unwrap();
         let registered: u64 = rusqlite::Connection::open(path)
             .unwrap()
             .query_row("SELECT COUNT(*) FROM ironwood_one_time_keys", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(registered, 1);
+        assert_eq!(registered, 4);
         let first_receiver = |fvk: &orchard::keys::FullViewingKey| {
             KeyId::new(Purpose::Receive, 0)
                 .derive(fvk)

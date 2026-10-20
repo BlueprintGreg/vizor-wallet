@@ -12,17 +12,18 @@ class SwapHistoryApi {
   const SwapHistoryApi({
     required this.begin,
     required this.isChecking,
+    required this.cancel,
     this.pollInterval = const Duration(seconds: 5),
     this.maxWait = const Duration(minutes: 3),
   });
 
-  /// Ends every software account's discovery pass, so the next sync starts a
-  /// new one against the receiver directory. The wallet first stops a
-  /// discovery run in progress and waits for it, so that run cannot restore
-  /// the old pass.
-  final Future<void> Function() begin;
+  /// Starts or resumes the durable explicit history job for eligible accounts.
+  final Future<void> Function(BigInt? receiveEnd) begin;
 
-  /// Whether that pass, or a restored wallet's first one, is still running.
+  /// Cancels the job without discarding its durable position.
+  final Future<void> Function() cancel;
+
+  /// Whether manual recovery or a restored wallet's seed walk is unfinished.
   final Future<bool> Function() isChecking;
 
   /// How often a running check asks the wallet whether it is done.
@@ -35,10 +36,9 @@ class SwapHistoryApi {
 final swapHistoryApiProvider = Provider<SwapHistoryApi>((ref) {
   String network() => ref.read(rpcEndpointFailoverProvider).current.networkName;
   return SwapHistoryApi(
-    begin: () async => rust_swap.checkSwapHistory(
-      dbPath: await getWalletDbPath(),
-      networkName: network(),
-    ),
+    begin: (end) =>
+        ref.read(syncProvider.notifier).checkSwapHistory(receiveEnd: end),
+    cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
     isChecking: () async => rust_swap.isSwapHistoryChecking(
       dbPath: await getWalletDbPath(),
       networkName: network(),
@@ -51,46 +51,52 @@ enum SwapHistoryCheck {
   /// Not run since launch.
   idle,
 
-  /// Waiting for sync to finish the check.
+  /// Waiting for receiver recovery to finish the check.
   checking,
 
   /// The check finished.
   done,
 
-  /// The check outlasted [SwapHistoryApi.maxWait]; later syncs finish it.
+  /// The check outlasted [SwapHistoryApi.maxWait]; later recovery rounds finish it.
   continuing,
+
+  /// The user paused the durable job.
+  paused,
 
   /// The wallet could not start the check.
   failed,
 }
 
-/// Runs "Check swap history": a new search of the receiver directory for
-/// refunds or payouts that reached a swap address after the wallet stopped
-/// scanning it. Once a restored wallet's first search is complete nothing else
-/// starts one.
+/// Tracks the explicit check for older repeat payments that automatic catch-up skips.
 class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   @override
   SwapHistoryCheck build() => SwapHistoryCheck.idle;
 
-  /// Starts a check and syncs until the wallet reports it done, or until
+  int _generation = 0;
+
+  /// Starts a check and polls until the wallet reports it done, or until
   /// [SwapHistoryApi.maxWait] passes. Does nothing while one is running.
-  Future<void> check() async {
+  Future<void> check({BigInt? receiveEnd}) async {
     if (state == SwapHistoryCheck.checking) return;
+    final generation = ++_generation;
     state = SwapHistoryCheck.checking;
     final api = ref.read(swapHistoryApiProvider);
     try {
-      await api.begin();
+      await api.begin(receiveEnd);
+      if (!ref.mounted || generation != _generation) return;
       final deadline = DateTime.now().add(api.maxWait);
       while (true) {
-        // A sync already running continues the check; this one no-ops then.
-        ref.read(syncProvider.notifier).startSync();
+        // Receiver work has its own lifecycle and never occupies ordinary sync.
+        ref.read(syncProvider.notifier).continueSwapRecovery();
         await Future<void>.delayed(api.pollInterval);
-        if (!ref.mounted) return;
-        if (!await api.isChecking()) {
+        if (!ref.mounted || generation != _generation) return;
+        final checking = await api.isChecking();
+        if (!ref.mounted || generation != _generation) return;
+        if (!checking) {
           state = SwapHistoryCheck.done;
           return;
         }
-        if (!ref.mounted) return;
+        if (!ref.mounted || generation != _generation) return;
         if (!DateTime.now().isBefore(deadline)) {
           state = SwapHistoryCheck.continuing;
           return;
@@ -98,7 +104,24 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       }
     } catch (error) {
       log('Swap history check failed: $error');
-      if (ref.mounted) state = SwapHistoryCheck.failed;
+      if (ref.mounted && generation == _generation)
+        state = SwapHistoryCheck.failed;
+    }
+  }
+
+  /// Pauses the current job and prevents a late poll from overwriting that state.
+  Future<void> cancel() async {
+    final generation = ++_generation;
+    try {
+      await ref.read(swapHistoryApiProvider).cancel();
+      if (ref.mounted && generation == _generation) {
+        state = SwapHistoryCheck.paused;
+      }
+    } catch (error) {
+      log('Could not pause swap history check: $error');
+      if (ref.mounted && generation == _generation) {
+        state = SwapHistoryCheck.failed;
+      }
     }
   }
 }
