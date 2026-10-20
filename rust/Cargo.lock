@@ -3107,6 +3107,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipir-native-client"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2#5ea080a3281a01c5459f585e0a1bbbde50ec2bd2"
+dependencies = [
+ "rand 0.9.5",
+ "rand_chacha 0.3.1",
+ "reinspiring 0.1.3-rc.1 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "ipir-sp"
 version = "0.1.0-rc.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3125,7 +3136,29 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
- "simplepir-kernel",
+ "simplepir-kernel 0.1.0-rc.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "valar-spiral-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "ipir-sp"
+version = "0.1.0-rc.7"
+source = "git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2#5ea080a3281a01c5459f585e0a1bbbde50ec2bd2"
+dependencies = [
+ "fastrand",
+ "inspiring 0.1.0-rc.3 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
+ "ipir-native-client",
+ "log",
+ "rand 0.9.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "reinspiring 0.1.3-rc.1 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "simplepir-kernel 0.1.0-rc.4 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
  "valar-spiral-rs",
  "zeroize",
 ]
@@ -4897,7 +4930,7 @@ dependencies = [
  "hyper-util",
  "ics23",
  "incrementalmerkletree",
- "ipir-sp",
+ "ipir-sp 0.1.0-rc.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "ledger-transport",
  "ledger-transport-hid",
  "log",
@@ -4950,6 +4983,7 @@ dependencies = [
  "zakura-primitives 4.0.0-rc2",
  "zakura-proofs 4.0.0-rc2",
  "zakura-protocol 4.0.0-rc2",
+ "zakura-receiver-pir",
  "zakura-sapling-crypto 4.0.0-rc2",
  "zakura-transparent 4.0.0-rc2",
  "zcash_script",
@@ -5510,6 +5544,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12074f1ad6dfb60d44dc652776b9a309adb058ca98970f1297c761f735427f1b"
 dependencies = [
  "inspiring 0.1.0-rc.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rayon",
+ "valar-spiral-rs",
+]
+
+[[package]]
+name = "simplepir-kernel"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2#5ea080a3281a01c5459f585e0a1bbbde50ec2bd2"
+dependencies = [
+ "inspiring 0.1.0-rc.3 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
  "rayon",
  "valar-spiral-rs",
 ]
@@ -9025,12 +9069,15 @@ version = "0.0.1-rc0"
 source = "git+https://github.com/zakura-core/wallet-libraries.git?rev=d3bb177af13a39b15b8f6a8eda1984070ef3bae0#d3bb177af13a39b15b8f6a8eda1984070ef3bae0"
 dependencies = [
  "hex",
+ "ipir-sp 0.1.0-rc.7 (git+https://github.com/valargroup/ipir-sp?rev=5ea080a3281a01c5459f585e0a1bbbde50ec2bd2)",
  "rand 0.8.8",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "zakura-pir-client",
+ "zakura-pir-query-server",
+ "zakura-pir-server-core",
  "zakura-receiver-directory",
 ]
 

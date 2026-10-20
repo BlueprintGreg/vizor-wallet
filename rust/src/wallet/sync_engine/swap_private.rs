@@ -509,3 +509,6 @@ async fn filter_batch<T: Transport>(
     .map_err(|_| "Receiver filter request timed out.".to_string())?
     .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests;
