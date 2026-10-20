@@ -69,10 +69,20 @@ class _SyncKeepAwakePrivacyLockHostState
     final visible = mode != SyncKeepAwakePrivacyLockMode.hidden;
     _syncIdleTimer(active: active, interaction: interaction, visible: visible);
 
+    // The lock covers the app without replacing its route, so the app stays
+    // mounted underneath. While the lock shows, screen readers, keyboard
+    // focus and pointers must not reach it: a screen reader would otherwise
+    // keep its focus on the covered screen and read or activate it.
     return Stack(
       fit: StackFit.expand,
       children: [
-        widget.child,
+        ExcludeSemantics(
+          excluding: visible,
+          child: ExcludeFocus(
+            excluding: visible,
+            child: IgnorePointer(ignoring: visible, child: widget.child),
+          ),
+        ),
         if (visible)
           Positioned.fill(child: SyncKeepAwakePrivacyLockScreen(mode: mode)),
       ],

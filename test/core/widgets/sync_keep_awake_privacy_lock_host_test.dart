@@ -431,6 +431,84 @@ void main() {
   });
 
   testWidgets(
+    'the lock hides the covered app from screen readers and focus until unlock',
+    (tester) async {
+      _setMobileViewport(tester);
+      final semantics = tester.ensureSemantics();
+      final sendFocus = FocusNode(debugLabel: 'covered send');
+      addTearDown(sendFocus.dispose);
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(_bootstrap()),
+          appSecurityProvider.overrideWith(_FakeSecurityNotifier.new),
+          biometricUnlockProvider.overrideWith(
+            () => _FakeBiometricUnlockNotifier(_disabledBiometricState),
+          ),
+          syncProvider.overrideWith(
+            () => FakeSyncNotifier(
+              _sync(lastSyncStartedAt: DateTime(2026, 7, 9, 12)),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: _coveredApp(sendFocus: sendFocus),
+        ),
+      );
+      await _settleInitialSync(tester);
+
+      tester.semantics.tap(find.semantics.byLabel('Send'));
+      await tester.pump();
+      expect(find.text('Sent 1'), findsOneWidget);
+      expect(_routeLabels(), hasLength(1));
+
+      await tester.pump(const Duration(minutes: 1));
+      await tester.pump();
+      expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
+
+      // Nothing of the covered app reaches a screen reader, so its focus
+      // cannot stay behind the lock, and the lock is the only route left to
+      // announce.
+      expect(find.semantics.byLabel(_coveredBalance), findsNothing);
+      expect(find.semantics.byLabel('Send'), findsNothing);
+      expect(find.semantics.byLabel(RegExp('Sent 1')), findsNothing);
+      expect(find.semantics.byLabel(RegExp('Unlock Vizor')), findsOneWidget);
+      expect(_routeLabels(), ['Vizor is syncing']);
+      sendFocus.requestFocus();
+      await tester.pump();
+      expect(sendFocus.hasFocus, isFalse);
+      await tester.tap(find.text('Send'), warnIfMissed: false);
+      await tester.pump();
+      expect(find.text('Sent 1'), findsOneWidget);
+
+      await tester.tap(find.text('Unlock Vizor'));
+      await tester.pump();
+      expect(_routeLabels(), ['Confirm passcode to unlock Vizor']);
+      expect(find.semantics.byLabel(_coveredBalance), findsNothing);
+      await _enterPasscode(tester, '123456');
+      expect(
+        container.read(syncKeepAwakePrivacyLockProvider).isLocked,
+        isFalse,
+      );
+
+      // The app comes back as it was left: still mounted, so its state
+      // survived, and reachable again.
+      expect(find.semantics.byLabel(_coveredBalance), findsOneWidget);
+      expect(find.text('Sent 1'), findsOneWidget);
+      tester.semantics.tap(find.semantics.byLabel('Send'));
+      await tester.pump();
+      expect(find.text('Sent 2'), findsOneWidget);
+      sendFocus.requestFocus();
+      await tester.pump();
+      expect(sendFocus.hasFocus, isTrue);
+      semantics.dispose();
+    },
+  );
+
+  testWidgets(
     'biometric confirmation clears the virtual lock without passcode UI',
     (tester) async {
       _setMobileViewport(tester);
@@ -1083,6 +1161,71 @@ Widget _themedApp({Duration idleTimeout = const Duration(milliseconds: 50)}) {
       ),
     ),
   );
+}
+
+const _coveredBalance = 'Shielded 1.25 ZEC';
+
+/// The lock as the app mounts it: in `MaterialApp.builder`, over the
+/// navigator, so the covered screen keeps its own route.
+Widget _coveredApp({required FocusNode sendFocus}) {
+  return MaterialApp(
+    builder: (_, child) => AppTheme(
+      data: AppThemeData.dark,
+      child: SyncKeepAwakePrivacyLockHost(
+        idleTimeout: const Duration(minutes: 1),
+        child: child!,
+      ),
+    ),
+    home: Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(_coveredBalance),
+            _SendCounter(focusNode: sendFocus),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _SendCounter extends StatefulWidget {
+  const _SendCounter({required this.focusNode});
+
+  final FocusNode focusNode;
+
+  @override
+  State<_SendCounter> createState() => _SendCounterState();
+}
+
+class _SendCounterState extends State<_SendCounter> {
+  var _sent = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextButton(
+          focusNode: widget.focusNode,
+          onPressed: () => setState(() => _sent += 1),
+          child: const Text('Send'),
+        ),
+        Text('Sent $_sent'),
+      ],
+    );
+  }
+}
+
+/// The labels of the routes a screen reader sees, in tree order. A platform
+/// announces the last one that is new and moves its focus into it.
+List<String> _routeLabels() {
+  return find.semantics
+      .byPredicate((node) => node.flagsCollection.scopesRoute)
+      .evaluate()
+      .map((node) => node.label)
+      .toList();
 }
 
 Future<void> _settleInitialSync(WidgetTester tester) async {
