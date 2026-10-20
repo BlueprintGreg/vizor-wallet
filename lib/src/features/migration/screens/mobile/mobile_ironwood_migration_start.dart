@@ -226,27 +226,31 @@ class _MobileIronwoodMigrationStartScreenState
   }
 
   Future<void> _discardKeystoneCombinedRequest(
-    MobileIronwoodMigrationKeystoneCombinedSignEntry entry,
-  ) async {
+    MobileIronwoodMigrationKeystoneCombinedSignEntry entry, {
+    bool propagateError = false,
+  }) async {
     try {
       await _migrationService.discardKeystonePrivateMigrationRequest(
         accountUuid: entry.accountUuid,
         requestId: entry.request.requestId,
       );
     } catch (error) {
+      if (propagateError) rethrow;
       debugPrint('Failed to discard the Keystone signing request: $error');
     }
   }
 
-  Future<void> _cancelKeystoneSigning() async {
+  Future<void> _cancelKeystoneSigning({bool navigate = true}) async {
     if (_phase != _MobileMigrationStartPhase.keystoneReady) return;
     final entry = _keystoneCombinedEntry;
+    if (entry != null) {
+      await _discardKeystoneCombinedRequest(entry, propagateError: !navigate);
+    }
     _keystoneCombinedEntry = null;
     _destination = null;
     _messageTimer?.cancel();
-    if (entry != null) await _discardKeystoneCombinedRequest(entry);
     if (!mounted) return;
-    context.go('/migration/options');
+    if (navigate) context.go('/migration/options');
   }
 
   void _startMessageRotation() {
@@ -396,6 +400,12 @@ class _MobileIronwoodMigrationStartScreenState
     final loading = _phase == _MobileMigrationStartPhase.loading;
     final ready = _phase == _MobileMigrationStartPhase.keystoneReady;
     return _MobileIronwoodMigrationBackScope(
+      onSidebarExit: _phase == _MobileMigrationStartPhase.keystoneReady
+          ? () async {
+              await _cancelKeystoneSigning(navigate: false);
+              return true;
+            }
+          : null,
       // Loading is mid-preparation and stays put. keystoneReady leaves through
       // the same cancel path as its on-screen button, so the prepared signing
       // request is discarded instead of orphaned.

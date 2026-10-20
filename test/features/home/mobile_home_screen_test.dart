@@ -1230,7 +1230,13 @@ void main() {
     expect(imageRect.size, const Size(246, 192));
     expect(canvasRect.bottom, moreOrLessEquals(744));
 
-    for (final size in const [Size(360, 800), Size(412, 915), Size(430, 932)]) {
+    for (final size in const [
+      Size(360, 800),
+      Size(412, 915),
+      Size(430, 932),
+      Size(690, 829),
+      Size(829, 690),
+    ]) {
       await tester.binding.setSurfaceSize(size);
       await tester.pump();
       expect(
@@ -1239,6 +1245,12 @@ void main() {
         ),
         size,
       );
+      for (final key in ['mobile_home_rest_canvas', 'mobile_home_rest_image']) {
+        expect(
+          tester.getCenter(find.byKey(ValueKey(key))).dx,
+          moreOrLessEquals(size.width / 2, epsilon: 0.1),
+        );
+      }
     }
   });
 
@@ -1259,7 +1271,9 @@ void main() {
     expect(find.text('No activity, yet...'), findsOneWidget);
   });
 
-  testWidgets('empty activity uses the Figma inner inset', (tester) async {
+  testWidgets('empty activity is centered with the original vertical spacing', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(393, 852));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -1281,8 +1295,8 @@ void main() {
     );
 
     expect(
-      canvasRect.left,
-      moreOrLessEquals(receiveRect.left + AppSpacing.xs, epsilon: 0.1),
+      canvasRect.center.dx,
+      moreOrLessEquals(receiveRect.center.dx, epsilon: 0.1),
     );
     expect(
       titleRect.top,
@@ -1297,6 +1311,46 @@ void main() {
       moreOrLessEquals(AppSpacing.xxs, epsilon: 0.1),
     );
   });
+
+  for (final width in [320.0, 393.0, 440.0, 690.0, 829.0]) {
+    for (final funded in [false, true]) {
+      testWidgets(
+        'empty activity stays centered at $width width (funded: $funded)',
+        (tester) async {
+          await tester.binding.setSurfaceSize(Size(width, 1200));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await tester.pumpWidget(
+            _app(
+              _syncedState(
+                orchardBalance: funded ? BigInt.from(14312000000) : BigInt.zero,
+              ),
+            ),
+          );
+          await tester.pump();
+
+          // The full-width voting card shares the balance card's center,
+          // including when Send and Receive split the action row.
+          final contentCenter = tester
+              .getCenter(
+                find.byKey(const ValueKey('mobile_home_coinholder_voting')),
+              )
+              .dx;
+          for (final finder in [
+            find.text('No activity, yet...'),
+            find.text('How about running your\nfirst ZEC tx?'),
+            find.byKey(const ValueKey('mobile_home_rest_canvas')),
+            find.byKey(const ValueKey('mobile_home_rest_image')),
+          ]) {
+            expect(
+              tester.getCenter(finder).dx,
+              moreOrLessEquals(contentCenter, epsilon: 0.1),
+            );
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 
   testWidgets('empty activity keeps its illustration visible at 320 width', (
     tester,
@@ -2613,15 +2667,20 @@ void main() {
     expect(hint.tapToShow, isTrue);
   });
 
-  testWidgets('Ledger shielding opens the dedicated mobile Ledger route', (
+  testWidgets('Ledger shielding returns Home with immediate balance updates', (
     tester,
   ) async {
+    final syncNotifier = FakeSyncNotifier(
+      _syncedState(
+        orchardBalance: BigInt.from(1492000000),
+        transparentBalance: BigInt.from(1412000000),
+        canShieldTransparentBalance: true,
+      ),
+    );
     await tester.pumpWidget(
       _app(
-        _syncedState(
-          transparentBalance: BigInt.from(242000000),
-          canShieldTransparentBalance: true,
-        ),
+        syncNotifier.initialState!,
+        syncNotifier: syncNotifier,
         accountState: const AccountState(
           accounts: [
             AccountInfo(
@@ -2649,6 +2708,27 @@ void main() {
       find.byKey(const ValueKey('mobile_ledger_shield_route')),
       findsOneWidget,
     );
+
+    syncNotifier.setSyncState(
+      _syncedState(orchardBalance: BigInt.from(2904000000)),
+    );
+    GoRouter.of(
+      tester.element(find.byKey(const ValueKey('mobile_ledger_shield_route'))),
+    ).pop();
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.text('29.04 ZEC', findRichText: true, skipOffstage: false),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
+
+    syncNotifier.setSyncState(
+      _syncedState(orchardBalance: BigInt.from(3004000000)),
+    );
+    await tester.pump();
+    expect(find.text('30.04 ZEC', findRichText: true), findsOneWidget);
   });
 
   testWidgets('animates transparent balance tray away before removal', (

@@ -1,3 +1,4 @@
+import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -326,11 +327,14 @@ class _MobileActivityScreenState extends ConsumerState<MobileActivityScreen> {
             MobileTopNav.back(title: 'Activity'),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(
+                padding: EdgeInsets.fromLTRB(
                   AppSpacing.xxs,
                   AppSpacing.s,
                   AppSpacing.xxs,
-                  kMobileTabBarHeight + AppSpacing.lg,
+                  MobileNavigationScope.bottomClearanceOf(
+                    context,
+                    kMobileTabBarHeight + AppSpacing.lg,
+                  ),
                 ),
                 children: [
                   ActivityFeed(

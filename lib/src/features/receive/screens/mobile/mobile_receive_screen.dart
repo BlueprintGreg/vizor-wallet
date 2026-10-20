@@ -310,7 +310,7 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
                               children: [
                                 Expanded(
                                   child: AppButton(
-                                    key: const ValueKey('mobile_receive_share'),
+                                    key: const ValueKey('mobile_receive_copy'),
                                     expand: true,
                                     constrainContent: true,
                                     height: _MobileReceiveMetrics.buttonHeight,
@@ -319,14 +319,14 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
                                         : AppButtonVariant.secondary,
                                     onPressed: _selectedAddress.isEmpty
                                         ? null
-                                        : _shareAddress,
+                                        : () => unawaited(_copyAddress()),
                                     leading: const AppIcon(
-                                      AppIcons.share,
+                                      AppIcons.copy,
                                       size:
                                           _MobileReceiveMetrics.buttonIconSize,
                                     ),
                                     child: Text(
-                                      'Share $poolLabel address',
+                                      'Copy $poolLabel address',
                                       style: AppTypography.labelMedium.copyWith(
                                         fontWeight: FontWeight.w500,
                                       ),
@@ -334,21 +334,17 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: AppSpacing.xs),
-                                // Icon only, beside the share pill — the home
-                                // card's "Pay" shape and the desktop receive
-                                // pane's request entry. A third labelled tier
-                                // under Share made the stack taller than the
-                                // pane it sits in.
+                                // Sharing is familiar as an icon; the request
+                                // gets its own visible label on the row below.
                                 SizedBox(
                                   width: _MobileReceiveMetrics.buttonHeight,
                                   height: _MobileReceiveMetrics.buttonHeight,
                                   child: Semantics(
                                     button: true,
-                                    label:
-                                        'Request $kZcashDefaultCurrencyTicker',
+                                    label: 'Share $poolLabel address',
                                     child: AppButton(
                                       key: const ValueKey(
-                                        'mobile_receive_request',
+                                        'mobile_receive_share',
                                       ),
                                       minWidth:
                                           _MobileReceiveMetrics.buttonHeight,
@@ -358,9 +354,9 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
                                       variant: AppButtonVariant.secondary,
                                       onPressed: _selectedAddress.isEmpty
                                           ? null
-                                          : _openRequest,
+                                          : _shareAddress,
                                       child: const AppIcon(
-                                        AppIcons.qr,
+                                        AppIcons.share,
                                         size: _MobileReceiveMetrics
                                             .buttonIconSize,
                                       ),
@@ -370,11 +366,11 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
                               ],
                             ),
                             const SizedBox(height: AppSpacing.s),
-                            _CopyAddressTextButton(
-                              key: const ValueKey('mobile_receive_copy'),
-                              label: 'Copy $poolLabel address',
+                            _RequestTextButton(
+                              key: const ValueKey('mobile_receive_request'),
+                              label: 'Request $kZcashDefaultCurrencyTicker',
                               enabled: _selectedAddress.isNotEmpty,
-                              onTap: () => unawaited(_copyAddress()),
+                              onTap: _openRequest,
                             ),
                           ],
                         ),
@@ -535,8 +531,8 @@ class _ReceiveAddressSummary extends StatelessWidget {
   }
 }
 
-class _CopyAddressTextButton extends StatelessWidget {
-  const _CopyAddressTextButton({
+class _RequestTextButton extends StatelessWidget {
+  const _RequestTextButton({
     required this.label,
     required this.enabled,
     required this.onTap,
@@ -564,12 +560,6 @@ class _CopyAddressTextButton extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             mainAxisSize: MainAxisSize.min,
             children: [
-              AppIcon(
-                AppIcons.copy,
-                size: _MobileReceiveMetrics.buttonIconSize,
-                color: color,
-              ),
-              const SizedBox(width: AppSpacing.xs),
               Flexible(
                 child: Text(
                   label,
