@@ -4983,6 +4983,7 @@ dependencies = [
  "zakura-primitives 4.0.0-rc2",
  "zakura-proofs 4.0.0-rc2",
  "zakura-protocol 4.0.0-rc2",
+ "zakura-receiver-crypto",
  "zakura-receiver-pir",
  "zakura-sapling-crypto 4.0.0-rc2",
  "zakura-transparent 4.0.0-rc2",

@@ -1,98 +1,15 @@
 //! Exercises the app worker against production filter encoding and encrypted PIR.
+//! Payments are real Ironwood notes in a synthetic Mainnet chain that real app wallets
+//! scan. Each test runs in its own process because the worker's admission and
+//! cancellation state, and the app's feature settings, are process wide.
 use super::*;
-use std::sync::Mutex;
-use zakura_pir_receiver::{
-    receiver_directory::{
-        blocks::{BlockFilter, BlockId},
-        snapshot::{Manifest, Snapshot, PROFILE},
-    },
-    receiver_pir::{server::Server, MIN_ROWS},
-};
-use zcash_client_backend::data_api::{chain::BlockSource, testing::TestBuilder, WalletRead};
-use zcash_client_sqlite::testing::{db::TestDbFactory, BlockCache};
+use std::collections::BTreeSet;
+use zakura_one_time_ivk::Purpose;
 
-/// Serves real immutable directory material and counts wire bodies by route.
-struct Service {
-    server: Server,
-    head: Head,
-    filters: Vec<BlockFilter>,
-    requests: Mutex<Vec<(String, usize, usize)>>,
-}
-impl Service {
-    /// Routes a request through the production encoder or encrypted PIR server.
-    fn reply(&self, url: &str, body: &[u8], limit: usize) -> Result<Vec<u8>, DirectoryError> {
-        let route = url.split("/v1/receiver/").nth(1).unwrap();
-        let response = if route == "init" {
-            serde_json::to_vec(self.server.manifest()).unwrap()
-        } else if route == "block-filters/head" {
-            serde_json::to_vec(&self.head).unwrap()
-        } else if let Some(range) = route.strip_prefix("block-filters/0/") {
-            let (from, count) = range.split_once('/').unwrap();
-            let from: u32 = from.parse().unwrap();
-            let count: usize = count.parse().unwrap();
-            Batch::new(
-                MAINNET_GENESIS,
-                0,
-                self.filters
-                    .iter()
-                    .filter(|f| f.block().height >= from)
-                    .take(count)
-                    .cloned()
-                    .collect(),
-            )
-            .unwrap()
-            .encode()
-            .unwrap()
-        } else if route.starts_with("public/") {
-            self.server.public().to_vec()
-        } else if route == "query" {
-            self.server.respond(body).unwrap()
-        } else {
-            panic!("unexpected receiver route {route}")
-        };
-        assert!(response.len() <= limit);
-        self.requests
-            .lock()
-            .unwrap()
-            .push((route.into(), body.len(), response.len()));
-        Ok(response)
-    }
+mod fixture;
+use fixture::*;
 
-    /// Counts actual encrypted address queries, excluding setup and public hints.
-    fn queries(&self) -> usize {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(route, _, _)| route == "query")
-            .count()
-    }
-
-    /// Reports actual request and response body bytes, including public setup.
-    fn bytes(&self) -> usize {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(_, request, response)| request + response)
-            .sum()
-    }
-}
-impl Transport for Service {
-    /// Returns a bounded encoded public resource.
-    async fn get(&self, url: &str, limit: usize) -> Result<Vec<u8>, DirectoryError> {
-        self.reply(url, &[], limit)
-    }
-    /// Evaluates a real encrypted query without exposing its receiver to the fixture.
-    async fn post(
-        &self,
-        url: &str,
-        body: Vec<u8>,
-        limit: usize,
-    ) -> Result<Vec<u8>, DirectoryError> {
-        self.reply(url, &body, limit)
-    }
-}
+const RECEIVE: bool = true;
 
 /// Runs near-head negative/positive hints and unavailable-history catch-up through the app worker.
 #[test]
@@ -103,171 +20,31 @@ fn worker_filters_and_direct_catchup_use_real_pir() {
     ) {
         return;
     }
-    crate::api::sync::set_enhance_pir_enabled(true);
-    crate::api::sync::set_near_swap_privacy_enabled(true);
-    let network = WalletNetwork::Main;
-    let activation = network.activation_height(NetworkUpgrade::Nu6_3).unwrap();
-    let height = |upgrade| network.activation_height(upgrade);
-    let mut st = TestBuilder::new()
-        .with_network(zcash_protocol::local_consensus::LocalNetwork {
-            overwinter: height(NetworkUpgrade::Overwinter),
-            sapling: height(NetworkUpgrade::Sapling),
-            blossom: height(NetworkUpgrade::Blossom),
-            heartwood: height(NetworkUpgrade::Heartwood),
-            canopy: height(NetworkUpgrade::Canopy),
-            nu5: height(NetworkUpgrade::Nu5),
-            nu6: height(NetworkUpgrade::Nu6),
-            nu6_1: height(NetworkUpgrade::Nu6_1),
-            nu6_2: height(NetworkUpgrade::Nu6_2),
-            nu6_3: Some(activation),
-            nu7: None,
-        })
-        .with_data_store_factory(TestDbFactory::default())
-        .with_block_cache(BlockCache::new())
-        .with_initial_chain_state(|_, _| {
-            zcash_client_backend::data_api::testing::InitialChainState {
-                chain_state: zcash_client_backend::data_api::chain::ChainState::empty(
-                    activation - 1,
-                    BlockHash([0; 32]),
-                ),
-                prior_sapling_roots: vec![],
-                prior_orchard_roots: vec![],
-            }
-        })
-        .with_account_having_current_birthday()
-        .build();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wallet.db");
-    let path = path.to_str().unwrap();
-    let (account, _) = crate::wallet::keys::init_db_and_create_account(
-        path,
-        network,
-        &secrecy::SecretVec::new(vec![4; 32]),
-        Some(u64::from(u32::from(activation))),
-        "Recovery",
-    )
-    .unwrap();
-    let account = crate::wallet::keys::parse_account_uuid(&account).unwrap();
-    let mut previous = zcash_client_backend::data_api::chain::ChainState::empty(
-        activation - 1,
-        BlockHash([0; 32]),
-    );
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let generation = CANCEL.load(Ordering::SeqCst);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
     let mut total_bytes = Vec::new();
     for mode in 0..4 {
-        let count = if mode == 0 { 3 } else { 2 };
-        st.generate_and_scan_empty_blocks(count);
-        let end = st.wallet().block_fully_scanned().unwrap().unwrap();
-        let end_height = u32::from(end.block_height());
-        let mut db =
-            open_existing_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT).unwrap();
-        zcash_client_backend::data_api::WalletWrite::update_chain_tip(&mut db, end.block_height())
-            .unwrap();
-        zcash_client_backend::data_api::chain::scan_cached_blocks(
-            &network,
-            st.cache(),
-            &mut db,
-            previous.block_height() + 1,
-            &previous,
-            count,
-        )
-        .unwrap();
-        previous = zcash_client_backend::data_api::chain::ChainState::empty(
-            end.block_height(),
-            end.block_hash(),
-        );
-        let receivers = if mode == 2 {
-            db.one_time_receivers(account).unwrap().1
+        chain.mine(2);
+        wallet.scan(&chain);
+        let tip = chain.tip();
+        // A deliberately overinclusive hint exercises the same path as a GCS false positive.
+        let extra = if mode == 2 {
+            vec![(tip, account.receiver(Purpose::Receive, 0))]
         } else {
             vec![]
         };
-        let mut filters = Vec::new();
-        st.cache()
-            .with_blocks::<_, ()>(Some(activation), None, |block| {
-                let hits: Vec<_> = if mode == 2 && block.height == u64::from(end_height) {
-                    vec![receivers[0].receiver]
-                } else {
-                    vec![]
-                };
-                filters.push(
-                    BlockFilter::build(
-                        &MAINNET_GENESIS,
-                        BlockId {
-                            height: block.height.try_into().unwrap(),
-                            hash: block.hash().0,
-                        },
-                        block.prev_hash().0,
-                        &hits,
-                    )
-                    .unwrap(),
-                );
-                Ok(())
-            })
-            .unwrap();
-        let manifest = Manifest {
-            profile: PROFILE.into(),
-            history_revision: 0,
-            genesis: MAINNET_GENESIS,
-            start_height: activation.into(),
-            start_parent: filters[0].parent(),
-            start_position: 0,
-            end_height,
-            end_hash: end.block_hash().0,
-            end_position: 0,
-            rows: MIN_ROWS,
-            salt: [5; 32],
-            records: 0,
-            data_sha256: [0; 32],
-        };
-        let service = Service {
-            server: Server::new(Snapshot::build(manifest, &[]).unwrap()).unwrap(),
-            head: Head {
-                genesis: MAINNET_GENESIS,
-                revision: 0,
-                first: if mode == 3 {
-                    end_height
-                } else {
-                    activation.into()
-                },
-                tip: BlockId {
-                    height: end_height,
-                    hash: end.block_hash().0,
-                },
-            },
-            filters,
-            requests: Mutex::new(Vec::new()),
-        };
-        runtime.block_on(async {
-            recover_with_transport(
-                &path,
-                network,
-                None,
-                "https://receiver.test",
-                &service,
-                generation,
-                tokio::time::Instant::now() + Duration::from_secs(45),
-            )
-            .await
-            .unwrap();
-        });
-        let state = db
-            .one_time_recovery(account, one_time_ivk::now().unwrap())
-            .unwrap();
+        let first = if mode == 3 { tip } else { activation() };
+        let service = Service::publish(&chain, tip, first, tip, &extra);
+        wallet.recover(&service).unwrap();
+        let state = wallet.state(&account);
         assert!(state.restore_complete);
         assert!(state.lookups.is_empty());
         assert_eq!(service.queries(), [4, 0, 1, 4][mode], "mode {mode}");
         total_bytes.push(service.bytes());
         if mode == 3 {
-            assert!(!service
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(route, _, _)| route.starts_with("block-filters/0/")));
+            assert!(service.filter_requests().is_empty());
         }
     }
     assert!(total_bytes[1] < total_bytes[3]);
@@ -275,4 +52,827 @@ fn worker_filters_and_direct_catchup_use_real_pir() {
         "receiver body bytes: initial={}, negative={}, positive={}, expired-history={}",
         total_bytes[0], total_bytes[1], total_bytes[2], total_bytes[3]
     );
+}
+
+/// Holds the filter download and then the PIR answer while ordinary sync scans more
+/// than three further blocks each time. Sync never waits, discovery stays pending, and
+/// releasing the answers credits the payment without another block or a manual action.
+#[test]
+fn held_filter_and_pir_responses_leave_ordinary_sync_running() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "held_filter_and_pir_responses_leave_ordinary_sync_running",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet
+        .recover(&Service::publish(
+            &chain,
+            chain.tip(),
+            activation(),
+            chain.tip(),
+            &[],
+        ))
+        .unwrap();
+    assert!(wallet.state(&account).restore_complete);
+
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    wallet.scan(&chain);
+    let published = chain.tip();
+    let service = Service::publish(&chain, published, activation(), published, &[]);
+    let filters = service.hold("filters", 0);
+    let query = service.hold("query", 0);
+    let worker = wallet.spawn(&service, None, Duration::from_secs(45));
+
+    filters.wait();
+    chain.mine(4);
+    wallet.scan(&chain);
+    assert_eq!(
+        wallet.scanned(),
+        published + 4,
+        "ordinary sync committed four blocks"
+    );
+    assert!(!worker.is_finished());
+    assert!(
+        wallet.queued(&account).is_empty(),
+        "no hint has been applied yet"
+    );
+    assert_eq!(wallet.one_time_unspent(&account), 0);
+    filters.release();
+
+    query.wait();
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 0)]));
+    chain.mine(4);
+    wallet.scan(&chain);
+    assert_eq!(wallet.scanned(), published + 8);
+    assert!(!worker.is_finished());
+    assert_eq!(
+        wallet.one_time_unspent(&account),
+        0,
+        "pending, not complete"
+    );
+    query.release();
+
+    worker.join().unwrap().unwrap();
+    let state = wallet.state(&account);
+    assert!(state.lookups.is_empty() && state.witnesses.is_empty());
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    assert_eq!(service.queries(), 1);
+    assert_eq!(service.count("witness"), 1);
+    service.report("held near-head hint, one paid lookup");
+}
+
+/// A short gap downloads filters and queries only the positive address. A long gap
+/// queries unfinished addresses directly, skips a completed address and still answers a
+/// queued positive for one. The settings action later finds the skipped repeat.
+#[test]
+fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "route_choice_follows_measured_costs_and_skips_completed_addresses",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    chain.pay(&receive(0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let restore = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet.recover(&restore).unwrap();
+    let state = wallet.state(&account);
+    assert!(state.restore_complete);
+    assert_eq!(state.restore_next, 5);
+    assert_eq!(restore.queries(), 5);
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    restore.report("seed restore: five lookups, one paid page and its proof");
+
+    // Short gap: one block pays I2. Filters are cheaper and only the positive is queried.
+    let frontier = chain.tip();
+    chain.pay(&receive(2), 2_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let short = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let held = short.hold("query", 0);
+    let worker = wallet.spawn(&short, None, Duration::from_secs(45));
+    held.wait();
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 2)]));
+    held.release();
+    worker.join().unwrap().unwrap();
+    assert_eq!(
+        short.filter_requests(),
+        [format!("{}/1", frontier + 1), format!("{}/1", frontier + 2)]
+    );
+    assert_eq!(short.queries(), 1);
+    assert_eq!(wallet.one_time_unspent(&account), 3_000_000);
+    short.report("short gap, filter route: two filters, one lookup, one proof");
+
+    // A live hint for completed I0 that PIR has not published yet stays queued.
+    let repeat = chain.pay(&receive(0), 700_000, true);
+    wallet.scan(&chain);
+    let lagging = Service::publish(&chain, repeat - 1, activation(), repeat, &[]);
+    wallet.recover(&lagging).unwrap();
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 0)]));
+    assert_eq!(lagging.queries(), 0);
+    assert_eq!(wallet.one_time_unspent(&account), 3_000_000);
+
+    // Long offline gap: a repeat to completed I2 and a first payment to lookahead I3.
+    // Neither is in the gap's first block, which the cost check samples and applies.
+    chain.mine(10);
+    chain.pay(&receive(2), 900_000, true);
+    chain.pay(&receive(3), 400_000, true);
+    chain.mine(6_000);
+    wallet.scan(&chain);
+    let direct_count = wallet.db().one_time_direct_query_count(account.id).unwrap();
+    let long = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let held = long.hold("query", 0);
+    let worker = wallet.spawn(&long, None, Duration::from_secs(45));
+    held.wait();
+    let queued = wallet.queued(&account);
+    // Unfinished I1 and the I3..I6 lookahead, plus the queued positive for I0. Not I2.
+    assert_eq!(
+        queued,
+        BTreeSet::from([
+            (RECEIVE, 0),
+            (RECEIVE, 1),
+            (RECEIVE, 3),
+            (RECEIVE, 4),
+            (RECEIVE, 5),
+            (RECEIVE, 6),
+        ])
+    );
+    assert_eq!(direct_count, 5);
+    held.release();
+    worker.join().unwrap().unwrap();
+    // Only the one-block sample was downloaded before the cost check chose direct queries.
+    assert_eq!(long.filter_requests(), [format!("{}/1", repeat + 1)]);
+    let sample = long
+        .requests_of("filters")
+        .first()
+        .map(|(_, response)| *response)
+        .unwrap();
+    let gap = chain.tip() - repeat;
+    assert!(!filters_cheaper(
+        gap,
+        sample,
+        0,
+        direct_count,
+        long.bytes_of("public"),
+        long.bytes_of("query") / long.queries()
+    ));
+    assert_eq!(
+        wallet.one_time_unspent(&account),
+        3_000_000 + 700_000 + 400_000
+    );
+    assert_eq!(
+        wallet.state(&account).skipped_through,
+        Some(chain.tip().into())
+    );
+    let line = long.report("long gap, direct route");
+    println!(
+        "long gap of {gap} blocks: filter estimate {} bytes ({sample} per block), direct actual {}",
+        u64::from(gap) * sample as u64,
+        long.bytes()
+    );
+    assert!(line.contains("filters: 1 requests"));
+
+    // The settings action reads completed addresses too and finds the skipped repeat.
+    let manual = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet
+        .recover_with(&manual, Some(None), Duration::from_secs(45))
+        .unwrap();
+    assert_eq!(
+        wallet.one_time_unspent(&account),
+        3_000_000 + 700_000 + 400_000 + 900_000
+    );
+    assert!(!wallet.state(&account).manual.unwrap().active);
+    manual.report("manual history check over every known address");
+}
+
+/// The seconds clock the app's quote calls use.
+fn now() -> i64 {
+    one_time_ivk::now().unwrap()
+}
+
+/// Builds, broadcasts and stores a proposal with the app's send path, against a
+/// lightwalletd that reports `tip` and accepts the broadcast.
+fn execute(wallet: &Wallet, account: &fixture::Account, proposal: u64, flow: &str, tip: u32) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let lwd = runtime.block_on(
+        crate::wallet::sync_engine::test_lwd::CapturingLwd::start_for_broadcast(u64::from(tip)),
+    );
+    let result = runtime
+        .block_on(crate::wallet::sync::execute_proposal(
+            &wallet.path,
+            &lwd.url,
+            proposal,
+            flow,
+            account.seed(),
+            None,
+            None,
+        ))
+        .unwrap();
+    assert_eq!(result.broadcasted_count, 1, "{:?}", result.message);
+    assert_eq!(lwd.count("/SendTransaction"), 1);
+}
+
+/// A NEAR payout with two pages, a second receive and a small refund to a key learned
+/// from the app's own funding memo are credited through the worker after page, proof
+/// and spend checks, and the app's send path spends them. A second device restored from
+/// the same seed learns the refund key through ordinary public enhancement of the
+/// funding transaction and admits the same payments as already spent, so its balance
+/// matches instead of resurrecting the spent notes.
+#[test]
+fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "paid_receipts_are_credited_spent_and_not_resurrected_on_another_device",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut phone = Wallet::new(4, activation());
+    let account = phone.account().clone();
+    chain.pay(&account.parent(), 21_000_000, false);
+    chain.mine(12);
+    phone.scan(&chain);
+    phone
+        .recover(&Service::publish(
+            &chain,
+            chain.tip(),
+            activation(),
+            chain.tip(),
+            &[],
+        ))
+        .unwrap();
+    assert!(phone.state(&account).restore_complete);
+
+    // The phone reserves a refund key, records the quote and funds the swap with the
+    // refund memo through the app's FFI and send path.
+    let reserved = crate::api::one_time_ivk::reserve_swap_address(
+        phone.path.clone(),
+        "main".into(),
+        account.uuid.clone(),
+        false,
+        chain.tip().into(),
+    )
+    .unwrap();
+    let refund = reserved.refund_index.unwrap();
+    let deposit = zcash_keys::address::Address::Transparent(
+        transparent::address::TransparentAddress::PublicKeyHash([23; 20]),
+    )
+    .encode(&NETWORK);
+    crate::api::one_time_ivk::record_swap_refund_quote(
+        phone.path.clone(),
+        "main".into(),
+        account.uuid.clone(),
+        refund,
+        deposit.clone(),
+        now() + 3_600,
+    )
+    .unwrap();
+    let funding = crate::wallet::sync::propose_send_with_swap_refund(
+        &phone.path,
+        NETWORK,
+        &account.uuid,
+        "fund",
+        &deposit,
+        20_000_000,
+        refund,
+    )
+    .unwrap();
+    execute(&phone, &account, funding.proposal_id, "fund", chain.tip());
+    let (funding_tx, funding_raw) = phone.last_built();
+    let funded_at = chain.mine_tx(&funding_tx);
+
+    // NEAR pays receive I0 twice, receive I1 once and a small refund to the refund key.
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.pay(&account.key(Purpose::Receive, 0), 1_100_000, true);
+    chain.pay(&account.key(Purpose::Receive, 1), 500_000, true);
+    chain.pay(&account.key(Purpose::Refund, refund), 300_000, true);
+    chain.mine(12);
+    phone.scan(&chain);
+    assert_eq!(
+        phone.one_time_unspent(&account),
+        0,
+        "ordinary sync never credits them"
+    );
+    let before = phone.balance(&account);
+    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    phone.recover(&service).unwrap();
+    let state = phone.state(&account);
+    assert!(state.lookups.is_empty() && state.witnesses.is_empty());
+    assert_eq!(phone.one_time_unspent(&account), 2_900_000);
+    assert_eq!(phone.balance(&account), before + 2_900_000);
+    let deltas: Vec<i64> = phone
+        .history(&account)
+        .iter()
+        .map(|t| t.account_balance_delta)
+        .collect();
+    for value in [1_000_000, 1_100_000, 500_000, 300_000] {
+        assert!(deltas.contains(&value), "history shows {value}: {deltas:?}");
+    }
+    service.report("paid recovery: two receive pages, one receive and one refund, with proofs");
+
+    // The recovered notes are spendable through the app's ordinary send path.
+    let ordinary = phone.balance(&account) - 2_900_000;
+    let to = zcash_keys::address::Address::Unified(
+        zcash_keys::address::UnifiedAddress::from_receivers(
+            Some(
+                orchard::keys::FullViewingKey::from(
+                    &orchard::keys::SpendingKey::from_bytes([7; 32]).unwrap(),
+                )
+                .address_at(0u32, orchard::keys::Scope::External),
+            ),
+            None,
+            None,
+        )
+        .unwrap(),
+    )
+    .encode(&NETWORK);
+    let amount = ordinary + 2_000_000;
+    let spend = crate::wallet::sync::propose_send(
+        &phone.path,
+        NETWORK,
+        &account.uuid,
+        "spend",
+        &to,
+        amount,
+        None,
+    )
+    .unwrap();
+    let before = phone.balance(&account);
+    execute(&phone, &account, spend.proposal_id, "spend", chain.tip());
+    let (spend_tx, _) = phone.last_built();
+    chain.mine_tx(&spend_tx);
+    chain.mine(3);
+    phone.scan(&chain);
+    let spent_one_time = 2_900_000 - phone.one_time_unspent(&account);
+    assert!(spent_one_time >= 2_000_000, "spent {spent_one_time}");
+    assert_eq!(phone.balance(&account), before - amount - spend.fee_zatoshi);
+    assert!(phone
+        .history(&account)
+        .iter()
+        .any(|t| t.account_balance_delta == -((amount + spend.fee_zatoshi) as i64)));
+
+    // A second device restored from the seed scans the whole chain, including the
+    // phone's spend, before it knows any one-time key.
+    let final_service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let mut unenhanced = Wallet::new(4, activation());
+    unenhanced.scan(&chain);
+    unenhanced.recover(&final_service).unwrap();
+    let account_without_memo = unenhanced.account().clone();
+    assert_eq!(
+        unenhanced.one_time_received(&account_without_memo),
+        2_600_000,
+        "without the funding memo the refund key stays unknown"
+    );
+    assert!(!unenhanced
+        .queued(&account_without_memo)
+        .contains(&(false, refund)));
+    let mut desktop = Wallet::new(4, activation());
+    let other = desktop.account().clone();
+    desktop.scan(&chain);
+    assert_eq!(desktop.one_time_received(&other), 0);
+    let enhanced = enhance_publicly(&desktop, funding_tx.txid(), &funding_raw, funded_at, &chain);
+    let final_service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    desktop.recover(&final_service).unwrap();
+    let state = desktop.state(&other);
+    assert!(state.restore_complete && state.lookups.is_empty() && state.witnesses.is_empty());
+    assert_eq!(state.restore_next, 6, "I0 and I1 paid, then four empties");
+    assert_eq!(desktop.one_time_received(&other), 2_900_000);
+    assert_eq!(
+        desktop.one_time_unspent(&other),
+        phone.one_time_unspent(&account),
+        "spent receipts stay spent"
+    );
+    assert_eq!(desktop.balance(&other), phone.balance(&account));
+    let line = final_service
+        .report("second-device restore: seed walk, memo-derived refund, pages and proofs");
+    println!("receiver bytes enhancement: {enhanced} bytes of funding transaction for the refund memo; {line}");
+}
+
+/// Runs the app's public enhancement lane for `txid`, as ordinary sync does after
+/// scanning, against a lightwalletd that serves the raw transaction. Returns the raw
+/// transaction size the response carried.
+fn enhance_publicly(
+    wallet: &Wallet,
+    txid: zcash_primitives::transaction::TxId,
+    raw: &[u8],
+    height: u32,
+    chain: &Chain,
+) -> usize {
+    use super::super::enhancement::{EnhancementPolicy, EnhancementSession};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut reversed = *txid.as_ref();
+    reversed.reverse();
+    let lwd = runtime.block_on(
+        crate::wallet::sync_engine::test_lwd::CapturingLwd::start_serving(
+            vec![
+                (*txid.as_ref(), raw.to_vec(), u64::from(height)),
+                (reversed, raw.to_vec(), u64::from(height)),
+            ],
+            u64::from(chain.tip()),
+            |_| {},
+        ),
+    );
+    let mut session = EnhancementSession::with_policy(
+        NETWORK,
+        &wallet.path,
+        EnhancementPolicy::for_preference(NETWORK, false),
+    );
+    let mut db = wallet.db();
+    let mut client = lwd.client.clone();
+    runtime
+        .block_on(session.run_payload_recovery(&mut db, &mut client, None, &|| false))
+        .unwrap();
+    assert!(lwd.count("/GetTransaction") >= 1);
+    raw.len()
+}
+
+/// Turning the feature off while a lookup is in flight, or cancelling the worker as lock,
+/// background, transport changes and wallet mutations do, rejects the held answer
+/// without settling it as empty. Known funds stay, a paused round makes no request, and
+/// the next round after re-enabling or restarting resumes the saved work.
+#[test]
+fn toggle_and_cancellation_reject_held_answers_and_resume() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "toggle_and_cancellation_reject_held_answers_and_resume",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    let publish =
+        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
+    chain.pay(&receive(0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    wallet.recover(&publish(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+
+    // Toggle off while I1's answer is held.
+    chain.pay(&receive(1), 500_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = publish(&chain);
+    let held = service.hold("query", 0);
+    let worker = wallet.spawn(&service, None, Duration::from_secs(45));
+    held.wait();
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 1)]));
+    crate::api::sync::set_near_swap_privacy_enabled(false);
+    crate::api::one_time_ivk::reconcile_swap_recovery(wallet.path.clone(), "main".into()).unwrap();
+    held.release();
+    worker.join().unwrap().unwrap();
+    assert!(!wallet.state(&account).enabled);
+    assert_eq!(
+        wallet.one_time_unspent(&account),
+        1_000_000,
+        "known funds remain"
+    );
+    assert!(wallet.balance(&account) >= 1_000_000);
+    let paused = publish(&chain);
+    wallet.recover(&paused).unwrap();
+    assert_eq!(
+        paused.count("init"),
+        0,
+        "a paused feature makes no receiver request"
+    );
+
+    // Re-enabling resumes the saved obligation.
+    enable_feature();
+    crate::api::one_time_ivk::reconcile_swap_recovery(wallet.path.clone(), "main".into()).unwrap();
+    wallet.recover(&publish(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
+
+    // Cancellation while I2's answer is held, as lock, background, transport changes
+    // and wallet mutations request it.
+    chain.pay(&receive(2), 700_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = publish(&chain);
+    let held = service.hold("query", 0);
+    let worker = wallet.spawn(&service, None, Duration::from_secs(45));
+    held.wait();
+    cancel_recovery();
+    held.release();
+    let error = worker.join().unwrap().unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
+    assert!(
+        wallet.queued(&account).contains(&(RECEIVE, 2)),
+        "the stale answer was not settled as empty"
+    );
+    wallet.recover(&publish(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 2_200_000);
+}
+
+/// Two software accounts share one filter download per range but keep their own
+/// cursors, queues and time budgets. A held lookup that exhausts the first account's
+/// budget leaves its work pending while the second account still finishes, and neither
+/// account is credited with the other's payment.
+#[test]
+fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "accounts_share_filter_downloads_but_not_cursors_budgets_or_credit",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let created = wallet.account().clone();
+    let added = wallet.add_account(5, activation());
+    // The worker visits software accounts in the wallet's account order.
+    let order = one_time_ivk::software_accounts(&wallet.db()).unwrap();
+    let (first, second) = if order[0] == created.id {
+        (created, added)
+    } else {
+        (added, created)
+    };
+    assert_eq!(order, [first.id, second.id]);
+    chain.mine(2);
+    wallet.scan(&chain);
+    let restore = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet.recover(&restore).unwrap();
+    assert_eq!(
+        restore.queries(),
+        8,
+        "each account walks its own four empties"
+    );
+    assert_eq!(restore.count("public"), 1, "setup is shared");
+    assert!(wallet.state(&first).restore_complete && wallet.state(&second).restore_complete);
+
+    let frontier = chain.tip();
+    chain.pay(&first.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.pay(&second.key(Purpose::Receive, 0), 2_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    // The first account's lookup outlasts its slice of a nine second round.
+    let held = service.hold("query", 0);
+    let worker = wallet.spawn(&service, None, Duration::from_secs(9));
+    held.wait();
+    let error = worker.join().unwrap().unwrap_err();
+    assert!(error.contains("pending"), "{error}");
+    assert_eq!(
+        service.filter_requests(),
+        [format!("{}/1", frontier + 1), format!("{}/2", frontier + 2)],
+        "both accounts matched the same downloaded filters"
+    );
+    for account in [&first, &second] {
+        assert_eq!(
+            wallet
+                .state(account)
+                .filter_frontier
+                .map(|f| u32::from(f.height)),
+            Some(chain.tip())
+        );
+    }
+    assert_eq!(wallet.queued(&first), BTreeSet::from([(RECEIVE, 0)]));
+    assert!(wallet.queued(&second).is_empty());
+    assert_eq!(wallet.one_time_unspent(&first), 0);
+    assert_eq!(wallet.one_time_unspent(&second), 2_000_000);
+    held.release();
+
+    let next = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet.recover(&next).unwrap();
+    assert_eq!(
+        next.queries(),
+        1,
+        "only the first account's pending lookup remains"
+    );
+    assert_eq!(wallet.one_time_unspent(&first), 1_000_000);
+    assert_eq!(wallet.one_time_unspent(&second), 2_000_000);
+}
+
+/// Seed restore through the app worker crosses an unpaid hole, resets its empty count at
+/// each authenticated payment and stops after four true empties. Issuance through the
+/// app's FFI then recycles the hole and never derives past the payment-backed window.
+#[test]
+fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "seed_restore_walks_holes_and_issuance_recycles_within_the_window",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let seed = Wallet::new(4, activation()).account().clone();
+    chain.pay(&seed.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.pay(&seed.key(Purpose::Receive, 2), 2_000_000, true);
+    chain.pay(&seed.key(Purpose::Receive, 2), 300_000, true);
+    chain.mine(12);
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    wallet.scan(&chain);
+    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet.recover(&service).unwrap();
+    let state = wallet.state(&account);
+    assert!(state.restore_complete);
+    assert_eq!(
+        state.restore_next, 7,
+        "I0 paid, I1 empty, I2 paid, I3 to I6 empty"
+    );
+    assert_eq!(service.queries(), 8, "seven addresses, one query per page");
+    assert_eq!(wallet.one_time_unspent(&account), 3_300_000);
+    service.report("seed restore across a hole: seven addresses, eight pages, three proofs");
+
+    let reserve = || {
+        crate::api::one_time_ivk::reserve_swap_address(
+            wallet.path.clone(),
+            "main".into(),
+            account.uuid.clone(),
+            true,
+            chain.tip().into(),
+        )
+    };
+    let begin = |index| {
+        crate::api::one_time_ivk::begin_receive_quote(
+            wallet.path.clone(),
+            "main".into(),
+            account.uuid.clone(),
+            index,
+            now() + 3_600,
+        )
+        .unwrap()
+    };
+    let finish = |request, accepted| {
+        crate::api::one_time_ivk::finish_receive_quote(
+            wallet.path.clone(),
+            "main".into(),
+            account.uuid.clone(),
+            request,
+            accepted,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        reserve().unwrap().reservation_index,
+        Some(1),
+        "the hole is issued first"
+    );
+    // A definitively rejected quote releases the hole for reuse.
+    finish(begin(1), None);
+    assert_eq!(reserve().unwrap().reservation_index, Some(1));
+    for expected in [1, 3, 4, 5, 6] {
+        let index = reserve().unwrap().reservation_index.unwrap();
+        assert_eq!(index, expected);
+        let request = begin(index);
+        finish(
+            request.clone(),
+            Some(crate::api::one_time_ivk::ReceiveDeposit {
+                address: format!("deposit-{index}.near"),
+                memo: None,
+                deadline_seconds: now() + 3_600,
+            }),
+        );
+        crate::api::one_time_ivk::start_receive_quote(
+            wallet.path.clone(),
+            "main".into(),
+            account.uuid.clone(),
+            request,
+        )
+        .unwrap();
+    }
+    let full = reserve().err().unwrap();
+    assert!(
+        full.message.contains("No swap address is free"),
+        "{}",
+        full.message
+    );
+}
+
+/// The settings action searches past the four-empty stop up to an explicit bound, but an
+/// unbounded check reads only known addresses. A pause keeps the cursor, the check
+/// reports busy until it ends, and a later check resumes from the cursor.
+#[test]
+fn manual_history_check_honours_bounds_and_resumes_after_pause() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "manual_history_check_honours_bounds_and_resumes_after_pause",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let path = wallet.path.clone();
+    let checking =
+        || crate::api::one_time_ivk::is_swap_history_checking(path.clone(), "main".into()).unwrap();
+    chain.pay(&account.key(Purpose::Receive, 9), 900_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let publish =
+        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
+    wallet.recover(&publish(&chain)).unwrap();
+    assert_eq!(wallet.state(&account).restore_next, 4);
+    assert_eq!(wallet.one_time_unspent(&account), 0);
+    assert!(!checking());
+
+    let known = publish(&chain);
+    wallet
+        .recover_with(&known, Some(None), Duration::from_secs(45))
+        .unwrap();
+    assert_eq!(
+        known.queries(),
+        0,
+        "known addresses were already checked through it"
+    );
+    assert_eq!(
+        wallet.one_time_unspent(&account),
+        0,
+        "known addresses stop before I9"
+    );
+    assert!(!wallet.state(&account).manual.unwrap().active);
+
+    // An explicit bound of ten addresses, paused on its third new lookup (I6).
+    let bounded = publish(&chain);
+    let held = bounded.hold("query", 2);
+    let worker = wallet.spawn(&bounded, Some(Some(10)), Duration::from_secs(45));
+    held.wait();
+    assert!(checking());
+    cancel_recovery();
+    held.release();
+    assert!(worker.join().unwrap().is_err());
+    crate::api::one_time_ivk::cancel_swap_history(wallet.path.clone(), "main".into()).unwrap();
+    let manual = wallet.state(&account).manual.unwrap();
+    assert!(!manual.active);
+    assert_eq!(manual.receive_end, 10);
+    assert_eq!(
+        manual.next, 6,
+        "the cursor stays on the interrupted address"
+    );
+    assert!(!checking());
+
+    let resumed = publish(&chain);
+    wallet
+        .recover_with(&resumed, Some(Some(10)), Duration::from_secs(45))
+        .unwrap();
+    let manual = wallet.state(&account).manual.unwrap();
+    assert!(!manual.active);
+    assert_eq!(
+        resumed.queries(),
+        4,
+        "I6 through I9, not again from I0 or I4"
+    );
+    assert_eq!(wallet.one_time_unspent(&account), 900_000);
+    assert!(!checking());
+    resumed.report("resumed manual check: four lookups, one paid page and its proof");
+}
+
+/// An authenticated payment before the selected birthday advances the seed walk without
+/// being credited. Vizor has no in-place birthday-lowering action; its earlier-birthday
+/// path is restoring the seed from that birthday, which credits the payment.
+#[test]
+fn prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let seed = Wallet::new(4, activation()).account().clone();
+    chain.pay(&seed.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.mine(12);
+    let birthday = chain.tip() + 1;
+    chain.mine(3);
+    let mut late = Wallet::new(4, birthday);
+    let account = late.account().clone();
+    late.scan(&chain);
+    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    late.recover(&service).unwrap();
+    let state = late.state(&account);
+    assert!(state.restore_complete);
+    assert_eq!(
+        state.restore_next, 5,
+        "the prebirthday payment counts as used"
+    );
+    assert_eq!(late.one_time_received(&account), 0, "but is not credited");
+
+    let mut early = Wallet::new(4, activation());
+    let account = early.account().clone();
+    early.scan(&chain);
+    early.recover(&service).unwrap();
+    assert_eq!(early.one_time_unspent(&account), 1_000_000);
 }
