@@ -178,6 +178,83 @@ void transactionLoadingTests({required bool mobile}) {
     expect(find.text('Receive memo'), findsOneWidget);
   });
 
+  testWidgets(
+    'a provisional row keeps its skeleton until the row read names its role',
+    (tester) async {
+      // The debit's detail answers first, but the row read turns the
+      // transaction into a receive: no content may show and then give way
+      // to the receive's skeleton.
+      final rows = Completer<List<rust_sync.TransactionInfo>>();
+      final receiveDetail = Completer<rust_sync.TransactionDetail?>();
+      final memoSkeletonSeen = <bool>[];
+      void sample() => memoSkeletonSeen.add(
+        find.byType(ReceiptMemoSkeleton).evaluate().isNotEmpty,
+      );
+      await _pump(
+        tester,
+        mobile: mobile,
+        kind: 'sent',
+        provisional: true,
+        history: (_, _) => rows.future,
+        detail: (_, tx) => tx.txKind == 'sent'
+            ? Future.value(_detail('Debit memo', kind: 'sent'))
+            : receiveDetail.future,
+      );
+      await tester.pump();
+      await tester.pump();
+      sample();
+      expect(find.text('Debit memo'), findsNothing);
+      rows.complete([_tx()]);
+      await tester.pump();
+      await tester.pump();
+      sample();
+      receiveDetail.complete(_detail('Receive memo'));
+      await tester.pump();
+      await tester.pump();
+      sample();
+      expect(find.text('Debit memo'), findsNothing);
+      expect(find.text('Receive memo'), findsOneWidget);
+      expect(memoSkeletonSeen, [true, true, false]);
+    },
+  );
+
+  testWidgets('a receive that became mined keeps its detail while it reloads', (
+    tester,
+  ) async {
+    // The tapped row was unmined; the row read reports it received. The
+    // receiving detail still fits the received row, so it stays shown, with
+    // no skeleton, until the received detail replaces it.
+    final rows = Completer<List<rust_sync.TransactionInfo>>();
+    final receivedDetail = Completer<rust_sync.TransactionDetail?>();
+    final kinds = <String>[];
+    await _pump(
+      tester,
+      mobile: mobile,
+      kind: 'receiving',
+      history: (_, _) => rows.future,
+      detail: (_, tx) {
+        kinds.add(tx.txKind);
+        return tx.txKind == 'receiving'
+            ? Future.value(_detail('Early memo', kind: 'receiving'))
+            : receivedDetail.future;
+      },
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Early memo'), findsOneWidget);
+    rows.complete([_tx()]);
+    await tester.pump();
+    await tester.pump();
+    expect(kinds, ['receiving', 'received']);
+    expect(find.text('Early memo'), findsOneWidget);
+    expect(find.byType(ReceiptMemoSkeleton), findsNothing);
+    expect(find.byType(ReceiptValueSkeleton), findsNothing);
+    receivedDetail.complete(_detail('Mined memo'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Mined memo'), findsOneWidget);
+  });
+
   for (final kind in ['sent', 'received', 'shielded']) {
     for (final hasMemo in [true, false]) {
       testWidgets('$kind detail skeleton preserves layout with memo=$hasMemo', (

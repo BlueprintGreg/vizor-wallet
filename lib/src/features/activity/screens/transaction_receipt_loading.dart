@@ -229,7 +229,9 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
   /// Loads the shown row's Activity rows and detail, and publishes each as it
   /// arrives. A receipt opened from a row already shows that row; while it
   /// has no detail for it, the detail is read at once, alongside the row read
-  /// rather than after it, so the skeleton waits on that one read.
+  /// rather than after it, so the skeleton waits on that one read. A
+  /// provisional row's detail is shown only once the row read confirms its
+  /// role.
   Future<void> loadReceipt() async {
     final generation = ++_loadGeneration;
     final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
@@ -263,7 +265,12 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
     if (shown != null && matchingReceiptDetailFor(shown) == null) {
       final read = _readShownDetail(accountUuid, shown);
       shownDetail = read;
-      unawaited(_publishShownDetail(read, shown, generation, accountUuid));
+      // A provisional row's role can still change with the row read
+      // ([_findTransaction]); its detail would then show for a moment and
+      // give way to the new role's skeleton. It waits for the row read.
+      if (!shown.provisional) {
+        unawaited(_publishShownDetail(read, shown, generation, accountUuid));
+      }
     }
     try {
       final txs = await _loadHistory(accountUuid);
@@ -283,6 +290,9 @@ mixin TransactionReceiptLoading<W extends TransactionReceiptScreen>
       // transaction's role changed meanwhile.
       final sameRow = shown != null && _isSameRow(shown, tx);
       // Publish the status without waiting for addresses, outputs, or memo.
+      // A detail that still fits the row (a receive that became mined) stays
+      // shown while its new read runs: [receiptDetailsLoading] shows the
+      // skeleton only when no shown detail fits.
       setState(() {
         _transaction = tx;
         _detail = matchingReceiptDetailFor(tx);
