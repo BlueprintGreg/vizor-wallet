@@ -388,7 +388,7 @@ class _VotingProposalDetailViewState
     if (_resultsRedirectRoundId == roundId) return;
     _resultsRedirectRoundId = roundId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
       context.go(votingResultsRoute(roundId));
     });
   }

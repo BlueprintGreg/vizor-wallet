@@ -13,6 +13,8 @@ import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_shell.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_exit.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_sheet.dart';
 import 'package:zcash_wallet/src/features/accounts/widgets/mobile/mobile_accounts_sheet.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_tab_bar.dart';
@@ -139,6 +141,96 @@ Iterable<GoRoute> _leafRoutes() =>
     goRouteDescendants(buildMobileRoutes(entryRoutes: const []));
 
 void main() {
+  for (final interrupted in ['none', 'different', 'same']) {
+    testWidgets(
+      'sidebar waits for cleanup, serializes input and respects route changes ($interrupted)',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(900, 720);
+        addTearDown(tester.view.reset);
+        var cleanup = Completer<bool>();
+        var calls = 0;
+        final router = GoRouter(
+          initialLocation: '/pay',
+          routes: [
+            ShellRoute(
+              builder: (context, state, child) => MobileAdaptiveFrame(
+                router: GoRouter.of(context),
+                child: child,
+              ),
+              routes: [
+                GoRoute(
+                  path: '/pay',
+                  pageBuilder: (_, state) => NoTransitionPage(
+                    key: ValueKey(state.extra ?? 'original'),
+                    child: MobileSidebarExitScope(
+                      onExit: () {
+                        calls++;
+                        return cleanup.future;
+                      },
+                      child: const Scaffold(body: Text('Editor')),
+                    ),
+                  ),
+                ),
+                GoRoute(
+                  path: '/activity',
+                  builder: (_, _) =>
+                      const Scaffold(body: Text('Activity pane')),
+                ),
+                GoRoute(
+                  path: '/settings',
+                  builder: (_, _) =>
+                      const Scaffold(body: Text('Settings pane')),
+                ),
+              ],
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+        await tester.pumpWidget(_app(router));
+        await tester.pumpAndSettle();
+        final sidebar = tester.widget<MobileWalletSidebar>(
+          find.byType(MobileWalletSidebar),
+        );
+        expect(sidebar.onSelect, isNotNull);
+        expect(sidebar.onAccountTap, isNull);
+        sidebar.onSelect!('/activity');
+        sidebar.onSelect!('/settings');
+        await tester.pump();
+        expect(calls, 1);
+        expect(mobileVisiblePath(router), '/pay');
+        expect(
+          tester
+              .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+              .onSelect,
+          isNull,
+        );
+        if (interrupted != 'none') {
+          final nextPath = interrupted == 'same' ? '/pay' : '/settings';
+          router.go(nextPath, extra: 'replacement');
+          await tester.pumpAndSettle();
+          cleanup.complete(true);
+          await tester.pumpAndSettle();
+          expect(mobileVisiblePath(router), nextPath);
+        } else {
+          cleanup.complete(false);
+          await tester.pumpAndSettle();
+          expect(mobileVisiblePath(router), '/pay');
+          cleanup = Completer<bool>();
+          tester
+              .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+              .onSelect!('/activity');
+          cleanup.complete(true);
+          await tester.pumpAndSettle();
+          expect(mobileVisiblePath(router), '/activity');
+          expect(calls, 2);
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
   setUp(() {
     final view = TestWidgetsFlutterBinding.ensureInitialized()
         .platformDispatcher
@@ -402,7 +494,7 @@ void main() {
   );
 
   testWidgets(
-    'sidebar navigation cannot bypass a popup or protected send flow',
+    'sidebar blocks modals and protected work but can leave send input',
     (tester) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(900, 720);
@@ -462,8 +554,12 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pump();
       expect(find.byType(MobileWalletSidebar), findsOneWidget);
-      expect(settings().onPressed, isNull);
-      expect(tester.widget<MobileWalletSidebar>(sidebar).onAccountTap, isNull);
+      expect(settings().onPressed, isNotNull);
+      settings().onPressed!();
+      await tester.pumpAndSettle();
+      expect(mobileVisiblePath(router), '/settings');
+      expect(find.byType(MobileSendScreen), findsNothing);
+
       await tester.pumpWidget(const SizedBox());
     },
   );

@@ -37,25 +37,30 @@ bool hasMobileWalletSidebar(String path) => const [
   '/voting',
   '/migration',
   '/about',
+  '/setup/backup',
 ].any((root) => path == root || path.startsWith('$root/'));
 
-bool allowsMobileSidebarNavigation(String path) =>
-    const [
-      '/home',
-      '/accounts',
-      '/swap',
-      '/activity',
-      '/settings',
-      '/receive',
-      '/about',
-    ].contains(path) ||
-    path.startsWith('/activity/') ||
-    (path.startsWith('/settings/') &&
-        !const [
-          '/settings/change-password',
-          '/settings/seed-phrase',
-          '/settings/viewing-key',
-        ].contains(path));
+/// Stateful flows must publish their current exit permission. Unknown/new
+/// wallet routes fail closed until reviewed; read-only routes need no handler.
+bool requiresMobileSidebarExitPolicy(String path) =>
+    !(const [
+          '/home',
+          '/accounts',
+          '/swap',
+          '/activity',
+          '/settings',
+          '/receive',
+          '/about',
+          '/voting',
+        ].contains(path) ||
+        path.startsWith('/activity/') ||
+        RegExp(r'^/voting/poll/[^/]+/results$').hasMatch(path) ||
+        (path.startsWith('/settings/') &&
+            !const [
+              '/settings/change-password',
+              '/settings/seed-phrase',
+              '/settings/viewing-key',
+            ].contains(path)));
 
 /// Imperative pushes retain the base URI in currentConfiguration.uri. Walk
 /// the actual top route (including nested shell branches) for flow protection.

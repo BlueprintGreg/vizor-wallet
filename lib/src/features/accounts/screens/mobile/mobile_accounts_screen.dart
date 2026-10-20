@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -554,62 +555,66 @@ class _MobileAccountsScreenState extends ConsumerState<MobileAccountsScreen> {
         if (account.uuid != active?.uuid) account,
     ];
 
-    return Scaffold(
-      backgroundColor: colors.background.window,
-      body: AppToastHost(
-        child: SafeArea(
-          bottom: false,
-          child: Column(
-            children: [
-              MobileTopNav.back(
-                title: 'Accounts',
-                titleStyle: AppTypography.headlineLarge,
-                onBack: _busy ? null : () => context.pop(),
-              ),
-              Expanded(
-                child: ListView(
-                  padding: EdgeInsets.fromLTRB(
-                    AppSpacing.sm,
-                    AppSpacing.s,
-                    AppSpacing.sm,
-                    MobileNavigationScope.bottomClearanceOf(
-                      context,
-                      kMobileTabBarHeight + AppSpacing.lg,
-                    ),
-                  ),
-                  children: [
-                    if (active != null)
-                      _AccountsGroupCard(
-                        title: 'Current',
-                        titleGap: AppSpacing.s,
-                        children: [_accountRow(active, enabled: !_busy)],
+    return MobileSidebarExitScope(
+      canNavigate: !_busy,
+      canSwitchAccount: !_busy,
+      child: Scaffold(
+        backgroundColor: colors.background.window,
+        body: AppToastHost(
+          child: SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                MobileTopNav.back(
+                  title: 'Accounts',
+                  titleStyle: AppTypography.headlineLarge,
+                  onBack: _busy ? null : () => context.pop(),
+                ),
+                Expanded(
+                  child: ListView(
+                    padding: EdgeInsets.fromLTRB(
+                      AppSpacing.sm,
+                      AppSpacing.s,
+                      AppSpacing.sm,
+                      MobileNavigationScope.bottomClearanceOf(
+                        context,
+                        kMobileTabBarHeight + AppSpacing.lg,
                       ),
-                    if (others.isNotEmpty) ...[
+                    ),
+                    children: [
+                      if (active != null)
+                        _AccountsGroupCard(
+                          title: 'Current',
+                          titleGap: AppSpacing.s,
+                          children: [_accountRow(active, enabled: !_busy)],
+                        ),
+                      if (others.isNotEmpty) ...[
+                        const SizedBox(height: AppSpacing.sm),
+                        _AccountsGroupCard(
+                          title: 'Other',
+                          titleGap: AppSpacing.xs,
+                          children: [
+                            for (final account in others)
+                              _accountRow(account, enabled: !_busy),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: AppSpacing.sm),
-                      _AccountsGroupCard(
-                        title: 'Other',
-                        titleGap: AppSpacing.xs,
-                        children: [
-                          for (final account in others)
-                            _accountRow(account, enabled: !_busy),
-                        ],
+                      AppButton(
+                        key: const ValueKey('mobile_accounts_add_account'),
+                        variant: AppButtonVariant.secondary,
+                        expand: true,
+                        onPressed: _busy
+                            ? null
+                            : () => context.push('/add-account'),
+                        leading: const AppIcon(AppIcons.addNew),
+                        child: const Text('Add account'),
                       ),
                     ],
-                    const SizedBox(height: AppSpacing.sm),
-                    AppButton(
-                      key: const ValueKey('mobile_accounts_add_account'),
-                      variant: AppButtonVariant.secondary,
-                      expand: true,
-                      onPressed: _busy
-                          ? null
-                          : () => context.push('/add-account'),
-                      leading: const AppIcon(AppIcons.addNew),
-                      child: const Text('Add account'),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

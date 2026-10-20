@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -98,31 +99,57 @@ class _MobileSwapKeystoneSignScreenState
 
   @override
   Widget build(BuildContext context) {
-    return PopScope<void>(
-      canPop: false,
-      child: AbsorbPointer(
-        absorbing: _cancelling,
-        child: MobileKeystonePcztSigningFlow(
-          title: _cancelling ? 'Cancelling…' : 'Sign ZEC deposit',
-          failedTitle: 'Keystone signing failed',
-          description:
-              'Use your Keystone wallet to scan this transaction QR code. '
-              'Follow the steps on your device.',
-          preparePczt: _preparePczt,
-          onSigned: _handleSignedPczt,
-          friendlyError: _friendlyError,
-          onCancel: _handleCancel,
-          signedPcztDecoder: widget.signedPcztDecoder ?? _decodeSigningResponse,
-          expectedSignedUrType: 'zcash-batch-sig-result',
-          unexpectedUrMessage:
-              'Open the signature result QR on Keystone, then scan again.',
-          scannerBuilder: widget.scannerBuilder,
-          forceScannerActiveForTesting: widget.forceScannerActiveForTesting,
-          keyPrefix: 'mobile_swap_keystone_sign',
-          scanCaption:
-              'Scan the QR code on your Keystone to finish the ZEC deposit',
-          finalizingSignatureLabel: 'Broadcasting ZEC deposit...',
-          logTag: 'MobileSwapKeystoneSign',
+    return MobileSidebarExitScope(
+      canNavigate: !_cancelling && !_cancelled,
+      onExit: () async {
+        setState(() {
+          _cancelling = true;
+          _cancelled = true;
+        });
+        try {
+          await _discardDraft();
+          if (!mounted) return false;
+          ref
+              .read(swapStateProvider.notifier)
+              .clearPendingHardwareSigningIntent(widget.args.intent.id);
+          return true;
+        } catch (_) {
+          if (mounted) {
+            setState(() {
+              _cancelling = false;
+              _cancelled = false;
+            });
+          }
+          return false;
+        }
+      },
+      child: PopScope<void>(
+        canPop: false,
+        child: AbsorbPointer(
+          absorbing: _cancelling,
+          child: MobileKeystonePcztSigningFlow(
+            title: _cancelling ? 'Cancelling…' : 'Sign ZEC deposit',
+            failedTitle: 'Keystone signing failed',
+            description:
+                'Use your Keystone wallet to scan this transaction QR code. '
+                'Follow the steps on your device.',
+            preparePczt: _preparePczt,
+            onSigned: _handleSignedPczt,
+            friendlyError: _friendlyError,
+            onCancel: _handleCancel,
+            signedPcztDecoder:
+                widget.signedPcztDecoder ?? _decodeSigningResponse,
+            expectedSignedUrType: 'zcash-batch-sig-result',
+            unexpectedUrMessage:
+                'Open the signature result QR on Keystone, then scan again.',
+            scannerBuilder: widget.scannerBuilder,
+            forceScannerActiveForTesting: widget.forceScannerActiveForTesting,
+            keyPrefix: 'mobile_swap_keystone_sign',
+            scanCaption:
+                'Scan the QR code on your Keystone to finish the ZEC deposit',
+            finalizingSignatureLabel: 'Broadcasting ZEC deposit...',
+            logTag: 'MobileSwapKeystoneSign',
+          ),
         ),
       ),
     );

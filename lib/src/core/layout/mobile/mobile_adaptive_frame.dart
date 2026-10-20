@@ -16,9 +16,11 @@ import '../../formatting/sync_status_label.dart';
 import '../../navigation/external_action_guard_provider.dart';
 import '../../navigation/mobile_destinations.dart';
 import '../../navigation/mobile_sidebar_route_observer.dart';
+import '../../navigation/mobile_sidebar_exit.dart';
 import '../../profile_pictures.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_profile_picture.dart';
+import '../../widgets/app_toast.dart';
 import '../../widgets/mobile/mobile_account_avatar.dart';
 import '../content_overlay_inset.dart';
 import 'mobile_navigation_scope.dart';
@@ -43,10 +45,12 @@ class MobileAdaptiveFrame extends ConsumerStatefulWidget {
 class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
     with WidgetsBindingObserver {
   final _navigation = MobileBranchNavigation();
+  final _sidebarExit = MobileSidebarExitController();
   MobileNavigationGeometry? _geometry;
   StreamSubscription<MobileNavigationGeometry?>? _subscription;
   int _revision = 0;
   bool _routeUpdatePending = false;
+  bool _sidebarNavigationPending = false;
   late MobileSidebarRouteObserver _routeObserver;
   late final NativeMobileNavigationGeometry _native;
 
@@ -77,6 +81,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
   @override
   void initState() {
     super.initState();
+    _sidebarExit.addListener(_routingChanged);
     _native = ref.read(mobileNavigationGeometryServiceProvider);
     WidgetsBinding.instance.addObserver(this);
     widget.router.routerDelegate.addListener(_routingChanged);
@@ -109,6 +114,8 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
 
   @override
   void dispose() {
+    _sidebarExit.removeListener(_routingChanged);
+    _sidebarExit.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.router.routerDelegate.removeListener(_routingChanged);
     _routeObserver.removeListener(_routingChanged);
@@ -139,17 +146,70 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
       navigationItemCount: swapEnabled ? 4 : 3,
     );
     final guard = ref.watch(externalActionGuardProvider);
-    bool canNavigate() =>
+    bool navigationUnblocked() =>
         !observer.hasPopup &&
-        allowsMobileSidebarNavigation(mobileVisiblePath(widget.router)) &&
         !ref
             .read(externalActionGuardProvider)
             .blocks(ExternalAction.navigation);
-    // A root modal barrier blocks interaction without changing sidebar styles.
-    // Keep click-time popup protection for callbacks captured before a push.
+    final requiresPolicy = requiresMobileSidebarExitPolicy(path);
     final enabled =
-        allowsMobileSidebarNavigation(path) &&
-        !guard.blocks(ExternalAction.navigation);
+        !_sidebarNavigationPending &&
+        !guard.blocks(ExternalAction.navigation) &&
+        _sidebarExit.canNavigate(path, requiresPolicy: requiresPolicy);
+    final accountEnabled =
+        !_sidebarNavigationPending &&
+        !guard.blocks(ExternalAction.navigation) &&
+        _sidebarExit.canSwitchAccount(path, requiresPolicy: requiresPolicy);
+    Future<void> select(String destination) async {
+      if (_sidebarNavigationPending ||
+          !navigationUnblocked() ||
+          mobileVisiblePath(widget.router) != path) {
+        return;
+      }
+      _sidebarNavigationPending = true;
+      _routingChanged();
+      final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
+      final routeIdentity = _sidebarExit.routeIdentity(path);
+      try {
+        await ref.read(externalActionGuardProvider.notifier).runNavigation(
+          () async {
+            if (!await _sidebarExit.prepareLeave(
+              path,
+              requiresPolicy: requiresPolicy,
+            )) {
+              if (context.mounted &&
+                  mobileVisiblePath(widget.router) == path &&
+                  navigationUnblocked()) {
+                showAppToast(
+                  context,
+                  'Could not finish cancellation. Try again.',
+                );
+              }
+              return;
+            }
+            if (!mounted ||
+                !navigationUnblocked() ||
+                mobileVisiblePath(widget.router) != path ||
+                !identical(routeIdentity, _sidebarExit.routeIdentity(path)) ||
+                ref.read(accountProvider).value?.activeAccountUuid !=
+                    accountUuid ||
+                ref.read(appSecurityProvider).requiresUnlock) {
+              return;
+            }
+            if (!_navigation.select(destination)) widget.router.go(destination);
+            await WidgetsBinding.instance.endOfFrame;
+          },
+        );
+      } catch (_) {
+        if (context.mounted) {
+          showAppToast(context, 'Could not finish cancellation. Try again.');
+        }
+      } finally {
+        _sidebarNavigationPending = false;
+        if (mounted) _routingChanged();
+      }
+    }
+
     final wide = layout.mode == MobileNavigationMode.sidebar;
     return ContentOverlayInset(
       leftInset: wide ? layout.body.left : 0,
@@ -159,6 +219,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
         railRect: layout.rail,
         contentRect: wide ? layout.body.shift(-layout.viewport.topLeft) : null,
         navigation: _navigation,
+        sidebarExit: _sidebarExit,
         child: ColoredBox(
           color: context.colors.background.window,
           child: Stack(
@@ -172,7 +233,13 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
                     layout.viewport,
                     safeRect: layout.contentSafeRect,
                   ),
-                  child: widget.child,
+                  child: ExcludeFocus(
+                    excluding: _sidebarNavigationPending,
+                    child: AbsorbPointer(
+                      absorbing: _sidebarNavigationPending,
+                      child: widget.child,
+                    ),
+                  ),
                 ),
               ),
               if (wide)
@@ -203,25 +270,23 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
                       ),
                       currentPath: path,
                       swapEnabled: swapEnabled,
-                      onSelect: !enabled
-                          ? null
-                          : (destination) {
-                              if (!canNavigate()) return;
-                              unawaited(
-                                ref
-                                    .read(externalActionGuardProvider.notifier)
-                                    .runNavigation(() async {
-                                      if (!_navigation.select(destination)) {
-                                        widget.router.go(destination);
-                                      }
-                                      await WidgetsBinding.instance.endOfFrame;
-                                    }),
-                              );
-                            },
-                      onAccountTap: !enabled
+                      onSelect: enabled
+                          ? (destination) => unawaited(select(destination))
+                          : null,
+                      onAccountTap: !accountEnabled
                           ? null
                           : () {
-                              if (!canNavigate()) return;
+                              if (_sidebarNavigationPending ||
+                                  !navigationUnblocked() ||
+                                  !_sidebarExit.canSwitchAccount(
+                                    mobileVisiblePath(widget.router),
+                                    requiresPolicy:
+                                        requiresMobileSidebarExitPolicy(
+                                          mobileVisiblePath(widget.router),
+                                        ),
+                                  )) {
+                                return;
+                              }
                               unawaited(
                                 ref
                                     .read(externalActionGuardProvider.notifier)

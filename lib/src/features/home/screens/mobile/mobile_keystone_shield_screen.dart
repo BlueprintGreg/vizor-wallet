@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -418,77 +419,80 @@ class _MobileKeystoneShieldScreenState
   @override
   Widget build(BuildContext context) {
     final scanning = _stage == _ShieldSignStage.scanning;
-    return PopScope<void>(
-      canPop: _stage != _ShieldSignStage.broadcasting,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _cancel();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (scanning) _buildScanner() else _buildQrStage(),
-            SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpacing.sm,
-                      vertical: AppSpacing.s,
-                    ),
-                    child: Row(
-                      children: [
-                        if (scanning)
+    return MobileSidebarExitScope(
+      canNavigate: _stage != _ShieldSignStage.broadcasting,
+      child: PopScope<void>(
+        canPop: _stage != _ShieldSignStage.broadcasting,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _cancel();
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (scanning) _buildScanner() else _buildQrStage(),
+              SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.sm,
+                        vertical: AppSpacing.s,
+                      ),
+                      child: Row(
+                        children: [
+                          if (scanning)
+                            Semantics(
+                              button: true,
+                              label: 'Toggle flashlight',
+                              excludeSemantics: true,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () =>
+                                    unawaited(_scanController?.toggleTorch()),
+                                child: const SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: Icon(
+                                    Icons.flashlight_on_outlined,
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          const Spacer(),
                           Semantics(
                             button: true,
-                            label: 'Toggle flashlight',
+                            label: 'Cancel signing',
                             excludeSemantics: true,
                             child: GestureDetector(
                               behavior: HitTestBehavior.opaque,
-                              onTap: () =>
-                                  unawaited(_scanController?.toggleTorch()),
+                              onTap: _cancel,
                               child: const SizedBox(
                                 width: 44,
                                 height: 44,
-                                child: Icon(
-                                  Icons.flashlight_on_outlined,
-                                  color: Colors.white,
-                                  size: 24,
+                                child: Center(
+                                  child: AppIcon(
+                                    AppIcons.cross,
+                                    size: 24,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
-                        const Spacer(),
-                        Semantics(
-                          button: true,
-                          label: 'Cancel signing',
-                          excludeSemantics: true,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _cancel,
-                            child: const SizedBox(
-                              width: 44,
-                              height: 44,
-                              child: Center(
-                                child: AppIcon(
-                                  AppIcons.cross,
-                                  size: 24,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                  const Spacer(),
-                  _buildBottomBar(),
-                ],
+                    const Spacer(),
+                    _buildBottomBar(),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

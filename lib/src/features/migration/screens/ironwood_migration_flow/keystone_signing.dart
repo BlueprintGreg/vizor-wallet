@@ -1054,13 +1054,18 @@ class _IronwoodMigrationKeystonePrivateSignScreenState
     );
   }
 
-  Future<void> _discardRequest(String accountUuid, String requestId) async {
+  Future<void> _discardRequest(
+    String accountUuid,
+    String requestId, {
+    bool propagateError = false,
+  }) async {
     try {
       await _migrationService.discardKeystonePrivateMigrationRequest(
         accountUuid: accountUuid,
         requestId: requestId,
       );
     } catch (e, st) {
+      if (propagateError) rethrow;
       log(
         'IronwoodMigrationKeystoneSign(${widget.step.logName}): '
         'discard error: $e\n$st',
@@ -1084,14 +1089,29 @@ class _IronwoodMigrationKeystonePrivateSignScreenState
     await _prepareRequest();
   }
 
-  Future<void> _returnToReview() async {
+  Future<void> _returnToReview({bool navigate = true}) async {
     if (_stage == _KeystoneDenominationSignStage.completing) return;
-    final requestId = _request?.requestId;
+    final request = _request;
+    final requestId = request?.requestId;
     final accountUuid = _accountUuid;
+    // Fence camera/proof callbacks before awaiting cancellation. Restore the
+    // request on failure so a sidebar exit can be retried without orphaning it.
     _stopProofPolling();
     _request = null;
-    if (!_requestCompleted && requestId != null && accountUuid != null) {
-      await _discardRequest(accountUuid, requestId);
+    try {
+      if (!_requestCompleted && requestId != null && accountUuid != null) {
+        await _discardRequest(
+          accountUuid,
+          requestId,
+          propagateError: !navigate,
+        );
+      }
+    } catch (_) {
+      _request = request;
+      if (mounted && requestId != null && !_requestCompleted) {
+        _startProofPolling(requestId);
+      }
+      rethrow;
     }
     if (!mounted) return;
     final previousRoute = switch ((widget.mobileLayout, widget.step)) {
@@ -1103,7 +1123,7 @@ class _IronwoodMigrationKeystonePrivateSignScreenState
         '/migration/private/status',
       _ => widget.step.previousRoute,
     };
-    context.go(previousRoute);
+    if (navigate) context.go(previousRoute);
   }
 
   void _handleBack() {
@@ -1258,43 +1278,53 @@ class _IronwoodMigrationKeystonePrivateSignScreenState
     final round = widget.step == _KeystonePrivateSignStep.denominations
         ? MobileIronwoodKeystoneSigningRound.denominationSplit
         : MobileIronwoodKeystoneSigningRound.migrationBatch;
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && !completing) _handleBack();
+    return MobileSidebarExitScope(
+      canNavigate:
+          !completing &&
+          !_decoding &&
+          _stage != _KeystoneDenominationSignStage.preparing,
+      onExit: () async {
+        await _returnToReview(navigate: false);
+        return true;
       },
-      child: KeyedSubtree(
-        key: const ValueKey('mobile_ironwood_keystone_sign_screen'),
-        child: switch (_stage) {
-          _KeystoneDenominationSignStage.preparing =>
-            MobileIronwoodKeystoneSigningView(
-              state: MobileIronwoodKeystoneSigningViewState.loading,
+      child: PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && !completing) _handleBack();
+        },
+        child: KeyedSubtree(
+          key: const ValueKey('mobile_ironwood_keystone_sign_screen'),
+          child: switch (_stage) {
+            _KeystoneDenominationSignStage.preparing =>
+              MobileIronwoodKeystoneSigningView(
+                state: MobileIronwoodKeystoneSigningViewState.loading,
+                round: round,
+                onCancel: () => unawaited(_returnToReview()),
+              ),
+            _KeystoneDenominationSignStage.showQr => _buildMobileQrContent(
+              context,
               round: round,
-              onCancel: () => unawaited(_returnToReview()),
             ),
-          _KeystoneDenominationSignStage.showQr => _buildMobileQrContent(
-            context,
-            round: round,
-          ),
-          _KeystoneDenominationSignStage.scanning ||
-          _KeystoneDenominationSignStage.waitingForProofs ||
-          _KeystoneDenominationSignStage.completing =>
-            _buildMobileScannerContent(context, round: round),
-          _KeystoneDenominationSignStage.failed => Scaffold(
-            backgroundColor: context.colors.background.window,
-            body: SafeArea(
-              child: Column(
-                children: [
-                  MobileTopNav.back(
-                    title: 'Keystone migration',
-                    onBack: () => unawaited(_returnToReview()),
-                  ),
-                  Expanded(child: _buildMobileFailureContent(context)),
-                ],
+            _KeystoneDenominationSignStage.scanning ||
+            _KeystoneDenominationSignStage.waitingForProofs ||
+            _KeystoneDenominationSignStage.completing =>
+              _buildMobileScannerContent(context, round: round),
+            _KeystoneDenominationSignStage.failed => Scaffold(
+              backgroundColor: context.colors.background.window,
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    MobileTopNav.back(
+                      title: 'Keystone migration',
+                      onBack: () => unawaited(_returnToReview()),
+                    ),
+                    Expanded(child: _buildMobileFailureContent(context)),
+                  ],
+                ),
               ),
             ),
-          ),
-        },
+          },
+        ),
       ),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import '../../navigation/mobile_sidebar_exit.dart';
 
 /// Runtime window layout never changes the build-time mobile design tokens.
 enum MobileNavigationMode { bottomTabs, systemSideTabs, sidebar }
@@ -35,6 +36,7 @@ class MobileNavigationScope extends InheritedWidget {
     required super.child,
     this.railRect,
     this.contentRect,
+    this.sidebarExit,
     super.key,
   });
 
@@ -43,6 +45,7 @@ class MobileNavigationScope extends InheritedWidget {
 
   /// Content bounds in the wallet Navigator's coordinates, before animations.
   final Rect? contentRect;
+  final MobileSidebarExitController? sidebarExit;
   final MobileBranchNavigation navigation;
 
   static MobileNavigationScope? maybeOf(BuildContext context) =>
@@ -63,5 +66,6 @@ class MobileNavigationScope extends InheritedWidget {
       mode != oldWidget.mode ||
       railRect != oldWidget.railRect ||
       contentRect != oldWidget.contentRect ||
+      sidebarExit != oldWidget.sidebarExit ||
       navigation != oldWidget.navigation;
 }
