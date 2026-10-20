@@ -20,7 +20,7 @@ use zakura_receiver_crypto::witness::{Publication, WitnessSnapshot};
 use zcash_client_backend::{
     data_api::{
         chain::{BlockSource, ChainState},
-        one_time_ivk::restore::{DirectoryPayment, RecoveryStatus},
+        one_time_ivk::restore::{DirectoryPayment, LookupWork, RecoveryStatus},
         testing::{AddressType, IronwoodFvk, TestBuilder, TestState},
         WalletRead, WalletWrite,
     },
@@ -275,6 +275,16 @@ pub(super) struct Service {
     filters: Vec<BlockFilter>,
     requests: Mutex<Vec<(&'static str, String, usize, usize)>>,
     holds: Mutex<Vec<Hold>>,
+    trace: Mutex<Trace>,
+}
+
+/// Which address and history page each encrypted query read, for one account.
+#[derive(Default)]
+struct Trace {
+    wallet: Option<(String, AccountUuid)>,
+    /// The work item and page of the previous query, to number pages within a step.
+    previous: Option<(LookupWork, u32)>,
+    pages: Vec<(bool, u64, u32)>,
 }
 
 impl Service {
@@ -377,6 +387,7 @@ impl Service {
             filters,
             requests: Mutex::new(Vec::new()),
             holds: Mutex::new(Vec::new()),
+            trace: Mutex::new(Trace::default()),
         })
     }
 
@@ -396,10 +407,54 @@ impl Service {
         }
     }
 
+    /// Records the address and page of every later query for `account` of `wallet`.
+    /// Queries are encrypted, so each one is attributed to the lookup the worker just
+    /// read: the first due item of the account's queue, which the worker cannot change
+    /// before its request. Only for single-account rounds without concurrent writers.
+    pub(super) fn trace(&self, wallet: &Wallet, account: &Account) {
+        self.trace.lock().unwrap().wallet = Some((wallet.path.clone(), account.id));
+    }
+
+    /// The traced queries as (is a receive key, index, page), in request order.
+    pub(super) fn traced(&self) -> Vec<(bool, u64, u32)> {
+        self.trace.lock().unwrap().pages.clone()
+    }
+
+    /// Attributes one query to the lookup in flight (see [`Self::trace`]).
+    fn record_query(&self) {
+        let mut trace = self.trace.lock().unwrap();
+        let Some((path, account)) = trace.wallet.clone() else {
+            return;
+        };
+        let db =
+            open_existing_wallet_db_with_timeout(&path, NETWORK, WALLET_DB_BUSY_TIMEOUT).unwrap();
+        let work = db
+            .one_time_recovery(account, one_time_ivk::now().unwrap())
+            .unwrap()
+            .lookups
+            .into_iter()
+            .next()
+            .expect("a query is sent only for a due lookup");
+        let page = match &trace.previous {
+            Some((previous, page)) if *previous == work => page + 1,
+            // A saved cursor is reread first to check it still matches the session.
+            _ => work.last.as_ref().map_or(0, |last| last.page),
+        };
+        trace.pages.push((
+            work.work.key.purpose() == Purpose::Receive,
+            work.work.key.index(),
+            page,
+        ));
+        trace.previous = Some((work, page));
+    }
+
     /// Answers one request, after any hold on it is released.
     async fn reply(&self, url: &str, body: &[u8], limit: usize) -> Result<Vec<u8>, DirectoryError> {
         let route = url.split("/v1/receiver/").nth(1).unwrap().to_owned();
         let class = route_class(&route);
+        if class == "query" {
+            self.record_query();
+        }
         let gate = {
             let seen = self
                 .requests

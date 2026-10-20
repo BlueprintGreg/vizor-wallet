@@ -163,12 +163,13 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     chain.mine(1);
     wallet.scan(&chain);
     let short = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
-    let held = short.hold("query", 0);
-    let worker = wallet.spawn(&short, None, Duration::from_secs(45));
-    held.wait();
-    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 2)]));
-    held.release();
-    worker.join().unwrap().unwrap();
+    short.trace(&wallet, &account);
+    wallet.recover(&short).unwrap();
+    assert_eq!(
+        short.traced(),
+        [(RECEIVE, 2, 0)],
+        "only the positive is queried"
+    );
     assert_eq!(
         short.filter_requests(),
         [format!("{}/1", frontier + 1), format!("{}/1", frontier + 2)]
@@ -195,25 +196,28 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     wallet.scan(&chain);
     let direct_count = wallet.db().one_time_direct_query_count(account.id).unwrap();
     let long = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
-    let held = long.hold("query", 0);
-    let worker = wallet.spawn(&long, None, Duration::from_secs(45));
-    held.wait();
-    let queued = wallet.queued(&account);
-    // Unfinished I1 and the I3..I6 lookahead, plus the queued positive for I0. Not I2.
+    long.trace(&wallet, &account);
+    wallet.recover(&long).unwrap();
+    // The queued I0 positive rereads its saved page 0 cursor, then reads the repeat on
+    // page 1. Then unfinished I1, the I3..I6 lookahead, and I7, which I3's payment
+    // exposed. Never completed I2.
     assert_eq!(
-        queued,
-        BTreeSet::from([
-            (RECEIVE, 0),
-            (RECEIVE, 1),
-            (RECEIVE, 3),
-            (RECEIVE, 4),
-            (RECEIVE, 5),
-            (RECEIVE, 6),
-        ])
+        long.traced(),
+        [
+            (RECEIVE, 0, 0),
+            (RECEIVE, 0, 1),
+            (RECEIVE, 1, 0),
+            (RECEIVE, 3, 0),
+            (RECEIVE, 4, 0),
+            (RECEIVE, 5, 0),
+            (RECEIVE, 6, 0),
+            (RECEIVE, 7, 0),
+        ]
     );
-    assert_eq!(direct_count, 5);
-    held.release();
-    worker.join().unwrap().unwrap();
+    assert_eq!(
+        direct_count, 5,
+        "I1 and I3 to I6 before I3's payment is known"
+    );
     // Only the one-block sample was downloaded before the cost check chose direct queries.
     assert_eq!(long.filter_requests(), [format!("{}/1", repeat + 1)]);
     let sample = long
@@ -709,6 +713,7 @@ fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
     let account = wallet.account().clone();
     wallet.scan(&chain);
     let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    service.trace(&wallet, &account);
     wallet.recover(&service).unwrap();
     let state = wallet.state(&account);
     assert!(state.restore_complete);
@@ -716,7 +721,20 @@ fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
         state.restore_next, 7,
         "I0 paid, I1 empty, I2 paid, I3 to I6 empty"
     );
-    assert_eq!(service.queries(), 8, "seven addresses, one query per page");
+    assert_eq!(
+        service.traced(),
+        [
+            (RECEIVE, 0, 0),
+            (RECEIVE, 1, 0),
+            (RECEIVE, 2, 0),
+            (RECEIVE, 2, 1),
+            (RECEIVE, 3, 0),
+            (RECEIVE, 4, 0),
+            (RECEIVE, 5, 0),
+            (RECEIVE, 6, 0),
+        ],
+        "seven addresses, one query per page"
+    );
     assert_eq!(wallet.one_time_unspent(&account), 3_300_000);
     service.report("seed restore across a hole: seven addresses, eight pages, three proofs");
 
@@ -849,14 +867,20 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     assert!(!checking());
 
     let resumed = publish(&chain);
+    resumed.trace(&wallet, &account);
     wallet
         .recover_with(&resumed, Some(Some(10)), Duration::from_secs(45))
         .unwrap();
     let manual = wallet.state(&account).manual.unwrap();
     assert!(!manual.active);
     assert_eq!(
-        resumed.queries(),
-        4,
+        resumed.traced(),
+        [
+            (RECEIVE, 6, 0),
+            (RECEIVE, 7, 0),
+            (RECEIVE, 8, 0),
+            (RECEIVE, 9, 0)
+        ],
         "I6 through I9, not again from I0 or I4"
     );
     assert_eq!(wallet.one_time_unspent(&account), 900_000);
