@@ -2745,6 +2745,20 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       return PaymentLinksMobileBody(
         page: _page,
         navigationLocked: _mobileNavigationLocked,
+        onSidebarExit: () async {
+          if (_mobileNavigationLocked || _operationInProgress) return false;
+          final session = _receivedClaimSession;
+          if (session != null) {
+            await (_shouldKeepCard(session)
+                ? _paymentLinkOperations.retainPendingClaim(session)
+                : _paymentLinkOperations.discardClaimSession(session));
+            if (!mounted) return false;
+            _receivedClaimSession = null;
+          }
+          _clearDeferredPreparation();
+          _mobileNavigationEpoch++;
+          return true;
+        },
         onCancelKeystone: _cancelHardwareFunding,
         redeemState: _redeemState,
         claimOutcome: _buildClaimOutcome(),

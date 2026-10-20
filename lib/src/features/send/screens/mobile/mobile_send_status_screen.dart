@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -280,29 +281,34 @@ class _MobileSendStatusScreenState
 
   @override
   Widget build(BuildContext context) {
-    return MobileTransactionProgressScreen(
-      phase: _presentationPhase,
-      title: _title,
-      body: _subtitle,
-      bodyMaxWidth: _phase == _MobileSendStatusPhase.pendingBroadcast
-          ? null
-          : _statusSubtitleWidth,
-      canPop: _routePopAllowed,
-      onPopBlocked: _handleBack,
-      titleKey: ValueKey('mobile_send_status_${_phase.name}'),
-      progressIconKey: const ValueKey('mobile_send_status_icon_loader'),
-      successIconKey: const ValueKey('mobile_send_status_icon_success'),
-      failureIconKey: const ValueKey('mobile_send_status_icon_failed'),
-      successRippleKey: const ValueKey('mobile_send_status_success_ripple'),
-      primaryActionKey: const ValueKey('mobile_send_status_button'),
-      primaryActionLabel: _buttonLabel,
-      onPrimaryAction: _buttonLabel == null
-          ? null
-          : _canRetryBroadcast
-          ? () => unawaited(_startBroadcast())
-          : _handleBack,
-      secondaryActionLabel: _canRetryBroadcast ? 'Return home' : null,
-      onSecondaryAction: _canRetryBroadcast ? _handleBack : null,
+    return MobileSidebarExitScope(
+      canNavigate: _routePopAllowed,
+      canSwitchAccount: _routePopAllowed,
+      onExit: () => _discardProposalIfNeeded('MobileSendStatus(sidebar)'),
+      child: MobileTransactionProgressScreen(
+        phase: _presentationPhase,
+        title: _title,
+        body: _subtitle,
+        bodyMaxWidth: _phase == _MobileSendStatusPhase.pendingBroadcast
+            ? null
+            : _statusSubtitleWidth,
+        canPop: _routePopAllowed,
+        onPopBlocked: _handleBack,
+        titleKey: ValueKey('mobile_send_status_${_phase.name}'),
+        progressIconKey: const ValueKey('mobile_send_status_icon_loader'),
+        successIconKey: const ValueKey('mobile_send_status_icon_success'),
+        failureIconKey: const ValueKey('mobile_send_status_icon_failed'),
+        successRippleKey: const ValueKey('mobile_send_status_success_ripple'),
+        primaryActionKey: const ValueKey('mobile_send_status_button'),
+        primaryActionLabel: _buttonLabel,
+        onPrimaryAction: _buttonLabel == null
+            ? null
+            : _canRetryBroadcast
+            ? () => unawaited(_startBroadcast())
+            : _handleBack,
+        secondaryActionLabel: _canRetryBroadcast ? 'Return home' : null,
+        onSecondaryAction: _canRetryBroadcast ? _handleBack : null,
+      ),
     );
   }
 }

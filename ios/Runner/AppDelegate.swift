@@ -6,6 +6,7 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  private var mobileNavigationGeometryHandler: MobileNavigationGeometryHandler?
   private var numericKeyboardHandler: NumericKeyboardHandler?
   private var customHapticEngine: CHHapticEngine?
   private var ledgerMobileHandler: LedgerMobileHandler?
@@ -54,6 +55,11 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
 
     let messenger = engineBridge.applicationRegistrar.messenger()
+    let navigationRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "VizorMobileNavigation")
+    mobileNavigationGeometryHandler = MobileNavigationGeometryHandler(
+      messenger: messenger,
+      viewControllerProvider: { navigationRegistrar?.viewController }
+    )
     let reviewRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "VizorAppReview")
     let appReviewHandler = AppReviewHandler {
       reviewRegistrar?.viewController

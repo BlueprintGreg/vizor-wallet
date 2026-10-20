@@ -19,9 +19,12 @@ import 'src/core/lifecycle/app_shutdown_signal.dart';
 import 'src/core/config/swap_feature_config.dart';
 import 'src/core/config/network_config.dart';
 import 'src/core/layout/app_layout.dart';
+import 'src/core/layout/mobile/mobile_window_policy.dart';
 import 'src/core/navigation/mobile_exit_back_guard.dart';
 import 'src/core/navigation/mobile_onboarding_routes.dart';
 import 'src/core/navigation/mobile_routes.dart';
+import 'src/core/navigation/mobile_sidebar_route_observer.dart';
+import 'src/core/navigation/route_owned_redirect.dart';
 import 'src/core/navigation/incoming_link_dispatch.dart';
 import 'src/core/navigation/incoming_link_entry_policy.dart';
 import 'src/core/navigation/external_action_guard_provider.dart';
@@ -573,18 +576,26 @@ final _routerProvider = Provider<_AppRouter>((ref) {
   );
   ref.onDispose(mobileExitBackDispatcher.dispose);
   final useMobileExitBackGuard = mobileExitBackGuard.enabled;
+  final routeOwnedNavigationObserver = RouteOwnedNavigationObserver();
+  ref.onDispose(routeOwnedNavigationObserver.dispose);
 
   router = GoRouter(
     navigatorKey: navigatorKey,
-    observers: kAppFormFactor == AppFormFactor.desktop
-        ? [
-            SendStatusRoutePayloadObserver(
-              onLeaveStatus: () => ref
-                  .read(sendStatusRoutePayloadProvider.notifier)
-                  .clearAfterNavigation(),
-            ),
-          ]
-        : [ref.watch(appReviewRouteObserverProvider)],
+    observers: [
+      routeOwnedNavigationObserver,
+      ...kAppFormFactor == AppFormFactor.desktop
+          ? [
+              SendStatusRoutePayloadObserver(
+                onLeaveStatus: () => ref
+                    .read(sendStatusRoutePayloadProvider.notifier)
+                    .clearAfterNavigation(),
+              ),
+            ]
+          : [
+              ref.watch(appReviewRouteObserverProvider),
+              ref.watch(mobileSidebarRouteObserverProvider),
+            ],
+    ],
     initialLocation: bootstrap.initialLocation,
     refreshListenable: refresh,
     redirect: (context, state) =>
@@ -1844,7 +1855,7 @@ class ZcashWalletApp extends ConsumerWidget {
       backButtonDispatcher: appRouter.backButtonDispatcher,
       onNavigationNotification: appRouter.onNavigationNotification,
       builder: (context, child) {
-        return AppThemeHost(
+        final app = AppThemeHost(
           themeMode: themeMode,
           // The inner `GestureDetector` handles global "tap outside clears
           // focus" — `HitTestBehavior.translucent` lets it receive pointer
@@ -1914,6 +1925,15 @@ class ZcashWalletApp extends ConsumerWidget {
             ),
           ),
         );
+        // Root sheets and overlays sit outside the wallet pane's Navigator.
+        // Share the full-window decision before SafeArea or a keyboard can
+        // change their local metrics, including while a modal is already open.
+        return kAppFormFactor == AppFormFactor.mobile
+            ? MobileWindowPolicyScope(
+                policy: MobileWindowPolicy.resolve(MediaQuery.of(context)),
+                child: app,
+              )
+            : app;
       },
     );
   }

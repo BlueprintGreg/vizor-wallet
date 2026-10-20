@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -107,34 +108,61 @@ class _MobileKeystoneSignScreenState
 
   @override
   Widget build(BuildContext context) {
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) _proposalOwnershipTransferred = true;
-      },
-      child: AbsorbPointer(
-        absorbing: _cancelRequested,
-        child: MobileKeystonePcztSigningFlow(
-          key: ValueKey('mobile_keystone_sign_round_${_rounds.index}'),
-          title: _cancelRequested ? 'Cancelling…' : _rounds.title,
-          description: widget.args.addressType == 'tex'
-              ? 'This TEX send requires two Keystone approvals. Scan transaction ${_rounds.index + 1} of 2.'
-              : 'Use your Keystone wallet to scan this transaction QR code. '
-                    'Follow the steps on your device.',
-          preparePczt: _preparePczt,
-          onSigned: _handleSignedPczt,
-          signedPcztDecoder: _decodeKeystoneResponse,
-          expectedSignedUrType: widget.args.addressType == 'tex'
-              ? 'zcash-pczt'
-              : 'zcash-batch-sig-result',
-          friendlyError: _friendlyError,
-          keyPrefix: 'mobile_keystone_sign',
-          scanCaption: 'Scan the QR code on your Keystone to finish sending',
-          logTag: 'MobileKeystoneSign',
-          onCancel: _cancelSigning,
+    return MobileSidebarExitScope(
+      canNavigate: !_cancelRequested && !_proposalOwnershipTransferred,
+      onExit: _leaveViaSidebar,
+      child: PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) _proposalOwnershipTransferred = true;
+        },
+        child: AbsorbPointer(
+          absorbing: _cancelRequested,
+          child: MobileKeystonePcztSigningFlow(
+            key: ValueKey('mobile_keystone_sign_round_${_rounds.index}'),
+            title: _cancelRequested ? 'Cancelling…' : _rounds.title,
+            description: widget.args.addressType == 'tex'
+                ? 'This TEX send requires two Keystone approvals. Scan transaction ${_rounds.index + 1} of 2.'
+                : 'Use your Keystone wallet to scan this transaction QR code. '
+                      'Follow the steps on your device.',
+            preparePczt: _preparePczt,
+            onSigned: _handleSignedPczt,
+            signedPcztDecoder: _decodeKeystoneResponse,
+            expectedSignedUrType: widget.args.addressType == 'tex'
+                ? 'zcash-pczt'
+                : 'zcash-batch-sig-result',
+            friendlyError: _friendlyError,
+            keyPrefix: 'mobile_keystone_sign',
+            scanCaption: 'Scan the QR code on your Keystone to finish sending',
+            logTag: 'MobileKeystoneSign',
+            onCancel: _cancelSigning,
+          ),
         ),
       ),
     );
+  }
+
+  Future<bool> _leaveViaSidebar() async {
+    if (_cancelRequested || _proposalOwnershipTransferred) return false;
+    setState(() => _cancelRequested = true);
+    try {
+      await _proposalConsumption;
+    } catch (_) {
+      /* Cleanup is idempotent. */
+    }
+    final released = await discardSendProposal(
+      syncNotifier: _syncNotifier,
+      accountUuid: widget.args.proposalAccountUuid,
+      proposalId: widget.args.proposalId,
+      sendFlowId: widget.args.sendFlowId,
+      logContext: 'MobileKeystoneSign(sidebar)',
+    );
+    if (!mounted) return false;
+    setState(() {
+      _cancelRequested = false;
+      _proposalOwnershipTransferred = released;
+    });
+    return released;
   }
 
   Future<void> _cancelSigning() async {

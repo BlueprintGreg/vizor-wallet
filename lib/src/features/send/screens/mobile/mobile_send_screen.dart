@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -2198,70 +2199,75 @@ class _MobileSendScreenState extends ConsumerState<MobileSendScreen> {
       _ => _buildStatus(context),
     };
 
-    return PopScope<void>(
-      canPop: _routePopAllowed,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _handleBack();
-      },
-      child: Scaffold(
-        backgroundColor: colors.background.window,
-        resizeToAvoidBottomInset: true,
-        body: AppToastHost(
-          child: Stack(
-            children: [
-              SafeArea(
-                child: Column(
-                  children: [
-                    MobileTopNav.back(
-                      title: title,
-                      onBack: _isConfirmingSend || _pendingCancellation != null
-                          ? null
-                          : _handleBack,
-                    ),
-                    Expanded(child: body),
-                  ],
-                ),
-              ),
-              if (showRecipientFocusOverlay) ...[
-                Positioned.fill(
-                  key: const ValueKey(
-                    'mobile_send_recipient_focus_scrim_layer',
-                  ),
-                  child: GestureDetector(
-                    key: const ValueKey('mobile_send_recipient_focus_scrim'),
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _addressFocus.unfocus,
-                    child: const SizedBox.expand(),
+    return MobileSidebarExitScope(
+      canNavigate: !_isConfirmingSend && _pendingCancellation == null,
+      child: PopScope<void>(
+        canPop: _routePopAllowed,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _handleBack();
+        },
+        child: Scaffold(
+          backgroundColor: colors.background.window,
+          resizeToAvoidBottomInset: true,
+          body: AppToastHost(
+            child: Stack(
+              children: [
+                SafeArea(
+                  child: Column(
+                    children: [
+                      MobileTopNav.back(
+                        title: title,
+                        onBack:
+                            _isConfirmingSend || _pendingCancellation != null
+                            ? null
+                            : _handleBack,
+                      ),
+                      Expanded(child: body),
+                    ],
                   ),
                 ),
-              ],
-              if (showRecipientFieldLayer)
-                Positioned(
-                  key: const ValueKey('mobile_send_recipient_field_layer'),
-                  top:
-                      MediaQuery.paddingOf(context).top +
-                      kMobileTopNavHeight +
-                      AppSpacing.s,
-                  left: AppSpacing.sm,
-                  right: AppSpacing.sm,
-                  child: _buildAddressFieldGroup(context),
-                ),
-              if (showRecipientFocusOverlay) ...[
-                if (_showRecipientContinue)
-                  Positioned(
+                if (showRecipientFocusOverlay) ...[
+                  Positioned.fill(
                     key: const ValueKey(
-                      'mobile_send_recipient_focus_continue_layer',
+                      'mobile_send_recipient_focus_scrim_layer',
                     ),
+                    child: GestureDetector(
+                      key: const ValueKey('mobile_send_recipient_focus_scrim'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _addressFocus.unfocus,
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ],
+                if (showRecipientFieldLayer)
+                  Positioned(
+                    key: const ValueKey('mobile_send_recipient_field_layer'),
+                    top:
+                        MediaQuery.paddingOf(context).top +
+                        kMobileTopNavHeight +
+                        AppSpacing.s,
                     left: AppSpacing.sm,
                     right: AppSpacing.sm,
-                    bottom: MediaQuery.paddingOf(context).bottom + AppSpacing.s,
-                    child: _buildRecipientContinueButton(
-                      context,
-                      useBackdropColors: true,
-                    ),
+                    child: _buildAddressFieldGroup(context),
                   ),
+                if (showRecipientFocusOverlay) ...[
+                  if (_showRecipientContinue)
+                    Positioned(
+                      key: const ValueKey(
+                        'mobile_send_recipient_focus_continue_layer',
+                      ),
+                      left: AppSpacing.sm,
+                      right: AppSpacing.sm,
+                      bottom:
+                          MediaQuery.paddingOf(context).bottom + AppSpacing.s,
+                      child: _buildRecipientContinueButton(
+                        context,
+                        useBackdropColors: true,
+                      ),
+                    ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

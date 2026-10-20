@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart' show Scaffold;
@@ -370,56 +371,59 @@ class _MobileViewingKeyScreenState
     final colors = context.colors;
     final accounts = ref.watch(accountProvider).value;
     final targetAccount = _targetAccount(accounts);
-    return PopScope(
-      canPop: _selectedType == null,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectedType != null) {
-          setState(() => _selectedType = null);
-        }
-      },
-      child: Scaffold(
-        backgroundColor: colors.background.window,
-        body: AppToastHost(
-          child: SensitivePrivacyOverlay(
-            sensitiveContentVisible:
-                _stage == _ViewingKeyStage.reveal && _viewingKeys != null,
-            controller: _privacyController,
-            child: SafeArea(
-              child: Column(
-                children: [
-                  _ViewingKeyMobileHeader(
-                    title: _stage == _ViewingKeyStage.confirmAccess
-                        ? ''
-                        : _selectedType?.title ?? 'Viewing key',
-                    onBack: () {
-                      if (_selectedType != null) {
-                        setState(() => _selectedType = null);
-                      } else {
-                        context.pop();
-                      }
-                    },
-                  ),
-                  Expanded(
-                    child: switch (_stage) {
-                      _ViewingKeyStage.confirmAccess => _buildGate(colors),
-                      _ViewingKeyStage.reveal => _MobileViewingKeyRevealView(
-                        viewingKeys: _viewingKeys,
-                        initialType: _selectedType,
-                        onSelectType: (type) =>
-                            setState(() => _selectedType = type),
-                        account: targetAccount,
-                        showAccountName:
-                            targetAccount != null &&
-                            targetAccount.uuid != accounts?.activeAccountUuid,
-                        onRetry: targetAccount == null
-                            ? () => context.go('/accounts')
-                            : _retryReveal,
-                        errorText: _revealError,
-                        onCopy: _copyViewingKey,
-                      ),
-                    },
-                  ),
-                ],
+    return MobileSidebarExitScope(
+      canNavigate: !_checking,
+      child: PopScope(
+        canPop: _selectedType == null,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && _selectedType != null) {
+            setState(() => _selectedType = null);
+          }
+        },
+        child: Scaffold(
+          backgroundColor: colors.background.window,
+          body: AppToastHost(
+            child: SensitivePrivacyOverlay(
+              sensitiveContentVisible:
+                  _stage == _ViewingKeyStage.reveal && _viewingKeys != null,
+              controller: _privacyController,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _ViewingKeyMobileHeader(
+                      title: _stage == _ViewingKeyStage.confirmAccess
+                          ? ''
+                          : _selectedType?.title ?? 'Viewing key',
+                      onBack: () {
+                        if (_selectedType != null) {
+                          setState(() => _selectedType = null);
+                        } else {
+                          context.pop();
+                        }
+                      },
+                    ),
+                    Expanded(
+                      child: switch (_stage) {
+                        _ViewingKeyStage.confirmAccess => _buildGate(colors),
+                        _ViewingKeyStage.reveal => _MobileViewingKeyRevealView(
+                          viewingKeys: _viewingKeys,
+                          initialType: _selectedType,
+                          onSelectType: (type) =>
+                              setState(() => _selectedType = type),
+                          account: targetAccount,
+                          showAccountName:
+                              targetAccount != null &&
+                              targetAccount.uuid != accounts?.activeAccountUuid,
+                          onRetry: targetAccount == null
+                              ? () => context.go('/accounts')
+                              : _retryReveal,
+                          errorText: _revealError,
+                          onCopy: _copyViewingKey,
+                        ),
+                      },
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

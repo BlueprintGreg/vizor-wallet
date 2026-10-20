@@ -1,3 +1,8 @@
+import '../src/core/navigation/external_action_guard_provider.dart';
+import '../src/core/layout/mobile/mobile_adaptive_frame.dart';
+import '../src/core/layout/mobile/mobile_navigation_scope.dart';
+import '../src/services/native_mobile_navigation_geometry.dart';
+import '../src/providers/sync_display_progress_provider.dart';
 import '../src/core/navigation/mobile_shield_page.dart';
 import '../figma_compare/ledger_shield_capture.dart';
 import '../figma_compare/keystone_shield_capture.dart';
@@ -1704,6 +1709,76 @@ Widget buildMobileAccountsActiveMigrationRemoveAccountUseCase(
 
 Widget buildMobileAccountsManyUseCase(BuildContext context) {
   return _buildMobileAccountsUseCase(_accountsManyState);
+}
+
+/// Full adaptive shell with deterministic production Home data for captures.
+Widget buildMobileAdaptiveHomeUseCase(
+  BuildContext context, {
+  bool closed = false,
+  bool openAccountsSheet = false,
+  bool locked = false,
+  bool synced = false,
+}) {
+  final size = MediaQuery.sizeOf(context);
+  final geometry = closed
+      ? MobileNavigationGeometry(
+          edge: MobileNavigationEdge.right,
+          viewSize: size,
+          safeRect: Rect.fromLTWH(0, 0, size.width - 84, size.height),
+          occlusions: [Rect.fromLTWH(size.width - 84, 0, 84, 180)],
+        )
+      : null;
+  final insets = closed
+      ? const EdgeInsets.only(right: 84)
+      : const EdgeInsets.only(top: 24, bottom: 24);
+  return MediaQuery(
+    data: MediaQuery.of(context).copyWith(padding: insets, viewPadding: insets),
+    child: _buildMobileHomeUseCase(
+      adaptive: true,
+      sidebarLocked: locked,
+      openAccountsSheet: openAccountsSheet,
+      geometryService: _PreviewMobileGeometry(geometry),
+      constrainToPreviewFrame: false,
+      votingVisible: false,
+      accountState: _accountsDesignState,
+      syncState: _homeSyncedState().copyWith(
+        isSyncing: !synced,
+        isSyncComplete: synced,
+        percentage: synced ? 1 : 0.04,
+      ),
+    ),
+  );
+}
+
+Widget buildMobileAdaptiveHomeLockedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, locked: true);
+
+Widget buildMobileAdaptiveHomeLockedSyncedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, locked: true, synced: true);
+
+/// Capture-only guard; no signing, storage, or wallet operation is started.
+class _PreviewLockedNavigationGuard extends ExternalActionGuardNotifier {
+  @override
+  ExternalActionGuardState build() => const ExternalActionGuardState(
+    blockedActions: {ExternalAction.navigation},
+  );
+}
+
+Widget buildMobileAdaptiveAccountsModalUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, openAccountsSheet: true);
+
+Widget buildMobileAdaptiveHomeClosedUseCase(BuildContext context) =>
+    buildMobileAdaptiveHomeUseCase(context, closed: true);
+
+class _PreviewMobileGeometry extends NativeMobileNavigationGeometry {
+  const _PreviewMobileGeometry(this.geometry);
+  final MobileNavigationGeometry? geometry;
+  @override
+  bool get supportedHost => true;
+  @override
+  Future<MobileNavigationGeometry?> read() async => geometry;
+  @override
+  Stream<MobileNavigationGeometry?> get changes => const Stream.empty();
 }
 
 Widget buildMobileHomeDefaultUseCase(
@@ -3443,6 +3518,9 @@ Widget buildMobileHomeVotingHiddenUseCase(BuildContext context) =>
     buildMobileHomeDefaultUseCase(context, votingVisible: false);
 
 Widget _buildMobileHomeUseCase({
+  bool adaptive = false,
+  bool sidebarLocked = false,
+  NativeMobileNavigationGeometry? geometryService,
   String initialLocation = '/home',
   Widget? previewChild,
   Map<String, String>? etaLabels,
@@ -3470,6 +3548,7 @@ Widget _buildMobileHomeUseCase({
   NetworkPrivacyState? networkPrivacyState,
 }) {
   final harness = _MobileHomeHarness(
+    adaptive: adaptive,
     initialLocation: initialLocation,
     openAccountsSheet: openAccountsSheet,
     showStaticIronwoodAnnouncement: showStaticIronwoodAnnouncement,
@@ -3479,6 +3558,15 @@ Widget _buildMobileHomeUseCase({
   );
   return ProviderScope(
     overrides: [
+      if (sidebarLocked)
+        externalActionGuardProvider.overrideWith(
+          _PreviewLockedNavigationGuard.new,
+        ),
+      if (adaptive) syncDisplayWholePercentageProvider.overrideWithValue(4),
+      if (geometryService != null || shieldFlow)
+        mobileNavigationGeometryServiceProvider.overrideWithValue(
+          geometryService ?? _PreviewMobileGeometry(null),
+        ),
       if (etaLabels != null) ...[
         activityEtaLabelsProvider.overrideWithValue(etaLabels),
         swapActivityRecordsProvider.overrideWith((ref, account) async => []),
@@ -3573,6 +3661,7 @@ Widget _buildMobileHomeUseCase({
         ? _ShieldMotionPreview(child: harness)
         : _MobilePreviewFrame(
             constrainToDesignSize: constrainToPreviewFrame,
+            preserveWindowPadding: adaptive,
             child: previewChild ?? harness,
           ),
   );
@@ -4260,6 +4349,7 @@ class _MobileAccountsHarnessState extends State<_MobileAccountsHarness> {
 
 class _MobileHomeHarness extends StatefulWidget {
   const _MobileHomeHarness({
+    this.adaptive = false,
     this.initialLocation = '/home',
     required this.openAccountsSheet,
     required this.showStaticIronwoodAnnouncement,
@@ -4270,6 +4360,7 @@ class _MobileHomeHarness extends StatefulWidget {
 
   final String initialLocation;
   final bool openAccountsSheet;
+  final bool adaptive;
   final bool showStaticIronwoodAnnouncement;
   final bool shieldFlow;
   final bool keystoneShieldPreview;
@@ -4306,106 +4397,139 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
           );
   }
 
+  RouteBase _shieldPreviewRoute(RouteBase route) {
+    if (route is ShellRoute) {
+      return ShellRoute(
+        navigatorKey: route.navigatorKey,
+        parentNavigatorKey: route.parentNavigatorKey,
+        observers: route.observers,
+        builder: route.builder,
+        pageBuilder: route.pageBuilder,
+        restorationScopeId: route.restorationScopeId,
+        routes: route.routes.map(_shieldPreviewRoute).toList(),
+      );
+    }
+    if (route is GoRoute &&
+        ((widget.keystoneShieldPreview &&
+                route.path == '/home/keystone-shield') ||
+            (widget.ledgerShieldPreview &&
+                route.path == '/home/ledger-shield'))) {
+      return GoRoute(
+        path: route.path,
+        pageBuilder: (context, state) => MobileShieldPage(
+          key: state.pageKey,
+          child: _shieldPreview(context, state),
+        ),
+      );
+    }
+    return route;
+  }
+
   @override
   void initState() {
     super.initState();
     if (widget.shieldFlow) {
       _router = GoRouter(
         initialLocation: widget.initialLocation,
-        routes: [
-          for (final route in buildMobileRoutes(entryRoutes: const []))
-            if (route is GoRoute &&
-                ((widget.keystoneShieldPreview &&
-                        route.path == '/home/keystone-shield') ||
-                    (widget.ledgerShieldPreview &&
-                        route.path == '/home/ledger-shield')))
-              GoRoute(
-                path: route.path,
-                pageBuilder: (context, state) => MobileShieldPage(
-                  key: state.pageKey,
-                  child: _shieldPreview(context, state),
-                ),
-              )
-            else
-              route,
-        ],
+        routes: buildMobileRoutes(
+          entryRoutes: const [],
+        ).map(_shieldPreviewRoute).toList(),
       );
       return;
     }
+    final routes = [
+      for (final entry in {
+        '/setup/education/intro': GiftEducationPage.intro,
+        '/setup/education/address-types': GiftEducationPage.addressTypes,
+        '/setup/education/things-to-know': GiftEducationPage.thingsToKnow,
+      }.entries)
+        GoRoute(
+          path: entry.key,
+          builder: (_, state) => MobileGiftEducationScreen(
+            page: entry.value,
+            accountUuid: state.extra as String?,
+          ),
+        ),
+      GoRoute(
+        path: '/setup/backup',
+        builder: (_, state) => MobileSeedPhraseScreen(
+          accountUuid: state.extra as String?,
+          showBackupIntro: true,
+          screenshotStream: const Stream.empty(),
+          privacyOverlayController: _privacyController,
+          birthdayHeightLoader: (_) async => 3000000,
+          birthdayBlockTimeLoader: (_) async =>
+              DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
+        ),
+      ),
+      GoRoute(
+        path: '/home',
+        builder: (context, _) => AppMobileShell(
+          body: _MobileHomeBody(openAccountsSheet: widget.openAccountsSheet),
+          tabBar: AppMobileTabBar(
+            axis:
+                MobileNavigationScope.maybeOf(context)?.mode ==
+                    MobileNavigationMode.systemSideTabs
+                ? Axis.vertical
+                : Axis.horizontal,
+            items: _mobileHomeTabItems,
+            currentIndex: 0,
+            onSelect: (_) {},
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/send',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/send'),
+      ),
+      GoRoute(
+        path: '/receive',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/receive'),
+      ),
+      GoRoute(
+        path: '/swap',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/swap'),
+      ),
+      GoRoute(
+        path: '/activity',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/activity'),
+      ),
+      GoRoute(
+        path: '/activity/tx/:txid',
+        builder: (_, state) => _PreviewRoutePlaceholder(
+          label: '/activity/tx/${state.pathParameters['txid']}',
+        ),
+      ),
+      GoRoute(
+        path: '/settings',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/settings'),
+      ),
+      GoRoute(
+        path: '/accounts',
+        builder: (_, _) => const _PreviewRoutePlaceholder(label: '/accounts'),
+      ),
+      GoRoute(
+        path: '/add-account',
+        builder: (_, _) =>
+            const _PreviewRoutePlaceholder(label: '/add-account'),
+      ),
+    ];
     _router = GoRouter(
       initialLocation: widget.initialLocation,
-      routes: [
-        for (final entry in {
-          '/setup/education/intro': GiftEducationPage.intro,
-          '/setup/education/address-types': GiftEducationPage.addressTypes,
-          '/setup/education/things-to-know': GiftEducationPage.thingsToKnow,
-        }.entries)
-          GoRoute(
-            path: entry.key,
-            builder: (_, state) => MobileGiftEducationScreen(
-              page: entry.value,
-              accountUuid: state.extra as String?,
-            ),
-          ),
-        GoRoute(
-          path: '/setup/backup',
-          builder: (_, state) => MobileSeedPhraseScreen(
-            accountUuid: state.extra as String?,
-            showBackupIntro: true,
-            screenshotStream: const Stream.empty(),
-            privacyOverlayController: _privacyController,
-            birthdayHeightLoader: (_) async => 3000000,
-            birthdayBlockTimeLoader: (_) async =>
-                DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
-          ),
-        ),
-        GoRoute(
-          path: '/home',
-          builder: (_, _) => AppMobileShell(
-            body: _MobileHomeBody(openAccountsSheet: widget.openAccountsSheet),
-            tabBar: AppMobileTabBar(
-              items: _mobileHomeTabItems,
-              currentIndex: 0,
-              onSelect: (_) {},
-            ),
-          ),
-        ),
-        GoRoute(
-          path: '/send',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/send'),
-        ),
-        GoRoute(
-          path: '/receive',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/receive'),
-        ),
-        GoRoute(
-          path: '/swap',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/swap'),
-        ),
-        GoRoute(
-          path: '/activity',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/activity'),
-        ),
-        GoRoute(
-          path: '/activity/tx/:txid',
-          builder: (_, state) => _PreviewRoutePlaceholder(
-            label: '/activity/tx/${state.pathParameters['txid']}',
-          ),
-        ),
-        GoRoute(
-          path: '/settings',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/settings'),
-        ),
-        GoRoute(
-          path: '/accounts',
-          builder: (_, _) => const _PreviewRoutePlaceholder(label: '/accounts'),
-        ),
-        GoRoute(
-          path: '/add-account',
-          builder: (_, _) =>
-              const _PreviewRoutePlaceholder(label: '/add-account'),
-        ),
-      ],
+      routes: widget.adaptive
+          ? [
+              ShellRoute(
+                pageBuilder: (context, state, child) => NoTransitionPage(
+                  key: state.pageKey,
+                  child: MobileAdaptiveFrame(
+                    router: GoRouter.of(context),
+                    child: child,
+                  ),
+                ),
+                routes: routes,
+              ),
+            ]
+          : routes,
     );
   }
 
@@ -5185,10 +5309,12 @@ class _MobilePreviewFrame extends StatelessWidget {
   const _MobilePreviewFrame({
     required this.child,
     this.constrainToDesignSize = true,
+    this.preserveWindowPadding = false,
   });
 
   final Widget child;
   final bool constrainToDesignSize;
+  final bool preserveWindowPadding;
 
   static const size = Size(393, 852);
   static const safeAreaPadding = EdgeInsets.only(top: 55, bottom: 24);
@@ -5201,8 +5327,10 @@ class _MobilePreviewFrame extends StatelessWidget {
       child: MediaQuery(
         data: mediaQuery.copyWith(
           size: frameSize,
-          padding: safeAreaPadding,
-          viewPadding: safeAreaPadding,
+          padding: preserveWindowPadding ? mediaQuery.padding : safeAreaPadding,
+          viewPadding: preserveWindowPadding
+              ? mediaQuery.viewPadding
+              : safeAreaPadding,
         ),
         child: MobileOnboardingProgressScope(
           setupMode: OnboardingSetupMode.createPasscode,

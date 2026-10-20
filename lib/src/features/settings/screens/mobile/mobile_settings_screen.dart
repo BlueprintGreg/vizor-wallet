@@ -1,3 +1,4 @@
+import '../../../../core/layout/mobile/mobile_navigation_scope.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -79,7 +80,10 @@ class MobileSettingsScreen extends ConsumerWidget {
                 // The shell exposes the floating tab bar's full occupied
                 // height, including Android's navigation-bar inset.
                 math.max(
-                  kMobileTabBarHeight + AppSpacing.lg,
+                  MobileNavigationScope.bottomClearanceOf(
+                    context,
+                    kMobileTabBarHeight + AppSpacing.lg,
+                  ),
                   MediaQuery.paddingOf(context).bottom + AppSpacing.md,
                 ),
               ),

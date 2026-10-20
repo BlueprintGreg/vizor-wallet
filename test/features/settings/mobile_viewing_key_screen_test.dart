@@ -7,6 +7,16 @@ import 'dart:ui' as ui;
 import 'package:zcash_wallet/src/rust/api/wallet.dart' show AccountViewingKeys;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart' show CupertinoPage;
+import 'package:go_router/go_router.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_page_viewport.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_destinations.dart';
+import 'package:zcash_wallet/src/core/privacy/sensitive_privacy_overlay.dart';
+import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
+import '../../fakes/fake_sync_notifier.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import '../../figma_compare/figma_compare_font_loader.dart';
@@ -130,6 +140,106 @@ void main() {
       ..physicalSize = const Size(520, 1100)
       ..devicePixelRatio = 1.0;
   });
+
+  testWidgets(
+    'wide viewing key retains sidebar guards and both levels of back navigation',
+    (tester) async {
+      tester.view.physicalSize = const Size(951, 669);
+      addTearDown(tester.view.reset);
+      final access = Completer<bool>();
+      final keys = Completer<AccountViewingKeys>();
+      final router = await _adaptiveApp(tester, access: access, keys: keys);
+      final idleSidebar = tester.widget<MobileWalletSidebar>(
+        find.byType(MobileWalletSidebar),
+      );
+      expect(idleSidebar.onSelect, isNotNull);
+      expect(idleSidebar.onAccountTap, isNull);
+      await _confirmPasscode(tester);
+      expect(
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onSelect,
+        isNull,
+      );
+      idleSidebar.onSelect!('/home');
+      await tester.pump();
+      expect(mobileVisiblePath(router), '/settings/viewing-key');
+      access.complete(true);
+      await tester.pump();
+      expect(
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onSelect,
+        isNull,
+      );
+      keys.complete(_keys);
+      await tester.pumpAndSettle();
+      expect(find.text('Choose what others can view'), findsOneWidget);
+      expect(
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onSelect,
+        isNotNull,
+      );
+      expect(
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onAccountTap,
+        isNull,
+      );
+      await tester.tap(find.byKey(const ValueKey('viewing_key_choose_full')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('mobile_viewing_key_value')),
+        findsOneWidget,
+      );
+      await tester.tap(find.bySemanticsLabel('Back'));
+      await tester.pumpAndSettle();
+      expect(find.text('Choose what others can view'), findsOneWidget);
+      expect(mobileVisiblePath(router), '/settings/viewing-key');
+      await tester.tap(
+        find.byKey(const ValueKey('viewing_key_choose_incoming')),
+      );
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Choose what others can view'), findsOneWidget);
+      expect(mobileVisiblePath(router), '/settings/viewing-key');
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(mobileVisiblePath(router), '/settings');
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
+  );
+
+  testWidgets(
+    'wide sidebar can leave selected viewing key without an intermediate back step',
+    (tester) async {
+      tester.view.physicalSize = const Size(951, 669);
+      addTearDown(tester.view.reset);
+      final access = Completer<bool>()..complete(true);
+      final keys = Completer<AccountViewingKeys>()..complete(_keys);
+      final router = await _adaptiveApp(tester, access: access, keys: keys);
+      await _confirmPasscode(tester);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('viewing_key_choose_full')));
+      await tester.pumpAndSettle();
+      tester
+          .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+          .onSelect!('/home');
+      await tester.pumpAndSettle();
+      expect(mobileVisiblePath(router), '/home');
+      expect(find.byType(MobileViewingKeyScreen), findsNothing);
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'mobile copy stays at the bottom with key details above and no repeated sharing warning',
@@ -672,4 +782,85 @@ Future<void> _selectIncoming(WidgetTester tester) async {
   await tester.tap(choice);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 220));
+}
+
+class _DelayedSecurityNotifier extends _FakeSecurityNotifier {
+  _DelayedSecurityNotifier(this.access);
+  final Completer<bool> access;
+  @override
+  Future<bool> confirmPassword(String password) => access.future;
+}
+
+class _NoNativeGeometry extends NativeMobileNavigationGeometry {
+  @override
+  bool get supportedHost => false;
+}
+
+Future<GoRouter> _adaptiveApp(
+  WidgetTester tester, {
+  required Completer<bool> access,
+  required Completer<AccountViewingKeys> keys,
+}) async {
+  final container = ProviderContainer(
+    overrides: [
+      appBootstrapProvider.overrideWithValue(_bootstrap()),
+      accountProvider.overrideWith(_FakeAccountNotifier.new),
+      appSecurityProvider.overrideWith(() => _DelayedSecurityNotifier(access)),
+      syncProvider.overrideWith(FakeSyncNotifier.new),
+      biometricUnlockServiceProvider.overrideWithValue(_FakeBiometricUnlock()),
+      mobileNavigationGeometryServiceProvider.overrideWithValue(
+        _NoNativeGeometry(),
+      ),
+    ],
+  );
+  addTearDown(container.dispose);
+  final privacy = SensitivePrivacyOverlayController(initiallySafe: true);
+  addTearDown(privacy.dispose);
+  final router = GoRouter(
+    initialLocation: '/settings',
+    routes: [
+      ShellRoute(
+        builder: (context, state, child) =>
+            MobileAdaptiveFrame(router: GoRouter.of(context), child: child),
+        routes: [
+          GoRoute(
+            path: '/home',
+            builder: (_, _) => const Scaffold(body: Text('Home destination')),
+          ),
+          GoRoute(
+            path: '/settings',
+            builder: (_, _) =>
+                const Scaffold(body: Text('Settings destination')),
+          ),
+          GoRoute(
+            path: '/settings/viewing-key',
+            pageBuilder: (_, state) => CupertinoPage(
+              key: state.pageKey,
+              child: MobilePageViewport(
+                child: MobileViewingKeyScreen(
+                  privacyOverlayController: privacy,
+                  viewingKeysLoader: (_) => keys.future,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+  addTearDown(router.dispose);
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp.router(
+        routerConfig: router,
+        builder: (_, child) =>
+            AppTheme(data: AppThemeData.light, child: child!),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  unawaited(router.push<void>('/settings/viewing-key'));
+  await tester.pumpAndSettle();
+  return router;
 }

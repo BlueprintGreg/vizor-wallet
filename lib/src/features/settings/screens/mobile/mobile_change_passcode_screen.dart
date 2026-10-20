@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart' show Scaffold;
@@ -219,72 +220,75 @@ class _MobileChangePasscodeScreenState
       _Phase.confirm => ('Confirm Passcode', '6 digits length'),
     };
 
-    return Scaffold(
-      backgroundColor: colors.background.window,
-      body: SafeArea(
-        child: Column(
-          children: [
-            MobileTopNav.back(
-              title: '',
-              onBack: _submitting ? null : () => context.pop(),
-            ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.sm,
-                  vertical: AppSpacing.md,
-                ),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              key: ValueKey(
-                                'mobile_change_passcode_${_phase.name}',
+    return MobileSidebarExitScope(
+      canNavigate: !_submitting,
+      child: Scaffold(
+        backgroundColor: colors.background.window,
+        body: SafeArea(
+          child: Column(
+            children: [
+              MobileTopNav.back(
+                title: '',
+                onBack: _submitting ? null : () => context.pop(),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.sm,
+                    vertical: AppSpacing.md,
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                key: ValueKey(
+                                  'mobile_change_passcode_${_phase.name}',
+                                ),
+                                title,
+                                textAlign: TextAlign.center,
+                                style: AppTypography.displayLarge.copyWith(
+                                  color: colors.text.accent,
+                                ),
                               ),
-                              title,
-                              textAlign: TextAlign.center,
-                              style: AppTypography.displayLarge.copyWith(
-                                color: colors.text.accent,
+                              const SizedBox(height: AppSpacing.s),
+                              Text(
+                                subtitle,
+                                textAlign: TextAlign.center,
+                                style: AppTypography.bodyMediumStrong.copyWith(
+                                  color: colors.text.primary,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: AppSpacing.s),
-                            Text(
-                              subtitle,
-                              textAlign: TextAlign.center,
-                              style: AppTypography.bodyMediumStrong.copyWith(
-                                color: colors.text.primary,
+                              const SizedBox(height: AppSpacing.md),
+                              SizedBox(
+                                height: kPasscodePromptDigitsHeight,
+                                child: PasscodePromptField(
+                                  length: kMobilePasscodeLength,
+                                  filled: _entry.length,
+                                  error: _error,
+                                  minGap: 0,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: AppSpacing.md),
-                            SizedBox(
-                              height: kPasscodePromptDigitsHeight,
-                              child: PasscodePromptField(
-                                length: kMobilePasscodeLength,
-                                filled: _entry.length,
-                                error: _error,
-                                minGap: 0,
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    PasscodeNumpad(
-                      onDigit: _onDigit,
-                      onBackspace: _onBackspace,
-                      canDelete: _entry.isNotEmpty,
-                      enabled: !_submitting,
-                    ),
-                    const SizedBox(height: AppSpacing.md),
-                  ],
+                      PasscodeNumpad(
+                        onDigit: _onDigit,
+                        onBackspace: _onBackspace,
+                        canDelete: _entry.isNotEmpty,
+                        enabled: !_submitting,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

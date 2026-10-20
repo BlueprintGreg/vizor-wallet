@@ -37,6 +37,7 @@ import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 import 'package:zcash_wallet/src/services/qr_scanner.dart';
 
+import '../../support/go_route_descendants.dart';
 import '../../fakes/fake_sync_notifier.dart';
 import '../../support/payment_request_scan_expectations.dart';
 
@@ -204,9 +205,9 @@ Future<_Harness> _pumpHost(
               : Scaffold(body: Text('screen $path')),
         ),
       if (realComposer)
-        buildMobileRoutes(
-          entryRoutes: const [],
-        ).whereType<GoRoute>().singleWhere((route) => route.path == '/send'),
+        goRouteDescendants(
+          buildMobileRoutes(entryRoutes: const []),
+        ).singleWhere((route) => route.path == '/send'),
       GoRoute(
         path: '/send/review',
         builder: (_, state) {
