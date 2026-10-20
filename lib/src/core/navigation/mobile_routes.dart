@@ -63,6 +63,7 @@ import '../layout/mobile/app_mobile_tab_bar.dart';
 import '../layout/mobile/mobile_navigation_scope.dart';
 import '../layout/mobile/mobile_page_viewport.dart';
 import 'mobile_destinations.dart';
+import 'route_owned_redirect.dart';
 import 'payload_page_key.dart';
 
 /// The mobile route tree: the shared entry/onboarding routes, a
@@ -80,6 +81,7 @@ List<RouteBase> buildMobileRoutes({required List<RouteBase> entryRoutes}) {
     // Root modals cover the full window. The wallet Navigator covers the
     // right pane; each opaque page constrains only its foreground content.
     ShellRoute(
+      observers: [RouteOwnedNavigationObserver()],
       pageBuilder: (context, state, child) => NoTransitionPage(
         key: state.pageKey,
         child: MobileAdaptiveFrame(router: GoRouter.of(context), child: child),

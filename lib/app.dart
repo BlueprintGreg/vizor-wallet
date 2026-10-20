@@ -24,6 +24,7 @@ import 'src/core/navigation/mobile_exit_back_guard.dart';
 import 'src/core/navigation/mobile_onboarding_routes.dart';
 import 'src/core/navigation/mobile_routes.dart';
 import 'src/core/navigation/mobile_sidebar_route_observer.dart';
+import 'src/core/navigation/route_owned_redirect.dart';
 import 'src/core/navigation/incoming_link_dispatch.dart';
 import 'src/core/navigation/incoming_link_entry_policy.dart';
 import 'src/core/navigation/external_action_guard_provider.dart';
@@ -575,21 +576,26 @@ final _routerProvider = Provider<_AppRouter>((ref) {
   );
   ref.onDispose(mobileExitBackDispatcher.dispose);
   final useMobileExitBackGuard = mobileExitBackGuard.enabled;
+  final routeOwnedNavigationObserver = RouteOwnedNavigationObserver();
+  ref.onDispose(routeOwnedNavigationObserver.dispose);
 
   router = GoRouter(
     navigatorKey: navigatorKey,
-    observers: kAppFormFactor == AppFormFactor.desktop
-        ? [
-            SendStatusRoutePayloadObserver(
-              onLeaveStatus: () => ref
-                  .read(sendStatusRoutePayloadProvider.notifier)
-                  .clearAfterNavigation(),
-            ),
-          ]
-        : [
-            ref.watch(appReviewRouteObserverProvider),
-            ref.watch(mobileSidebarRouteObserverProvider),
-          ],
+    observers: [
+      routeOwnedNavigationObserver,
+      ...kAppFormFactor == AppFormFactor.desktop
+          ? [
+              SendStatusRoutePayloadObserver(
+                onLeaveStatus: () => ref
+                    .read(sendStatusRoutePayloadProvider.notifier)
+                    .clearAfterNavigation(),
+              ),
+            ]
+          : [
+              ref.watch(appReviewRouteObserverProvider),
+              ref.watch(mobileSidebarRouteObserverProvider),
+            ],
+    ],
     initialLocation: bootstrap.initialLocation,
     refreshListenable: refresh,
     redirect: (context, state) =>
