@@ -70,6 +70,7 @@ class FigmaCompareScenario {
     this.allowFocus = false,
     this.allowPointer = false,
     this.renderShadows = false,
+    this.outsideScaffold = false,
     this.platform,
   });
 
@@ -82,6 +83,10 @@ class FigmaCompareScenario {
   final bool allowFocus;
   final bool allowPointer;
   final bool renderShadows;
+
+  /// App-level surfaces must receive the same fallback text style as the
+  /// production MaterialApp.builder, without a capture-only Material ancestor.
+  final bool outsideScaffold;
   final TargetPlatform? platform;
 }
 
@@ -91,6 +96,59 @@ class FigmaCompareScenario {
 /// storage, network, wallet, and Rust state. Widgetbook fixtures are preferred
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-wide',
+    description:
+        'Wide mobile window with persistent mobile sidebar and sync footer',
+    builder: buildMobileAdaptiveHomeUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-locked',
+    description: 'Fully locked mobile sidebar with unobscured live sync footer',
+    builder: buildMobileAdaptiveHomeLockedUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    allowFocus: true,
+    renderShadows: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-locked-synced',
+    description: 'Locked mobile sidebar with a bright completed sync indicator',
+    builder: buildMobileAdaptiveHomeLockedSyncedUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    allowFocus: true,
+    renderShadows: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-accounts-modal',
+    description: 'Full-window accounts modal over the adaptive mobile shell',
+    builder: buildMobileAdaptiveAccountsModalUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-closed',
+    description:
+        'Closed system-side layout preserving the existing mobile Home',
+    builder: buildMobileAdaptiveHomeClosedUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
   FigmaCompareScenario(
     id: 'mobile-ledger-shield-home-flow',
     description: 'Ledger shielding stages and continuous particle resolution',

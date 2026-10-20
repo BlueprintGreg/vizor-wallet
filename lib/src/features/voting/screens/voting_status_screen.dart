@@ -4,6 +4,7 @@ import '../../../providers/account_provider.dart';
 import '../../ledger/services/ledger_device_selection.dart';
 import '../../ledger/widgets/ledger_access_recovery_modal.dart';
 import 'dart:async';
+import '../../../core/navigation/mobile_sidebar_exit.dart';
 
 import '../../ledger/services/ledger_signing_progress.dart';
 
@@ -592,8 +593,15 @@ class _VotingStatusViewState extends ConsumerState<VotingStatusView> {
         );
       },
     );
-    if (usesPlatformScreen) return content;
-    return widget.contentWrapper?.call(context, content) ?? content;
+    final result = usesPlatformScreen
+        ? content
+        : widget.contentWrapper?.call(context, content) ?? content;
+    if (!widget.requireCurrentRouteForConfirmation) return result;
+    return MobileSidebarExitScope(
+      canNavigate: startError != null || (job != null && !job.isInFlight),
+      canSwitchAccount: job != null && !job.isInFlight,
+      child: result,
+    );
   }
 
   VotingSessionPhase _displayPhase(

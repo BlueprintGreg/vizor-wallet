@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart' show Scaffold;
@@ -328,33 +329,36 @@ class _MobileViewingKeyScreenState
       },
     );
     final colors = context.colors;
-    return Scaffold(
-      backgroundColor: colors.background.window,
-      body: AppToastHost(
-        child: SensitivePrivacyOverlay(
-          sensitiveContentVisible:
-              _stage == _ViewingKeyStage.reveal && _ufvk != null,
-          controller: _privacyController,
-          child: SafeArea(
-            child: Column(
-              children: [
-                MobileTopNav.back(
-                  title: _stage == _ViewingKeyStage.confirmAccess
-                      ? ''
-                      : 'Viewing Key',
-                  onBack: () => context.pop(),
-                ),
-                Expanded(
-                  child: switch (_stage) {
-                    _ViewingKeyStage.confirmAccess => _buildGate(colors),
-                    _ViewingKeyStage.reveal => _MobileViewingKeyRevealView(
-                      ufvk: _ufvk,
-                      errorText: _revealError,
-                      onCopyUfvk: _copyUfvk,
-                    ),
-                  },
-                ),
-              ],
+    return MobileSidebarExitScope(
+      canNavigate: !_checking,
+      child: Scaffold(
+        backgroundColor: colors.background.window,
+        body: AppToastHost(
+          child: SensitivePrivacyOverlay(
+            sensitiveContentVisible:
+                _stage == _ViewingKeyStage.reveal && _ufvk != null,
+            controller: _privacyController,
+            child: SafeArea(
+              child: Column(
+                children: [
+                  MobileTopNav.back(
+                    title: _stage == _ViewingKeyStage.confirmAccess
+                        ? ''
+                        : 'Viewing Key',
+                    onBack: () => context.pop(),
+                  ),
+                  Expanded(
+                    child: switch (_stage) {
+                      _ViewingKeyStage.confirmAccess => _buildGate(colors),
+                      _ViewingKeyStage.reveal => _MobileViewingKeyRevealView(
+                        ufvk: _ufvk,
+                        errorText: _revealError,
+                        onCopyUfvk: _copyUfvk,
+                      ),
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         ),

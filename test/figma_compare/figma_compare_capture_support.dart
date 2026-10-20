@@ -104,6 +104,10 @@ void runFigmaCompareCaptureTest({
     // resting state without using pumpAndSettle, which would hang on the
     // intentionally looping home-screen illustration motion.
     await tester.pump(const Duration(milliseconds: 400));
+    // Prepared iOS sheets first lay out offstage for native corners, then
+    // start their entrance on a post-frame callback. Advance that entrance
+    // too; a single pump may capture its first, almost invisible frame.
+    await tester.pump(const Duration(milliseconds: 400));
 
     if (scenario.scrollToEnd) {
       final scrollable = find.byType(Scrollable);

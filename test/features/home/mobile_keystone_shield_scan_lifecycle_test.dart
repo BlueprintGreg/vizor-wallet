@@ -2,6 +2,12 @@
 library;
 
 import 'package:zcash_wallet/src/core/navigation/mobile_shield_page.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_destinations.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.dart';
+import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
@@ -38,6 +44,12 @@ void main() {
     api.decodes = 0;
     api.broadcasts = 0;
     api.pendingDecode = null;
+    api.pendingCreation = null;
+    api.pendingProofs = null;
+    api.pendingDiscard = null;
+    api.pendingBroadcast = null;
+    api.failDiscard = false;
+    api.discards.clear();
     FlutterSecureStorage.setMockInitialValues({});
     directory = await Directory.systemTemp.createTemp('keystone-morph-scan-');
     originalPaths = PathProviderPlatform.instance;
@@ -159,6 +171,326 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });
+  testWidgets(
+    'sidebar awaits release, blocks duplicate input and retries a failed discard',
+    (tester) async {
+      final router = await _startScanner(tester, sidebar: true);
+      final sidebar = tester.widget<MobileWalletSidebar>(
+        find.byType(MobileWalletSidebar),
+      );
+      final scanner = tester.widget<AnimatedUrScannerView>(
+        find.byType(AnimatedUrScannerView),
+      );
+      final cancel = tester
+          .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+          .onClose!;
+      api.pendingDiscard = Completer<void>();
+      api.failDiscard = true;
+      sidebar.onSelect!('/activity');
+      await _flush(tester);
+      expect(mobileVisiblePath(router), '/home/keystone-shield');
+      expect(api.discards.length, 1);
+      sidebar.onSelect!('/settings');
+      cancel();
+      scanner.onComplete(const ScanResult(urType: 'zcash-pczt', data: [4]));
+      await _flush(tester);
+      expect(api.discards.length, 1);
+      expect(api.decodes, 0);
+      api.pendingDiscard!.complete();
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        await _flush(tester);
+      }
+      expect(api.discards.length, 3);
+      expect(mobileVisiblePath(router), '/home/keystone-shield');
+      expect(
+        find.text('Could not finish cancelling. Please try again.'),
+        findsOneWidget,
+      );
+      final owner = api.discards.first;
+      expect(api.discards.every((entry) => entry == owner), isTrue);
+      api.pendingDiscard = null;
+      api.failDiscard = false;
+      tester
+          .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+          .onSelect!('/activity');
+      await _flush(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(mobileVisiblePath(router), '/activity');
+      expect(api.discards.length, 4);
+      expect(api.discards.last, owner);
+      expect(api.broadcasts, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(api.discards.length, 4);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('sidebar waits for balance refresh and retries its failure', (
+    tester,
+  ) async {
+    final sync = _ExitSync();
+    final router = await _startScanner(tester, sidebar: true, sync: sync);
+    sync.pendingRefresh = Completer<void>();
+    sync.failRefresh = true;
+    tester
+        .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+        .onSelect!('/activity');
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/home/keystone-shield');
+    expect(api.discards.length, 1);
+    expect(sync.releases, 1);
+    sync.pendingRefresh!.complete();
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/home/keystone-shield');
+    sync.pendingRefresh = null;
+    sync.failRefresh = false;
+    tester
+        .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+        .onSelect!('/activity');
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/activity');
+    expect(sync.releases, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'sidebar cancellation ignores a late signature decode after cleanup failure',
+    (tester) async {
+      final sync = _ExitSync();
+      final router = await _startScanner(tester, sidebar: true, sync: sync);
+      api.pendingDecode = Completer<Uint8List>();
+      tester
+          .widget<AnimatedUrScannerView>(find.byType(AnimatedUrScannerView))
+          .onComplete(const ScanResult(urType: 'zcash-pczt', data: [4]));
+      await tester.pump();
+      expect(api.decodes, 1);
+      sync.failRefresh = true;
+      tester
+          .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+          .onSelect!('/activity');
+      await _flush(tester);
+      expect(mobileVisiblePath(router), '/home/keystone-shield');
+      api.pendingDecode!.complete(Uint8List.fromList([4]));
+      await _flush(tester);
+      expect(api.broadcasts, 0);
+      expect(
+        find.text('Could not finish cancelling. Please try again.'),
+        findsOneWidget,
+      );
+      sync.failRefresh = false;
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _flush(tester);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final fail in [false, true]) {
+    testWidgets(
+      'sidebar drains late creation and rejects its continuation (failure=$fail)',
+      (tester) async {
+        api.pendingCreation = Completer<ShieldTransparentPcztResult>();
+        final sync = _ExitSync()..failRefresh = fail;
+        final router = await _startScanner(
+          tester,
+          sidebar: true,
+          scan: false,
+          waitForQr: false,
+          sync: sync,
+        );
+        await _flush(tester);
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onSelect!('/activity');
+        await _flush(tester);
+        expect(mobileVisiblePath(router), '/home/keystone-shield');
+        expect(api.discards, isEmpty);
+        api.pendingCreation!.complete(_preparedShield());
+        await _flush(tester);
+        expect(api.discards.length, 1);
+        expect(api.broadcasts, 0);
+        if (fail) {
+          expect(mobileVisiblePath(router), '/home/keystone-shield');
+          expect(
+            find.text('Could not finish cancelling. Please try again.'),
+            findsOneWidget,
+          );
+        } else {
+          expect(mobileVisiblePath(router), '/activity');
+        }
+        sync.failRefresh = false;
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _flush(tester);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+  testWidgets('Cancel also awaits cleanup failure and retries before popping', (
+    tester,
+  ) async {
+    final sync = _ExitSync();
+    final router = await _startScanner(tester, sync: sync);
+    sync.pendingRefresh = Completer<void>();
+    sync.failRefresh = true;
+    await tester.tap(find.text('Cancel'));
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/home/keystone-shield');
+    sync.pendingRefresh!.complete();
+    await _flush(tester);
+    expect(
+      find.text('Could not finish cancelling. Please try again.'),
+      findsOneWidget,
+    );
+    sync.pendingRefresh = null;
+    sync.failRefresh = false;
+    await tester.tap(find.text('Back to wallet'));
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/home');
+    expect(sync.releases, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final proofFails in [false, true]) {
+    testWidgets(
+      'late proof completion cannot overwrite a failed exit (proofFails=$proofFails)',
+      (tester) async {
+        api.pendingProofs = Completer<Uint8List>();
+        final sync = _ExitSync();
+        final router = await _startScanner(tester, sidebar: true, sync: sync);
+        sync.failRefresh = true;
+        tester
+            .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+            .onSelect!('/activity');
+        await _flush(tester);
+        expect(mobileVisiblePath(router), '/home/keystone-shield');
+        expect(api.discards.length, 1);
+        if (proofFails) {
+          api.pendingProofs!.completeError(StateError('late proof failure'));
+        } else {
+          api.pendingProofs!.complete(Uint8List.fromList([2]));
+        }
+        await _flush(tester);
+        expect(api.discards.length, 1);
+        expect(api.broadcasts, 0);
+        expect(
+          find.text('Could not finish cancelling. Please try again.'),
+          findsOneWidget,
+        );
+        sync.failRefresh = false;
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _flush(tester);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('sidebar and Cancel cannot abandon an accepted broadcast', (
+    tester,
+  ) async {
+    final router = await _startScanner(tester, sidebar: true);
+    final sidebar = tester.widget<MobileWalletSidebar>(
+      find.byType(MobileWalletSidebar),
+    );
+    final cancel = tester
+        .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+        .onClose!;
+    api.pendingBroadcast = Completer<StoreAndBroadcastPcztsResult>();
+    tester
+        .widget<AnimatedUrScannerView>(find.byType(AnimatedUrScannerView))
+        .onComplete(const ScanResult(urType: 'zcash-pczt', data: [4]));
+    await _flush(tester);
+    expect(api.broadcasts, 1);
+    expect(
+      tester
+          .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+          .onSelect,
+      isNull,
+    );
+    sidebar.onSelect!('/activity');
+    cancel();
+    await _flush(tester);
+    expect(mobileVisiblePath(router), '/home/keystone-shield');
+    expect(api.discards, isEmpty);
+    api.pendingBroadcast!.complete(
+      const StoreAndBroadcastPcztsResult(
+        broadcastedCount: 1,
+        totalCount: 1,
+        txids: 'ab',
+        status: 'broadcasted',
+      ),
+    );
+    await _flush(tester);
+    ProviderScope.containerOf(
+      tester.element(find.byType(MobileKeystoneShieldScreen)),
+    ).read(pendingActivityEvidenceProvider.notifier).clear();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _flush(tester);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'a popup interrupting the completed exit leaves a usable return action',
+    (tester) async {
+      final sync = _ExitSync();
+      final router = await _startScanner(tester, sidebar: true, sync: sync);
+      sync.pendingRefresh = Completer<void>();
+      tester
+          .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+          .onSelect!('/activity');
+      await _flush(tester);
+      final context = tester.element(find.byType(MobileShieldScene));
+      unawaited(
+        showDialog<void>(
+          context: context,
+          builder: (_) => const AlertDialog(title: Text('Exit interrupted')),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      sync.pendingRefresh!.complete();
+      await _flush(tester);
+      expect(mobileVisiblePath(router), '/home/keystone-shield');
+      expect(api.discards.length, 1);
+      Navigator.of(context, rootNavigator: true).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Shielding was cancelled.'), findsOneWidget);
+      await tester.tap(find.text('Back to wallet'));
+      await _flush(tester);
+      expect(mobileVisiblePath(router), '/home');
+      expect(api.discards.length, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets('Cancel preserves signing visuals during the return transition', (
+    tester,
+  ) async {
+    final router = await _startScanner(tester);
+    final before = tester
+        .widget<MobileShieldScene>(find.byType(MobileShieldScene))
+        .phase;
+    api.pendingDiscard = Completer<void>();
+    await tester.tap(find.text('Cancel'));
+    await _flush(tester);
+    api.pendingDiscard!.complete();
+    await tester.pump();
+    expect(mobileVisiblePath(router), '/home');
+    expect(
+      tester.widget<MobileShieldScene>(find.byType(MobileShieldScene)).phase,
+      before,
+    );
+    expect(find.text('Shielding was cancelled.'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<void> _flush(WidgetTester tester) async {
@@ -170,52 +502,89 @@ Future<void> _flush(WidgetTester tester) async {
   }
 }
 
-Future<void> _startScanner(WidgetTester tester) async {
+Future<GoRouter> _startScanner(
+  WidgetTester tester, {
+  bool sidebar = false,
+  bool scan = true,
+  bool waitForQr = true,
+  FakeSyncNotifier? sync,
+}) async {
+  if (sidebar) {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(951, 669);
+    addTearDown(tester.view.reset);
+  }
   final container = ProviderContainer(
     overrides: [
       appBootstrapProvider.overrideWithValue(_bootstrap),
       walletProvider.overrideWith(_Wallet.new),
       syncProvider.overrideWith(
-        () => FakeSyncNotifier(
-          SyncState(
-            accountUuid: 'account-1',
-            hasAccountScopedData: true,
-            transparentBalance: BigInt.from(1412000000),
-            canShieldTransparentBalance: true,
-          ),
-        ),
+        () =>
+            sync ??
+            FakeSyncNotifier(
+              SyncState(
+                accountUuid: 'account-1',
+                hasAccountScopedData: true,
+                transparentBalance: BigInt.from(1412000000),
+                canShieldTransparentBalance: true,
+              ),
+            ),
       ),
     ],
   );
   addTearDown(container.dispose);
   await container.read(walletProvider.future);
   await container.read(syncProvider.future);
+  final routes = <RouteBase>[
+    GoRoute(
+      path: '/activity',
+      builder: (_, _) => const Scaffold(body: Text('Activity destination')),
+    ),
+    GoRoute(
+      path: '/settings',
+      builder: (_, _) => const Scaffold(body: Text('Settings destination')),
+    ),
+
+    GoRoute(
+      path: '/home',
+      builder: (context, _) => Scaffold(
+        body: TextButton(
+          onPressed: () => context.push('/home/keystone-shield'),
+          child: const Text('Open shield'),
+        ),
+      ),
+    ),
+    GoRoute(
+      path: '/home/keystone-shield',
+      pageBuilder: (_, state) => MobileShieldPage(
+        key: state.pageKey,
+        child: const MobileKeystoneShieldScreen(),
+      ),
+    ),
+  ];
   final router = GoRouter(
+    observers: [container.read(mobileSidebarRouteObserverProvider)],
     initialLocation: '/home',
-    routes: [
-      GoRoute(
-        path: '/home',
-        builder: (context, _) => Scaffold(
-          body: TextButton(
-            onPressed: () => context.push('/shield'),
-            child: const Text('Open shield'),
-          ),
-        ),
-      ),
-      GoRoute(
-        path: '/shield',
-        pageBuilder: (_, state) => MobileShieldPage(
-          key: state.pageKey,
-          child: const MobileKeystoneShieldScreen(),
-        ),
-      ),
-    ],
+    routes: sidebar
+        ? [
+            ShellRoute(
+              builder: (context, state, child) => MobileAdaptiveFrame(
+                router: GoRouter.of(context),
+                child: child,
+              ),
+              routes: routes,
+            ),
+          ]
+        : routes,
   );
   addTearDown(router.dispose);
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
-      child: MaterialApp.router(routerConfig: router),
+      child: MaterialApp.router(
+        routerConfig: router,
+        builder: (_, child) => AppTheme(data: AppThemeData.dark, child: child!),
+      ),
     ),
   );
   await tester.tap(find.text('Open shield'));
@@ -227,6 +596,7 @@ Future<void> _startScanner(WidgetTester tester) async {
   );
   await gesture.moveBy(Offset(tester.getSize(slider).width - 60, 0));
   await gesture.up();
+  if (!waitForQr) return router;
   for (var i = 0; i < 35; i++) {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
@@ -241,11 +611,13 @@ Future<void> _startScanner(WidgetTester tester) async {
       break;
     }
   }
+  if (!scan) return router;
   await tester.tap(find.text('Next step'));
   await tester.pump();
   await _flush(tester);
   await tester.pump(const Duration(seconds: 1));
   expect(find.byType(AnimatedUrScannerView), findsOneWidget);
+  return router;
 }
 
 class _Api extends RustLibApi {
@@ -253,8 +625,18 @@ class _Api extends RustLibApi {
   Future<void> crateApiSyncDiscardProposal({
     required BigInt proposalId,
     required String sendFlowId,
-  }) async {}
+  }) async {
+    discards.add((proposalId, sendFlowId));
+    await pendingDiscard?.future;
+    if (failDiscard) throw StateError('release unavailable');
+  }
 
+  final discards = <(BigInt, String)>[];
+  Completer<void>? pendingDiscard;
+  Completer<ShieldTransparentPcztResult>? pendingCreation;
+  Completer<Uint8List>? pendingProofs;
+  Completer<StoreAndBroadcastPcztsResult>? pendingBroadcast;
+  bool failDiscard = false;
   int decodes = 0, broadcasts = 0;
   Completer<Uint8List>? pendingDecode;
   @override
@@ -266,19 +648,14 @@ class _Api extends RustLibApi {
     required String network,
     required String accountUuid,
     required String sendFlowId,
-  }) async => ShieldTransparentPcztResult(
-    proposalId: BigInt.from(77),
-    pcztBytes: Uint8List.fromList([1]),
-    feeZatoshi: BigInt.from(10000),
-    shieldedZatoshi: BigInt.from(1411990000),
-    needsSaplingParams: false,
-  );
+  }) async => pendingCreation?.future ?? _preparedShield();
+
   @override
   Future<Uint8List> crateApiSyncAddProofsToPczt({
     required List<int> pcztBytes,
     String? spendParamsPath,
     String? outputParamsPath,
-  }) async => Uint8List.fromList([2]);
+  }) async => pendingProofs?.future ?? Uint8List.fromList([2]);
   @override
   Future<Uint8List> crateApiSyncRedactPcztForSigner({
     required List<int> pcztBytes,
@@ -310,12 +687,13 @@ class _Api extends RustLibApi {
     String? outputParamsPath,
   }) async {
     broadcasts++;
-    return const StoreAndBroadcastPcztsResult(
-      broadcastedCount: 1,
-      totalCount: 1,
-      txids: 'ab',
-      status: 'broadcasted',
-    );
+    return pendingBroadcast?.future ??
+        const StoreAndBroadcastPcztsResult(
+          broadcastedCount: 1,
+          totalCount: 1,
+          txids: 'ab',
+          status: 'broadcasted',
+        );
   }
 
   @override
@@ -365,3 +743,24 @@ final _bootstrap = AppBootstrapState(
   isUnlocked: true,
   passwordRotationRecoveryFailed: false,
 );
+
+ShieldTransparentPcztResult _preparedShield() => ShieldTransparentPcztResult(
+  proposalId: BigInt.from(77),
+  pcztBytes: Uint8List.fromList([1]),
+  feeZatoshi: BigInt.from(10000),
+  shieldedZatoshi: BigInt.from(1411990000),
+  needsSaplingParams: false,
+);
+
+class _ExitSync extends FakeSyncNotifier {
+  Completer<void>? pendingRefresh;
+  bool failRefresh = false;
+  int releases = 0;
+  @override
+  Future<void> refreshAfterProposalRelease(String accountUuid) async {
+    releases++;
+    await pendingRefresh?.future;
+    if (failRefresh) throw StateError('balance refresh unavailable');
+    await super.refreshAfterProposalRelease(accountUuid);
+  }
+}

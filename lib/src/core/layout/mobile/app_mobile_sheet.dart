@@ -12,6 +12,7 @@ import '../../widgets/app_button.dart';
 import '../../widgets/app_icon.dart';
 import '../../widgets/app_modal_shape.dart';
 import 'mobile_modal_corners.dart';
+import 'mobile_window_policy.dart';
 import 'prepared_modal_sheet_route.dart';
 import 'controlled_modal_sheet_route.dart';
 
@@ -160,6 +161,10 @@ class MobileModalCard extends StatelessWidget {
     super.key,
   });
 
+  /// Wide-window cap including outer margins. Portrait windows retain the
+  /// original route/theme constraints instead of imposing this extra limit.
+  static const double maxWidth = 440;
+
   final Widget child;
 
   /// For content that is already its own card (e.g. the birthday calendar
@@ -237,45 +242,60 @@ class MobileModalCard extends StatelessWidget {
     // is already its own card and owns its horizontal sizing, so only the
     // bottom gap applies there.
     final double sideMargin = transparentBackground ? 0 : AppSpacing.sm;
-    return Padding(
-      padding:
-          margin ??
-          EdgeInsets.only(
-            left: sideMargin,
-            right: sideMargin,
-            bottom: bottomGapFor(context),
-          ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (onBack != null) ...[
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: Semantics(
-                container: true,
-                button: true,
-                enabled: backEnabled,
-                label: 'Back',
-                child: AppButton(
-                  key: const ValueKey('mobile_modal_back_button'),
-                  variant: AppButtonVariant.secondary,
-                  minWidth: 44,
-                  height: 44,
-                  contentPadding: EdgeInsets.zero,
-                  enabledBackgroundColor: colors.background.base,
-                  onPressed: backEnabled ? onBack : null,
-                  child: const ExcludeSemantics(
-                    child: AppIcon(AppIcons.arrowBack, size: 20),
+    return Align(
+      alignment: Alignment.bottomCenter,
+      widthFactor: 1,
+      heightFactor: 1,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MobileWindowPolicyScope.of(context).usesWideLayout
+              ? maxWidth
+              : double.infinity,
+        ),
+        child: Padding(
+          padding:
+              margin ??
+              EdgeInsets.only(
+                left: sideMargin,
+                right: sideMargin,
+                bottom: bottomGapFor(context),
+              ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (onBack != null) ...[
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    enabled: backEnabled,
+                    label: 'Back',
+                    child: AppButton(
+                      key: const ValueKey('mobile_modal_back_button'),
+                      variant: AppButtonVariant.secondary,
+                      minWidth: 44,
+                      height: 44,
+                      contentPadding: EdgeInsets.zero,
+                      enabledBackgroundColor: colors.background.base,
+                      onPressed: backEnabled ? onBack : null,
+                      child: const ExcludeSemantics(
+                        child: AppIcon(AppIcons.arrowBack, size: 20),
+                      ),
+                    ),
                   ),
                 ),
+                const SizedBox(height: AppSpacing.xs),
+              ],
+              // Revealing Back must preserve stateful device/approval owners.
+              Flexible(
+                key: const ValueKey('mobile_modal_content'),
+                child: card,
               ),
-            ),
-            const SizedBox(height: AppSpacing.xs),
-          ],
-          // Revealing Back must preserve stateful device/approval owners.
-          Flexible(key: const ValueKey('mobile_modal_content'), child: card),
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }

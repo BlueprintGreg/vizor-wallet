@@ -1,3 +1,4 @@
+import '../../../../core/navigation/mobile_sidebar_exit.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -525,11 +526,14 @@ class _MobileSeedPhraseScreenState
         ),
       ),
     );
-    return PopScope(
-      canPop: !ref
-          .watch(externalActionGuardProvider)
-          .blocks(ExternalAction.navigation),
-      child: scaffold,
+    return MobileSidebarExitScope(
+      canNavigate: !_checking && !_markingBackedUp && !_snoozingBackup,
+      child: PopScope(
+        canPop: !ref
+            .watch(externalActionGuardProvider)
+            .blocks(ExternalAction.navigation),
+        child: scaffold,
+      ),
     );
   }
 
