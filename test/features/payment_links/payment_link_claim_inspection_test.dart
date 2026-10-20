@@ -232,7 +232,6 @@ void main() {
         expect(api.checkUrls[0], primary.normalizedLightwalletdUrl);
         expect(api.checkUrls[1], isNot(api.checkUrls[0]));
         expect(api.importCalls, 1);
-        expect(api.freshImports, everyElement(isFalse));
       },
     );
 
@@ -821,7 +820,6 @@ class _InspectRustApi implements RustLibApi {
   final estimateDestinations = <String>[];
   int mainWalletLookups = 0;
   int importCalls = 0;
-  final freshImports = <bool>[];
   int syncCalls = 0;
   int cancelCalls = 0;
   bool failSync = false;
@@ -873,10 +871,8 @@ class _InspectRustApi implements RustLibApi {
     required String network,
     required String dbPath,
     String? accountName,
-    required bool fresh,
   }) async {
     importCalls++;
-    freshImports.add(fresh);
     importedDbPath = dbPath;
     await File(dbPath).writeAsString('claim wallet fixture');
     if (!importStarted.isCompleted) importStarted.complete();

@@ -377,8 +377,8 @@ fn found(facts: &TransparentDisplayFacts) -> TxidLookup {
     }
     TxidLookup::Found {
         entry: DisplayEntry {
-            tag: zakura_pir_client::transparent::testing::transparent_shard::txid::Tag::of(
-                &zakura_pir_client::transparent::testing::transparent_events::Txid(
+            tag: zakura_pir_client::transparent::testing::shard::txid::Tag::of(
+                &zakura_pir_client::transparent::testing::events::Txid(
                     *facts.txid.as_ref(),
                 ),
             ),

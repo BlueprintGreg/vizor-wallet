@@ -16,7 +16,6 @@ fn stored_software_secret_matches_only_its_exact_database_account() {
         "main".to_string(),
         db_path.clone(),
         Some("BIP39 vector".to_string()),
-        false,
     )
     .unwrap();
     let stored_secret = serde_json::json!({

@@ -473,7 +473,6 @@ class _SetupRustApi implements RustLibApi {
     required String network,
     required String dbPath,
     String? accountName,
-    required bool fresh,
   }) async {
     importCalls++;
     File(dbPath).writeAsStringSync('new account committed to DB');

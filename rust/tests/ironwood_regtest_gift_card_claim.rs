@@ -252,7 +252,6 @@ fn import(name: &str, mnemonic: &str, birthday: u64) -> Wallet {
         NETWORK.into(),
         db.clone(),
         Some(name.to_string()),
-        false,
     )
     .unwrap_or_else(|error| panic!("import {name}: {error}"));
     Wallet {

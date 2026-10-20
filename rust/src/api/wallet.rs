@@ -1540,7 +1540,6 @@ mod tests {
             main(),
             from_mnemonic_db.clone(),
             None,
-            false,
         )
         .unwrap();
         assert_eq!(
@@ -1806,7 +1805,6 @@ mod tests {
                 network_name.clone(),
                 db_path.clone(),
                 Some("Gift Card".to_string()),
-                false,
             )
             .unwrap();
             assert_eq!(imported.unified_address, account.unified_address);
@@ -1838,7 +1836,6 @@ mod tests {
             "main".to_string(),
             db_path.clone(),
             Some("BIP39 vector".to_string()),
-            false,
         )
         .unwrap();
 
@@ -1866,7 +1863,6 @@ mod tests {
                 "main".to_string(),
                 db_path.to_str().unwrap().to_string(),
                 Some("Passphrase isolation".to_string()),
-                false,
             )
             .unwrap()
         }
