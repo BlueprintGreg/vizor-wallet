@@ -11,7 +11,7 @@ import '../../../providers/swap_history_check_provider.dart';
 
 /// What the swap history check says for each state.
 String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
-  SwapHistoryCheck.idle => 'Check older addresses for repeat payments. Refund recovery also needs the original funding transaction in wallet history.',
+  SwapHistoryCheck.idle => 'Check older addresses for repeat payments.',
   SwapHistoryCheck.checking => 'Checking swap history…',
   SwapHistoryCheck.done => 'The selected swap history check is complete.',
   SwapHistoryCheck.continuing => 'The check will continue in the background.',

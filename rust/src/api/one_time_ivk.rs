@@ -308,8 +308,8 @@ pub fn run_swap_recovery(db_path: String, network_name: String) -> Result<(), Re
 }
 
 /// Starts or resumes an explicit older-address PIR search. `receive_end` is exclusive.
-/// Refunds require known funding memos. A funding transaction before the wallet birthday
-/// requires lowering the birthday and rescanning before its refund can be recovered.
+/// Refunds require known funding memos, so a refund funded before the wallet birthday is
+/// found only after restoring with an earlier birthday.
 pub fn check_swap_history(
     db_path: String,
     network_name: String,
