@@ -51,7 +51,11 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
   StreamSubscription<MobileNavigationGeometry?>? _subscription;
   int _revision = 0;
   bool _routeUpdatePending = false;
-  bool _sidebarNavigationPending = false;
+  // Preserve the accepted route's affordances while serializing navigation.
+  // Incoming exit scopes may mount on the next frame; neither that gap nor
+  // cancellation's temporary busy state should paint disabled button fills.
+  ({bool navigation, bool account})? _pendingSidebarPermissions;
+  bool get _sidebarNavigationPending => _pendingSidebarPermissions != null;
   late MobileSidebarRouteObserver _routeObserver;
   late final NativeMobileNavigationGeometry _native;
 
@@ -154,20 +158,30 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
             .blocks(ExternalAction.navigation);
     final requiresPolicy = requiresMobileSidebarExitPolicy(path);
     final enabled =
-        !_sidebarNavigationPending &&
         !guard.blocks(ExternalAction.navigation) &&
-        _sidebarExit.canNavigate(path, requiresPolicy: requiresPolicy);
+        (_pendingSidebarPermissions?.navigation ??
+            _sidebarExit.canNavigate(path, requiresPolicy: requiresPolicy));
     final accountEnabled =
-        !_sidebarNavigationPending &&
         !guard.blocks(ExternalAction.navigation) &&
-        _sidebarExit.canSwitchAccount(path, requiresPolicy: requiresPolicy);
+        (_pendingSidebarPermissions?.account ??
+            _sidebarExit.canSwitchAccount(
+              path,
+              requiresPolicy: requiresPolicy,
+            ));
     Future<void> select(String destination) async {
       if (_sidebarNavigationPending ||
           !navigationUnblocked() ||
-          mobileVisiblePath(widget.router) != path) {
+          mobileVisiblePath(widget.router) != path ||
+          !_sidebarExit.canNavigate(path, requiresPolicy: requiresPolicy)) {
         return;
       }
-      _sidebarNavigationPending = true;
+      _pendingSidebarPermissions = (
+        navigation: true,
+        account: _sidebarExit.canSwitchAccount(
+          path,
+          requiresPolicy: requiresPolicy,
+        ),
+      );
       _routingChanged();
       final accountUuid = ref.read(accountProvider).value?.activeAccountUuid;
       final routeIdentity = _sidebarExit.routeIdentity(path);
@@ -206,7 +220,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
           showAppToast(context, 'Could not finish cancellation. Try again.');
         }
       } finally {
-        _sidebarNavigationPending = false;
+        _pendingSidebarPermissions = null;
         if (mounted) _routingChanged();
       }
     }
@@ -257,6 +271,7 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
                         safeRect: layout.contentSafeRect,
                       ),
                       child: MobileWalletSidebar(
+                        inputBlocked: _sidebarNavigationPending,
                         accountName: account?.name ?? '',
                         avatar: MobileAccountAvatar(
                           profilePictureId:

@@ -106,6 +106,7 @@ GoRouter _router() => GoRouter(
 Widget _app(
   GoRouter router, {
   bool swapFeatureEnabled = true,
+  AppThemeData theme = AppThemeData.dark,
   SyncState? initialSyncState,
   List<Override> overrides = const [],
 }) => ProviderScope(
@@ -129,7 +130,7 @@ Widget _app(
   ],
   child: MaterialApp.router(
     routerConfig: router,
-    builder: (_, child) => AppTheme(data: AppThemeData.dark, child: child!),
+    builder: (_, child) => AppTheme(data: theme, child: child!),
   ),
 );
 
@@ -140,6 +141,47 @@ LocalKey? _sendPageKey(WidgetTester tester) =>
 
 Iterable<GoRoute> _leafRoutes() =>
     goRouteDescendants(buildMobileRoutes(entryRoutes: const []));
+
+// Read the rendered pill fill and inherited text color, rather than just
+// the enabled-color overrides (which stay unchanged even when disabled).
+List<({Color? fill, Color? label})> _sidebarPaints(WidgetTester tester) => [
+  for (final button
+      in find
+          .descendant(
+            of: find.byType(MobileWalletSidebar),
+            matching: find.byType(AppButton),
+          )
+          .evaluate())
+    (
+      fill:
+          (tester
+                      .widget<AnimatedContainer>(
+                        find
+                            .descendant(
+                              of: find.byWidget(button.widget),
+                              matching: find.byType(AnimatedContainer),
+                            )
+                            .first,
+                      )
+                      .decoration
+                  as ShapeDecoration)
+              .color,
+      label:
+          (tester
+                      .widget<RichText>(
+                        find
+                            .descendant(
+                              of: find.byWidget(button.widget),
+                              matching: find.byType(RichText),
+                            )
+                            .first,
+                      )
+                      .text
+                  as TextSpan)
+              .style!
+              .color,
+    ),
+];
 
 void main() {
   for (final interrupted in ['none', 'different', 'same']) {
@@ -195,17 +237,60 @@ void main() {
         );
         expect(sidebar.onSelect, isNotNull);
         expect(sidebar.onAccountTap, isNull);
+        final paints = _sidebarPaints(tester);
         sidebar.onSelect!('/activity');
         sidebar.onSelect!('/settings');
         await tester.pump();
         expect(calls, 1);
         expect(mobileVisiblePath(router), '/pay');
-        expect(
-          tester
-              .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
-              .onSelect,
-          isNull,
+        expect(_sidebarPaints(tester), paints);
+        // Input is blocked without changing the button appearance. Stale
+        // callbacks are also guarded while cancellation is still pending.
+        final pending = tester.widget<MobileWalletSidebar>(
+          find.byType(MobileWalletSidebar),
         );
+        expect(pending.onSelect, isNotNull);
+        expect(pending.onAccountTap, isNull);
+        pending.onSelect!('/settings');
+        await tester.tap(
+          find.descendant(
+            of: find.byType(MobileWalletSidebar),
+            matching: find.text('Settings'),
+          ),
+          warnIfMissed: false,
+        );
+        await tester.pump();
+        expect(calls, 1);
+        expect(mobileVisiblePath(router), '/pay');
+        expect(_sidebarPaints(tester), paints);
+        if (interrupted == 'none') {
+          final container = ProviderScope.containerOf(
+            tester.element(find.byType(MobileWalletSidebar)),
+          );
+          final hold = container
+              .read(externalActionGuardProvider.notifier)
+              .acquire(blocks: {ExternalAction.navigation});
+          await tester.pump();
+          expect(
+            tester
+                .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+                .onSelect,
+            isNull,
+          );
+          expect(
+            _sidebarPaints(tester).last.label,
+            AppThemeData.dark.colors.button.disabled.label,
+          );
+          hold.release();
+          await tester.pump();
+          expect(_sidebarPaints(tester), paints);
+          expect(
+            tester
+                .widget<MobileWalletSidebar>(find.byType(MobileWalletSidebar))
+                .inputBlocked,
+            isTrue,
+          );
+        }
         if (interrupted != 'none') {
           final nextPath = interrupted == 'same' ? '/pay' : '/settings';
           router.go(nextPath, extra: 'replacement');
@@ -556,6 +641,60 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final theme in [AppThemeData.light, AppThemeData.dark]) {
+    testWidgets(
+      'sidebar keeps its appearance in intermediate navigation frames (${theme == AppThemeData.dark ? 'dark' : 'light'})',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 720);
+        final router = _router();
+        addTearDown(router.dispose);
+        await tester.pumpWidget(
+          _app(router, theme: theme, swapFeatureEnabled: false),
+        );
+        await tester.pumpAndSettle();
+        final sidebar = find.byType(MobileWalletSidebar);
+        final accountPaint = _sidebarPaints(tester).first;
+        final unselectedPaint = _sidebarPaints(tester).last;
+        for (final destination in ['/activity', '/settings', '/home']) {
+          final before = tester.widget<MobileWalletSidebar>(sidebar);
+          // Two callbacks before the next frame must only accept the first.
+          before.onSelect!(destination);
+          before.onSelect!(destination == '/home' ? '/settings' : '/home');
+          before.onAccountTap!();
+          for (var frame = 0; frame < 4; frame++) {
+            await tester.pump(const Duration(milliseconds: 16));
+            final paints = _sidebarPaints(tester);
+            final current = tester
+                .widget<MobileWalletSidebar>(sidebar)
+                .currentPath;
+            expect(current, destination);
+            expect(paints.first, accountPaint);
+            for (var item = 0; item < 3; item++) {
+              final selected =
+                  ['/home', '/activity', '/settings'][item] == current;
+              expect(
+                paints[item + 1].label,
+                selected
+                    ? theme.colors.navPanel.activeIcon
+                    : unselectedPaint.label,
+              );
+              expect(
+                paints[item + 1].fill,
+                selected
+                    ? theme.colors.navPanel.activeBg
+                    : unselectedPaint.fill,
+              );
+            }
+            expect(find.byType(MobileAccountsSheet), findsNothing);
+          }
+          await tester.pumpAndSettle();
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
   testWidgets(
     'sidebar blocks modals and protected work but can leave send input',

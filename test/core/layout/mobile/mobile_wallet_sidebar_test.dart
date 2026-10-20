@@ -1,7 +1,10 @@
 @Tags(['mobile'])
 library;
 
+import 'dart:ui' show SemanticsAction;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/formatting/sync_status_label.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/app_mobile_shell.dart';
@@ -117,6 +120,102 @@ void main() {
       }
     }
   }
+
+  testWidgets(
+    'temporary lock keeps paint and labels while blocking all input',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        final visits = <String>[];
+        var accounts = 0;
+        Widget sidebar({required bool blocked}) => SizedBox(
+          width: 256,
+          height: 600,
+          child: MobileWalletSidebar(
+            accountName: 'Account probe',
+            avatar: const SizedBox(width: 40, height: 40),
+            status: status,
+            currentPath: '/home',
+            swapEnabled: true,
+            inputBlocked: blocked,
+            onSelect: visits.add,
+            onAccountTap: () => accounts++,
+          ),
+        );
+        Color? textColor(String text) =>
+            (tester
+                        .widget<RichText>(
+                          find.descendant(
+                            of: find.text(text),
+                            matching: find.byType(RichText),
+                          ),
+                        )
+                        .text
+                    as TextSpan)
+                .style!
+                .color;
+        await tester.pumpWidget(harness(sidebar(blocked: false)));
+        final labels = [
+          'Account probe',
+          'Home',
+          'Swap',
+          'Activity',
+          'Settings',
+        ];
+        final colors = [for (final label in labels) textColor(label)];
+        final settingsNode = Focus.of(tester.element(find.text('Settings')));
+        settingsNode.requestFocus();
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        expect(visits, ['/settings']);
+        expect(
+          tester
+              .getSemantics(find.text('Settings'))
+              .getSemanticsData()
+              .hasAction(SemanticsAction.tap),
+          isTrue,
+        );
+
+        await tester.pumpWidget(harness(sidebar(blocked: true)));
+        expect(settingsNode.hasFocus, isFalse);
+        settingsNode.requestFocus();
+        await tester.pump();
+        expect(settingsNode.hasFocus, isFalse);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.tap(find.text('Settings'), warnIfMissed: false);
+        await tester.tap(find.text('Account probe'), warnIfMissed: false);
+        expect(visits, ['/settings']);
+        expect(accounts, 0);
+        for (var i = 0; i < labels.length; i++) {
+          expect(textColor(labels[i]), colors[i]);
+          expect(find.text(labels[i]), findsOneWidget);
+          expect(
+            tester
+                .getSemantics(find.text(labels[i]))
+                .getSemanticsData()
+                .hasAction(SemanticsAction.tap),
+            isFalse,
+          );
+        }
+
+        await tester.pumpWidget(harness(sidebar(blocked: false)));
+        await tester.tap(find.text('Settings'));
+        await tester.tap(find.text('Account probe'));
+        expect(visits, ['/settings', '/settings']);
+        expect(accounts, 1);
+        expect(
+          tester
+              .getSemantics(find.text('Settings'))
+              .getSemanticsData()
+              .hasAction(SemanticsAction.tap),
+          isTrue,
+        );
+        expect(tester.takeException(), isNull);
+      } finally {
+        semantics.dispose();
+      }
+    },
+  );
 
   testWidgets(
     'sidebar shows mobile destinations and sync, respects flag and disabled state',

@@ -20,6 +20,7 @@ class MobileWalletSidebar extends StatelessWidget {
     required this.swapEnabled,
     required this.onSelect,
     required this.onAccountTap,
+    this.inputBlocked = false,
     super.key,
   });
   final String accountName;
@@ -29,6 +30,11 @@ class MobileWalletSidebar extends StatelessWidget {
   final bool swapEnabled;
   final ValueChanged<String>? onSelect;
   final VoidCallback? onAccountTap;
+
+  /// A temporary navigation lock preserves paint while blocking pointer,
+  /// keyboard focus, and pointer-related accessibility actions. Null callbacks
+  /// still represent actual route restrictions and retain disabled styling.
+  final bool inputBlocked;
 
   @override
   Widget build(BuildContext context) {
@@ -159,13 +165,19 @@ class MobileWalletSidebar extends StatelessWidget {
     // Establish text defaults independently of surrounding route Material widgets.
     // Establish a complete mobile text style instead of inheriting the
     // MaterialApp fallback's yellow double underline.
-    return Material(
-      type: MaterialType.transparency,
-      textStyle: AppTypography.bodyMedium.copyWith(
-        color: colors.text.accent,
-        decoration: TextDecoration.none,
+    return ExcludeFocus(
+      excluding: inputBlocked,
+      child: AbsorbPointer(
+        absorbing: inputBlocked,
+        child: Material(
+          type: MaterialType.transparency,
+          textStyle: AppTypography.bodyMedium.copyWith(
+            color: colors.text.accent,
+            decoration: TextDecoration.none,
+          ),
+          child: panel,
+        ),
       ),
-      child: panel,
     );
   }
 
