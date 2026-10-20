@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use zakura_pir_receiver::{
-    receiver_directory::blocks::Batch,
+    receiver_directory::blocks::{Batch, Head},
     receiver_pir::{self, transport::DirectoryClient, AcceptedCoverage},
     DirectoryError, Transport, MAINNET_GENESIS,
 };
@@ -221,9 +221,13 @@ async fn recover_with_transport<T: Transport>(
         .check(&manifest.directory)
         .map_err(|e| e.to_string())?;
     let head = if discovery_enabled {
-        DirectoryClient::fetch_block_head(origin, &transport, &MAINNET_GENESIS)
-            .await
-            .ok()
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            DirectoryClient::fetch_block_head(origin, &transport, &MAINNET_GENESIS),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
     } else {
         None
     };
@@ -237,6 +241,7 @@ async fn recover_with_transport<T: Transport>(
     let mut proofs = None;
     let mut failure = None;
     let account_budget = Duration::from_secs(40).div_f64(active.len() as f64);
+    let hint_timeout = (account_budget / 4).min(Duration::from_secs(2));
     for account in active {
         let result = tokio::time::timeout(account_budget, async {
             let accepted_locally = wallet(path, network, generation, |db| {
@@ -289,11 +294,9 @@ async fn recover_with_transport<T: Transport>(
                         // Sample bytes are shared by accounts and committed even when direct
                         // queries win. A positive on a completed address must not be lost.
                         if !batches.contains_key(&(from, 1)) {
-                            let sample = DirectoryClient::fetch_block_batch(
-                                origin, &transport, head, from, 1,
-                            )
-                            .await
-                            .map_err(|e| e.to_string())?;
+                            let sample = filter_batch(
+                                origin, transport, head, from, 1, hint_timeout,
+                            ).await?;
                             batches.insert((from, 1), sample);
                         }
                         let sample = batches.get(&(from, 1)).expect("inserted");
@@ -316,11 +319,9 @@ async fn recover_with_transport<T: Transport>(
                             let next = from + 1;
                             let limit = (to - from).min(256);
                             if !batches.contains_key(&(next, limit)) {
-                                let batch = DirectoryClient::fetch_block_batch(
-                                    origin, &transport, head, next, limit,
-                                )
-                                .await
-                                .map_err(|e| e.to_string())?;
+                                let batch = filter_batch(
+                                    origin, transport, head, next, limit, hint_timeout,
+                                ).await?;
                                 batches.insert((next, limit), batch);
                             }
                             wallet(path, network, generation, |db| {
@@ -481,4 +482,22 @@ fn apply_filters(
         );
     }
     Ok(())
+}
+
+/// Bounds optional hints independently so an outage leaves time for direct PIR work.
+async fn filter_batch<T: Transport>(
+    origin: &str,
+    transport: &T,
+    head: &Head,
+    from: u32,
+    limit: u32,
+    timeout: Duration,
+) -> Result<Batch, String> {
+    tokio::time::timeout(
+        timeout,
+        DirectoryClient::fetch_block_batch(origin, &transport, head, from, limit),
+    )
+    .await
+    .map_err(|_| "Receiver filter request timed out.".to_string())?
+    .map_err(|e| e.to_string())
 }
