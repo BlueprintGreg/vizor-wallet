@@ -67,6 +67,7 @@ class _Api extends RustLibApi {
         );
   }
 
+  /// Accepts the receiver-round cancellation the sync notifier sends.
   @override
   void crateApiOneTimeIvkCancelSwapRecovery() {}
 

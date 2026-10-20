@@ -32,29 +32,37 @@ class _Api extends RustLibApi {
   /// The newest automatic round, which the test completes to release it.
   Completer<void> get round => recoveries.last;
 
+  /// Whether this fake's ordinary sync still holds the Rust guard.
   @override
   bool crateApiSyncIsSyncRunning() => running;
 
+  /// Reports no pending cancellation, so stops complete at once.
   @override
   bool crateApiSyncIsSyncCancelRequested() => false;
 
+  /// Reports no mempool observer, which these tests never start.
   @override
   bool crateApiSyncIsMempoolObserverRunning() => false;
 
+  /// Ignores the refresh order hint for the active account.
   @override
   void crateApiSyncSetActiveSyncAccount({String? accountUuid}) {}
 
+  /// Ignores the foreground or background mode request.
   @override
   void crateApiSyncSetSyncMode({required int mode}) {}
 
+  /// Releases the sync guard, as Rust does once a cancelled sync stops.
   @override
   void crateApiSyncCancelFullSync() {
     running = false;
   }
 
+  /// Accepts the stop request for the observer that never runs.
   @override
   void crateApiSyncStopMempoolObserver() {}
 
+  /// Starts no mempool observation and ends at once.
   @override
   Stream<rust_sync.ApiMempoolTxEvent> crateApiSyncStartMempoolObserver({
     required String dbPath,
@@ -62,6 +70,7 @@ class _Api extends RustLibApi {
     required String lightwalletdUrl,
   }) => const Stream.empty();
 
+  /// Starts an ordinary sync whose batches the test adds to the returned stream.
   @override
   Stream<rust_sync.ApiSyncProgressEvent> crateApiSyncStartFullSync({
     required String dbPath,
@@ -77,6 +86,7 @@ class _Api extends RustLibApi {
     return controller.stream;
   }
 
+  /// Starts a receiver round that stays pending until the test completes it.
   @override
   Future<void> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
@@ -88,12 +98,14 @@ class _Api extends RustLibApi {
     return round.future;
   }
 
+  /// Counts a cancellation; the held round ends only when the test completes it.
   @override
   void crateApiOneTimeIvkCancelSwapRecovery() {
     cancels++;
     events.add('cancel');
   }
 
+  /// Starts a manual check with its bound, pending until the test completes it.
   @override
   Future<void> crateApiOneTimeIvkCheckSwapHistory({
     required String dbPath,
@@ -106,6 +118,7 @@ class _Api extends RustLibApi {
     return check.future;
   }
 
+  /// Records that the durable manual job was paused.
   @override
   Future<void> crateApiOneTimeIvkCancelSwapHistory({
     required String dbPath,
@@ -114,6 +127,7 @@ class _Api extends RustLibApi {
     events.add('cancel manual');
   }
 
+  /// Records which account's balance was read and returns a fixed balance.
   @override
   Future<rust_sync.WalletBalance> crateApiSyncGetBalance({
     required String dbPath,
@@ -146,6 +160,7 @@ class _Api extends RustLibApi {
     );
   }
 
+  /// Returns an empty history.
   @override
   Future<List<rust_sync.TransactionInfo>> crateApiSyncGetTransactionHistory({
     required String dbPath,
@@ -161,11 +176,13 @@ class _Api extends RustLibApi {
     await syncs[index].close();
   }
 
+  /// Fails any Rust call this fake does not expect.
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _Account extends AccountNotifier {
+  /// Two accounts with the first active.
   @override
   AccountState build() => const AccountState(
     accounts: [
@@ -182,6 +199,7 @@ class _Account extends AccountNotifier {
 }
 
 class _Security extends AppSecurityNotifier {
+  /// An unlocked wallet with a password.
   @override
   AppSecurityState build() =>
       const AppSecurityState(isPasswordConfigured: true, isUnlocked: true);
@@ -193,6 +211,7 @@ class _Security extends AppSecurityNotifier {
 }
 
 class _Tip extends RpcEndpointFailoverNotifier {
+  /// The default Mainnet endpoint without fallbacks.
   @override
   RpcEndpointFailoverState build() => RpcEndpointFailoverState(
     primary: defaultRpcEndpointConfig('main'),
@@ -200,20 +219,24 @@ class _Tip extends RpcEndpointFailoverNotifier {
     fallbackCandidates: const [],
   );
 
+  /// Reports the chain tip the initial state already scanned.
   @override
   Future<BigInt> getLatestBlockHeight() async => BigInt.from(100);
 }
 
 class _Upgrade extends ChainUpgradeStatusNotifier {
+  /// Treats the chain upgrade as active.
   @override
   Future<ChainUpgradeStatusState> build() async =>
       ChainUpgradeStatusState.cachedActive(defaultRpcEndpointConfig('main'));
 
+  /// Skips the upgrade refresh.
   @override
   Future<void> refreshAtTip(BigInt tipHeight) async {}
 }
 
 class _NoPrivateQueries extends EnhancePirNotifier {
+  /// Keeps Private queries off, which these scheduling tests do not need.
   @override
   bool build() => false;
 }
@@ -225,6 +248,7 @@ class _Sync extends SyncNotifier {
         excludeCompanionsFromBackup: (_) async {},
       );
 
+  /// A completed sync of the first account at height 100.
   @override
   Future<SyncState> build() async => SyncState(
     accountUuid: _first,

@@ -111,9 +111,11 @@ class _Api extends RustLibApi {
     await syncs[index].close();
   }
 
+  /// Accepts the receiver-round cancellation the sync notifier sends.
   @override
   void crateApiOneTimeIvkCancelSwapRecovery() {}
 
+  /// Finishes a receiver round at once without wallet work.
   @override
   Future<void> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,

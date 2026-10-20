@@ -446,6 +446,7 @@ class _PrivacyApi extends RustLibApi {
   bool crateApiSyncIsSyncRunning() => false;
   @override
   bool crateApiSyncIsMempoolObserverRunning() => false;
+  /// Accepts the receiver-round cancellation the sync notifier sends.
   @override
   void crateApiOneTimeIvkCancelSwapRecovery() {}
 
