@@ -2625,73 +2625,79 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     Future<void> Function() updateTransport, {
     bool failIfNotQuiescent = true,
   }) async {
-    ++_syncGen;
-    ++_progressEventVersion;
-    ++_balanceReadVersion;
-    rust_sync.cancelFullSync();
-    await _syncSub?.cancel();
-    _syncSub = null;
-    _stopMempoolObserver();
-    _isSyncing = false;
-    _stopPolling();
-    // Its quiet syncs would reach the network while the transport changes.
-    // Polling's restart below resumes it.
-    _suspendSeedImportSyncWindow();
-    final prev = state.value;
-    if (prev != null) {
-      state = AsyncData(prev.withSyncActivityStopped());
-    }
-    // `cancelFullSync` / `stopMempoolObserver` set atomics that
-    // the Rust loop and the mempool observer check at their own
-    // cadence (batch boundaries for sync, the 100ms cancel-aware
-    // sleep for the observer), so they take up to one batch /
-    // one message worth of work to actually stop. We must wait
-    // for BOTH of them to clear before starting a fresh session:
-    //
-    //   * `isSyncRunning()` — the next `startFullSync` will
-    //     reject until the old single-run lock drops.
-    //   * `isMempoolObserverRunning()` — the next
-    //     `_startMempoolObserver` will log "already running" and
-    //     skip without retry if the old observer is still
-    //     winding down. Without waiting here the new sync
-    //     session would silently lose mempool streaming for
-    //     its entire run (Codex adversarial-review finding 1).
-    //
-    // 5s ceiling matches the original `restartSync` behaviour
-    // and the `_resetWallet` path in `home_screen.dart`. Neither
-    // the sync loop's post-batch cancel check nor the observer's
-    // 100ms cancel slice should take anywhere near that long,
-    // but a network stall mid-broadcast can extend it.
-    final stopped = await _waitForRustTasksToStop(
-      timeoutMs: 5000,
-      onSyncTimeout: failIfNotQuiescent
-          ? 'SyncNotifier: restartSync timed out waiting for Rust sync loop to '
-                'stop after 5s; transport change blocked'
-          : 'SyncNotifier: restartSync timed out waiting for Rust sync loop to '
-                'stop after 5s; starting anyway (the startSync guard will log '
-                'if the old run is still around)',
-      onMempoolTimeout: failIfNotQuiescent
-          ? 'SyncNotifier: restartSync timed out waiting for mempool observer '
-                'to stop after 5s; transport change blocked'
-          : 'SyncNotifier: restartSync timed out waiting for mempool observer '
-                'to stop after 5s; the new observer start will skip and the '
-                'new session runs without streaming',
-    );
-    if (shouldAbortRestartForBusyNetwork(
-      quiescent: stopped,
-      changesTransport: failIfNotQuiescent,
-    )) {
-      throw StateError(
-        'Network tasks did not stop before the transport change. Direct '
-        'traffic remains blocked; retry the Tor setting after sync stops.',
+    _swapRecoveryTransitions++;
+    try {
+      await _stopSwapRecovery();
+      ++_syncGen;
+      ++_progressEventVersion;
+      ++_balanceReadVersion;
+      rust_sync.cancelFullSync();
+      await _syncSub?.cancel();
+      _syncSub = null;
+      _stopMempoolObserver();
+      _isSyncing = false;
+      _stopPolling();
+      // Its quiet syncs would reach the network while the transport changes.
+      // Polling's restart below resumes it.
+      _suspendSeedImportSyncWindow();
+      final prev = state.value;
+      if (prev != null) {
+        state = AsyncData(prev.withSyncActivityStopped());
+      }
+      // `cancelFullSync` / `stopMempoolObserver` set atomics that
+      // the Rust loop and the mempool observer check at their own
+      // cadence (batch boundaries for sync, the 100ms cancel-aware
+      // sleep for the observer), so they take up to one batch /
+      // one message worth of work to actually stop. We must wait
+      // for BOTH of them to clear before starting a fresh session:
+      //
+      //   * `isSyncRunning()` — the next `startFullSync` will
+      //     reject until the old single-run lock drops.
+      //   * `isMempoolObserverRunning()` — the next
+      //     `_startMempoolObserver` will log "already running" and
+      //     skip without retry if the old observer is still
+      //     winding down. Without waiting here the new sync
+      //     session would silently lose mempool streaming for
+      //     its entire run (Codex adversarial-review finding 1).
+      //
+      // 5s ceiling matches the original `restartSync` behaviour
+      // and the `_resetWallet` path in `home_screen.dart`. Neither
+      // the sync loop's post-batch cancel check nor the observer's
+      // 100ms cancel slice should take anywhere near that long,
+      // but a network stall mid-broadcast can extend it.
+      final stopped = await _waitForRustTasksToStop(
+        timeoutMs: 5000,
+        onSyncTimeout: failIfNotQuiescent
+            ? 'SyncNotifier: restartSync timed out waiting for Rust sync loop to '
+                  'stop after 5s; transport change blocked'
+            : 'SyncNotifier: restartSync timed out waiting for Rust sync loop to '
+                  'stop after 5s; starting anyway (the startSync guard will log '
+                  'if the old run is still around)',
+        onMempoolTimeout: failIfNotQuiescent
+            ? 'SyncNotifier: restartSync timed out waiting for mempool observer '
+                  'to stop after 5s; transport change blocked'
+            : 'SyncNotifier: restartSync timed out waiting for mempool observer '
+                  'to stop after 5s; the new observer start will skip and the '
+                  'new session runs without streaming',
       );
+      if (shouldAbortRestartForBusyNetwork(
+        quiescent: stopped,
+        changesTransport: failIfNotQuiescent,
+      )) {
+        throw StateError(
+          'Network tasks did not stop before the transport change. Direct '
+          'traffic remains blocked; retry the Tor setting after sync stops.',
+        );
+      }
+      await updateTransport();
+      // Welcome can change Tor before a wallet exists. The transport is ready,
+      // but there is no account to sync or poll yet.
+      if (_getActiveAccountUuid() == null) return;
+      startSync();
+      _startPolling();
+    } finally {
+      _swapRecoveryTransitions--;
     }
-    await updateTransport();
-    // Welcome can change Tor before a wallet exists. The transport is ready,
-    // but there is no account to sync or poll yet.
-    if (_getActiveAccountUuid() == null) return;
-    startSync();
-    _startPolling();
   }
 
   // ======================== Polling ========================
