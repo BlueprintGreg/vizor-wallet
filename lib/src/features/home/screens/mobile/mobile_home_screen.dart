@@ -2398,7 +2398,7 @@ class _EmptyActivity extends StatelessWidget {
         vertical: AppSpacing.s,
       ),
       child: Align(
-        alignment: Alignment.centerLeft,
+        alignment: Alignment.topCenter,
         child: SizedBox(
           width: _MobileRestImage.canvasWidth,
           child: Column(
