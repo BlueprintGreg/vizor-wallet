@@ -1114,8 +1114,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         _requiresUnlock ||
         _walletMutationPauseCount > 0 ||
         !canRunAppProcessWork(isInForeground: _isInForeground) ||
-        _getActiveAccountUuid() == null)
+        _getActiveAccountUuid() == null) {
       return;
+    }
     _swapRecovery = _runSwapRecovery(_swapRecoveryGeneration);
   }
 
@@ -2588,7 +2589,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     await _stopSwapRecovery();
     await _waitForRustTasksToStop(
       timeoutMs: 5000,
-      onSyncTimeout: 'SyncNotifier: timed out waiting for Rust sync to stop during sign-out',
+      onSyncTimeout:
+          'SyncNotifier: timed out waiting for Rust sync to stop during sign-out',
       onMempoolTimeout:
           'SyncNotifier: timed out waiting for mempool observer to stop during '
           'sign-out',

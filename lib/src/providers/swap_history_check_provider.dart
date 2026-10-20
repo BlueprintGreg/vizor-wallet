@@ -104,8 +104,9 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       }
     } catch (error) {
       log('Swap history check failed: $error');
-      if (ref.mounted && generation == _generation)
+      if (ref.mounted && generation == _generation) {
         state = SwapHistoryCheck.failed;
+      }
     }
   }
 
