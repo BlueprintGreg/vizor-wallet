@@ -4,14 +4,15 @@ import 'package:flutter/widgets.dart';
 
 import '../../../services/native_mobile_navigation_geometry.dart';
 import 'mobile_navigation_scope.dart';
+import 'mobile_window_policy.dart';
 
-/// Geometry in root-view coordinates. The sidebar needs at least 200 + 320 points for
-/// navigation/content, with room for margins; this is a window breakpoint,
-/// independent of the device model or the operating system's fold state.
+/// Geometry in root-view coordinates, sharing [MobileWindowPolicy] with entry
+/// pages. Native exclusions can prevent panes from fitting a wide window.
 class MobileWindowLayout {
   const MobileWindowLayout({
     required this.mode,
     required this.body,
+    required this.windowPolicy,
     this.sidebar,
     this.rail,
     this.contentSafeRect,
@@ -19,6 +20,7 @@ class MobileWindowLayout {
   });
   final MobileNavigationMode mode;
   final Rect body;
+  final MobileWindowPolicy windowPolicy;
   final Rect? sidebar;
   final Rect? rail;
 
@@ -36,11 +38,9 @@ class MobileWindowLayout {
     int navigationItemCount = 4,
   }) {
     final full = Offset.zero & media.size;
+    final windowPolicy = MobileWindowPolicy.resolve(media);
     native = native?.matches(media.size) == true ? native : null;
-    final safe = _inset(
-      full,
-      media.viewPadding,
-    ).intersect(native?.safeRect ?? full);
+    final safe = windowPolicy.safeRect.intersect(native?.safeRect ?? full);
     final divisions = <Rect>[
       ...?native?.divisions,
       for (final feature in media.displayFeatures)
@@ -49,9 +49,15 @@ class MobileWindowLayout {
           feature.bounds,
     ];
     final blocked = [...divisions, ...?native?.occlusions];
-    if (wallet && safe.width >= 600) {
-      final preferredWidth = math.min(256.0, safe.width - 320 - 48);
-      for (final sidebarWidth in {preferredWidth, 200.0}) {
+    if (wallet && windowPolicy.usesWideLayout) {
+      const sidebarMinimum = MobileWindowPolicy.minimumSidebarWidth;
+      const contentMinimum = MobileWindowPolicy.minimumContentWidth;
+      const gap = MobileWindowPolicy.paneSpacing;
+      final preferredWidth = math.min(
+        256.0,
+        safe.width - contentMinimum - gap * 3,
+      );
+      for (final sidebarWidth in {preferredWidth, sidebarMinimum}) {
         final sidebarCandidates = _freeRects(
           Rect.fromLTWH(
             safe.left + 16,
@@ -63,7 +69,7 @@ class MobileWindowLayout {
         );
         final sidebar = _largest(
           sidebarCandidates,
-          minWidth: 200,
+          minWidth: sidebarMinimum,
           minHeight: 96,
         );
         if (sidebar != null) {
@@ -75,8 +81,8 @@ class MobileWindowLayout {
           );
           final bodyArea = _largest(
             _freeRects(rightPane, blocked),
-            minWidth: 320,
-            minHeight: 160,
+            minWidth: contentMinimum,
+            minHeight: MobileWindowPolicy.minimumWideHeight,
           );
           if (bodyArea != null) {
             final width = math.min(440.0, bodyArea.width);
@@ -88,6 +94,7 @@ class MobileWindowLayout {
             )!;
             return MobileWindowLayout(
               mode: MobileNavigationMode.sidebar,
+              windowPolicy: windowPolicy,
               sidebar: sidebar,
               contentSafeRect: safe,
               navigationViewport: viewport,
@@ -161,6 +168,7 @@ class MobileWindowLayout {
         );
         return MobileWindowLayout(
           mode: MobileNavigationMode.systemSideTabs,
+          windowPolicy: windowPolicy,
           body: body,
           rail: Rect.fromLTWH(
             available.center.dx - width / 2,
@@ -173,17 +181,11 @@ class MobileWindowLayout {
     }
     return MobileWindowLayout(
       mode: MobileNavigationMode.bottomTabs,
+      windowPolicy: windowPolicy,
       body: body,
     );
   }
 }
-
-Rect _inset(Rect rect, EdgeInsets insets) => Rect.fromLTRB(
-  rect.left + insets.left,
-  rect.top + insets.top,
-  math.max(rect.left + insets.left, rect.right - insets.right),
-  math.max(rect.top + insets.top, rect.bottom - insets.bottom),
-);
 
 Rect? _largest(List<Rect> rects, {double minWidth = 1, double minHeight = 1}) {
   final usable =

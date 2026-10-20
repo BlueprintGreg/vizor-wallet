@@ -26,6 +26,7 @@ import '../content_overlay_inset.dart';
 import 'mobile_navigation_scope.dart';
 import 'mobile_wallet_sidebar.dart';
 import 'mobile_window_layout.dart';
+import 'mobile_window_policy.dart';
 
 /// Wallet route shell below the full-window root Navigator. Resizing changes
 /// pane rectangles without replacing the nested Navigator or its state.
@@ -211,94 +212,101 @@ class _MobileAdaptiveFrameState extends ConsumerState<MobileAdaptiveFrame>
     }
 
     final wide = layout.mode == MobileNavigationMode.sidebar;
-    return ContentOverlayInset(
-      leftInset: wide ? layout.body.left : 0,
-      rightInset: wide ? media.size.width - layout.body.right : 0,
-      child: MobileNavigationScope(
-        mode: layout.mode,
-        railRect: layout.rail,
-        contentRect: wide ? layout.body.shift(-layout.viewport.topLeft) : null,
-        navigation: _navigation,
-        sidebarExit: _sidebarExit,
-        child: ColoredBox(
-          color: context.colors.background.window,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Positioned.fromRect(
-                rect: layout.viewport,
-                child: MediaQuery(
-                  data: mobilePaneMedia(
-                    media,
-                    layout.viewport,
-                    safeRect: layout.contentSafeRect,
-                  ),
-                  child: ExcludeFocus(
-                    excluding: _sidebarNavigationPending,
-                    child: AbsorbPointer(
-                      absorbing: _sidebarNavigationPending,
-                      child: widget.child,
-                    ),
-                  ),
-                ),
-              ),
-              if (wide)
+    return MobileWindowPolicyScope(
+      policy: layout.windowPolicy,
+      child: ContentOverlayInset(
+        leftInset: wide ? layout.body.left : 0,
+        rightInset: wide ? media.size.width - layout.body.right : 0,
+        child: MobileNavigationScope(
+          mode: layout.mode,
+          railRect: layout.rail,
+          contentRect: wide
+              ? layout.body.shift(-layout.viewport.topLeft)
+              : null,
+          navigation: _navigation,
+          sidebarExit: _sidebarExit,
+          child: ColoredBox(
+            color: context.colors.background.window,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
                 Positioned.fromRect(
-                  rect: layout.sidebar!,
+                  rect: layout.viewport,
                   child: MediaQuery(
                     data: mobilePaneMedia(
                       media,
-                      layout.sidebar!,
+                      layout.viewport,
                       safeRect: layout.contentSafeRect,
                     ),
-                    child: MobileWalletSidebar(
-                      accountName: account?.name ?? '',
-                      avatar: MobileAccountAvatar(
-                        profilePictureId:
-                            account?.profilePictureId ??
-                            kDefaultProfilePictureId,
-                        size: AppProfilePictureSize.navLarge,
-                        hardwareSignerKind: account?.hardwareSignerKind,
-                        badgeRingColor: context.colors.background.raised,
+                    child: ExcludeFocus(
+                      excluding: _sidebarNavigationPending,
+                      child: AbsorbPointer(
+                        absorbing: _sidebarNavigationPending,
+                        child: widget.child,
                       ),
-                      status: SyncStatusLabel.from(
-                        ref.watch(syncProvider).value ?? SyncState(),
-                        displayWholePercentage: ref.watch(
-                          syncDisplayWholePercentageProvider,
-                        ),
-                        networkPrivacy: ref.watch(networkPrivacyProvider),
-                      ),
-                      currentPath: path,
-                      swapEnabled: swapEnabled,
-                      onSelect: enabled
-                          ? (destination) => unawaited(select(destination))
-                          : null,
-                      onAccountTap: !accountEnabled
-                          ? null
-                          : () {
-                              if (_sidebarNavigationPending ||
-                                  !navigationUnblocked() ||
-                                  !_sidebarExit.canSwitchAccount(
-                                    mobileVisiblePath(widget.router),
-                                    requiresPolicy:
-                                        requiresMobileSidebarExitPolicy(
-                                          mobileVisiblePath(widget.router),
-                                        ),
-                                  )) {
-                                return;
-                              }
-                              unawaited(
-                                ref
-                                    .read(externalActionGuardProvider.notifier)
-                                    .runNavigation(
-                                      () => showMobileAccountsSheet(context),
-                                    ),
-                              );
-                            },
                     ),
                   ),
                 ),
-            ],
+                if (wide)
+                  Positioned.fromRect(
+                    rect: layout.sidebar!,
+                    child: MediaQuery(
+                      data: mobilePaneMedia(
+                        media,
+                        layout.sidebar!,
+                        safeRect: layout.contentSafeRect,
+                      ),
+                      child: MobileWalletSidebar(
+                        accountName: account?.name ?? '',
+                        avatar: MobileAccountAvatar(
+                          profilePictureId:
+                              account?.profilePictureId ??
+                              kDefaultProfilePictureId,
+                          size: AppProfilePictureSize.navLarge,
+                          hardwareSignerKind: account?.hardwareSignerKind,
+                          badgeRingColor: context.colors.background.raised,
+                        ),
+                        status: SyncStatusLabel.from(
+                          ref.watch(syncProvider).value ?? SyncState(),
+                          displayWholePercentage: ref.watch(
+                            syncDisplayWholePercentageProvider,
+                          ),
+                          networkPrivacy: ref.watch(networkPrivacyProvider),
+                        ),
+                        currentPath: path,
+                        swapEnabled: swapEnabled,
+                        onSelect: enabled
+                            ? (destination) => unawaited(select(destination))
+                            : null,
+                        onAccountTap: !accountEnabled
+                            ? null
+                            : () {
+                                if (_sidebarNavigationPending ||
+                                    !navigationUnblocked() ||
+                                    !_sidebarExit.canSwitchAccount(
+                                      mobileVisiblePath(widget.router),
+                                      requiresPolicy:
+                                          requiresMobileSidebarExitPolicy(
+                                            mobileVisiblePath(widget.router),
+                                          ),
+                                    )) {
+                                  return;
+                                }
+                                unawaited(
+                                  ref
+                                      .read(
+                                        externalActionGuardProvider.notifier,
+                                      )
+                                      .runNavigation(
+                                        () => showMobileAccountsSheet(context),
+                                      ),
+                                );
+                              },
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

@@ -34,6 +34,7 @@ Widget _app({
   String network = 'main',
   TargetPlatform platform = TargetPlatform.iOS,
   EdgeInsets padding = EdgeInsets.zero,
+  EdgeInsets viewInsets = EdgeInsets.zero,
 }) {
   final router = GoRouter(
     initialLocation: initialLocation,
@@ -68,6 +69,7 @@ Widget _app({
           disableAnimations: true,
           padding: padding,
           viewPadding: padding,
+          viewInsets: viewInsets,
         ),
         child: AppTheme(data: theme, child: child!),
       ),
@@ -325,8 +327,8 @@ void main() {
     String location = '/welcome',
     AppThemeData theme = AppThemeData.light,
   }) async {
-    await tester.binding.setSurfaceSize(const Size(393, 852));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+    tester.view.physicalSize = const Size(393, 852);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(_app(initialLocation: location, theme: theme));
     await tester.pumpAndSettle();
   }
@@ -451,8 +453,8 @@ void main() {
     testWidgets('$entry adapts its composition without replacing route state', (
       tester,
     ) async {
-      await tester.binding.setSurfaceSize(const Size(466, 678));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
+      tester.view.physicalSize = const Size(466, 678);
+      addTearDown(tester.view.resetPhysicalSize);
       await tester.pumpWidget(_app(initialLocation: entry));
       await tester.pumpAndSettle();
       final welcomeState = tester.state(find.byType(MobileWelcomeScreen));
@@ -460,7 +462,7 @@ void main() {
         find.byKey(const ValueKey('mobile_welcome_get_started')),
       );
 
-      await tester.binding.setSurfaceSize(const Size(951, 669));
+      tester.view.physicalSize = const Size(951, 669);
       await tester.pumpAndSettle();
       expect(
         tester.state(find.byType(MobileWelcomeScreen)),
@@ -487,7 +489,7 @@ void main() {
       }
       expect(tester.takeException(), isNull);
 
-      await tester.binding.setSurfaceSize(const Size(466, 678));
+      tester.view.physicalSize = const Size(466, 678);
       await tester.pumpAndSettle();
       expect(
         tester.state(find.byType(MobileWelcomeScreen)),
@@ -501,7 +503,7 @@ void main() {
       );
 
       // The expanded composition keeps the same onboarding entry and return.
-      await tester.binding.setSurfaceSize(const Size(951, 669));
+      tester.view.physicalSize = const Size(951, 669);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('mobile_welcome_import')));
       await tester.pumpAndSettle();
@@ -520,8 +522,8 @@ void main() {
   testWidgets('wide short windows can scroll to the final welcome action', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(951, 320));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+    tester.view.physicalSize = const Size(951, 320);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(_app(initialLocation: '/add-account'));
     await tester.pumpAndSettle();
     final gift = find.byKey(const ValueKey('mobile_welcome_redeem_card'));
@@ -542,8 +544,8 @@ void main() {
   testWidgets('composition and corner controls honor available safe width', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(850, 669));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+    tester.view.physicalSize = const Size(650, 500);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(_app(padding: const EdgeInsets.only(right: 120)));
     await tester.pumpAndSettle();
     expect(
@@ -553,7 +555,7 @@ void main() {
       isFalse,
     );
 
-    await tester.binding.setSurfaceSize(const Size(951, 669));
+    tester.view.physicalSize = const Size(951, 669);
     await tester.pumpAndSettle();
     expect(
       tester
@@ -568,6 +570,59 @@ void main() {
           )
           .right,
       lessThanOrEqualTo(951 - 120),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final sample in [
+    (size: const Size(690, 829), wide: false),
+    (size: const Size(800, 800), wide: false),
+    (size: const Size(829, 690), wide: true),
+    (size: const Size(700, 600), wide: true),
+    (size: const Size(568, 400), wide: true),
+  ]) {
+    testWidgets('welcome uses the common window ratio at ${sample.size}', (
+      tester,
+    ) async {
+      tester.view.physicalSize = sample.size;
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.pumpWidget(_app(initialLocation: '/add-account'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<MobileWelcomeBackdrop>(find.byType(MobileWelcomeBackdrop))
+            .landscape,
+        sample.wide,
+      );
+      expect(tester.takeException(), isNull);
+      if (sample.wide) {
+        expect(
+          tester
+              .getSize(find.byKey(const ValueKey('mobile_welcome_import')))
+              .width,
+          closeTo(240, 1e-8),
+        );
+      }
+    });
+  }
+
+  testWidgets('keyboard resize preserves the portrait welcome composition', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(690, 829);
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.pumpWidget(
+      _app(
+        initialLocation: '/add-account',
+        viewInsets: const EdgeInsets.only(bottom: 500),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<MobileWelcomeBackdrop>(find.byType(MobileWelcomeBackdrop))
+          .landscape,
+      isFalse,
     );
     expect(tester.takeException(), isNull);
   });

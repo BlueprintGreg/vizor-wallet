@@ -13,6 +13,7 @@ import 'mobile_network_settings_sheet.dart';
 import 'mobile_onboarding_progress_scope.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/layout/mobile/mobile_window_policy.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../shared/onboarding_welcome_art.dart' show VizorWordmark;
@@ -84,6 +85,7 @@ class _MobileWelcomeScreenState extends ConsumerState<MobileWelcomeScreen> {
         _scheduleSettings();
       }
     });
+    final windowPolicy = MobileWindowPolicyScope.of(context);
     final bottom = math.max(50.0, MediaQuery.paddingOf(context).bottom + 16);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light,
@@ -93,10 +95,10 @@ class _MobileWelcomeScreenState extends ConsumerState<MobileWelcomeScreen> {
           builder: (context, constraints) {
             final insets = MediaQuery.paddingOf(context);
             final safeWidth = constraints.maxWidth - insets.horizontal;
-            // Enough space for a mobile-sized action pane and the wide scene.
-            // This is window geometry, independent of device or fold state.
-            final landscape = safeWidth >= 740;
-            final paneWidth = (safeWidth * 0.4).clamp(340.0, 420.0);
+            final landscape = windowPolicy.usesWideLayout;
+            // Keep 240-point mobile buttons and 16-point side padding even in
+            // a short, wide window below the former 740-point breakpoint.
+            final paneWidth = (safeWidth * 0.4).clamp(272.0, 420.0);
             final artWidth = math.max(
               constraints.maxHeight * 16 / 9,
               safeWidth - paneWidth,

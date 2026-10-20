@@ -23,6 +23,7 @@ import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_sync_status.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_page_viewport.dart';
+import 'package:zcash_wallet/src/core/layout/mobile/mobile_window_policy.dart';
 import 'package:zcash_wallet/src/core/widgets/app_toast.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_sidebar_route_observer.dart';
 import 'package:zcash_wallet/src/core/navigation/external_action_guard_provider.dart';
@@ -477,12 +478,21 @@ void main() {
       await tester.pump();
       expect(find.byType(MobileWalletSidebar), findsOneWidget);
       final receive = tester.element(find.byType(MobileReceiveScreen));
-      tester.view.physicalSize = const Size(393, 852);
-      await tester.pump(const Duration(milliseconds: 500));
-      await tester.pump();
-      expect(find.byType(MobileWalletSidebar), findsNothing);
-      expect(tester.element(find.byType(MobileReceiveScreen)), same(receive));
-      expect(router.routerDelegate.navigatorKey.currentState, same(navigator));
+      for (final size in [
+        const Size(393, 852),
+        const Size(690, 829),
+        const Size(800, 800),
+      ]) {
+        tester.view.physicalSize = size;
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        expect(find.byType(MobileWalletSidebar), findsNothing);
+        expect(tester.element(find.byType(MobileReceiveScreen)), same(receive));
+        expect(
+          router.routerDelegate.navigatorKey.currentState,
+          same(navigator),
+        );
+      }
       tester.view.physicalSize = const Size(900, 720);
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pump();
@@ -490,6 +500,60 @@ void main() {
       expect(tester.element(find.byType(MobileReceiveScreen)), same(receive));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'root policy remains stable inside the pane and with a keyboard',
+    (tester) async {
+      tester.view.physicalSize = const Size(690, 829);
+      addTearDown(tester.view.reset);
+      late MobileWindowPolicy policy;
+      final router = GoRouter(
+        initialLocation: '/settings',
+        routes: [
+          ShellRoute(
+            builder: (context, _, child) =>
+                MobileAdaptiveFrame(router: GoRouter.of(context), child: child),
+            routes: [
+              GoRoute(
+                path: '/settings',
+                builder: (_, _) => Builder(
+                  builder: (context) {
+                    policy = MobileWindowPolicyScope.of(context);
+                    return const Scaffold(body: Text('Settings body'));
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(_app(router));
+      await tester.pumpAndSettle();
+      expect(policy.usesWideLayout, isFalse);
+      expect(find.byType(MobileWalletSidebar), findsNothing);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 500);
+      await tester.pumpAndSettle();
+      expect(policy.safeRect.size, const Size(690, 829));
+      expect(policy.usesWideLayout, isFalse);
+      expect(find.byType(MobileWalletSidebar), findsNothing);
+      tester.view.resetViewInsets();
+      tester.view.physicalSize = const Size(829, 690);
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      expect(policy.safeRect.size, const Size(829, 690));
+      expect(policy.usesWideLayout, isTrue);
+      expect(
+        MediaQuery.sizeOf(tester.element(find.text('Settings body'))).width,
+        lessThan(829),
+      );
+      tester.view.viewInsets = const FakeViewPadding(bottom: 350);
+      await tester.pumpAndSettle();
+      expect(find.byType(MobileWalletSidebar), findsOneWidget);
+      expect(policy.safeRect.size, const Size(829, 690));
+      expect(tester.takeException(), isNull);
     },
   );
 

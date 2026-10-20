@@ -110,13 +110,42 @@ void main() {
       expect(layout.rail, isNull);
     },
   );
-  test('sidebar width yields to the minimum body at the wide breakpoint', () {
+  test(
+    'a short wide window fits both panes below the old width breakpoint',
+    () {
+      final layout = MobileWindowLayout.resolve(
+        media: const MediaQueryData(size: Size(568, 400)),
+      );
+      expect(layout.mode, MobileNavigationMode.sidebar);
+      expect(layout.sidebar!.width, 200);
+      expect(layout.body.width, 320);
+    },
+  );
+  for (final size in [
+    const Size(600, 700),
+    const Size(690, 829),
+    const Size(800, 800),
+  ]) {
+    test('portrait and square windows keep mobile navigation ($size)', () {
+      final layout = MobileWindowLayout.resolve(
+        media: MediaQueryData(size: size),
+      );
+      expect(layout.mode, MobileNavigationMode.bottomTabs);
+      expect(layout.sidebar, isNull);
+      expect(layout.body, Offset.zero & size);
+    });
+  }
+  test('keyboard cannot turn a portrait window into the sidebar layout', () {
     final layout = MobileWindowLayout.resolve(
-      media: const MediaQueryData(size: Size(600, 700)),
+      media: const MediaQueryData(
+        size: Size(690, 829),
+        padding: EdgeInsets.only(top: 24),
+        viewPadding: EdgeInsets.only(top: 24, bottom: 24),
+        viewInsets: EdgeInsets.only(bottom: 500),
+      ),
     );
-    expect(layout.mode, MobileNavigationMode.sidebar);
-    expect(layout.sidebar!.width, 232);
-    expect(layout.body.width, 320);
+    expect(layout.mode, MobileNavigationMode.bottomTabs);
+    expect(layout.windowPolicy.usesWideLayout, isFalse);
   });
   test('wide surfaces reach the bottom while pane content retains safety', () {
     const size = Size(951, 669);
