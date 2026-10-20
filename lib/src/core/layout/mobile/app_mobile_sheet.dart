@@ -12,6 +12,7 @@ import '../../widgets/app_button.dart';
 import '../../widgets/app_icon.dart';
 import '../../widgets/app_modal_shape.dart';
 import 'mobile_modal_corners.dart';
+import 'mobile_window_policy.dart';
 import 'prepared_modal_sheet_route.dart';
 import 'controlled_modal_sheet_route.dart';
 
@@ -76,7 +77,6 @@ Future<T?> showAppMobileSheet<T>({
       barrierOnTapHint: localizations.scrimOnTapHint(
         localizations.bottomSheetLabel,
       ),
-      constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
       canDismiss: canDismiss,
       isDismissible: isDismissible,
       enableDrag: enableDrag,
@@ -91,7 +91,6 @@ Future<T?> showAppMobileSheet<T>({
   if (canDismiss != null) {
     final navigator = Navigator.of(context, rootNavigator: true);
     final route = ControlledModalSheetRoute<T>(
-      constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
       canDismiss: canDismiss,
       capturedThemes: InheritedTheme.capture(
         from: context,
@@ -117,8 +116,6 @@ Future<T?> showAppMobileSheet<T>({
 
   return showModalBottomSheet<T>(
     context: context,
-    // Constrain the floating card, never the root modal barrier.
-    constraints: const BoxConstraints(maxWidth: MobileModalCard.maxWidth),
     isDismissible: isDismissible,
     enableDrag: enableDrag,
     isScrollControlled: true,
@@ -164,7 +161,8 @@ class MobileModalCard extends StatelessWidget {
     super.key,
   });
 
-  /// Includes outer margins; shared by route-based sheets and custom dialogs.
+  /// Wide-window cap including outer margins. Portrait windows retain the
+  /// original route/theme constraints instead of imposing this extra limit.
   static const double maxWidth = 440;
 
   final Widget child;
@@ -249,7 +247,11 @@ class MobileModalCard extends StatelessWidget {
       widthFactor: 1,
       heightFactor: 1,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: maxWidth),
+        constraints: BoxConstraints(
+          maxWidth: MobileWindowPolicyScope.of(context).usesWideLayout
+              ? maxWidth
+              : double.infinity,
+        ),
         child: Padding(
           padding:
               margin ??
