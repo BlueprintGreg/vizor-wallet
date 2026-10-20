@@ -25,19 +25,23 @@ void main() {
     expect(find.byType(MobileReceiveScreen), findsOneWidget);
     expect(find.text('Receive ZEC'), findsOneWidget);
     expect(find.text('Account Name'), findsOneWidget);
-    expect(find.text('Share shielded address'), findsOneWidget);
+    expect(find.text('Request ZEC'), findsOneWidget);
     expect(find.text('Copy shielded address'), findsOneWidget);
-    // Share shares its row with the square request button: 300 - 8 - 50.
+    final scrollable = tester.state<ScrollableState>(
+      find.byType(Scrollable).first,
+    );
+    expect(scrollable.position.maxScrollExtent, 0);
+    // Copy shares its row with the square share button: 300 - 8 - 50.
     expect(
-      tester.getSize(find.byKey(const ValueKey('mobile_receive_share'))),
+      tester.getSize(find.byKey(const ValueKey('mobile_receive_copy'))),
       const Size(242, 50),
     );
     expect(
-      tester.getSize(find.byKey(const ValueKey('mobile_receive_request'))),
+      tester.getSize(find.byKey(const ValueKey('mobile_receive_share'))),
       const Size(50, 50),
     );
     expect(
-      tester.getSize(find.byKey(const ValueKey('mobile_receive_copy'))),
+      tester.getSize(find.byKey(const ValueKey('mobile_receive_request'))),
       const Size(300, 50),
     );
     expect(
@@ -79,7 +83,7 @@ void main() {
     );
 
     expect(tester.takeException(), isNull);
-    expect(find.text('Share transparent address'), findsOneWidget);
+    expect(find.text('Request ZEC'), findsOneWidget);
     expect(find.text('Copy transparent address'), findsOneWidget);
   });
 

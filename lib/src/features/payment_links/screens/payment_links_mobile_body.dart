@@ -7,6 +7,7 @@
 /// file is left with the state machine plus one render tree instead of two.
 library;
 
+import '../../../core/navigation/mobile_sidebar_exit.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,6 +44,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
     required this.keystoneOverlay,
     required this.onCancelKeystone,
     required this.navigationLocked,
+    this.onSidebarExit,
     required this.hasCards,
     required this.cardsSections,
     required this.activeCardsTab,
@@ -119,6 +121,7 @@ class PaymentLinksMobileBody extends StatelessWidget {
   final Widget? keystoneOverlay;
   final VoidCallback onCancelKeystone;
   final bool navigationLocked;
+  final Future<bool> Function()? onSidebarExit;
 
   /// Whether any created or received Card exists, which is what decides the
   /// home page between the empty landing surface and the cards list.
@@ -621,58 +624,71 @@ class _PaymentLinksMobileNavigatorState
     }
     final hasInnerBack = steps.length > 1 || signing != null;
     final outerRoute = ModalRoute.of(context);
-    return PopScope<Object?>(
-      canPop:
-          !hasInnerBack &&
+    return MobileSidebarExitScope(
+      canNavigate:
           !body.navigationLocked &&
-          outerRoute?.isFirst != true,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        if (hasInnerBack) {
-          _navigatorKey.currentState?.maybePop();
-        } else if (!body.navigationLocked) {
-          body._leavePaymentLinks(context);
-        }
-      },
-      child: Scaffold(
-        key: const ValueKey('payment_links_mobile_screen'),
-        backgroundColor: context.colors.background.window,
-        body: Navigator(
-          key: _navigatorKey,
-          onDidRemovePage: _didRemovePage,
-          pages: [
-            for (final step in steps)
-              CupertinoPage<Object?>(
-                key: _stepKeys[step],
-                child: PopScope<Object?>(
-                  canPop: !body.navigationLocked,
-                  child: Scaffold(
-                    backgroundColor: context.colors.background.window,
-                    body: AppToastHost(
-                      child: SafeArea(child: body._buildPage(context, step)),
+          !body.operationInProgress &&
+          signing == null,
+      canSwitchAccount:
+          !body.navigationLocked &&
+          !body.operationInProgress &&
+          signing == null &&
+          (body.page == PaymentLinksLocalPage.home ||
+              body.page == PaymentLinksLocalPage.ready),
+      onExit: body.onSidebarExit,
+      child: PopScope<Object?>(
+        canPop:
+            !hasInnerBack &&
+            !body.navigationLocked &&
+            outerRoute?.isFirst != true,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          if (hasInnerBack) {
+            _navigatorKey.currentState?.maybePop();
+          } else if (!body.navigationLocked) {
+            body._leavePaymentLinks(context);
+          }
+        },
+        child: Scaffold(
+          key: const ValueKey('payment_links_mobile_screen'),
+          backgroundColor: context.colors.background.window,
+          body: Navigator(
+            key: _navigatorKey,
+            onDidRemovePage: _didRemovePage,
+            pages: [
+              for (final step in steps)
+                CupertinoPage<Object?>(
+                  key: _stepKeys[step],
+                  child: PopScope<Object?>(
+                    canPop: !body.navigationLocked,
+                    child: Scaffold(
+                      backgroundColor: context.colors.background.window,
+                      body: AppToastHost(
+                        child: SafeArea(child: body._buildPage(context, step)),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            if (signing is PaymentLinkLedgerSigningOverlay)
-              CustomTransitionPage<Object?>(
-                key: _signingKey,
-                opaque: false,
-                transitionsBuilder:
-                    (context, animation, secondaryAnimation, child) =>
-                        FadeTransition(opacity: animation, child: child),
-                child: AppToastHost(child: signing),
-              )
-            else if (signing != null)
-              CupertinoPage<Object?>(
-                key: _signingKey,
-                // The shared signing flow owns its decode/finalization guard.
-                child: Scaffold(
-                  backgroundColor: context.colors.background.window,
-                  body: AppToastHost(child: SafeArea(child: signing)),
+              if (signing is PaymentLinkLedgerSigningOverlay)
+                CustomTransitionPage<Object?>(
+                  key: _signingKey,
+                  opaque: false,
+                  transitionsBuilder:
+                      (context, animation, secondaryAnimation, child) =>
+                          FadeTransition(opacity: animation, child: child),
+                  child: AppToastHost(child: signing),
+                )
+              else if (signing != null)
+                CupertinoPage<Object?>(
+                  key: _signingKey,
+                  // The shared signing flow owns its decode/finalization guard.
+                  child: Scaffold(
+                    backgroundColor: context.colors.background.window,
+                    body: AppToastHost(child: SafeArea(child: signing)),
+                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

@@ -1352,16 +1352,31 @@ pub fn find_software_account_for_mnemonic(
     })
 }
 
-/// Export a single account's Unified Full Viewing Key (UFVK). Works for both
-/// software and hardware (Keystone) accounts.
+/// The full and incoming viewing keys for the same account and network.
+pub struct AccountViewingKeys {
+    pub ufvk: String,
+    pub uivk: String,
+}
+
+/// Export a single account's Unified Full Viewing Key (UFVK).
 pub fn get_account_ufvk(
     db_path: String,
     network: String,
     account_uuid: String,
 ) -> Result<String, String> {
+    get_account_viewing_keys(db_path, network, account_uuid).map(|keys| keys.ufvk)
+}
+
+/// Export full and incoming viewing keys for a software or hardware account.
+pub fn get_account_viewing_keys(
+    db_path: String,
+    network: String,
+    account_uuid: String,
+) -> Result<AccountViewingKeys, String> {
     catch(|| {
         let network = parse_network_and_migrate(&db_path, &network)?;
-        keys::get_account_ufvk(&db_path, network, &account_uuid)
+        let (ufvk, uivk) = keys::get_account_viewing_keys(&db_path, network, &account_uuid)?;
+        Ok(AccountViewingKeys { ufvk, uivk })
     })
 }
 

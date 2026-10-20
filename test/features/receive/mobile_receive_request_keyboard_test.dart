@@ -138,6 +138,7 @@ Future<void> _openRequestWithMemo(
         )
         .first,
   );
+  await _settle(tester);
   await tester.tap(requestEntry);
   await _settle(tester);
   await tester.enterText(

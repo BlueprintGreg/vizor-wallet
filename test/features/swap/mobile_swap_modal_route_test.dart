@@ -377,6 +377,11 @@ void main() {
     final screen = tester.getRect(find.byType(MaterialApp));
     final barrier = tester.getRect(find.byType(ModalBarrier).last);
     expect(barrier, screen);
+    // Custom root dialogs share the same mobile width cap as ordinary sheets.
+    expect(
+      tester.getSize(find.byType(MobileSwapAddressEditModal)).width,
+      lessThanOrEqualTo(440 - 2 * AppSpacing.sm),
+    );
 
     // A tap in the top strip — which the old inline overlay left
     // uncovered — now hits the barrier and dismisses the modal.
@@ -766,10 +771,10 @@ void main() {
 }
 
 Future<void> _setNarrowMobileViewport(WidgetTester tester) async {
-  await tester.binding.setSurfaceSize(const Size(432, 960));
-  addTearDown(() async {
-    await tester.binding.setSurfaceSize(null);
-  });
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(432, 960);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.resetPhysicalSize);
 }
 
 class _MobileDelayedQuoteSwapProvider implements SwapProvider {

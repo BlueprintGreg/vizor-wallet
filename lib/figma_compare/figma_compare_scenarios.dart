@@ -1,3 +1,4 @@
+import 'mobile_shield_capture.dart';
 import '../src/features/ledger/services/ledger_failure_guidance.dart';
 import 'desktop_welcome_capture.dart';
 import '../widgetbook/desktop_gift_onboarding_use_cases.dart';
@@ -69,6 +70,7 @@ class FigmaCompareScenario {
     this.allowFocus = false,
     this.allowPointer = false,
     this.renderShadows = false,
+    this.outsideScaffold = false,
     this.platform,
   });
 
@@ -81,6 +83,10 @@ class FigmaCompareScenario {
   final bool allowFocus;
   final bool allowPointer;
   final bool renderShadows;
+
+  /// App-level surfaces must receive the same fallback text style as the
+  /// production MaterialApp.builder, without a capture-only Material ancestor.
+  final bool outsideScaffold;
   final TargetPlatform? platform;
 }
 
@@ -90,6 +96,142 @@ class FigmaCompareScenario {
 /// storage, network, wallet, and Rust state. Widgetbook fixtures are preferred
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-wide',
+    description:
+        'Wide mobile window with persistent mobile sidebar and sync footer',
+    builder: buildMobileAdaptiveHomeUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-locked',
+    description: 'Fully locked mobile sidebar with unobscured live sync footer',
+    builder: buildMobileAdaptiveHomeLockedUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    allowFocus: true,
+    renderShadows: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-locked-synced',
+    description: 'Locked mobile sidebar with a bright completed sync indicator',
+    builder: buildMobileAdaptiveHomeLockedSyncedUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    allowFocus: true,
+    renderShadows: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-accounts-modal',
+    description: 'Full-window accounts modal over the adaptive mobile shell',
+    builder: buildMobileAdaptiveAccountsModalUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-adaptive-home-closed',
+    description:
+        'Closed system-side layout preserving the existing mobile Home',
+    builder: buildMobileAdaptiveHomeClosedUseCase,
+    desktop: false,
+    mobile: true,
+    outsideScaffold: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-ledger-shield-home-flow',
+    description: 'Ledger shielding stages and continuous particle resolution',
+    allowPointer: true,
+    builder: buildMobileLedgerShieldHomeFlowUseCase,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-keystone-shield-home-flow',
+    description: 'Keystone shielding: QR and camera particle transitions',
+    allowPointer: true,
+    builder: buildMobileKeystoneShieldHomeFlowUseCase,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-home-flow',
+    description: 'Mobile home to shielding with a frozen blurred backdrop',
+    builder: buildMobileShieldHomeFlowUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-reference-review',
+    description: 'Original video: Transparent Balance',
+    builder: buildMobileShieldReferenceReview,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-reference-result',
+    description: 'Original video: Shielded successfully',
+    builder: buildMobileShieldReferenceResult,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-review',
+    description: 'Mobile shielding: Review',
+    builder: buildMobileShieldReview,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-cloud',
+    description: 'Mobile shielding: Processing cloud',
+    builder: buildMobileShieldCloud,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-result',
+    description: 'Mobile shielding: Submitted result',
+    builder: buildMobileShieldResult,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-keystone',
+    description: 'Mobile shielding: Keystone approval',
+    builder: buildMobileShieldKeystone,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-shield-ledger',
+    description: 'Mobile shielding: Ledger approval',
+    builder: buildMobileShieldLedger,
+    desktop: false,
+    mobile: true,
+    renderShadows: true,
+  ),
   FigmaCompareScenario(
     id: 'ironwood-label-audit-desktop-activity',
     description:
@@ -1395,6 +1537,66 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'settings-secret-passphrase-reveal-without-bip39',
     description: 'Desktop secret passphrase recovery without BIP39 section',
     builder: buildSettingsSecretPassphraseRevealWithoutBip39UseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'settings-viewing-key-choice',
+    description: 'Choose incoming-only or full viewing access',
+    builder: buildSettingsViewingKeyChoiceUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-settings-viewing-key-choice',
+    description: 'Choose incoming-only or full viewing access',
+    builder: buildMobileSettingsViewingKeyChoiceUseCase,
+    mobile: true,
+    desktop: false,
+  ),
+  FigmaCompareScenario(
+    id: 'settings-viewing-key-text',
+    description: 'Desktop full viewing key text',
+    builder: buildSettingsViewingKeyTextUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-settings-viewing-key-text',
+    description: 'Mobile full viewing key text',
+    builder: buildMobileSettingsViewingKeyTextUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'settings-viewing-key-qr',
+    description: 'viewing key qr display',
+    builder: buildSettingsViewingKeyQrUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'settings-viewing-key-incoming',
+    description: 'viewing key incoming display',
+    builder: buildSettingsIncomingViewingKeyUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'settings-viewing-key-incoming-qr',
+    description: 'viewing key incoming-qr display',
+    builder: buildSettingsIncomingViewingKeyQrUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-settings-viewing-key-qr',
+    description: 'mobile-viewing key qr display',
+    builder: buildMobileSettingsViewingKeyQrUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-settings-viewing-key-incoming',
+    description: 'mobile-viewing key incoming display',
+    builder: buildMobileSettingsIncomingViewingKeyUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-settings-viewing-key-incoming-qr',
+    description: 'mobile-viewing key incoming-qr display',
+    builder: buildMobileSettingsIncomingViewingKeyQrUseCase,
+    desktop: false,
+    mobile: true,
   ),
   FigmaCompareScenario(
     id: 'settings-viewing-key-reveal',
@@ -3269,7 +3471,7 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
   ),
   FigmaCompareScenario(
     id: 'receive-desktop-shielded',
-    description: 'Desktop receive pane with the request entry beside copy',
+    description: 'Desktop receive pane with copy/share and a labelled request',
     builder: buildReceiveDesktopRequestEntryUseCase,
     desktop: true,
     mobile: false,
