@@ -68,6 +68,9 @@ class _Api extends RustLibApi {
   }
 
   @override
+  void crateApiOneTimeIvkCancelSwapRecovery() {}
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

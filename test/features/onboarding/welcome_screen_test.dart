@@ -447,6 +447,9 @@ class _PrivacyApi extends RustLibApi {
   @override
   bool crateApiSyncIsMempoolObserverRunning() => false;
   @override
+  void crateApiOneTimeIvkCancelSwapRecovery() {}
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

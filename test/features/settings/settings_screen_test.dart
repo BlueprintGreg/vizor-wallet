@@ -317,7 +317,8 @@ void main() {
 
     await tester.tap(find.text('Account name'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Savings');
+    // The rename modal covers the swap history bound field.
+    await tester.enterText(find.byType(TextField).hitTestable(), 'Savings');
     await tester.pump();
     await tester.tap(find.text('Update'));
     await tester.pumpAndSettle();
