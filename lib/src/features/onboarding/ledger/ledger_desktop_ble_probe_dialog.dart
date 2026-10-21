@@ -219,7 +219,11 @@ class _LedgerDesktopConnectModalState
         if (!_current(generation)) return;
         await requireLedgerBluetoothAccess(widget.service);
         if (!_current(generation)) return;
-        await widget.service.connect(_device!);
+        // A locked app or declined approval can leave the BLE link alive.
+        // Native transports reject connecting again to an existing link.
+        if (widget.service.connectedDeviceId != _device!.id) {
+          await widget.service.connect(_device!);
+        }
         if (!_current(generation)) return;
       }
       setState(() => _phase = _Phase.reading);

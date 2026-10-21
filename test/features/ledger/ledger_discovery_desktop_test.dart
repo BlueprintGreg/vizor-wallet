@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
@@ -27,6 +28,8 @@ void main() {
     'back',
     'cancel connection',
     'reselect',
+    'retry locked',
+    'retry disconnected',
   ]) {
     testWidgets('desktop $action drains quiet native discovery', (
       tester,
@@ -34,6 +37,12 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(1100, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final native = LedgerDiscoveryChannel();
+      final retry = action.startsWith('retry ');
+      if (retry) {
+        native.currentAppError = PlatformException(
+          code: action.substring('retry '.length),
+        );
+      }
       final connection = Completer<void>();
       final holdConnection =
           action == 'cancel connection' || action == 'reselect';
@@ -66,15 +75,17 @@ void main() {
                     service: native.service,
                     usbConnector: (_) async =>
                         throw StateError('Unexpected USB'),
-                    bluetoothConnector: (index, device) async =>
-                        LedgerDeviceAccount(
-                          ufvk: 'test',
-                          seedFingerprint: const [],
-                          accountIndex: index,
-                          appVersion: '3.9.4',
-                          transport: LedgerConnectionTransport.bluetooth,
-                          device: device,
-                        ),
+                    bluetoothConnector: (index, device) async {
+                      if (retry) await native.service.currentApp();
+                      return LedgerDeviceAccount(
+                        ufvk: 'test',
+                        seedFingerprint: const [],
+                        accountIndex: index,
+                        appVersion: '3.9.4',
+                        transport: LedgerConnectionTransport.bluetooth,
+                        device: device,
+                      );
+                    },
                     cancelOperation: () async {
                       await native.service.cancelSigning();
                       if (holdConnection && !connection.isCompleted) {
@@ -106,6 +117,18 @@ void main() {
         );
       }
       await pumpLedgerDiscovery(tester);
+      if (retry) {
+        expect(connected, isFalse);
+        expect(find.text('Try again'), findsOneWidget);
+        native.currentAppError = null;
+        await tester.tap(find.text('Try again'));
+        await pumpLedgerDiscovery(tester);
+        expect(connected, isTrue);
+        expect(
+          native.calls.where((call) => call == 'connect'),
+          hasLength(action == 'retry locked' ? 1 : 2),
+        );
+      }
       if (holdConnection) {
         expect(native.calls.where((call) => call == 'connect'), hasLength(1));
         final procedure = tester.widget<LedgerProcedure>(
@@ -122,7 +145,7 @@ void main() {
         await pumpLedgerDiscovery(tester);
       }
       expect(native.eventCalls.take(2), ['listen', 'cancel']);
-      if (action == 'select') {
+      if (action == 'select' || retry) {
         expect(connected, isTrue);
       } else if (action == 'reselect') {
         expect(closed, isFalse);

@@ -19,7 +19,21 @@ class LedgerDiscoveryChannel {
           await starting;
           if (startError case final error?) throw error;
         case 'connect':
+          if (_connected) {
+            throw PlatformException(code: 'disconnected');
+          }
           await connecting;
+          _connected = true;
+        case 'disconnect':
+          _connected = false;
+        case 'currentApp':
+          if (currentAppError case final error?) {
+            if (error is PlatformException && error.code == 'disconnected') {
+              _connected = false;
+            }
+            throw error;
+          }
+          return {'name': 'Zcash', 'version': '3.9.4'};
         case 'stopDiscovery':
           await stopping;
       }
@@ -44,6 +58,8 @@ class LedgerDiscoveryChannel {
   Future<void>? connecting;
   Future<void>? stopping;
   Object? startError;
+  Object? currentAppError;
+  bool _connected = false;
 
   Future<void> emit(Object? event) => _send(
     event == null
