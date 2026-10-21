@@ -29,6 +29,7 @@ use crate::wallet::{
     keys::{self, HardwareSignerKind},
     network::WalletNetwork,
 };
+use zcash_client_backend::data_api::Account as _;
 
 const NETWORK: WalletNetwork = WalletNetwork::Regtest;
 /// The highest scanned block in every fixture wallet.

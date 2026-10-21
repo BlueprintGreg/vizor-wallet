@@ -4,7 +4,7 @@
 //! [`DelegationSigningRequest`] (account index, network, seed fingerprint,
 //! sighash, randomizer) and takes back only the detached SpendAuth signature.
 
-use ff::PrimeField;
+use orchard::primitives::redpallas::SpendAuthRandomizer;
 use secrecy::{ExposeSecret, SecretVec};
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_voting::delegate::DelegationSigningRequest;
@@ -57,10 +57,8 @@ pub fn sign_delegation_request(
     let sk = *usk.orchard();
     let ask = orchard::keys::SpendAuthorizingKey::from(&sk);
     // The alpha randomizer must decode as a canonical Pallas scalar.
-    let alpha = Option::<pasta_curves::pallas::Scalar>::from(
-        pasta_curves::pallas::Scalar::from_repr(request.alpha),
-    )
-    .ok_or_else(|| "delegation alpha is not a valid Pallas scalar".to_string())?;
+    let alpha = Option::<SpendAuthRandomizer>::from(SpendAuthRandomizer::from_bytes(request.alpha))
+        .ok_or_else(|| "delegation alpha is not a valid Pallas scalar".to_string())?;
     // Sign the request-specific sighash with the randomized spend auth key.
     let rsk = ask.randomize(&alpha);
     let rng = voting_crypto_deps::rand::rngs::OsRng;
@@ -71,6 +69,7 @@ pub fn sign_delegation_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ff::PrimeField;
     use orchard::{
         keys::SpendAuthorizingKey,
         primitives::redpallas::{Signature, SpendAuth, VerificationKey},
@@ -88,7 +87,8 @@ mod tests {
         )
         .unwrap();
         let ask = SpendAuthorizingKey::from(usk.orchard());
-        let alpha = pasta_curves::pallas::Scalar::from(7);
+        let alpha_bytes = pasta_curves::pallas::Scalar::from(7).to_repr();
+        let alpha = SpendAuthRandomizer::from_bytes(alpha_bytes).unwrap();
         let sighash = [0xAB; 32];
         let request = DelegationSigningRequest {
             account_index,
@@ -97,7 +97,7 @@ mod tests {
                 .unwrap()
                 .to_bytes(),
             sighash,
-            alpha: alpha.to_repr(),
+            alpha: alpha_bytes,
         };
 
         let (sig_bytes, returned_sighash) = sign_delegation_request(&seed, request).unwrap();
