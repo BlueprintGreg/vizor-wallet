@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.TextView
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -160,6 +161,44 @@ class AppPrivacyProtectionTest {
         protection.setSensitiveContentVisible(true)
         protection.onWindowFocusChanged(false)
         assertTrue(isSecure())
+    }
+
+    @Test fun accessibilityCoverHidesAndRestoresTheSameContentForBlurAndSolid() {
+        for (solid in listOf(false, true)) {
+            blurProtection { it() }
+            protection.setSolidBackground(solid)
+            val label = TextView(activity).apply {
+                text = "Test wallet balance"
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            }
+            activity.setContentView(label)
+            val content = activity.findViewById<ViewGroup>(android.R.id.content)
+            protection.onWindowFocusChanged(false)
+            val decor = activity.window.decorView as ViewGroup
+            val cover = (0 until decor.childCount).map { decor.getChildAt(it) }
+                .single { it.contentDescription == "Sensitive content hidden" }
+            assertEquals(View.INVISIBLE, content.visibility)
+            assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, cover.importantForAccessibility)
+            assertTrue(cover.isClickable)
+            assertTrue(cover.isFocusable)
+            assertSame(label, content.getChildAt(0))
+            val coveredElements = ArrayList<View>()
+            decor.addChildrenForAccessibility(coveredElements)
+            assertTrue(coveredElements.contains(cover))
+            assertFalse(coveredElements.contains(label))
+            resumeFocused()
+            assertEquals(View.VISIBLE, content.visibility)
+            assertEquals(0, coverCount())
+            assertSame(label, content.getChildAt(0))
+            assertEquals("Test wallet balance", label.text.toString())
+            val restoredElements = ArrayList<View>()
+            decor.addChildrenForAccessibility(restoredElements)
+            assertTrue(restoredElements.contains(label))
+            protection.onPause()
+            protection.close()
+            assertEquals(View.VISIBLE, content.visibility)
+            assertEquals(0, coverCount())
+        }
     }
 
     @Test fun secretScreensNeverRequestAPreviewEvenWhenTheSecretIsHidden() {
