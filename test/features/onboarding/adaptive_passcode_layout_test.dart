@@ -16,6 +16,8 @@ Widget _app(
   PasscodeCaptureScreen screen, {
   double scale = 1,
   double bottomInset = 0,
+  EdgeInsets? safeInsets,
+  GlobalKey? captureKey,
   BiometricUnlockState biometric = BiometricUnlockState.initial,
 }) => FigmaCompareApp(
   scenario: FigmaCompareScenario(
@@ -25,25 +27,32 @@ Widget _app(
     builder: (context) => MediaQuery(
       data: MediaQuery.of(context).copyWith(
         textScaler: TextScaler.linear(scale),
-        padding: EdgeInsets.only(bottom: bottomInset),
-        viewPadding: EdgeInsets.only(bottom: bottomInset),
+        padding: safeInsets ?? EdgeInsets.only(bottom: bottomInset),
+        viewPadding: safeInsets ?? EdgeInsets.only(bottom: bottomInset),
       ),
       child: MobilePasscodeCapture(screen: screen, biometric: biometric),
     ),
   ),
   themeMode: ThemeMode.light,
-  captureBoundaryKey: GlobalKey(),
+  captureBoundaryKey: captureKey ?? GlobalKey(),
 );
 
 void main() {
   setUpAll(loadFigmaCompareFonts);
   for (final screen in PasscodeCaptureScreen.values) {
     for (final scale in [1.0, 1.5, 2.0]) {
-      for (final size in [
-        const Size(951, 669),
-        const Size(951, 560),
-        const Size(568, 320),
+      for (final viewport in [
+        (size: const Size(951, 669), insets: const EdgeInsets.only(bottom: 24)),
+        (size: const Size(951, 560), insets: const EdgeInsets.only(bottom: 24)),
+        (size: const Size(568, 320), insets: const EdgeInsets.only(bottom: 24)),
+        // The Duo's folded display remains portrait, with side system chrome.
+        (
+          size: const Size(466, 678),
+          insets: const EdgeInsets.only(right: 84, bottom: 34),
+        ),
+        (size: const Size(320, 568), insets: const EdgeInsets.only(bottom: 24)),
       ]) {
+        final size = viewport.size;
         testWidgets('${screen.name} fits $size at text scale $scale', (
           tester,
         ) async {
@@ -51,7 +60,9 @@ void main() {
           tester.view.physicalSize = size;
           addTearDown(tester.view.resetPhysicalSize);
           addTearDown(tester.view.resetDevicePixelRatio);
-          await tester.pumpWidget(_app(screen, scale: scale, bottomInset: 24));
+          await tester.pumpWidget(
+            _app(screen, scale: scale, safeInsets: viewport.insets),
+          );
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull);
           final keypad = tester.widget<PasscodeNumpad>(
@@ -68,7 +79,10 @@ void main() {
           await tester.ensureVisible(find.bySemanticsLabel('Digit 0'));
           await tester.pumpAndSettle();
           final zero = tester.getRect(find.bySemanticsLabel('Digit 0'));
-          expect(zero.bottom, lessThanOrEqualTo(size.height - 24));
+          expect(
+            zero.bottom,
+            lessThanOrEqualTo(size.height - viewport.insets.bottom),
+          );
           await tester.tap(find.bySemanticsLabel('Digit 0'));
           await tester.pumpAndSettle();
           expect(
@@ -95,80 +109,103 @@ void main() {
     PasscodeCaptureScreen.viewingKey,
     PasscodeCaptureScreen.seedPhrase,
   ]) {
-    for (final enabled in [true, false]) {
-      testWidgets(
-        '${screen.name} biometric footer remains reachable ($enabled)',
-        (tester) async {
-          tester.view.devicePixelRatio = 1;
-          tester.view.physicalSize = const Size(951, 560);
-          addTearDown(tester.view.resetPhysicalSize);
-          addTearDown(tester.view.resetDevicePixelRatio);
-          await tester.pumpWidget(
-            _app(
-              screen,
-              scale: 2,
-              bottomInset: 24,
-              biometric: BiometricUnlockState(
-                availability: const BiometricAvailability(
-                  supported: true,
-                  enrolled: true,
-                  kind: BiometricKind.face,
+    for (final viewport in [
+      (size: const Size(951, 560), insets: const EdgeInsets.only(bottom: 24)),
+      (
+        size: const Size(466, 678),
+        insets: const EdgeInsets.only(right: 84, bottom: 34),
+      ),
+    ]) {
+      for (final enabled in [true, false]) {
+        testWidgets(
+          '${screen.name} biometric footer remains reachable ($enabled) ${viewport.size}',
+          (tester) async {
+            tester.view.devicePixelRatio = 1;
+            tester.view.physicalSize = viewport.size;
+            addTearDown(tester.view.resetPhysicalSize);
+            addTearDown(tester.view.resetDevicePixelRatio);
+            await tester.pumpWidget(
+              _app(
+                screen,
+                scale: 2,
+                safeInsets: viewport.insets,
+                biometric: BiometricUnlockState(
+                  availability: const BiometricAvailability(
+                    supported: true,
+                    enrolled: true,
+                    kind: BiometricKind.face,
+                  ),
+                  enabled: enabled,
                 ),
-                enabled: enabled,
               ),
-            ),
-          );
-          await tester.pumpAndSettle();
-          expect(tester.takeException(), isNull);
-          final footer = find.byType(
-            enabled ? PasscodeBiometricButton : PasscodeBiometricOptIn,
-          );
-          if (!enabled && screen != PasscodeCaptureScreen.unlock) {
-            expect(find.byType(PasscodeBiometricButton), findsNothing);
-            return;
-          }
-          expect(footer, findsOneWidget);
-          await tester.ensureVisible(footer);
-          await tester.pumpAndSettle();
-          expect(tester.getRect(footer).bottom, lessThanOrEqualTo(536));
-          expect(tester.takeException(), isNull);
-        },
-      );
+            );
+            await tester.pumpAndSettle();
+            expect(tester.takeException(), isNull);
+            final footer = find.byType(
+              enabled ? PasscodeBiometricButton : PasscodeBiometricOptIn,
+            );
+            if (!enabled && screen != PasscodeCaptureScreen.unlock) {
+              expect(find.byType(PasscodeBiometricButton), findsNothing);
+              return;
+            }
+            expect(footer, findsOneWidget);
+            await tester.ensureVisible(footer);
+            await tester.pumpAndSettle();
+            expect(
+              tester.getRect(footer).bottom,
+              lessThanOrEqualTo(viewport.size.height - viewport.insets.bottom),
+            );
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
     }
   }
 
-  testWidgets('portrait and roomy wide windows retain the original keypad', (
+  testWidgets('roomy windows retain the original keypad for every screen', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    for (final size in [
-      const Size(393, 852),
-      const Size(669, 951),
-      const Size(852, 852),
-      const Size(1200, 900),
-    ]) {
-      tester.view.physicalSize = size;
-      await tester.pumpWidget(_app(PasscodeCaptureScreen.change));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('compact_wide_passcode')), findsNothing);
-      expect(
-        tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
-        80,
-      );
-      expect(tester.takeException(), isNull);
+    for (final screen in PasscodeCaptureScreen.values) {
+      for (final size in [
+        const Size(393, 852),
+        const Size(669, 951),
+        const Size(852, 852),
+        const Size(1200, 900),
+      ]) {
+        tester.view.physicalSize = size;
+        await tester.pumpWidget(
+          _app(
+            screen,
+            safeInsets: size == const Size(393, 852)
+                ? const EdgeInsets.only(top: 62, bottom: 34)
+                : EdgeInsets.zero,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('compact_passcode')), findsNothing);
+        expect(
+          tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
+          80,
+        );
+        expect(tester.takeException(), isNull);
+      }
     }
   });
 
   testWidgets(
-    'rotation preserves entered digits and setup confirmation phase',
+    'folding and rotation preserve entered digits and setup confirmation phase',
     (tester) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(393, 852);
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(_app(PasscodeCaptureScreen.create));
+      final captureKey = GlobalKey();
+      await tester.pumpWidget(
+        _app(PasscodeCaptureScreen.create, captureKey: captureKey),
+      );
       await tester.pumpAndSettle();
       for (var i = 0; i < 6; i++) {
         await tester.tap(find.bySemanticsLabel('Digit 1'));
@@ -181,58 +218,98 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Confirm Passcode'), findsOneWidget);
       expect(tester.widget<PasscodeDots>(find.byType(PasscodeDots)).filled, 1);
+      tester.view.physicalSize = const Size(466, 678);
+      await tester.pumpWidget(
+        _app(
+          PasscodeCaptureScreen.create,
+          captureKey: captureKey,
+          safeInsets: const EdgeInsets.only(right: 84, bottom: 34),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm Passcode'), findsOneWidget);
+      expect(tester.widget<PasscodeDots>(find.byType(PasscodeDots)).filled, 1);
+      expect(
+        tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
+        lessThan(80),
+      );
+      tester.view.physicalSize = const Size(393, 852);
+      await tester.pumpWidget(
+        _app(PasscodeCaptureScreen.create, captureKey: captureKey),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm Passcode'), findsOneWidget);
+      expect(tester.widget<PasscodeDots>(find.byType(PasscodeDots)).filled, 1);
+      expect(
+        tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
+        80,
+      );
       await tester.tap(find.bySemanticsLabel('Delete digit'));
       await tester.pump();
       expect(tester.widget<PasscodeDots>(find.byType(PasscodeDots)).filled, 0);
     },
   );
 
-  testWidgets('error clearance is safe at the legacy fit boundary', (
-    tester,
-  ) async {
-    tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(951, 710);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(_app(PasscodeCaptureScreen.change));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
-      80,
-    );
-    for (var i = 0; i < 6; i++) {
-      await tester.tap(find.bySemanticsLabel('Digit 1'));
+  for (final size in [const Size(951, 710), const Size(466, 710)]) {
+    testWidgets('error clearance is safe at the legacy fit boundary $size', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(_app(PasscodeCaptureScreen.change));
       await tester.pumpAndSettle();
-    }
-    expect(find.text('Incorrect Passcode'), findsOneWidget);
-    expect(
-      tester.getRect(find.text('Incorrect Passcode')).bottom,
-      lessThan(tester.getRect(find.bySemanticsLabel('Digit 1')).top),
-    );
-    expect(tester.takeException(), isNull);
-  });
+      expect(
+        tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
+        80,
+      );
+      for (var i = 0; i < 6; i++) {
+        await tester.tap(find.bySemanticsLabel('Digit 1'));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('Incorrect Passcode'), findsOneWidget);
+      expect(
+        tester.getRect(find.text('Incorrect Passcode')).bottom,
+        lessThan(tester.getRect(find.bySemanticsLabel('Digit 1')).top),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
 
-  testWidgets('wide error text remains above the first key row', (
-    tester,
-  ) async {
-    tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(951, 669);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      _app(PasscodeCaptureScreen.change, scale: 1.5, bottomInset: 24),
-    );
-    await tester.pumpAndSettle();
-    for (var i = 0; i < 6; i++) {
-      await tester.ensureVisible(find.bySemanticsLabel('Digit 1'));
-      await tester.tap(find.bySemanticsLabel('Digit 1'));
+  for (final viewport in [
+    (size: const Size(951, 669), insets: const EdgeInsets.only(bottom: 24)),
+    (
+      size: const Size(466, 678),
+      insets: const EdgeInsets.only(right: 84, bottom: 34),
+    ),
+  ]) {
+    testWidgets('error text remains above the first key row ${viewport.size}', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = viewport.size;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        _app(
+          PasscodeCaptureScreen.change,
+          scale: 1.5,
+          safeInsets: viewport.insets,
+        ),
+      );
       await tester.pumpAndSettle();
-    }
-    expect(find.text('Incorrect Passcode'), findsOneWidget);
-    expect(
-      tester.getRect(find.text('Incorrect Passcode')).bottom,
-      lessThan(tester.getRect(find.bySemanticsLabel('Digit 1')).top),
-    );
-    expect(tester.takeException(), isNull);
-  });
+      for (var i = 0; i < 6; i++) {
+        await tester.ensureVisible(find.bySemanticsLabel('Digit 1'));
+        await tester.tap(find.bySemanticsLabel('Digit 1'));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('Incorrect Passcode'), findsOneWidget);
+      expect(
+        tester.getRect(find.text('Incorrect Passcode')).bottom,
+        lessThan(tester.getRect(find.bySemanticsLabel('Digit 1')).top),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

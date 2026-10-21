@@ -2,12 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
-import '../../../core/layout/mobile/mobile_window_policy.dart';
 import '../../../core/theme/app_theme.dart';
 import 'passcode_widgets.dart';
 
-/// Keeps the original composition unless a wide window cannot fit it.
-/// The window decision comes from the root, before a sidebar narrows the page.
+/// Keeps the original composition whenever it fits the available content area.
+/// Short portrait and wide windows share the same compact fallback.
 class AdaptivePasscodeLayout extends StatelessWidget {
   const AdaptivePasscodeLayout({
     required this.title,
@@ -57,7 +56,10 @@ class AdaptivePasscodeLayout extends StatelessWidget {
     double width,
   ) {
     final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
+      text: TextSpan(
+        text: text,
+        style: DefaultTextStyle.of(context).style.merge(style),
+      ),
       textDirection: Directionality.of(context),
       textScaler: MediaQuery.textScalerOf(context),
       locale: Localizations.maybeLocaleOf(context),
@@ -69,7 +71,7 @@ class AdaptivePasscodeLayout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!adapt || !MobileWindowPolicyScope.of(context).usesWideLayout) {
+    if (!adapt) {
       return legacy;
     }
     return LayoutBuilder(
@@ -170,7 +172,7 @@ class AdaptivePasscodeLayout extends StatelessWidget {
         }
         final colors = context.colors;
         return Padding(
-          key: const ValueKey('compact_wide_passcode'),
+          key: const ValueKey('compact_passcode'),
           padding: padding,
           child: CustomScrollView(
             slivers: [
