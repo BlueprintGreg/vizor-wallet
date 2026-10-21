@@ -1,4 +1,5 @@
 import 'mobile_shield_capture.dart';
+import 'mobile_passcode_capture.dart';
 import '../src/features/ledger/services/ledger_failure_guidance.dart';
 import 'desktop_welcome_capture.dart';
 import '../widgetbook/desktop_gift_onboarding_use_cases.dart';
@@ -96,6 +97,41 @@ class FigmaCompareScenario {
 /// storage, network, wallet, and Rust state. Widgetbook fixtures are preferred
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
+  FigmaCompareScenario(
+    id: 'mobile-passcode-change',
+    description: 'Responsive mobile passcode change',
+    builder: buildMobilePasscodeChangeCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-passcode-create',
+    description: 'Responsive mobile passcode create',
+    builder: buildMobilePasscodeCreateCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-passcode-unlock',
+    description: 'Responsive mobile passcode unlock',
+    builder: buildMobilePasscodeUnlockCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-passcode-viewing-key',
+    description: 'Responsive mobile passcode viewing-key',
+    builder: buildMobilePasscodeViewingKeyCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-passcode-seed-phrase',
+    description: 'Responsive mobile passcode seed-phrase',
+    builder: buildMobilePasscodeSeedPhraseCapture,
+    desktop: false,
+    mobile: true,
+  ),
   FigmaCompareScenario(
     id: 'mobile-adaptive-home-wide',
     description:
