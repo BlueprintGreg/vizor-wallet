@@ -2161,7 +2161,7 @@ Widget buildMobileTransparentReceiptUseCase({
           initialTransaction: tx,
           initialDetail: detail,
         ),
-        historyLoader: (_) async => [tx],
+        historyLoader: (_, _) async => [tx],
         detailLoader: (_, _) async => detail,
       ),
     ),
@@ -2259,7 +2259,7 @@ Widget buildMobileIronwoodLabelAuditSentUseCase(BuildContext context) {
         initialTransaction: tx,
         initialDetail: detail,
       ),
-      historyLoader: (_) async => _ironwoodLabelAuditTransactions(),
+      historyLoader: (_, _) async => _ironwoodLabelAuditTransactions(),
       detailLoader: (_, _) async => detail,
     ),
   );
@@ -2275,7 +2275,7 @@ Widget _mobileZeroValueReceipt(String kind) {
       initialTransaction: tx,
       initialDetail: detail,
     ),
-    historyLoader: (_) async => _zeroValueActivity(),
+    historyLoader: (_, _) async => _zeroValueActivity(),
     detailLoader: (_, _) async => detail,
   );
 }
@@ -4637,7 +4637,9 @@ class _DesktopHomeHarnessState extends State<_DesktopHomeHarness> {
                 )
               : ActivityTransactionStatusScreen(
                   args: receiptArgs,
-                  historyLoader: (_) async => [?receiptArgs.initialTransaction],
+                  historyLoader: (_, _) async => [
+                    ?receiptArgs.initialTransaction,
+                  ],
                   detailLoader: (_, _) async => receiptArgs.initialDetail,
                 ),
         ),
@@ -6907,7 +6909,7 @@ class _GiftCardProgressPreviewState extends State<_GiftCardProgressPreview> {
                     initialTransaction: initialTransaction,
                     giftCard: _metadata,
                   ),
-              historyLoader: (_) async => _history,
+              historyLoader: (_, _) async => _history,
               detailLoader: (_, _) async => null,
             );
           },
