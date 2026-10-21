@@ -12,6 +12,63 @@ private final class TextFieldWithoutSecureCanvas: UITextField {
 }
 
 class RunnerTests: XCTestCase {
+  func testAppPrivacyCoverIsOpaqueAndRemovedWithoutReplacingContent() {
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+    let content = UIView(frame: window.bounds)
+    window.addSubview(content)
+    let privacy = AppPrivacyOverlay(windows: { [window] })
+    privacy.show()
+    let cover = window.subviews.last!
+    XCTAssertTrue(cover !== content)
+    XCTAssertEqual(cover.accessibilityLabel, "Sensitive content hidden")
+    XCTAssertEqual(cover.backgroundColor?.cgColor.alpha, 1)
+    XCTAssertEqual(cover.frame, window.bounds)
+    privacy.show()
+    XCTAssertEqual(window.subviews.count, 2)
+    privacy.hide()
+    XCTAssertEqual(window.subviews, [content])
+    privacy.hide()
+    XCTAssertEqual(window.subviews, [content])
+  }
+
+  func testAppPrivacyCoversNewWindowsAndReassertsAboveLaterSheets() {
+    let first = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+    let second = UIWindow(frame: CGRect(x: 0, y: 0, width: 852, height: 393))
+    var windows = [first]
+    let privacy = AppPrivacyOverlay(windows: { windows })
+    privacy.show()
+    let firstCover = first.subviews.last!
+    first.addSubview(UIView())
+    windows.append(second)
+    first.bounds.size = CGSize(width: 852, height: 393)
+    privacy.show()
+    XCTAssertTrue(first.subviews.last === firstCover)
+    XCTAssertEqual(firstCover.frame, first.bounds)
+    XCTAssertEqual(second.subviews.last?.frame, second.bounds)
+    privacy.hide()
+    XCTAssertNil(firstCover.superview)
+    XCTAssertTrue(second.subviews.isEmpty)
+  }
+
+  func testAppPrivacyDoesNotDisableSensitiveCaptureProtection() {
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+    let host = CALayer()
+    host.addSublayer(window.layer)
+    let canvas = CALayer()
+    let shield = SecureScreenshotShield(
+      windowProvider: { window },
+      canvasProvider: { field in field.layer.addSublayer(canvas); return canvas }
+    )
+    shield.setSensitiveContentVisible(true)
+    let privacy = AppPrivacyOverlay(windows: { [window] })
+    privacy.show()
+    privacy.hide()
+    XCTAssertEqual(shield.status["state"] as? String, "applied")
+    XCTAssertTrue(window.layer.superlayer === canvas)
+    shield.setSensitiveContentVisible(false)
+    XCTAssertEqual(shield.status["state"] as? String, "disabled")
+  }
+
   func testScreenshotShieldRetriesOnActivationAndCanDisableBeforeRetry() {
     let done = expectation(description: "lifecycle")
     DispatchQueue.main.async {

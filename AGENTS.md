@@ -417,6 +417,20 @@ transparent addresses had activity.
   on the app-start `/unlock` screen. Never show it in any other passcode keypad
   context.
 
+### Mobile Screen Privacy
+
+Mobile app-switcher privacy belongs to the native app lifecycle, independently
+of the current route: iOS `SceneDelegate` / `AppPrivacyOverlay` and Android
+`AppPrivacyProtection` cover the whole app before background snapshots.
+Android also protects on window focus loss: live recents can keep the Activity
+resumed, so neither `onPause` nor the recents-only API is sufficient by itself.
+Ordinary foreground screens allow screenshots and recording. Screens showing
+secret material use `SensitiveCaptureGuard` to request native capture exclusion
+only while that material is visible. Do not add screen-local background blur
+controllers to mobile screens. Keep `RouteCoverageAware` on import screens so
+capture exclusion survives route transitions and releases after full coverage.
+Desktop screens continue to use `SensitivePrivacyOverlay`.
+
 ### Dart Provider Structure
 
 ```
