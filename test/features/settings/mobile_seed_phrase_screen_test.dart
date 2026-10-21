@@ -273,6 +273,7 @@ Widget _routerApp(
 Future<void> _revealSecret(WidgetTester tester) async {
   for (final digit in '111111'.split('')) {
     await tester.ensureVisible(find.bySemanticsLabel('Digit $digit'));
+    await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Digit $digit'));
     await tester.pump();
   }

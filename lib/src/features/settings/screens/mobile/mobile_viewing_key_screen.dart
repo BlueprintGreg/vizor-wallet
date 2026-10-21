@@ -26,6 +26,7 @@ import '../../../../services/biometric_unlock.dart';
 import '../../../onboarding/mobile/mobile_passcode_screen.dart'
     show kMobilePasscodeLength;
 import '../../../onboarding/mobile/passcode_widgets.dart';
+import '../../../onboarding/mobile/adaptive_passcode_layout.dart';
 import '../../widgets/viewing_key_content.dart';
 
 enum _ViewingKeyStage { confirmAccess, reveal }
@@ -437,70 +438,106 @@ class _MobileViewingKeyScreenState
         ref.watch(biometricUnlockProvider).value ??
         BiometricUnlockState.initial;
     final showBiometric = !_checking && biometric.usable;
-    return Column(
-      children: [
-        Expanded(
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Enter Passcode',
-                  textAlign: TextAlign.center,
-                  style: AppTypography.displayLarge.copyWith(
-                    color: colors.text.accent,
+    return AdaptivePasscodeLayout(
+      title: 'Enter Passcode',
+      subtitle: 'Confirm your access',
+      prompt: PasscodePromptField(
+        length: kMobilePasscodeLength,
+        filled: _entry.length,
+        error: _gateError,
+        minGap: 0,
+      ),
+      keypad: PasscodeNumpad(
+        onDigit: _onDigit,
+        onBackspace: _onBackspace,
+        canDelete: _entry.isNotEmpty,
+        enabled: !_checking,
+      ),
+      footer: showBiometric
+          ? SizedBox(
+              key: const ValueKey('mobile_viewing_key_biometric_footer'),
+              height: 36,
+              child: Center(
+                child: PasscodeBiometricButton(
+                  label: biometric.availability.kind.signInLabel,
+                  icon: Center(
+                    child: BiometricIcon(
+                      kind: biometric.availability.kind,
+                      size: 13.5,
+                      fingerprintSize: 16,
+                    ),
                   ),
+                  onPressed: () => unawaited(_tryBiometricGate()),
                 ),
-                const SizedBox(height: AppSpacing.s),
-                Text(
-                  'Confirm your access',
-                  textAlign: TextAlign.center,
-                  style: AppTypography.bodyMediumStrong.copyWith(
-                    color: colors.text.primary,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                SizedBox(
-                  height: kPasscodePromptDigitsHeight,
-                  child: PasscodePromptField(
-                    length: kMobilePasscodeLength,
-                    filled: _entry.length,
-                    error: _gateError,
-                    minGap: 0,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        PasscodeNumpad(
-          onDigit: _onDigit,
-          onBackspace: _onBackspace,
-          canDelete: _entry.isNotEmpty,
-          enabled: !_checking,
-        ),
-        if (showBiometric) ...[
-          const SizedBox(height: AppSpacing.md),
-          SizedBox(
-            key: const ValueKey('mobile_viewing_key_biometric_footer'),
-            height: 36,
+              ),
+            )
+          : null,
+      footerHeight: showBiometric ? 36 : 0,
+      legacy: Column(
+        children: [
+          Expanded(
             child: Center(
-              child: PasscodeBiometricButton(
-                label: biometric.availability.kind.signInLabel,
-                icon: Center(
-                  child: BiometricIcon(
-                    kind: biometric.availability.kind,
-                    size: 13.5,
-                    fingerprintSize: 16,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Enter Passcode',
+                    textAlign: TextAlign.center,
+                    style: AppTypography.displayLarge.copyWith(
+                      color: colors.text.accent,
+                    ),
                   ),
-                ),
-                onPressed: () => unawaited(_tryBiometricGate()),
+                  const SizedBox(height: AppSpacing.s),
+                  Text(
+                    'Confirm your access',
+                    textAlign: TextAlign.center,
+                    style: AppTypography.bodyMediumStrong.copyWith(
+                      color: colors.text.primary,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  SizedBox(
+                    height: kPasscodePromptDigitsHeight,
+                    child: PasscodePromptField(
+                      length: kMobilePasscodeLength,
+                      filled: _entry.length,
+                      error: _gateError,
+                      minGap: 0,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
+          PasscodeNumpad(
+            onDigit: _onDigit,
+            onBackspace: _onBackspace,
+            canDelete: _entry.isNotEmpty,
+            enabled: !_checking,
+          ),
+          if (showBiometric) ...[
+            const SizedBox(height: AppSpacing.md),
+            SizedBox(
+              key: const ValueKey('mobile_viewing_key_biometric_footer'),
+              height: 36,
+              child: Center(
+                child: PasscodeBiometricButton(
+                  label: biometric.availability.kind.signInLabel,
+                  icon: Center(
+                    child: BiometricIcon(
+                      kind: biometric.availability.kind,
+                      size: 13.5,
+                      fingerprintSize: 16,
+                    ),
+                  ),
+                  onPressed: () => unawaited(_tryBiometricGate()),
+                ),
+              ),
+            ),
+          ],
+          if (!showBiometric) const SizedBox(height: AppSpacing.md),
         ],
-        if (!showBiometric) const SizedBox(height: AppSpacing.md),
-      ],
+      ),
     );
   }
 }
