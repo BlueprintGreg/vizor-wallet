@@ -211,6 +211,26 @@ class _SyncKeepAwakePrivacyLockScreenState
   var _submittingPasscode = false;
   var _unlockAttemptInFlight = false;
   String? _passcodeError;
+  late final VoidCallback _detachBackHandler;
+
+  @override
+  void initState() {
+    super.initState();
+    _detachBackHandler = ref
+        .read(syncKeepAwakePrivacyLockBackProvider)
+        .attach(_handleSystemBack);
+  }
+
+  void _handleSystemBack() {
+    if (_submittingPasscode || _unlockAttemptInFlight || !_showPasscode) return;
+    _returnToStatusScreen();
+  }
+
+  @override
+  void dispose() {
+    _detachBackHandler();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(SyncKeepAwakePrivacyLockScreen oldWidget) {

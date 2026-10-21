@@ -2,8 +2,11 @@
 library;
 
 import 'dart:async';
+import 'dart:ui' show SemanticsAction, SemanticsActionEvent;
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:zcash_wallet/src/core/navigation/mobile_exit_back_guard.dart';
 import 'package:flutter/services.dart';
 import 'package:zcash_wallet/src/core/widgets/mobile/mobile_numeric_keyboard_toolbar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -88,6 +91,234 @@ const _fingerprintBiometricState = BiometricUnlockState(
 );
 
 void main() {
+  testWidgets(
+    'accessible actions extend idle time but focus notifications do not',
+    (tester) async {
+      _setMobileViewport(tester);
+      final semantics = tester.ensureSemantics();
+      final sendFocus = FocusNode();
+      addTearDown(sendFocus.dispose);
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(_bootstrap()),
+          appSecurityProvider.overrideWith(_FakeSecurityNotifier.new),
+          biometricUnlockProvider.overrideWith(
+            () => _FakeBiometricUnlockNotifier(_disabledBiometricState),
+          ),
+          syncProvider.overrideWith(
+            () => FakeSyncNotifier(
+              _sync(lastSyncStartedAt: DateTime(2026, 7, 9, 12)),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: _coveredApp(sendFocus: sendFocus),
+        ),
+      );
+      await _settleInitialSync(tester);
+      final node = tester.getSemantics(find.text('Send'));
+      void action(SemanticsAction type) =>
+          tester.binding.platformDispatcher.onSemanticsActionEvent!(
+            SemanticsActionEvent(
+              type: type,
+              viewId: tester.view.viewId,
+              nodeId: node.id,
+            ),
+          );
+      for (var i = 0; i < 3; i++) {
+        await tester.pump(const Duration(seconds: 15));
+        action(SemanticsAction.tap);
+        await tester.pump();
+      }
+      expect(find.text('Sent 3'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 16));
+      expect(
+        container.read(syncKeepAwakePrivacyLockProvider).isLocked,
+        isFalse,
+      );
+      action(SemanticsAction.didGainAccessibilityFocus);
+      await tester.pump(const Duration(seconds: 45));
+      await tester.pump();
+      expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
+      expect(find.semantics.byLabel('Send'), findsNothing);
+      semantics.dispose();
+    },
+  );
+
+  testWidgets('system Back belongs to the lock before cards, routes and exit', (
+    tester,
+  ) async {
+    _setMobileViewport(tester);
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(_bootstrap()),
+        appSecurityProvider.overrideWith(_FakeSecurityNotifier.new),
+        biometricUnlockProvider.overrideWith(
+          () => _FakeBiometricUnlockNotifier(_disabledBiometricState),
+        ),
+        syncProvider.overrideWith(
+          () => FakeSyncNotifier(
+            _sync(lastSyncStartedAt: DateTime(2026, 7, 9, 12)),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final navKey = GlobalKey<NavigatorState>();
+    final router = GoRouter(
+      navigatorKey: navKey,
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (_, _) => const Scaffold(body: Text('Home route')),
+        ),
+        GoRoute(
+          path: '/send',
+          builder: (_, _) => const Scaffold(body: Text('Send route')),
+        ),
+      ],
+    );
+    var cardDismissals = 0;
+    var cardVisible = true;
+    final dispatcher = MobileExitBackDispatcher(
+      exitBackGuard: MobileExitBackGuard(platform: TargetPlatform.android),
+      navigatorKey: navKey,
+      canPop: router.canPop,
+      currentLocation: () =>
+          router.routerDelegate.currentConfiguration.uri.path,
+      handleBackAboveRouter: () {
+        if (container.read(syncKeepAwakePrivacyLockBackProvider).handleBack()) {
+          return true;
+        }
+        if (!cardVisible) return false;
+        cardVisible = false;
+        cardDismissals++;
+        return true;
+      },
+    );
+    addTearDown(router.dispose);
+    addTearDown(dispatcher.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(
+          routeInformationProvider: router.routeInformationProvider,
+          routeInformationParser: router.routeInformationParser,
+          routerDelegate: router.routerDelegate,
+          backButtonDispatcher: dispatcher,
+          onNavigationNotification: dispatcher.handleNavigationNotification,
+          builder: (_, child) => AppTheme(
+            data: AppThemeData.dark,
+            child: SyncKeepAwakePrivacyLockHost(child: child!),
+          ),
+        ),
+      ),
+    );
+    await _settleInitialSync(tester);
+    router.push('/send');
+    await tester.pumpAndSettle();
+    expect(router.canPop(), isTrue);
+    container.read(syncKeepAwakePrivacyLockProvider.notifier).lock();
+    await tester.pump();
+    for (var i = 0; i < 2; i++) {
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+    }
+    expect(router.canPop(), isTrue);
+    expect(cardDismissals, 0);
+    expect(find.text(MobileExitBackGuard.exitHintMessage), findsNothing);
+    await tester.tap(find.text('Unlock Vizor'));
+    await tester.pump();
+    expect(find.text('Welcome Back'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.text('Welcome Back'), findsNothing);
+    expect(find.text('Unlock Vizor'), findsOneWidget);
+    expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
+    expect(router.canPop(), isTrue);
+    await tester.tap(find.text('Unlock Vizor'));
+    await tester.pump();
+    await _enterPasscode(tester, '123456');
+    expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isFalse);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(cardDismissals, 1);
+    expect(router.canPop(), isTrue);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(router.canPop(), isFalse);
+  });
+
+  testWidgets('system Back keeps an in-flight passcode confirmation intact', (
+    tester,
+  ) async {
+    _setMobileViewport(tester);
+    final pending = Completer<bool>();
+    final security = _PendingSecurityNotifier(pending);
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(_bootstrap()),
+        appSecurityProvider.overrideWith(() => security),
+        biometricUnlockProvider.overrideWith(
+          () => _FakeBiometricUnlockNotifier(_disabledBiometricState),
+        ),
+        syncProvider.overrideWith(
+          () => FakeSyncNotifier(
+            _sync(lastSyncStartedAt: DateTime(2026, 7, 9, 12)),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: _themedApp()),
+    );
+    await _settleInitialSync(tester);
+    container.read(syncKeepAwakePrivacyLockProvider.notifier).lock();
+    await tester.pump();
+    await tester.tap(find.text('Unlock Vizor'));
+    await tester.pump();
+    for (final digit in '123456'.split('')) {
+      await tester.tap(find.text(digit));
+      await tester.pump();
+    }
+    expect(find.text('Checking passcode...'), findsOneWidget);
+    expect(
+      container.read(syncKeepAwakePrivacyLockBackProvider).handleBack(),
+      isTrue,
+    );
+    await tester.pump();
+    expect(find.text('Checking passcode...'), findsOneWidget);
+    expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
+    pending.complete(true);
+    await tester.pump();
+    expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isFalse);
+  });
+
+  test(
+    'late back-handler disposal cannot detach a replacement lock screen',
+    () {
+      var visible = true;
+      final controller = SyncKeepAwakePrivacyLockBackController(() => visible);
+      expect(controller.handleBack(), isTrue); // Before the first locked frame.
+      var calls = 0;
+      final detachOld = controller.attach(() => calls += 100);
+      final detachNew = controller.attach(() => calls++);
+      detachOld();
+      expect(controller.handleBack(), isTrue);
+      expect(calls, 1);
+      visible = false;
+      expect(controller.handleBack(), isFalse);
+      expect(calls, 1);
+      detachNew();
+    },
+  );
+
   setUpAll(() async {
     final loader = FontLoader('Geist')
       ..addFont(rootBundle.load('assets/fonts/Geist-Regular.ttf'))
@@ -1260,7 +1491,7 @@ Widget _coveredApp({required FocusNode sendFocus}) {
       data: AppThemeData.dark,
       child: SyncKeepAwakePrivacyLockHost(
         idleTimeout: const Duration(minutes: 1),
-        child: child!,
+        child: SyncKeepAwakeInteractionListener(child: child!),
       ),
     ),
     home: Scaffold(
@@ -1373,4 +1604,11 @@ SyncState _sync({
     pendingScanStartHeight: pendingScanStartHeight,
     lastSyncStartedAt: lastSyncStartedAt,
   );
+}
+
+class _PendingSecurityNotifier extends _FakeSecurityNotifier {
+  _PendingSecurityNotifier(this.pending);
+  final Completer<bool> pending;
+  @override
+  Future<bool> confirmPassword(String password) => pending.future;
 }

@@ -442,6 +442,12 @@ Do not add screen-local background blur controllers. Keep `RouteCoverageAware`
 on import screens so capture exclusion survives transitions and releases after
 full coverage. Desktop continues to use `SensitivePrivacyOverlay`.
 
+The mobile keep-awake lock owns system Back before payment cards and routes.
+Back may return from passcode entry to the lock status screen, but never acts
+on the covered app or interrupts authentication. Its idle deadline counts
+pointer, keyboard and deliberate platform semantics actions; automatic focus
+notifications do not extend it. Remove global input listeners on disposal.
+
 ### Dart Provider Structure
 
 ```
