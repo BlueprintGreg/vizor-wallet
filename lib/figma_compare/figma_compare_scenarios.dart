@@ -1,5 +1,6 @@
 import 'mobile_shield_capture.dart';
 import 'mobile_passcode_capture.dart';
+import 'mobile_receive_capture.dart';
 import '../src/features/ledger/services/ledger_failure_guidance.dart';
 import 'desktop_welcome_capture.dart';
 import '../widgetbook/desktop_gift_onboarding_use_cases.dart';
@@ -3460,6 +3461,15 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     builder: buildReceiveMobileShieldedUseCase,
     desktop: false,
     mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-receive-wide',
+    description:
+        'Adaptive receive with safe pane geometry and a deterministic wallet',
+    builder: buildMobileReceiveWideCapture,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
   ),
   FigmaCompareScenario(
     id: 'receive-request-compose-no-price',
