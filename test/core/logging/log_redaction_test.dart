@@ -143,16 +143,38 @@ void main() {
       },
     );
 
-    test('repeated installation keeps a single wrapper', () {
-      installLogRedaction();
-      final installed = debugPrint;
+    test('repeated installation preserves cumulative redaction passes', () {
+      final address = 't1${List.filled(33, 'Z').join()}';
+      for (var installation = 1; installation <= 5; installation++) {
+        installLogRedaction();
+        final directCount = installation * 4;
+        final logCount = directCount + 4;
 
-      installLogRedaction();
+        debugPrint('direct=${List.filled(directCount, address).join()}');
+        log('app=${List.filled(logCount, address).join()}');
 
-      expect(debugPrint, same(installed));
-      expect(redactingDebugPrint(installed), same(installed));
-      debugPrint('tx $_txid');
-      expect(printed, ['tx <txid>']);
+        expect(
+          printed[printed.length - 2],
+          'direct=${List.filled(directCount, '<address>').join()}',
+        );
+        expect(
+          printed.last,
+          '[zcash] app=${List.filled(logCount, '<address>').join()}',
+        );
+      }
+    });
+
+    test('coalescing preserves a captured earlier output', () {
+      installLogRedaction();
+      final earlier = debugPrint;
+      installLogRedaction();
+      final input = 't1${List.filled(33, 'Z').join()}' * 6;
+
+      earlier(input);
+      debugPrint(input);
+
+      expect(printed.first, redactLogText(input));
+      expect(printed.last, List.filled(6, '<address>').join());
     });
 
     test('an opaque forwarding output still runs and retains redaction', () {

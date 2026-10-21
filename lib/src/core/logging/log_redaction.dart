@@ -27,18 +27,22 @@ String _redactWithPassLimit(String text, int limit) {
 
 // Track only our own wrappers, without retaining discarded output callbacks
 // or any log text. Never infer that a message is safe from its contents.
-final _redactingOutputs = Expando<DebugPrintCallback>();
+final _redactingOutputs =
+    Expando<({DebugPrintCallback output, int passLimit})>();
 
-/// Wraps [next] so every message is redacted before it is printed. Wrapping
-/// one of our wrappers again returns it unchanged.
+/// Wraps [next] so every message is redacted before it is printed. Coalesces
+/// our own wrappers into one scan with their combined pass budget, without
+/// changing a captured earlier wrapper or bypassing another caller's output.
 DebugPrintCallback redactingDebugPrint(DebugPrintCallback next) {
-  if (_redactingOutputs[next] != null) return next;
-  void wrapped(String? message, {int? wrapWidth}) => next(
-    message == null ? null : redactLogText(message),
+  final earlier = _redactingOutputs[next];
+  final output = earlier?.output ?? next;
+  final limit = _maxPasses + (earlier?.passLimit ?? 0);
+  void wrapped(String? message, {int? wrapWidth}) => output(
+    message == null ? null : _redactWithPassLimit(message, limit),
     wrapWidth: wrapWidth,
   );
   final DebugPrintCallback callback = wrapped;
-  _redactingOutputs[callback] = next;
+  _redactingOutputs[callback] = (output: output, passLimit: limit);
   return callback;
 }
 
@@ -47,12 +51,11 @@ DebugPrintCallback redactingDebugPrint(DebugPrintCallback next) {
 /// its downstream output still runs, with the same wrapping and throttling.
 void printRedactedLog(String? message, {int? wrapWidth}) {
   final current = debugPrint;
-  final downstream = _redactingOutputs[current];
-  // The installed wrapper used to add another four passes after the caller.
-  // Preserve that budget for cascading matches, but stop as soon as the
-  // text is stable instead of starting a redundant second scan.
-  final limit = downstream == null ? _maxPasses : 2 * _maxPasses;
-  (downstream ?? current)(
+  final target = _redactingOutputs[current];
+  // Preserve every coalesced wrapper's passes as well as the caller's, but
+  // stop when stable instead of starting redundant scans.
+  final limit = _maxPasses + (target?.passLimit ?? 0);
+  (target?.output ?? current)(
     message == null ? null : _redactWithPassLimit(message, limit),
     wrapWidth: wrapWidth,
   );
