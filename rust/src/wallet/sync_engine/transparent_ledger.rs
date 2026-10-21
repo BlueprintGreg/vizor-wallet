@@ -58,10 +58,12 @@ use std::future::Future;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-pub(crate) use zakura_pir_transparent::{
+pub(crate) use zakura_pir_client::transparent::{
     Applied, ApplyAction, ApplyFailure, BatchState, PassReport, Retry, Trust, WithdrawnCause,
 };
-use zakura_pir_transparent::{HoldCause as PlanHold, PassLimits, PassPlan, Step, StopCause};
+use zakura_pir_client::transparent::{
+    HoldCause as PlanHold, PassLimits, PassPlan, Step, StopCause,
+};
 use zcash_client_backend::data_api::{
     transparent_ledger::{
         AccountLifecycle, RecoveryBlocker, TransparentAddressWatchSet, TransparentLedgerMode,
