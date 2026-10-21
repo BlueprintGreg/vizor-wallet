@@ -1127,8 +1127,7 @@ fn swap_funding_shortfall_asks_for_ironwood_funds() {
              INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
         )
         .unwrap();
-    db.set_one_time_recovery_enabled(account_id, true)
-        .unwrap();
+    db.set_one_time_recovery_enabled(account_id, true).unwrap();
     let refund_index = db
         .reserve_refund_key(account_id, tip)
         .unwrap()

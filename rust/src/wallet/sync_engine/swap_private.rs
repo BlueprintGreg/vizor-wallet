@@ -12,7 +12,7 @@ use crate::wallet::{
 };
 use rusqlite::OptionalExtension;
 use std::{
-    collections::BTreeMap,
+    collections::{btree_map::Entry, BTreeMap},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
@@ -477,15 +477,14 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                     let filtered: Result<bool, String> = async {
                         // Sample bytes are shared by accounts and committed even when direct
                         // queries win. A positive on a completed address must not be lost.
-                        if !batches.contains_key(&(from, 1)) {
-                            let sample =
+                        let sample = match batches.entry((from, 1)) {
+                            Entry::Occupied(cached) => cached.into_mut(),
+                            Entry::Vacant(slot) => slot.insert(
                                 filter_batch(origin, transport, head, from, 1, hint_timeout)
-                                    .await?;
-                            batches.insert((from, 1), sample);
-                        }
-                        let sample = batches.get(&(from, 1)).expect("inserted");
-                        let receiver_bytes: Vec<_> =
-                            receivers.iter().map(|r| r.receiver).collect();
+                                    .await?,
+                            ),
+                        };
+                        let receiver_bytes: Vec<_> = receivers.iter().map(|r| r.receiver).collect();
                         let matches = sample
                             .matches(0, &receiver_bytes)
                             .map_err(|e| e.to_string())?
@@ -502,27 +501,22 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                         if from < to {
                             let next = from + 1;
                             let limit = (to - from).min(256);
-                            if !batches.contains_key(&(next, limit)) {
-                                let batch = filter_batch(
-                                    origin,
-                                    transport,
-                                    head,
-                                    next,
-                                    limit,
-                                    hint_timeout,
-                                )
-                                .await?;
-                                batches.insert((next, limit), batch);
-                            }
+                            let batch = match batches.entry((next, limit)) {
+                                Entry::Occupied(cached) => cached.into_mut(),
+                                Entry::Vacant(slot) => slot.insert(
+                                    filter_batch(
+                                        origin,
+                                        transport,
+                                        head,
+                                        next,
+                                        limit,
+                                        hint_timeout,
+                                    )
+                                    .await?,
+                                ),
+                            };
                             wallet(path, network, generation, |db| {
-                                apply_filters(
-                                    db,
-                                    account,
-                                    token,
-                                    head.revision,
-                                    batches.get(&(next, limit)).expect("inserted"),
-                                    &receivers,
-                                )
+                                apply_filters(db, account, token, head.revision, batch, &receivers)
                             })?;
                         }
                         Ok(true)
@@ -602,7 +596,9 @@ async fn drain<T: Transport>(
     client: &InventoryClient<T>,
     account: AccountUuid,
 ) -> Result<(), RecoveryError> {
-    let end = zakura_pir_receiver::publication(client.inventory()).end.height;
+    let end = zakura_pir_receiver::publication(client.inventory())
+        .end
+        .height;
     for _ in 0..16 {
         let state = wallet(path, network, generation, |db| {
             db.one_time_recovery(account, one_time_ivk::now()?)

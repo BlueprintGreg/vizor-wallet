@@ -906,7 +906,9 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     );
     assert_eq!(wallet.one_time_unspent(&account), 900_000);
     assert!(!checking());
-    resumed.report("resumed manual check: four lookups, one paid page and its proof, then the new lookahead");
+    resumed.report(
+        "resumed manual check: four lookups, one paid page and its proof, then the new lookahead",
+    );
 }
 
 /// An authenticated payment before the selected birthday advances the seed walk without
@@ -1026,15 +1028,25 @@ fn sealed_shards_use_filters_and_inventory_descriptors_persist() {
     let sealed = chain.tip();
     chain.mine(2);
     wallet.scan(&chain);
-    let service =
-        Service::publish_shards(&chain, &[sealed], chain.tip(), activation(), chain.tip(), &[]);
+    let service = Service::publish_shards(
+        &chain,
+        &[sealed],
+        chain.tip(),
+        activation(),
+        chain.tip(),
+        &[],
+    );
     assert!(shard_filters_cheaper(service.inventory(), 5));
     assert!(!shard_filters_cheaper(service.inventory(), 0));
     service.trace(&wallet, &account);
     wallet.recover(&service).unwrap();
     assert!(wallet.state(&account).restore_complete);
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
-    assert_eq!(service.count("shard-filter"), 1, "one filter serves every address");
+    assert_eq!(
+        service.count("shard-filter"),
+        1,
+        "one filter serves every address"
+    );
     // I0 matches the sealed shard's filter and reads both shards. I1 to I4 skip it.
     assert_eq!(
         service.traced(),
@@ -1071,8 +1083,18 @@ fn sealed_shards_use_filters_and_inventory_descriptors_persist() {
     chain.pay(&account.key(Purpose::Receive, 1), 500_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let next = Service::publish_shards(&chain, &[sealed], chain.tip(), activation(), chain.tip(), &[]);
+    let next = Service::publish_shards(
+        &chain,
+        &[sealed],
+        chain.tip(),
+        activation(),
+        chain.tip(),
+        &[],
+    );
     wallet.recover(&next).unwrap();
     assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
-    assert!(saved().len() > 1, "a full capture replaced the corrupted value");
+    assert!(
+        saved().len() > 1,
+        "a full capture replaced the corrupted value"
+    );
 }

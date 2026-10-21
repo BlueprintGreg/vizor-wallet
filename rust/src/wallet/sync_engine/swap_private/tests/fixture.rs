@@ -331,7 +331,10 @@ impl Service {
         let (mut payments, mut witnesses, mut shard_filters, mut shards) =
             (vec![], vec![], vec![], vec![]);
         let (mut start, mut parent, mut position) = (activation(), chain.hash(activation() - 1), 0);
-        let ends = sealed.iter().map(|end| (*end, true)).chain([(pir_end, false)]);
+        let ends = sealed
+            .iter()
+            .map(|end| (*end, true))
+            .chain([(pir_end, false)]);
         for (end, is_sealed) in ends {
             let end_position = chain.state(end).final_ironwood_tree().tree_size();
             let mut records: Vec<RawRecord> = chain
