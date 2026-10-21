@@ -63,6 +63,50 @@ void main() {
     }
   });
 
+  test('prefilter preserves every shared case after ordinary log prefixes', () {
+    for (final prefix in ['sync: ', '<txid> raw=', '한글 🙂 ', '\u0000']) {
+      for (final c in cases) {
+        expect(
+          redactLogText('$prefix${c.input}'),
+          '$prefix${c.expected}',
+          reason: '${c.name}, prefix=$prefix',
+        );
+      }
+    }
+  });
+
+  test('prefilter retains the hex boundaries and optional prefix', () {
+    for (final length in [31, 32, 63, 64, 65]) {
+      for (final prefix in ['', '0x', '0X']) {
+        final value = 'a' * length;
+        final expected = length < 32
+            ? '$prefix$value'
+            : length == 64
+            ? '<txid>'
+            : '<hex>';
+        expect(redactLogText('value=$prefix$value'), 'value=$expected');
+      }
+    }
+  });
+
+  test('prefilter candidates still require the full masking rule', () {
+    for (final input in [
+      'item1 tm t2 t3 u1 secret-extended-key-main1',
+      'abcdefab-z (not a UUID)',
+      '/v2/shards/{id}/query (not a device path)',
+      'Sync: height=3201456 duration=3.2s',
+      '한글 🙂 メモ',
+      'plain message ' * 1000,
+    ]) {
+      expect(redactLogText(input), input);
+    }
+  });
+
+  test('prefilter recognizes mixed-case payment URIs and URs', () {
+    expect(redactLogText('ZcAsH:abc?amount=1'), '<payment-uri>');
+    expect(redactLogText('Ur:zcash-accounts/abc'), '<ur>');
+  });
+
   group('sinks', () {
     late List<String?> printed;
     late DebugPrintCallback previous;

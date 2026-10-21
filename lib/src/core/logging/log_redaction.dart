@@ -18,11 +18,58 @@ String redactLogText(String text) => _redactWithPassLimit(text, _maxPasses);
 String _redactWithPassLimit(String text, int limit) {
   var current = text;
   for (var pass = 0; pass < limit; pass++) {
+    if (!_mayContainSensitiveShape(current)) break;
     final next = _redactOnce(current);
     if (next == current) break;
     current = next;
   }
   return current;
+}
+
+// A false positive only runs the existing rules; a false negative would leave
+// data unmasked. Every rule below must imply one of these cheap conditions.
+// Extend this prefilter and the shared vectors when adding a masking rule.
+bool _mayContainSensitiveShape(String text) {
+  var hexRun = 0;
+  for (var i = 0; i < text.length; i++) {
+    final code = text.codeUnitAt(i);
+    // Every path, URL and Keystone UR contains a slash or backslash.
+    if (code == 47 || code == 92) return true;
+    final lower = code | 32;
+    final isHex = (code >= 48 && code <= 57) || (lower >= 97 && lower <= 102);
+    if (isHex) {
+      if (++hexRun >= 32) return true;
+    } else {
+      // A UUID begins with eight hex digits followed by a hyphen.
+      if (code == 45 && hexRun >= 8) return true;
+      hexRun = 0;
+    }
+    // All supported Bech32 address/key HRPs end in an ASCII letter, then '1'.
+    if (code == 49 && i > 0) {
+      final previous = text.codeUnitAt(i - 1) | 32;
+      if (previous >= 97 && previous <= 122) return true;
+    }
+    // Transparent addresses also include t2/t3/tm, without a Bech32 separator.
+    if (lower == 116 && i + 1 < text.length) {
+      final next = text.codeUnitAt(i + 1) | 32;
+      if (next == 49 || next == 50 || next == 51 || next == 109) return true;
+    }
+    if (code == 58 &&
+        (_endsWithAscii(text, i, 'zcash') || _endsWithAscii(text, i, 'ur'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _endsWithAscii(String text, int end, String value) {
+  if (end < value.length) return false;
+  for (var i = 0; i < value.length; i++) {
+    if ((text.codeUnitAt(end - value.length + i) | 32) != value.codeUnitAt(i)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Track only our own wrappers, without retaining discarded output callbacks
