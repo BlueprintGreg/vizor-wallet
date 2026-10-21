@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/figma_compare/mobile_receive_capture.dart';
@@ -53,6 +54,53 @@ Future<void> _view(WidgetTester tester, Size size) async {
 
 void main() {
   setUpAll(loadFigmaCompareFonts);
+  for (final pool in ['shielded', 'transparent']) {
+    testWidgets(
+      'Duo $pool actions fit one line and retain their accessible pool',
+      (tester) async {
+        final semantics = tester.ensureSemantics();
+        try {
+          await _view(tester, const Size(951, 669));
+          await tester.pumpWidget(_app(native: _duoNative));
+          await _settle(tester);
+          if (pool == 'transparent') {
+            await tester.tap(find.text('Transparent'));
+            await _settle(tester);
+          }
+          for (final action in ['Copy', 'Share']) {
+            final label = find.text('$action address');
+            final paragraph = tester.renderObject<RenderParagraph>(
+              find.descendant(of: label, matching: find.byType(RichText)),
+            );
+            final boxes = paragraph.getBoxesForSelection(
+              TextSelection(
+                baseOffset: 0,
+                extentOffset: '$action address'.length,
+              ),
+            );
+            expect(boxes.map((box) => box.top).toSet(), hasLength(1));
+            expect(
+              find.bySemanticsLabel('$action $pool address'),
+              findsOneWidget,
+            );
+            expect(
+              tester
+                  .getSize(
+                    find.byKey(
+                      ValueKey('mobile_receive_${action.toLowerCase()}'),
+                    ),
+                  )
+                  .height,
+              50,
+            );
+          }
+          expect(tester.takeException(), isNull);
+        } finally {
+          semantics.dispose();
+        }
+      },
+    );
+  }
   final cases =
       <String, ({Size size, MobileNavigationGeometry? native, bool split})>{
         'duo': (size: const Size(951, 669), native: _duoNative, split: true),
@@ -171,7 +219,14 @@ void main() {
           same(screenState),
         );
         expect(tester.state(find.byType(PageView)), same(pagerState));
-        expect(find.text('Copy transparent address'), findsOneWidget);
+        expect(
+          find.text(
+            size.width > size.height
+                ? 'Copy address'
+                : 'Copy transparent address',
+          ),
+          findsOneWidget,
+        );
         expect(
           tester.widget<ReceiveQrSurface>(find.byType(ReceiveQrSurface)).type,
           ReceiveAddressType.transparent,

@@ -527,7 +527,8 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
             size: _MobileReceiveMetrics.buttonIconSize,
           ),
           child: Text(
-            'Copy $poolLabel address',
+            'Copy address',
+            semanticsLabel: 'Copy $poolLabel address',
             textAlign: TextAlign.center,
             style: labelStyle,
           ),
@@ -546,7 +547,8 @@ class _MobileReceiveScreenState extends ConsumerState<MobileReceiveScreen> {
             size: _MobileReceiveMetrics.buttonIconSize,
           ),
           child: Text(
-            'Share $poolLabel address',
+            'Share address',
+            semanticsLabel: 'Share $poolLabel address',
             textAlign: TextAlign.center,
             style: labelStyle,
           ),
