@@ -988,6 +988,7 @@ fn listed_detail_work(path: &str) -> Vec<TxId> {
 #[test]
 fn a_lookup_a_reply_queued_stays_held_on_new_handles_until_the_tip_changes() {
     let (mut st, account) = private_wallet();
+    cover(&mut st, account, vec![]);
     promote(&mut st, account);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
