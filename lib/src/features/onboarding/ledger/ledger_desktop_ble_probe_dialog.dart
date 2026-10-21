@@ -410,13 +410,14 @@ class _LedgerDesktopConnectModalState
     }
     final procedure = !failed || (_declined && !_cleanupFailed);
     final opening = readiness.phase == LedgerAppReadinessPhase.confirmOpening;
-    final current =
-        _declinedStep ??
-        (opening
-            ? 1
-            : readiness.phase == LedgerAppReadinessPhase.ready
-            ? 2
-            : _resumingStep ?? 1);
+    final current = _bluetooth && _phase == _Phase.connecting
+        ? 0
+        : _declinedStep ??
+              (opening
+                  ? 1
+                  : readiness.phase == LedgerAppReadinessPhase.ready
+                  ? 2
+                  : _resumingStep ?? 1);
     return LedgerModalContent(
       title: procedure ? 'Connect Ledger' : 'Could not connect Ledger',
       identity:
@@ -438,7 +439,13 @@ class _LedgerDesktopConnectModalState
               topPadding: 0,
               currentStep: current,
               steps: [
-                const LedgerStep('Connect Ledger'),
+                LedgerStep(
+                  'Connect Ledger',
+                  message: current == 0
+                      ? 'Keep your Ledger nearby and unlocked, with Bluetooth turned on.'
+                      : null,
+                  busy: current == 0 && !failed,
+                ),
                 LedgerStep(
                   'Open Zcash',
                   message: current == 1
