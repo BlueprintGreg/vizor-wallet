@@ -14,13 +14,11 @@
 use bytes::Bytes;
 use http_body_util::Full;
 use transparent::address::TransparentAddress;
-use zakura_pir_client::transparent::testing::service::{publish, superseded, InProcess, SEAL};
-use zakura_pir_client::transparent::testing::transparent_events::{
+use zakura_pir_client::transparent::testing::events::{
     ReceiveEvent, SpendEvent, TransparentEvent, Txid,
 };
-use zakura_pir_client::transparent::testing::transparent_filter::{
-    BlockHash, Recut, ScriptBytes, ShardMap,
-};
+use zakura_pir_client::transparent::testing::filter::{BlockHash, Recut, ScriptBytes, ShardMap};
+use zakura_pir_client::transparent::testing::service::{publish, superseded, InProcess, SEAL};
 
 pub(super) use zakura_pir_client::transparent::testing::service::ShardSpec;
 
