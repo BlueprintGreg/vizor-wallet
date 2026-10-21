@@ -5,7 +5,6 @@ import '../src/app_bootstrap.dart';
 import '../src/core/config/rpc_endpoint_config.dart';
 import '../src/core/layout/mobile/mobile_window_layout.dart';
 import '../src/core/layout/mobile/mobile_window_policy.dart';
-import '../src/core/privacy/sensitive_privacy_overlay.dart';
 import '../src/features/onboarding/mobile/mobile_passcode_screen.dart';
 import '../src/features/onboarding/mobile/mobile_onboarding_progress.dart';
 import '../src/features/onboarding/mobile/mobile_onboarding_progress_scope.dart';
@@ -36,14 +35,6 @@ class MobilePasscodeCapture extends StatefulWidget {
 }
 
 class _MobilePasscodeCaptureState extends State<MobilePasscodeCapture> {
-  final _privacyController = SensitivePrivacyOverlayController();
-
-  @override
-  void dispose() {
-    _privacyController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
@@ -94,13 +85,11 @@ class _MobilePasscodeCaptureState extends State<MobilePasscodeCapture> {
                 PasscodeCaptureScreen.unlock => const MobileUnlockScreen(
                   autoPromptBiometric: false,
                 ),
-                PasscodeCaptureScreen.viewingKey => MobileViewingKeyScreen(
-                  privacyOverlayController: _privacyController,
-                ),
+                PasscodeCaptureScreen.viewingKey =>
+                  const MobileViewingKeyScreen(),
                 PasscodeCaptureScreen.seedPhrase => MobileSeedPhraseScreen(
                   screenshotStream: const Stream.empty(),
                   loadBirthday: false,
-                  privacyOverlayController: _privacyController,
                 ),
               },
             ),

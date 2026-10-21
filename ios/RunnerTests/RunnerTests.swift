@@ -68,6 +68,30 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
   }
 
+  func testAppPrivacyAccessibilityModalRestoresOriginalContentForBlurAndSolid() {
+    for solid in [false, true] {
+      let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+      let content = UILabel(frame: window.bounds)
+      content.isAccessibilityElement = true
+      content.accessibilityLabel = "Test wallet balance"
+      window.addSubview(content)
+      let privacy = AppPrivacyOverlay(windows: { [window] }, isSolid: { solid })
+      privacy.show()
+      let cover = window.subviews.last!
+      XCTAssertTrue(cover.isAccessibilityElement)
+      XCTAssertTrue(cover.accessibilityViewIsModal)
+      XCTAssertEqual(cover.accessibilityLabel, "Sensitive content hidden")
+      XCTAssertTrue(window.subviews.first === content)
+      privacy.hide()
+      XCTAssertEqual(window.subviews, [content])
+      XCTAssertEqual(content.accessibilityLabel, "Test wallet balance")
+      XCTAssertTrue(content.isAccessibilityElement)
+      privacy.show()
+      privacy.hide()
+      XCTAssertEqual(window.subviews, [content])
+    }
+  }
+
   func testAppPrivacyPolicyUpgradesExistingBlurWithoutAnotherLifecycleEvent() {
     let policy = AppBackgroundPrivacyPolicy.shared
     defer { policy.setSolidBackground(true); policy.setCaptureSensitive(false) }
