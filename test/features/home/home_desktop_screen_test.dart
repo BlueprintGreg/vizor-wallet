@@ -993,7 +993,7 @@ void main() {
             suppliedArgs = state.extra as ActivityTransactionStatusArgs;
             return ActivityTransactionStatusScreen(
               args: suppliedArgs!,
-              historyLoader: (_) => history.future,
+              historyLoader: (_, _) => history.future,
               detailLoader: (_, _) async => null,
             );
           },
