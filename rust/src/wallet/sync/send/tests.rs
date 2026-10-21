@@ -4502,20 +4502,22 @@ fn gift_card_batch_ledger_limits_orchard_actions() {
 struct RecordingStatusSource {
     observed: std::sync::Arc<std::sync::Mutex<Vec<TxId>>>,
 }
-impl zakura_transaction_status::StatusSource for RecordingStatusSource {
+impl zakura_pir_client::status::policy::StatusSource for RecordingStatusSource {
     type Session = Self;
-    async fn open(self) -> Result<Self, zakura_transaction_status::StatusError> {
+    async fn open(self) -> Result<Self, zakura_pir_client::status::policy::StatusError> {
         Ok(self)
     }
 }
-impl zakura_transaction_status::StatusSession for RecordingStatusSource {
+impl zakura_pir_client::status::policy::StatusSession for RecordingStatusSource {
     async fn observe(
         &mut self,
-        request: zakura_transaction_status::StatusRequest,
-    ) -> Result<zakura_transaction_status::StatusObservation, zakura_transaction_status::StatusError>
-    {
+        request: zakura_pir_client::status::policy::StatusRequest,
+    ) -> Result<
+        zakura_pir_client::status::policy::StatusObservation,
+        zakura_pir_client::status::policy::StatusError,
+    > {
         self.observed.lock().unwrap().push(request.txid);
-        Ok(zakura_transaction_status::StatusObservation::NotFound)
+        Ok(zakura_pir_client::status::policy::StatusObservation::NotFound)
     }
 }
 

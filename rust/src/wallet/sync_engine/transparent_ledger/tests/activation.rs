@@ -707,7 +707,7 @@ async fn hardware_authority_waits_out_a_busy_wallet() {
 async fn hardware_authority_reserves_between_settlement_commits() {
     use super::super::pir::SettlementGate;
     use crate::wallet::sync::hardware_authority::await_authority_within;
-    use zakura_pir_transparent::WriteGate as _;
+    use zakura_pir_client::transparent::WriteGate as _;
 
     let mut wallet = wallet();
     let _mode = activate(&mut wallet).await;
