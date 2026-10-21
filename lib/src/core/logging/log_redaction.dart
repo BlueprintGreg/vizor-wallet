@@ -194,14 +194,23 @@ final _uuid = RegExp(
   '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
 );
 final _hex = RegExp('(?:0[xX])?[0-9a-fA-F]{32,}');
-final _paymentUri = RegExp('\\b[zZ][cC][aA][sS][hH]:[^$_space\'"<>]+');
-final _ur = RegExp('\\b[uU][rR]:[A-Za-z0-9\\-]+/[^$_space\'"<>]+');
+// Match both opaque payloads together so an embedded URI cannot be replaced
+// before its enclosing URI. Group 1 distinguishes payment URIs from URs.
+final _opaqueUri = RegExp(
+  '\\b(?:([zZ][cC][aA][sS][hH]:)|[uU][rR]:[A-Za-z0-9\\-]+/)'
+  '[^$_space\'"<>]+',
+);
 final _key = RegExp('($_notAlnum|^)${_bech32(_keyHrps)}');
 final _address = RegExp(
   '($_notAlnum|^)(?:${_bech32(_addressHrps)}|$_transparent)',
 );
 
 String _redactOnce(String text) => text
+    // Component replacements introduce '<' tokens that would truncate a URI.
+    .replaceAllMapped(
+      _opaqueUri,
+      (m) => m[1] == null ? '<ur>' : '<payment-uri>',
+    )
     .replaceAllMapped(
       _url,
       (m) => '${m[1]}${m[2]}${m[3] == null ? '' : '/<path>'}',
@@ -216,7 +225,5 @@ String _redactOnce(String text) => text
       final prefixed = value[1] == 'x' || value[1] == 'X';
       return value.length - (prefixed ? 2 : 0) == 64 ? '<txid>' : '<hex>';
     })
-    .replaceAll(_paymentUri, '<payment-uri>')
-    .replaceAll(_ur, '<ur>')
     .replaceAllMapped(_key, (m) => '${m[1]}<key>')
     .replaceAllMapped(_address, (m) => '${m[1]}<address>');

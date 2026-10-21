@@ -208,8 +208,7 @@ struct Rules {
     unix_path: Regex,
     uuid: Regex,
     hex: Regex,
-    payment_uri: Regex,
-    ur: Regex,
+    opaque_uri: Regex,
     key: Regex,
     address: Regex,
 }
@@ -231,9 +230,10 @@ static RULES: LazyLock<Rules> = LazyLock::new(|| {
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}".into(),
         ),
         hex: rule("(?:0[xX])?[0-9a-fA-F]{32,}".into()),
-        payment_uri: rule(format!(r#"(?-u:\b)[zZ][cC][aA][sS][hH]:[^{SPACE}'"<>]+"#)),
-        ur: rule(format!(
-            r#"(?-u:\b)[uU][rR]:[A-Za-z0-9\-]+/[^{SPACE}'"<>]+"#
+        // Match both opaque payloads together so an embedded URI cannot be
+        // replaced before its enclosing URI. Group 1 identifies payment URIs.
+        opaque_uri: rule(format!(
+            r#"(?-u:\b)(?:([zZ][cC][aA][sS][hH]:)|[uU][rR]:[A-Za-z0-9\-]+/)[^{SPACE}'"<>]+"#
         )),
         key: rule(format!("({NOT_ALNUM}|^){}", bech32(KEY_HRPS))),
         address: rule(format!(
@@ -255,6 +255,14 @@ fn bech32(hrps: &[&str]) -> String {
 fn redact_once(text: &str) -> Cow<'_, str> {
     let rules = &*RULES;
     let text = Cow::Borrowed(text);
+    // Component replacements introduce '<' tokens that would truncate a URI.
+    let text = replace(text, &rules.opaque_uri, |caps: &Captures| {
+        if caps.get(1).is_some() {
+            "<payment-uri>"
+        } else {
+            "<ur>"
+        }
+    });
     let text = replace(text, &rules.url, |caps: &Captures| {
         let path = if caps.get(3).is_some() { "/<path>" } else { "" };
         format!("{}{}{path}", &caps[1], &caps[2])
@@ -274,8 +282,6 @@ fn redact_once(text: &str) -> Cow<'_, str> {
             "<hex>"
         }
     });
-    let text = replace(text, &rules.payment_uri, "<payment-uri>");
-    let text = replace(text, &rules.ur, "<ur>");
     let text = replace(text, &rules.key, "${1}<key>");
     replace(text, &rules.address, "${1}<address>")
 }
@@ -413,6 +419,32 @@ mod tests {
                 "send: broadcast <txid> from <path> at height 3201456".to_string(),
             )]
         );
+    }
+
+    #[test]
+    fn opaque_uri_vectors_are_fully_masked_by_logger_and_panic_report() {
+        let logger = RedactingLogger::new(Capture::default());
+        for case in cases().into_iter().filter(|case| {
+            case.expected.contains("<payment-uri>") || case.expected.contains("<ur>")
+        }) {
+            logger.log(
+                &Record::builder()
+                    .args(format_args!("{}", case.input))
+                    .level(Level::Warn)
+                    .build(),
+            );
+            let records = logger.inner.records.lock().unwrap();
+            assert_eq!(records.last().unwrap().4, case.expected, "{}", case.name);
+            assert_eq!(
+                panic_report("worker", "src/test.rs:1:1", &case.input, None),
+                format!(
+                    "thread 'worker' panicked at src/test.rs:1:1:\n{}\n",
+                    case.expected
+                ),
+                "{}",
+                case.name
+            );
+        }
     }
 
     #[test]

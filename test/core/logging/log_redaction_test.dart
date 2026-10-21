@@ -141,6 +141,19 @@ void main() {
       ]);
     });
 
+    test('opaque URI vectors are fully masked through the installed sinks', () {
+      installLogRedaction();
+      for (final c in cases.where(
+        (c) =>
+            c.expected.contains('<payment-uri>') || c.expected.contains('<ur>'),
+      )) {
+        printed.clear();
+        debugPrint(c.input);
+        log(c.input);
+        expect(printed, [c.expected, '[zcash] ${c.expected}'], reason: c.name);
+      }
+    });
+
     test(
       'deduplication preserves cascading matches across both pass budgets',
       () {
