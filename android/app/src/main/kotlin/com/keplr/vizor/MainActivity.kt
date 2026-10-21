@@ -15,7 +15,7 @@ import io.flutter.plugin.common.EventChannel
 
 // FlutterFragmentActivity: BiometricPrompt requires a FragmentActivity host.
 class MainActivity : FlutterFragmentActivity() {
-    private val appPrivacyProtection by lazy { AppPrivacyProtection(this) }
+    private val appPrivacyProtection by lazy { AppPrivacyProtection(this, capturePreview = { flutterEngine?.renderer?.bitmap }) }
     private lateinit var deviceOwnerAuthHandler: DeviceOwnerAuthHandler
     private lateinit var sensitiveClipboardHandler: SensitiveClipboardHandler
     private var incomingUriChannel: MethodChannel? = null
@@ -112,6 +112,17 @@ class MainActivity : FlutterFragmentActivity() {
                 "sendSuccess" -> result.success(performSendSuccessHaptic())
                 "sendFailure" -> result.success(performSendFailureHaptic())
                 else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "com.zcash.wallet/app_privacy").setMethodCallHandler { call, result ->
+            if (call.method != "setSolidBackground") {
+                result.notImplemented()
+            } else {
+                val solid = (call.arguments as? Map<*, *>)?.get("solid") as? Boolean
+                if (solid == null) result.error("bad_args", "Expected solid argument.", null)
+                else { appPrivacyProtection.setSolidBackground(solid); result.success(null) }
             }
         }
 
@@ -336,6 +347,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        appPrivacyProtection.close()
         if (::ledgerMobileHandler.isInitialized) ledgerMobileHandler.close()
         super.onDestroy()
     }

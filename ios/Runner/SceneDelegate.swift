@@ -70,22 +70,66 @@ class SceneDelegate: FlutterSceneDelegate {
   }
 }
 
-/// A native, opaque app-switcher cover. It never changes screenshot exclusion
+/// Shared with the method channel, independently of capture exclusion.
+final class AppBackgroundPrivacyPolicy {
+  static let shared = AppBackgroundPrivacyPolicy()
+  static let changed = Notification.Name("VizorAppBackgroundPrivacyChanged")
+  private var solidBackground = true
+  private var captureSensitive = false
+  var isSolid: Bool { solidBackground || captureSensitive }
+
+  func setSolidBackground(_ solid: Bool) {
+    solidBackground = solid
+    NotificationCenter.default.post(name: Self.changed, object: self)
+  }
+
+  func setCaptureSensitive(_ visible: Bool) {
+    captureSensitive = visible
+    NotificationCenter.default.post(name: Self.changed, object: self)
+  }
+}
+
+/// A native app-switcher cover. It never changes screenshot exclusion
 /// (SecureScreenshotShield owns that policy for sensitive screens only).
 /// Kept with SceneDelegate so every Runner build includes the lifecycle owner.
 final class AppPrivacyOverlay {
   private let windows: () -> [UIWindow]
   private var covers: [ObjectIdentifier: UIView] = [:]
+  private let isSolid: () -> Bool
+  private var solidLatched = false
+  private var policyObserver: NSObjectProtocol?
 
-  init(windows: @escaping () -> [UIWindow]) {
+  init(
+    windows: @escaping () -> [UIWindow],
+    isSolid: @escaping () -> Bool = { AppBackgroundPrivacyPolicy.shared.isSolid }
+  ) {
     self.windows = windows
+    self.isSolid = isSolid
+    policyObserver = NotificationCenter.default.addObserver(
+      forName: AppBackgroundPrivacyPolicy.changed, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self, !self.covers.isEmpty, self.isSolid() else { return }
+      self.show()
+    }
+  }
+
+  deinit {
+    if let policyObserver { NotificationCenter.default.removeObserver(policyObserver) }
+    covers.values.forEach { $0.removeFromSuperview() }
   }
 
   func show() {
+    solidLatched = solidLatched || isSolid()
     UIView.performWithoutAnimation {
       for window in windows() {
         let key = ObjectIdentifier(window)
-        let cover = covers[key] ?? makeCover()
+        if let oldCover = covers[key],
+          (oldCover.tag == 1) != solidLatched
+        {
+          oldCover.removeFromSuperview()
+          covers.removeValue(forKey: key)
+        }
+        let cover = covers[key] ?? makeCover(solid: solidLatched)
         cover.frame = window.bounds
         if cover.superview !== window {
           window.addSubview(cover)
@@ -100,16 +144,29 @@ final class AppPrivacyOverlay {
   func hide() {
     covers.values.forEach { $0.removeFromSuperview() }
     covers.removeAll()
+    solidLatched = false
   }
 
-  private func makeCover() -> UIView {
+  private func makeCover(solid: Bool) -> UIView {
     let cover = UIView()
-    cover.backgroundColor = UIColor { traits in
+    cover.tag = solid ? 1 : 0
+    let fill = UIColor { traits in
       traits.userInterfaceStyle == .dark
         ? UIColor(red: 20 / 255, green: 24 / 255, blue: 24 / 255, alpha: 1)
         : .white
     }
+    cover.backgroundColor = solid ? fill : .clear
     cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    if !solid {
+      let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+      blur.frame = cover.bounds
+      blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      cover.addSubview(blur)
+      let tint = UIView(frame: cover.bounds)
+      tint.backgroundColor = fill.withAlphaComponent(0.35)
+      tint.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      cover.addSubview(tint)
+    }
     cover.isAccessibilityElement = true
     cover.accessibilityLabel = "Sensitive content hidden"
     cover.accessibilityViewIsModal = true

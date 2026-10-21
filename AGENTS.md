@@ -419,17 +419,28 @@ transparent addresses had activity.
 
 ### Mobile Screen Privacy
 
-Mobile app-switcher privacy belongs to the native app lifecycle, independently
-of the current route: iOS `SceneDelegate` / `AppPrivacyOverlay` and Android
-`AppPrivacyProtection` cover the whole app before background snapshots.
-Android also protects on window focus loss: live recents can keep the Activity
-resumed, so neither `onPause` nor the recents-only API is sufficient by itself.
-Ordinary foreground screens allow screenshots and recording. Screens showing
-secret material use `SensitiveCaptureGuard` to request native capture exclusion
-only while that material is visible. Do not add screen-local background blur
-controllers to mobile screens. Keep `RouteCoverageAware` on import screens so
-capture exclusion survives route transitions and releases after full coverage.
-Desktop screens continue to use `SensitivePrivacyOverlay`.
+Mobile app-switcher privacy belongs to the native app lifecycle: iOS
+`SceneDelegate` / `AppPrivacyOverlay` and Android `AppPrivacyProtection`.
+Ordinary screens use a strong blur; the five existing secret-screen scopes
+(create/import/review seed, settings seed, viewing key) use a solid cover,
+including their access gates and hidden-secret states. `AppPrivacyHost` and
+`SensitiveCaptureGuard` send background policy separately from capture policy.
+Solid takes priority through transitions and translucent overlays; lowering it
+to blur waits for an ordinary frame's raster timing. Native covers never
+weaken from solid while inactive. Unknown policy or unavailable blur stays solid.
+
+Ordinary foreground screens allow screenshots and recording. Secret material
+still requests native capture exclusion only while visible. Android protects
+at focus loss as well as pause: live recents may retain a resumed Activity.
+For ordinary blur it hides the source content subtree and keeps FLAG_SECURE
+until the opaque preview frame commits; only that cover may enter recents.
+Preview images are memory-only and never generated for solid secret screens.
+Some Android launchers (verified on API 30) retain the initial secure/theme
+snapshot even after a blur cover commits. Keep that opaque OS fallback rather
+than permitting an original-content snapshot to force a blur preview.
+Do not add screen-local background blur controllers. Keep `RouteCoverageAware`
+on import screens so capture exclusion survives transitions and releases after
+full coverage. Desktop continues to use `SensitivePrivacyOverlay`.
 
 ### Dart Provider Structure
 

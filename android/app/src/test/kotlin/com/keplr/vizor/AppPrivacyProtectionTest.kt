@@ -2,6 +2,9 @@ package com.keplr.vizor
 
 import android.app.Activity
 import android.os.Build
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import org.junit.Assert.*
@@ -22,7 +25,7 @@ class AppPrivacyProtectionTest {
     @Before fun setUp() {
         activity = spy(Robolectric.buildActivity(Activity::class.java).setup().get())
         if (Build.VERSION.SDK_INT >= 33) {
-            doNothing().`when`(activity).setRecentsScreenshotEnabled(false)
+            doNothing().`when`(activity).setRecentsScreenshotEnabled(anyBoolean())
         }
         protection = AppPrivacyProtection(activity)
         protection.onCreate()
@@ -112,5 +115,87 @@ class AppPrivacyProtectionTest {
         protection.onWindowFocusChanged(true)
         assertTrue(isSecure())
         assertEquals(0, coverCount())
+    }
+
+    private fun blurProtection(commit: ((() -> Unit) -> Unit)): AppPrivacyProtection =
+        AppPrivacyProtection(activity, capturePreview = {
+            Bitmap.createBitmap(240, 480, Bitmap.Config.ARGB_8888).apply {
+                eraseColor(Color.MAGENTA)
+            }
+        }, afterFrame = { _, callback -> commit(callback) }).also {
+            protection.close()
+            protection = it
+            it.onCreate()
+            resumeFocused()
+            it.setSolidBackground(false)
+        }
+
+    @Test fun blurCannotReleaseCaptureUntilCoverCommitsAndOriginalIsHidden() {
+        var committed: (() -> Unit)? = null
+        blurProtection { committed = it }
+        protection.onWindowFocusChanged(false)
+        assertTrue(isSecure())
+        assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        committed!!()
+        assertFalse(isSecure())
+        if (Build.VERSION.SDK_INT >= 33) verify(activity).setRecentsScreenshotEnabled(true)
+        protection.onPause()
+        assertFalse(isSecure())
+        resumeFocused()
+        assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertEquals(0, coverCount())
+    }
+
+    @Test fun staleFrameCommitCannotReleaseSensitiveProtectionOrSurviveResume() {
+        var committed: (() -> Unit)? = null
+        blurProtection { committed = it }
+        protection.onWindowFocusChanged(false)
+        protection.setSolidBackground(true)
+        committed!!()
+        assertTrue(isSecure())
+        protection.setSolidBackground(false)
+        assertTrue(isSecure()) // Solid is latched until foreground.
+        resumeFocused()
+        committed!!()
+        protection.setSensitiveContentVisible(true)
+        protection.onWindowFocusChanged(false)
+        assertTrue(isSecure())
+    }
+
+    @Test fun secretScreensNeverRequestAPreviewEvenWhenTheSecretIsHidden() {
+        var requests = 0
+        protection.close()
+        protection = AppPrivacyProtection(activity, capturePreview = { requests++; null })
+        protection.onCreate()
+        resumeFocused()
+        protection.setSolidBackground(true)
+        protection.onPause()
+        assertEquals(0, requests)
+        assertTrue(isSecure())
+    }
+
+    @Test fun missingPreviewFailsClosedAndBlurOutputIsSmallAndOpaque() {
+        protection.setSolidBackground(false)
+        protection.onPause()
+        assertTrue(isSecure())
+        val source = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
+        val result = AppPrivacyProtection.blurredPreview(source)
+        assertEquals(24, result.width)
+        assertEquals(53, result.height)
+        assertEquals(255, Color.alpha(result.getPixel(12, 26)))
+        result.recycle()
+        source.recycle()
+    }
+    @Test fun readbackMemoryFailureKeepsAnOpaqueCover() {
+        protection.close()
+        protection = AppPrivacyProtection(activity, capturePreview = {
+            throw OutOfMemoryError("simulated readback allocation failure")
+        })
+        protection.onCreate()
+        resumeFocused()
+        protection.setSolidBackground(false)
+        protection.onWindowFocusChanged(false)
+        assertTrue(isSecure())
+        assertEquals(1, coverCount())
     }
 }

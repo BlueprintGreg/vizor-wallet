@@ -16,7 +16,7 @@ class RunnerTests: XCTestCase {
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
     let content = UIView(frame: window.bounds)
     window.addSubview(content)
-    let privacy = AppPrivacyOverlay(windows: { [window] })
+    let privacy = AppPrivacyOverlay(windows: { [window] }, isSolid: { true })
     privacy.show()
     let cover = window.subviews.last!
     XCTAssertTrue(cover !== content)
@@ -48,6 +48,39 @@ class RunnerTests: XCTestCase {
     privacy.hide()
     XCTAssertNil(firstCover.superview)
     XCTAssertTrue(second.subviews.isEmpty)
+  }
+
+  func testAppPrivacyOrdinaryScreenUsesBlurAndSolidWinsUntilResume() {
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+    var solid = false
+    let privacy = AppPrivacyOverlay(windows: { [window] }, isSolid: { solid })
+    privacy.show()
+    XCTAssertTrue(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    solid = true
+    privacy.show()
+    XCTAssertFalse(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    XCTAssertEqual(window.subviews.last!.backgroundColor?.cgColor.alpha, 1)
+    solid = false
+    privacy.show()
+    XCTAssertFalse(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    privacy.hide()
+    privacy.show()
+    XCTAssertTrue(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+  }
+
+  func testAppPrivacyPolicyUpgradesExistingBlurWithoutAnotherLifecycleEvent() {
+    let policy = AppBackgroundPrivacyPolicy.shared
+    defer { policy.setSolidBackground(true); policy.setCaptureSensitive(false) }
+    policy.setSolidBackground(false)
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+    let privacy = AppPrivacyOverlay(windows: { [window] })
+    privacy.show()
+    XCTAssertTrue(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    policy.setCaptureSensitive(true)
+    XCTAssertFalse(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    policy.setCaptureSensitive(false)
+    XCTAssertFalse(window.subviews.last!.subviews.contains { $0 is UIVisualEffectView })
+    privacy.hide()
   }
 
   func testAppPrivacyDoesNotDisableSensitiveCaptureProtection() {
