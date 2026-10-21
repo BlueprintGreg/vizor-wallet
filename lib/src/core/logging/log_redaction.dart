@@ -12,10 +12,12 @@ library;
 
 import 'package:flutter/foundation.dart';
 
-/// Redacts [text] until it stops changing, so the result is idempotent.
-String redactLogText(String text) {
+/// Redacts [text] in bounded passes, stopping when it no longer changes.
+String redactLogText(String text) => _redactWithPassLimit(text, _maxPasses);
+
+String _redactWithPassLimit(String text, int limit) {
   var current = text;
-  for (var pass = 0; pass < _maxPasses; pass++) {
+  for (var pass = 0; pass < limit; pass++) {
     final next = _redactOnce(current);
     if (next == current) break;
     current = next;
@@ -23,17 +25,43 @@ String redactLogText(String text) {
   return current;
 }
 
-/// Wraps [next] so every message is redacted before it is printed.
-DebugPrintCallback redactingDebugPrint(DebugPrintCallback next) =>
-    (String? message, {int? wrapWidth}) => next(
-      message == null ? null : redactLogText(message),
-      wrapWidth: wrapWidth,
-    );
+// Track only our own wrappers, without retaining discarded output callbacks
+// or any log text. Never infer that a message is safe from its contents.
+final _redactingOutputs = Expando<DebugPrintCallback>();
+
+/// Wraps [next] so every message is redacted before it is printed. Wrapping
+/// one of our wrappers again returns it unchanged.
+DebugPrintCallback redactingDebugPrint(DebugPrintCallback next) {
+  if (_redactingOutputs[next] != null) return next;
+  void wrapped(String? message, {int? wrapWidth}) => next(
+    message == null ? null : redactLogText(message),
+    wrapWidth: wrapWidth,
+  );
+  final DebugPrintCallback callback = wrapped;
+  _redactingOutputs[callback] = next;
+  return callback;
+}
+
+/// Redacts before printing, even before installation or after another caller
+/// replaces [debugPrint]. Only bypasses our own wrapper's redundant scan;
+/// its downstream output still runs, with the same wrapping and throttling.
+void printRedactedLog(String? message, {int? wrapWidth}) {
+  final current = debugPrint;
+  final downstream = _redactingOutputs[current];
+  // The installed wrapper used to add another four passes after the caller.
+  // Preserve that budget for cascading matches, but stop as soon as the
+  // text is stable instead of starting a redundant second scan.
+  final limit = downstream == null ? _maxPasses : 2 * _maxPasses;
+  (downstream ?? current)(
+    message == null ? null : _redactWithPassLimit(message, limit),
+    wrapWidth: wrapWidth,
+  );
+}
 
 /// Prints an uncaught asynchronous error through the redactor instead of the
 /// engine's own unhandled-exception report, which would print it verbatim.
 bool reportUncaughtError(Object error, StackTrace stack) {
-  debugPrint(redactLogText('Unhandled Exception: $error\n$stack'));
+  printRedactedLog('Unhandled Exception: $error\n$stack');
   return true;
 }
 

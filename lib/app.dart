@@ -172,7 +172,7 @@ import 'src/providers/payment_request_flow_provider.dart';
 
 /// Prints an app log line. Identifier-shaped values are masked in every build
 /// mode; see [redactLogText] for what that does and does not catch.
-void log(String message) => debugPrint('[zcash] ${redactLogText(message)}');
+void log(String message) => printRedactedLog('[zcash] $message');
 
 StreamSubscription<rust_voting.ApiVotingObservability>?
 _votingObservabilitySubscription;
