@@ -9,7 +9,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../../main.dart' show log;
 import '../../../../core/clipboard/sensitive_clipboard.dart';
 import '../../../../core/layout/mobile/mobile_top_nav.dart';
-import '../../../../core/privacy/sensitive_privacy_overlay.dart';
+import '../../../../core/privacy/sensitive_capture_guard.dart';
 import '../../../../core/storage/wallet_paths.dart';
 import '../../../../core/feedback/app_haptics.dart';
 import '../../../../core/theme/app_theme.dart';
@@ -39,15 +39,11 @@ enum _ViewingKeyStage { confirmAccess, reveal }
 class MobileViewingKeyScreen extends ConsumerStatefulWidget {
   const MobileViewingKeyScreen({
     this.accountUuid,
-    this.privacyOverlayController,
     this.viewingKeysLoader,
     super.key,
   });
 
   final String? accountUuid;
-
-  @visibleForTesting
-  final SensitivePrivacyOverlayController? privacyOverlayController;
 
   /// Test seam — production calls `rust_wallet.getAccountViewingKeys` directly.
   @visibleForTesting
@@ -130,16 +126,9 @@ class _MobileViewingKeyScreenState
   String? _revealError;
   ViewingKeyType? _selectedType;
 
-  late final bool _ownsPrivacyController;
-  late final SensitivePrivacyOverlayController _privacyController;
-
   @override
   void initState() {
     super.initState();
-    _ownsPrivacyController = widget.privacyOverlayController == null;
-    _privacyController =
-        widget.privacyOverlayController ??
-        SensitivePrivacyEnvironmentController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_tryBiometricGate());
     });
@@ -147,7 +136,6 @@ class _MobileViewingKeyScreenState
 
   @override
   void dispose() {
-    if (_ownsPrivacyController) _privacyController.dispose();
     _viewingKeys = null;
     super.dispose();
   }
@@ -170,15 +158,9 @@ class _MobileViewingKeyScreenState
     if (!biometric.usable) return;
     final wasEnabled = biometric.enabled;
     setState(() => _checking = true);
-    _privacyController.beginAuthPrompt();
-    String? readResult;
-    try {
-      readResult = await ref
-          .read(biometricUnlockProvider.notifier)
-          .readPasscode(reason: 'Confirm access to your viewing key');
-    } finally {
-      _privacyController.endAuthPrompt();
-    }
+    final readResult = await ref
+        .read(biometricUnlockProvider.notifier)
+        .readPasscode(reason: 'Confirm access to your viewing key');
     if (!mounted) return;
     if (accessCheckGeneration != _accessCheckGeneration ||
         _targetAccountChanged(expectedAccountUuid)) {
@@ -384,10 +366,9 @@ class _MobileViewingKeyScreenState
         child: Scaffold(
           backgroundColor: colors.background.window,
           body: AppToastHost(
-            child: SensitivePrivacyOverlay(
+            child: SensitiveCaptureGuard(
               sensitiveContentVisible:
                   _stage == _ViewingKeyStage.reveal && _viewingKeys != null,
-              controller: _privacyController,
               child: SafeArea(
                 child: Column(
                   children: [

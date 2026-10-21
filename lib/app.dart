@@ -33,6 +33,7 @@ import 'src/core/navigation/windows_update_prompt_policy.dart';
 import 'src/core/navigation/payload_page_key.dart';
 import 'src/core/motion/onboarding_motion.dart';
 import 'src/core/security/background_auto_lock_host.dart';
+import 'src/core/privacy/app_privacy_host.dart';
 import 'src/core/theme/app_theme.dart';
 import 'src/core/theme/app_theme_host.dart';
 import 'src/core/theme/legacy_material_theme.dart';
@@ -1935,7 +1936,7 @@ class ZcashWalletApp extends ConsumerWidget {
         return kAppFormFactor == AppFormFactor.mobile
             ? MobileWindowPolicyScope(
                 policy: MobileWindowPolicy.resolve(MediaQuery.of(context)),
-                child: app,
+                child: AppPrivacyHost(child: app),
               )
             : app;
       },
