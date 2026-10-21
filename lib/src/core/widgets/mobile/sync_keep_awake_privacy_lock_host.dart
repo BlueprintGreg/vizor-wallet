@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../features/onboarding/mobile/mobile_passcode_screen.dart';
 import '../../../features/onboarding/mobile/passcode_widgets.dart';
+import '../../../features/onboarding/mobile/adaptive_passcode_layout.dart';
 import '../../../features/onboarding/shared/onboarding_welcome_art.dart';
 import '../../../providers/app_security_provider.dart';
 import '../../../providers/biometric_unlock_provider.dart';
@@ -650,48 +651,71 @@ class _SyncKeepAwakePasscodeConfirmScreen extends StatelessWidget {
                     final topGap = compact ? 0.0 : AppSpacing.md;
                     final sectionGap = compact ? AppSpacing.xs : AppSpacing.md;
 
-                    return Padding(
-                      padding: EdgeInsets.symmetric(
+                    return AdaptivePasscodeLayout(
+                      title: 'Welcome Back',
+                      subtitle: _bodyForMode(),
+                      prompt: PasscodePromptField(
+                        length: kMobilePasscodeLength,
+                        filled: entryLength,
+                        error: error,
+                        minGap: 0,
+                      ),
+                      keypad: PasscodeNumpad(
+                        onDigit: onDigit,
+                        onBackspace: onBackspace,
+                        canDelete: entryLength > 0,
+                        enabled: !submitting,
+                      ),
+                      legacyPadding: EdgeInsets.symmetric(
                         horizontal: AppSpacing.sm,
                         vertical: verticalPadding,
                       ),
-                      child: Column(
-                        children: [
-                          SizedBox(height: topGap),
-                          Text(
-                            'Welcome Back',
-                            textAlign: TextAlign.center,
-                            style: AppTypography.displayLarge.copyWith(
-                              color: colors.text.accent,
+                      legacySpacing: topGap + AppSpacing.s + sectionGap * 2,
+                      legacyCentersPrompt: false,
+                      legacyKeypadGap: sectionGap,
+                      legacy: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: AppSpacing.sm,
+                          vertical: verticalPadding,
+                        ),
+                        child: Column(
+                          children: [
+                            SizedBox(height: topGap),
+                            Text(
+                              'Welcome Back',
+                              textAlign: TextAlign.center,
+                              style: AppTypography.displayLarge.copyWith(
+                                color: colors.text.accent,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: AppSpacing.s),
-                          Text(
-                            _bodyForMode(),
-                            textAlign: TextAlign.center,
-                            style: AppTypography.bodyMediumStrong.copyWith(
-                              color: colors.text.primary,
+                            const SizedBox(height: AppSpacing.s),
+                            Text(
+                              _bodyForMode(),
+                              textAlign: TextAlign.center,
+                              style: AppTypography.bodyMediumStrong.copyWith(
+                                color: colors.text.primary,
+                              ),
                             ),
-                          ),
-                          SizedBox(height: sectionGap),
-                          SizedBox(
-                            height: kPasscodePromptDigitsHeight,
-                            child: PasscodePromptField(
-                              length: kMobilePasscodeLength,
-                              filled: entryLength,
-                              error: error,
-                              minGap: 0,
+                            SizedBox(height: sectionGap),
+                            SizedBox(
+                              height: kPasscodePromptDigitsHeight,
+                              child: PasscodePromptField(
+                                length: kMobilePasscodeLength,
+                                filled: entryLength,
+                                error: error,
+                                minGap: 0,
+                              ),
                             ),
-                          ),
-                          SizedBox(height: sectionGap),
-                          PasscodeNumpad(
-                            onDigit: onDigit,
-                            onBackspace: onBackspace,
-                            canDelete: entryLength > 0,
-                            enabled: !submitting,
-                          ),
-                          const Spacer(),
-                        ],
+                            SizedBox(height: sectionGap),
+                            PasscodeNumpad(
+                              onDigit: onDigit,
+                              onBackspace: onBackspace,
+                              canDelete: entryLength > 0,
+                              enabled: !submitting,
+                            ),
+                            const Spacer(),
+                          ],
+                        ),
                       ),
                     );
                   },
