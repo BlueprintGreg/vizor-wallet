@@ -4152,12 +4152,55 @@ final swapRecoveryUpdateRequiredProvider =
       SwapRecoveryUpdateRequired.new,
     );
 
+/// Reads the wallet's saved swap recovery state without network access, or
+/// null without a wallet. Overridable in tests.
+final swapRecoveryStatusReaderProvider =
+    Provider<Future<rust_swap.SwapRecoveryStatus?> Function()>((ref) {
+      return () async {
+        final path = await getExistingWalletDbPath();
+        if (path == null) return null;
+        return rust_swap.getSwapRecoveryStatus(
+          dbPath: path,
+          networkName: ref
+              .read(rpcEndpointFailoverProvider)
+              .current
+              .networkName,
+        );
+      };
+    });
+
 class SwapRecoveryUpdateRequired extends Notifier<bool> {
+  /// Whether a round has answered since this provider started, which the saved
+  /// state must not overwrite.
+  var _answered = false;
+
+  /// Starts from the wallet's saved state, so the update request shows right
+  /// after a restart instead of waiting for the first round.
   @override
-  bool build() => false;
+  bool build() {
+    _answered = false;
+    unawaited(_loadSaved());
+    return false;
+  }
+
+  /// Applies the saved state unless a round answered first. A failed read
+  /// leaves the next round to decide.
+  Future<void> _loadSaved() async {
+    try {
+      final status = await ref.read(swapRecoveryStatusReaderProvider)();
+      if (ref.mounted && !_answered && status != null) {
+        state = status.upgradeRequired;
+      }
+    } catch (error) {
+      log('Swap recovery state not read at startup: $error');
+    }
+  }
 
   /// Records the latest round's answer.
-  void set(bool required) => state = required;
+  void set(bool required) {
+    _answered = true;
+    state = required;
+  }
 }
 
 /// Counts wallet data changes that do not complete a sync: post-sync
