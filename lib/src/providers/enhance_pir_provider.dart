@@ -10,6 +10,7 @@ import '../core/storage/linux_keyring_coordinator.dart';
 import '../core/storage/wallet_paths.dart';
 import '../features/migration/services/ironwood_migration_background_credential_store.dart';
 import '../rust/api/sync.dart' as rust_sync;
+import '../rust/api/one_time_ivk.dart' as rust_swap;
 import 'account_provider.dart';
 import 'sync_provider.dart';
 
@@ -281,6 +282,9 @@ class EnhancePirNotifier extends Notifier<bool> {
 
   /// Returns the feedback to show, or `null` when everything applied.
   Future<String?> _disable() async {
+    // New private swap addresses need private queries, so their opt-in goes
+    // first; if that fails, nothing has changed.
+    await ref.read(nearSwapPrivacyProvider.notifier).disableWithParent();
     final store = ref.read(enhancePirPreferenceStoreProvider);
     final optOut = ref.read(transparentOptOutStoreProvider);
     final reconcile = ref.read(transparentPolicyReconcilerProvider);
@@ -384,3 +388,102 @@ final enhancePirTransitionProvider =
     NotifierProvider<EnhancePirTransitionNotifier, String?>(
       EnhancePirTransitionNotifier.new,
     );
+
+final nearSwapPrivacyPreferenceStoreProvider =
+    Provider<EnhancePirPreferenceStore>(
+      (_) => const SharedPreferencesEnhancePirStore(
+        key: kNearSwapPrivacyPreferenceKey,
+      ),
+    );
+
+/// Applies the effective setting to an existing wallet without creating one.
+final swapRecoveryReconcilerProvider = Provider<Future<void> Function()>((ref) {
+  return () async {
+    final path = await getExistingWalletDbPath();
+    if (path != null) {
+      await rust_swap.reconcileSwapRecovery(
+        dbPath: path,
+        networkName: ref.read(appBootstrapProvider).network,
+      );
+    }
+  };
+});
+
+/// The preference is saved even if the wallet must retry applying it.
+const kSwapRecoveryPendingMessage =
+    'Setting saved. Wallet recovery will apply it on the next check.';
+
+/// Install-scoped opt-in for private addresses and automatic receiver recovery.
+class NearSwapPrivacyNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final bootstrap = ref.watch(appBootstrapProvider);
+    return ref.watch(enhancePirAvailableProvider) &&
+        (bootstrap.enhancePirEnabled ?? true) &&
+        bootstrap.nearSwapPrivacyEnabled;
+  }
+
+  Future<void> set(bool enabled) async {
+    if (ref.read(enhancePirTransitionProvider) == kEnhancePirChangingMessage) {
+      return;
+    }
+    if (enabled && !ref.read(enhancePirProvider)) return;
+    if (enabled == state) return;
+    final transition = ref.read(enhancePirTransitionProvider.notifier);
+    transition.update(kEnhancePirChangingMessage);
+    var reconciled = true;
+    try {
+      await ref
+          .read(linuxKeyringCoordinatorProvider)
+          .runMutation(
+            () => ref.read(syncProvider.notifier).withRecoverySettingPaused(
+              () async {
+                // Recheck after draining work so a new address cannot race its parent setting.
+                if (enabled && !ref.read(enhancePirProvider)) return;
+                await ref
+                    .read(nearSwapPrivacyPreferenceStoreProvider)
+                    .writeEnabled(enabled);
+                rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
+                state = enabled;
+                reconciled = await _reconcileRecovery();
+              },
+            ),
+          );
+      transition.update(reconciled ? null : kSwapRecoveryPendingMessage);
+    } catch (error) {
+      log('NEAR swap privacy transition stopped: $error');
+      transition.update(
+        state == enabled
+            ? kSwapRecoveryPendingMessage
+            : kEnhancePirUnchangedMessage,
+      );
+    }
+  }
+
+  /// Called while the parent already holds the shared recovery pause.
+  Future<void> disableWithParent() async {
+    if (!state) return;
+    await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(false);
+    rust_sync.setNearSwapPrivacyEnabled(enabled: false);
+    state = false;
+    await _reconcileRecovery();
+  }
+
+  /// Leaves the applied preference visible when a short DB update needs retry.
+  Future<bool> _reconcileRecovery() async {
+    try {
+      await ref.read(swapRecoveryReconcilerProvider)();
+      return true;
+    } catch (error) {
+      // Every receiver round reconciles before reading work or issuing requests.
+      log('Swap recovery setting will be retried: $error');
+      return false;
+    }
+  }
+
+  Future<void> toggle() => set(!state);
+}
+
+final nearSwapPrivacyProvider = NotifierProvider<NearSwapPrivacyNotifier, bool>(
+  NearSwapPrivacyNotifier.new,
+);

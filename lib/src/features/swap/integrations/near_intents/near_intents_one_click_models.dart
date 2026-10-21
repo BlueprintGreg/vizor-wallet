@@ -198,6 +198,8 @@ class _OneClickSwapDetails {
     this.depositedAmountFormatted,
     this.originChainTxHash,
     this.destinationChainTxHash,
+    this.originChainTxHashes = const [],
+    this.destinationChainTxHashes = const [],
   });
 
   factory _OneClickSwapDetails.fromJson(Map<String, dynamic> json) {
@@ -223,6 +225,14 @@ class _OneClickSwapDetails {
       destinationChainTxHash:
           _firstChainTxHash(json, 'destinationChainTxHashes') ??
           _firstChainTxHash(json, 'destination_chain_tx_hashes'),
+      originChainTxHashes: [
+        ..._chainTxHashes(json, 'originChainTxHashes'),
+        ..._chainTxHashes(json, 'origin_chain_tx_hashes'),
+      ],
+      destinationChainTxHashes: [
+        ..._chainTxHashes(json, 'destinationChainTxHashes'),
+        ..._chainTxHashes(json, 'destination_chain_tx_hashes'),
+      ],
     );
   }
 
@@ -240,6 +250,10 @@ class _OneClickSwapDetails {
   final String? depositedAmountFormatted;
   final String? originChainTxHash;
   final String? destinationChainTxHash;
+
+  /// Every origin and destination chain transaction the provider reports.
+  final List<String> originChainTxHashes;
+  final List<String> destinationChainTxHashes;
 }
 
 const _placeholderDepositAddress = 'quote-placeholder-deposit';

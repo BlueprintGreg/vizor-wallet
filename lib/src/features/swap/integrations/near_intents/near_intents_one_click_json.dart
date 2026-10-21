@@ -56,21 +56,24 @@ String? _firstOptionalString(
   return null;
 }
 
-String? _firstChainTxHash(Map<String, dynamic> json, String key) {
+/// Every nonempty transaction hash listed under `key`, in order. Entries are
+/// objects with a hash field or bare strings.
+List<String> _chainTxHashes(Map<String, dynamic> json, String key) {
   final value = json[key];
-  if (value is! List) return null;
+  if (value is! List) return const [];
+  final hashes = <String>[];
   for (final item in value) {
-    if (item is Map) {
-      final raw = item['hash'] ?? item['txHash'] ?? item['tx_hash'];
-      final hash = raw is String ? raw.trim() : raw?.toString().trim();
-      if (hash != null && hash.isNotEmpty) return hash;
-      continue;
-    }
-    final hash = item?.toString().trim();
-    if (hash != null && hash.isNotEmpty) return hash;
+    final raw = item is Map
+        ? item['hash'] ?? item['txHash'] ?? item['tx_hash']
+        : item;
+    final hash = raw is String ? raw.trim() : raw?.toString().trim();
+    if (hash != null && hash.isNotEmpty) hashes.add(hash);
   }
-  return null;
+  return hashes;
 }
+
+String? _firstChainTxHash(Map<String, dynamic> json, String key) =>
+    _chainTxHashes(json, key).firstOrNull;
 
 SwapQuoteMode _oneClickSwapMode(String? value) {
   return switch (value?.trim().toUpperCase()) {
@@ -232,10 +235,7 @@ String _decimalStringToBaseUnits(String value, int decimals) {
 }
 
 String _expiryLabel(String? isoDate) {
-  if (isoDate == null) {
-    return 'Quote expiry pending';
-  }
-  final parsed = DateTime.tryParse(isoDate);
+  final parsed = _parseIsoDateTime(isoDate);
   if (parsed == null) {
     return 'Quote expiry pending';
   }
@@ -245,9 +245,22 @@ String _expiryLabel(String? isoDate) {
   return 'Expires $hour:$minute';
 }
 
+/// 1Click reports UTC timestamps. Dart reads one without a zone designator as
+/// device-local time, so such a timestamp is taken as UTC instead.
 DateTime? _parseIsoDateTime(String? isoDate) {
   if (isoDate == null) return null;
-  return DateTime.tryParse(isoDate)?.toUtc();
+  final parsed = DateTime.tryParse(isoDate);
+  if (parsed == null || parsed.isUtc) return parsed;
+  return DateTime.utc(
+    parsed.year,
+    parsed.month,
+    parsed.day,
+    parsed.hour,
+    parsed.minute,
+    parsed.second,
+    parsed.millisecond,
+    parsed.microsecond,
+  );
 }
 
 String _rateText({
@@ -265,10 +278,10 @@ String _rateText({
       '${rate.toStringAsFixed(precision)} ${receiveAsset.symbol}';
 }
 
-SwapIntentStatus _statusFromOneClick(String status, SwapQuote quote) {
+SwapIntentStatus _statusFromOneClick(String status, SwapDirection direction) {
   return switch (status) {
     'PENDING_DEPOSIT' =>
-      quote.direction.sendsZec
+      direction.sendsZec
           ? SwapIntentStatus.awaitingDeposit
           : SwapIntentStatus.awaitingExternalDeposit,
     'KNOWN_DEPOSIT_TX' => SwapIntentStatus.depositObserved,
@@ -281,11 +294,13 @@ SwapIntentStatus _statusFromOneClick(String status, SwapQuote quote) {
   };
 }
 
-String _nextAction(SwapIntentStatus status, SwapQuote quote) {
+/// The next step for `status`. `depositSymbol` is null for a token the provider
+/// no longer lists.
+String _nextAction(SwapIntentStatus status, String? depositSymbol) {
   return switch (status) {
     SwapIntentStatus.awaitingDeposit ||
     SwapIntentStatus.awaitingExternalDeposit =>
-      'Send ${quote.sellAsset.symbol} to the one-time deposit address',
+      'Send ${depositSymbol ?? 'the deposit'} to the one-time deposit address',
     SwapIntentStatus.depositObserved => 'Deposit detected',
     SwapIntentStatus.processing => 'Swap is processing',
     SwapIntentStatus.providerStatusUnknown =>
