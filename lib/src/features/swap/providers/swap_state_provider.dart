@@ -2405,13 +2405,16 @@ class SwapNotifier extends Notifier<SwapState> {
           depositMemo: intent.depositMemo,
         );
     // Like a refreshed status, it decides when the swap's key stops scanning.
-    // Failing to record it only delays that.
+    // Failing to record it only delays that. Only a terminal status's failure
+    // reaches here (see `recordProviderSnapshot`), and saving that status would
+    // end polling, so the swap stays open until a refresh records it.
     try {
       await ref
           .read(swapActivityTrackerProvider)
           .recordProviderSnapshot(intent, snapshot, checkedAt);
     } catch (e) {
       log('Swap: deposit status not recorded in the wallet error=$e');
+      return snapshot.withStatus(SwapIntentStatus.providerStatusUnknown);
     }
     return snapshot;
   }

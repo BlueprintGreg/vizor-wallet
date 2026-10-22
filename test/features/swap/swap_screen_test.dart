@@ -10008,6 +10008,67 @@ void main() {
     expect(find.text('zec-auto-txid'), findsWidgets);
   });
 
+  testWidgets(
+    'a final deposit status the wallet fails to record keeps the swap polled',
+    (tester) async {
+      await _setDesktopViewport(tester);
+      final swapProvider = _TerminalDepositSwapProvider();
+      final sessionStore = _FakeSwapPersistenceStore();
+      var failures = 1;
+      final recorded = <SwapIntentStatus>[];
+      await tester.pumpWidget(
+        _routerHarness(
+          GoRouter(
+            initialLocation: '/swap',
+            routes: [_swapRoute(), _swapActivityRoute()],
+          ),
+          seedSwapActivityFixtures: false,
+          swapProvider: swapProvider,
+          sessionStore: sessionStore,
+          reserveSwapAddress:
+              ({required accountUuid, required direction}) async =>
+                  SwapZecStagingAddress(
+                    address: 'u1swap1',
+                    refundIndex: BigInt.one,
+                  ),
+          onProviderSnapshot: (_, snapshot, _) async {
+            if (failures-- > 0) throw StateError('database is locked');
+            recorded.add(snapshot.status);
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(SwapScreen)),
+      );
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.zecToExternal);
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      notifier.updateAmount('1.5');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+      await notifier.startIntent();
+      await tester.pumpAndSettle();
+
+      // The provider reported the swap refunded, but the wallet never recorded it.
+      expect(swapProvider.submittedDeposits, hasLength(1));
+      expect(recorded, isEmpty);
+      final submitted = sessionStore.savedIntents.single;
+      expect(submitted.privateAddress, isTrue);
+      expect(submitted.depositTxHash, 'zec-auto-txid');
+      expect(submitted.status.isTerminal, isFalse);
+
+      await notifier.refreshOpenIntentStatuses();
+      await tester.pumpAndSettle();
+
+      expect(recorded, [SwapIntentStatus.refunded]);
+      expect(
+        sessionStore.savedIntents.single.status,
+        SwapIntentStatus.refunded,
+      );
+    },
+  );
+
   testWidgets('ZEC deposit tx hash is checkpointed when submit fails', (
     tester,
   ) async {
@@ -11173,6 +11234,8 @@ Widget _routerHarness(
   Future<List<int>> Function(List<int> pcztBytes)? ledgerSigner,
   LedgerOperationCanceller? ledgerCanceller,
   LedgerSignedOperationService? ledgerOperationService,
+  Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
+  onProviderSnapshot,
 }) {
   final fixtureIntents = seedSwapActivityFixtures
       ? _accountScopedSwapActivityFixtureIntents()
@@ -11255,6 +11318,7 @@ Widget _routerHarness(
           isTorEnabled: () => ref.read(networkPrivacyProvider).torEnabled,
           onRecordsChanged: () =>
               ref.read(swapActivityRecordsRevisionProvider.notifier).bump(),
+          onProviderSnapshot: onProviderSnapshot,
         ),
       ),
       swapComposerPreferencesStoreProvider.overrideWithValue(

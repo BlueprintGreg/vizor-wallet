@@ -98,6 +98,36 @@ class SwapIntentSnapshot {
   /// longer lists one of the swap's tokens. Its pair and amounts are placeholders,
   /// so a stored swap keeps its own.
   final bool statusOnly;
+
+  /// This snapshot with `status` in place of the provider's, every other field kept.
+  SwapIntentSnapshot withStatus(SwapIntentStatus status) => SwapIntentSnapshot(
+    id: id,
+    providerLabel: providerLabel,
+    pairText: pairText,
+    sellAmountText: sellAmountText,
+    receiveEstimateText: receiveEstimateText,
+    status: status,
+    nextAction: nextAction,
+    depositInstruction: depositInstruction,
+    swapFeeText: swapFeeText,
+    totalFeesText: totalFeesText,
+    realisedSlippageText: realisedSlippageText,
+    slippageToleranceText: slippageToleranceText,
+    minimumReceiveText: minimumReceiveText,
+    providerStatusRaw: providerStatusRaw,
+    nearIntentHash: nearIntentHash,
+    originChainTxHash: originChainTxHash,
+    destinationChainTxHash: destinationChainTxHash,
+    providerRefundInfo: providerRefundInfo,
+    sellAmountBaseUnits: sellAmountBaseUnits,
+    fiatValueBasis: fiatValueBasis,
+    providerSwapType: providerSwapType,
+    refundedAmountBaseUnits: refundedAmountBaseUnits,
+    amountOutBaseUnits: amountOutBaseUnits,
+    originChainTxHashes: originChainTxHashes,
+    destinationChainTxHashes: destinationChainTxHashes,
+    statusOnly: statusOnly,
+  );
 }
 
 class SwapPricingSnapshot {

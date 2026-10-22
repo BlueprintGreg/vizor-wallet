@@ -283,6 +283,34 @@ class _FakeSwapProvider implements SwapProvider {
   }
 }
 
+/// Reports every deposit submission and status refresh as refunded, a terminal
+/// status.
+class _TerminalDepositSwapProvider extends _FakeSwapProvider {
+  _TerminalDepositSwapProvider() : super(zecDepositMemo: null);
+
+  @override
+  Future<SwapIntentSnapshot> getStatus(
+    String intentId, {
+    String? depositMemo,
+  }) async => (await super.getStatus(
+    intentId,
+    depositMemo: depositMemo,
+  )).withStatus(SwapIntentStatus.refunded);
+
+  @override
+  Future<SwapIntentSnapshot> submitDepositTransaction({
+    required String depositAddress,
+    required String txHash,
+    String? depositMemo,
+    String? nearSenderAccount,
+  }) async => (await super.submitDepositTransaction(
+    depositAddress: depositAddress,
+    txHash: txHash,
+    depositMemo: depositMemo,
+    nearSenderAccount: nearSenderAccount,
+  )).withStatus(SwapIntentStatus.refunded);
+}
+
 class _DeferredSupportedAssetsSwapProvider extends _FakeSwapProvider {
   final _supportedAssetsCompleter = Completer<List<SwapAsset>>();
 
