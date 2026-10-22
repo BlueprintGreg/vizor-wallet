@@ -52,16 +52,19 @@ pub(crate) fn provider_amount(value: &Option<String>) -> Option<Zatoshis> {
 }
 
 /// Whether `account` is a software account: one with ZIP 32 derivation metadata, from
-/// which Vizor derives its spending key (see `execute_stored_proposal`), and without a
-/// hardware signer. That includes the first account, created as `Derived`, and accounts
-/// added later as spending UFVK imports. View-only imports have no derivation.
+/// which Vizor derives its spending key (see `execute_stored_proposal`), without a
+/// hardware signer, and with an Orchard full viewing key to derive one-time keys from.
+/// That includes the first account, created as `Derived`, and accounts added later as
+/// spending UFVK imports. View-only imports have no derivation.
 fn is_software(db: &WalletDatabase, account: AccountUuid) -> Result<bool, String> {
     let account = db
         .get_account(account)
         .map_err(|e| e.to_string())?
         .ok_or("Account not found")?;
     let source = account.source();
-    Ok(source.key_derivation().is_some() && super::keys::hardware_signer_kind(source).is_none())
+    Ok(source.key_derivation().is_some()
+        && super::keys::hardware_signer_kind(source).is_none()
+        && account.ufvk().is_some_and(|ufvk| ufvk.orchard().is_some()))
 }
 
 /// Fails unless `account` is a software account (see [`is_software`]).

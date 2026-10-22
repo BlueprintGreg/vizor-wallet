@@ -1143,3 +1143,79 @@ fn a_round_traverses_each_sealed_shard_filter_once() {
     assert_eq!(idle.queries(), 0);
     assert_eq!(round.filter_traversals, 0);
 }
+
+/// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
+/// can be, is not a software account. Recovery, the status read and issuance keep working
+/// for the wallet's other accounts, with the feature off and on.
+#[test]
+fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
+    use zcash_client_backend::data_api::{
+        AccountBirthday, AccountPurpose, WalletWrite as _, Zip32Derivation,
+    };
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "an_account_without_an_orchard_key_leaves_other_accounts_working",
+    ) {
+        return;
+    }
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let seed = [9; 32];
+    let usk =
+        zcash_keys::keys::UnifiedSpendingKey::from_seed(&NETWORK, &seed, zip32::AccountId::ZERO)
+            .unwrap();
+    let ufvk = zcash_keys::keys::UnifiedFullViewingKey::new(
+        Some(usk.transparent().to_account_pubkey()),
+        Some(usk.sapling().to_diversifiable_full_viewing_key()),
+        None,
+    )
+    .unwrap();
+    wallet
+        .db()
+        .import_account_ufvk(
+            "No Orchard",
+            &ufvk,
+            &AccountBirthday::from_parts(chain.state(activation()).clone(), None),
+            AccountPurpose::Spending {
+                derivation: Some(Zip32Derivation::new(
+                    zip32::fingerprint::SeedFingerprint::from_seed(&seed).unwrap(),
+                    zip32::AccountId::ZERO,
+                )),
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        one_time_ivk::software_accounts(&wallet.db()).unwrap(),
+        [account.id]
+    );
+    let path = wallet.path.clone();
+    let status =
+        || crate::api::one_time_ivk::get_swap_recovery_status(path.clone(), "main".into()).unwrap();
+    let publish =
+        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
+
+    wallet.scan(&chain);
+    wallet.recover(&publish(&chain)).unwrap();
+    assert!(!status().checking_history);
+
+    enable_feature();
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    wallet.recover(&publish(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    assert!(!status().checking_history);
+    let reserved = crate::api::one_time_ivk::reserve_swap_address(
+        wallet.path.clone(),
+        "main".into(),
+        account.uuid.clone(),
+        true,
+        chain.tip().into(),
+    )
+    .map_err(|e| e.message)
+    .unwrap();
+    assert_eq!(reserved.reservation_index, Some(1));
+}
