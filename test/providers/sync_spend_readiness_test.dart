@@ -421,6 +421,66 @@ void main() {
     },
   );
 
+  for (final historyFirst in [true, false]) {
+    test(
+      'unlock preserves both reads with historyFirst=$historyFirst',
+      () async {
+        final (:sync, :container) = await setup();
+        sync.stopTipChecksForTesting();
+        await sync.clearSensitiveStateForLock();
+        expect(container.read(syncProvider).requireValue.accountUuid, isNull);
+
+        final balanceGate = api.balanceGate = Completer<void>();
+        final historyGate = api.historyGate =
+            Completer<List<rust_sync.TransactionInfo>>();
+        api.gatedBalanceRead = api.balanceReads + 1;
+        api.gatedHistoryRead = api.historyReads + 1;
+        final history = [
+          rust_sync.TransactionInfo(
+            txidHex: '01' * 32,
+            minedHeight: BigInt.from(100),
+            expiredUnmined: false,
+            accountBalanceDelta: 1,
+            fee: BigInt.zero,
+            blockTime: BigInt.from(1800000000),
+            createdTime: BigInt.from(1800000000),
+            feeState: rust_sync.TransactionFeeState.unknown,
+            detailsComplete: true,
+            provisional: false,
+            amountIncludesFee: false,
+            isTransparent: false,
+            txKind: 'received',
+            displayAmount: BigInt.one,
+            displayPool: 'shielded',
+          ),
+        ];
+        final refresh = sync.refreshAfterUnlock();
+        await pumpEventQueue();
+        if (historyFirst) {
+          historyGate.complete(history);
+        } else {
+          balanceGate.complete();
+        }
+        await pumpEventQueue();
+        final partial = container.read(syncProvider).requireValue;
+        // Keep the first result while the other read is still pending.
+        expect(partial.accountUuid, _accountUuid);
+        expect(partial.hasBalanceData, !historyFirst);
+        expect(partial.hasRecentTransactionsData, historyFirst);
+        if (historyFirst) {
+          balanceGate.complete();
+        } else {
+          historyGate.complete(history);
+        }
+        await refresh.timeout(const Duration(seconds: 2));
+        final restored = container.read(syncProvider).requireValue;
+        expect(restored.hasBalanceData, isTrue);
+        expect(restored.hasRecentTransactionsData, isTrue);
+        expect(restored.recentTransactions, history);
+      },
+    );
+  }
+
   test('late history cannot repopulate a locked wallet', () async {
     api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
     final (:sync, :container) = await setup();

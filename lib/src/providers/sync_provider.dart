@@ -3400,15 +3400,19 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         .read(pendingActivityEvidenceProvider.notifier)
         .historyReadCompleted(accountUuid, available: transactions != null);
     if (transactions == null) return;
-    final current = _previousScopedState(state.value, accountUuid);
-    if (current != null) {
-      state = AsyncData(
-        current.copyWith(
-          hasRecentTransactionsData: true,
-          recentTransactions: transactions,
-        ),
-      );
+    final current = state.value ?? SyncState();
+    if (current.accountUuid != null && !current.belongsToAccount(accountUuid)) {
+      return;
     }
+    // Unlock clears the sync account; history may return before balance.
+    state = AsyncData(
+      current
+          .scopedToAccount(accountUuid)
+          .copyWith(
+            hasRecentTransactionsData: true,
+            recentTransactions: transactions,
+          ),
+    );
   }
 
   /// Coalesce concurrent refresh triggers into one running pass.
