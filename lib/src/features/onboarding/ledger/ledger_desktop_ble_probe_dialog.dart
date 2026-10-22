@@ -12,6 +12,8 @@ import '../../ledger/ledger_device_label.dart';
 import '../../ledger/services/ledger_account_service.dart';
 import '../../ledger/services/ledger_app_readiness_service.dart';
 import '../../ledger/services/ledger_bluetooth_access.dart';
+import '../../ledger/services/ledger_bluetooth_connection.dart';
+import '../../ledger/services/ledger_device_request.dart';
 import '../../../providers/account_models.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
@@ -215,12 +217,24 @@ class _LedgerDesktopConnectModalState
   Future<void> _readAccount(int generation) async {
     try {
       if (_bluetooth) {
+        final check = ref.read(ledgerDeviceRequestsProvider).capture();
+        void checkCurrent() {
+          check();
+          if (!_current(generation)) {
+            throw const LedgerMobileException(
+              LedgerMobileFailure.cancelled,
+              'Ledger operation was cancelled.',
+            );
+          }
+        }
+
         await _stopDiscovery();
-        if (!_current(generation)) return;
-        await requireLedgerBluetoothAccess(widget.service);
-        if (!_current(generation)) return;
-        await widget.service.connect(_device!);
-        if (!_current(generation)) return;
+        checkCurrent();
+        await reconnectLedgerBluetoothDevice(
+          service: widget.service,
+          device: _device!,
+          checkCurrent: checkCurrent,
+        );
       }
       setState(() => _phase = _Phase.reading);
       final account = _bluetooth
@@ -410,13 +424,14 @@ class _LedgerDesktopConnectModalState
     }
     final procedure = !failed || (_declined && !_cleanupFailed);
     final opening = readiness.phase == LedgerAppReadinessPhase.confirmOpening;
-    final current =
-        _declinedStep ??
-        (opening
-            ? 1
-            : readiness.phase == LedgerAppReadinessPhase.ready
-            ? 2
-            : _resumingStep ?? 1);
+    final current = _bluetooth && _phase == _Phase.connecting
+        ? 0
+        : _declinedStep ??
+              (opening
+                  ? 1
+                  : readiness.phase == LedgerAppReadinessPhase.ready
+                  ? 2
+                  : _resumingStep ?? 1);
     return LedgerModalContent(
       title: procedure ? 'Connect Ledger' : 'Could not connect Ledger',
       identity:
@@ -438,7 +453,13 @@ class _LedgerDesktopConnectModalState
               topPadding: 0,
               currentStep: current,
               steps: [
-                const LedgerStep('Connect Ledger'),
+                LedgerStep(
+                  'Connect Ledger',
+                  message: current == 0
+                      ? 'Keep your Ledger nearby and unlocked, with Bluetooth turned on.'
+                      : null,
+                  busy: current == 0 && !failed,
+                ),
                 LedgerStep(
                   'Open Zcash',
                   message: current == 1
