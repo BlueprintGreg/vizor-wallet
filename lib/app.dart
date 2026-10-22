@@ -33,6 +33,7 @@ import 'src/core/navigation/windows_update_prompt_policy.dart';
 import 'src/core/navigation/payload_page_key.dart';
 import 'src/core/motion/onboarding_motion.dart';
 import 'src/core/security/background_auto_lock_host.dart';
+import 'src/core/privacy/app_privacy_host.dart';
 import 'src/core/theme/app_theme.dart';
 import 'src/core/theme/app_theme_host.dart';
 import 'src/core/theme/legacy_material_theme.dart';
@@ -157,6 +158,7 @@ import 'src/providers/payment_uri_prefill_provider.dart';
 import 'src/providers/voting/voting_share_tracking_restorer_provider.dart';
 import 'src/providers/wallet_provider.dart';
 import 'src/providers/windows_update_provider.dart';
+import 'src/core/logging/log_redaction.dart';
 import 'src/core/storage/secure_storage_diagnostics.dart';
 import 'src/core/storage/wallet_paths.dart';
 import 'src/core/widgets/linux_keyring_gate.dart';
@@ -169,7 +171,9 @@ import 'src/rust/api/simple.dart' as rust_simple;
 import 'src/services/incoming_uri_service.dart';
 import 'src/providers/payment_request_flow_provider.dart';
 
-void log(String message) => debugPrint('[zcash] $message');
+/// Prints an app log line. Identifier-shaped values are masked in every build
+/// mode; see [redactLogText] for what that does and does not catch.
+void log(String message) => printRedactedLog('[zcash] $message');
 
 StreamSubscription<rust_voting.ApiVotingObservability>?
 _votingObservabilitySubscription;
@@ -518,6 +522,7 @@ class _BootstrappedZcashWalletAppState
 }
 
 Future<void> runZcashWalletApp() async {
+  installLogRedaction();
   log('runtime: starting');
   await initializeZcashWalletRuntime();
   final Widget app = Platform.isLinux
@@ -1937,7 +1942,7 @@ class ZcashWalletApp extends ConsumerWidget {
         return kAppFormFactor == AppFormFactor.mobile
             ? MobileWindowPolicyScope(
                 policy: MobileWindowPolicy.resolve(MediaQuery.of(context)),
-                child: app,
+                child: AppPrivacyHost(child: app),
               )
             : app;
       },
