@@ -1267,3 +1267,82 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
     assert!(!wallet.state(&account).enabled);
     assert_eq!(disabling.bytes(), 0);
 }
+
+/// With the feature off, no app entry point commits to a wallet that never enabled it:
+/// the round, the production entry point, the status read, reconciling the setting,
+/// pausing a history check, and a provider status for an ordinary swap. So no recovery
+/// rows exist, and ordinary scanning pays no per-account one-time work.
+#[test]
+fn feature_off_entry_points_leave_the_wallet_untouched() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "feature_off_entry_points_leave_the_wallet_untouched",
+    ) {
+        return;
+    }
+    use crate::api::one_time_ivk as api;
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    wallet.add_account(5, activation());
+    wallet.scan(&chain);
+    let path = wallet.path.clone();
+    let main = || "main".to_string();
+    // The first API call runs the app's migrations.
+    api::get_swap_recovery_status(path.clone(), main()).unwrap();
+    let watcher = rusqlite::Connection::open(&path).unwrap();
+    let version = || {
+        watcher
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version();
+
+    assert!(
+        !wallet
+            .recover(&Service::publish(
+                &chain,
+                chain.tip(),
+                activation(),
+                chain.tip(),
+                &[]
+            ))
+            .unwrap()
+            .active
+    );
+    assert!(!api::run_swap_recovery(path.clone(), main()).unwrap());
+    api::get_swap_recovery_status(path.clone(), main()).unwrap();
+    api::reconcile_swap_recovery(path.clone(), main()).unwrap();
+    api::cancel_swap_history(path.clone(), main()).unwrap();
+    api::observe_swap_status(
+        path.clone(),
+        main(),
+        account.uuid.clone(),
+        RECEIVE,
+        "ordinary-deposit.near".into(),
+        None,
+        api::SwapProviderStatus {
+            status: "SUCCESS".into(),
+            swap_type: None,
+            refunded_amount: None,
+            amount_out: Some("100000".into()),
+            origin_tx_hashes: vec![],
+            destination_tx_hashes: vec![],
+        },
+        true,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(version(), before, "an entry point committed a write");
+    let rows: i64 = watcher
+        .query_row("SELECT COUNT(*) FROM ironwood_one_time_recovery", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    chain.mine(2);
+    wallet.scan(&chain);
+    assert_eq!(wallet.scanned(), chain.tip());
+}
