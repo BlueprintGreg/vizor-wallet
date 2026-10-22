@@ -40,6 +40,11 @@ class _FakeSwapSyncNotifier extends SyncNotifier {
   var restartCount = 0;
   var refreshAfterSendCount = 0;
   var swapRecoveryRounds = 0;
+  var swapRecoveryContinues = 0;
+
+  /// Counts recovery rounds a swap flow starts without waiting.
+  @override
+  void continueSwapRecovery() => swapRecoveryContinues++;
 
   /// Counts the receiver rounds a swap flow waits for, without native work.
   @override
@@ -633,26 +638,46 @@ class _BindingReceiveReservationStore extends Fake
   }
 }
 
-/// Incoming reservation records that refuse the first reservation as stale, as
-/// the wallet does once its latest quote expired.
+/// Incoming reservation records that refuse the first reservation with `kind`:
+/// stale, as the wallet does once its latest quote expired, or waiting on a history
+/// check, as it does once a hint queued the address again.
 class _StaleFirstReservationStore extends Fake
     implements ReceiveReservationStore {
+  _StaleFirstReservationStore([this.kind = ReceiveErrorKind.stale]);
+
+  final ReceiveErrorKind kind;
   final begun = <BigInt>[];
 
   @override
   Future<String> begin(BigInt reservation, DateTime deadline) async {
     begun.add(reservation);
     if (reservation == BigInt.one) {
-      throw const ReceiveError(
-        message: 'This swap address is no longer available.',
-        kind: ReceiveErrorKind.stale,
-      );
+      throw ReceiveError(message: 'This swap address is waiting.', kind: kind);
     }
     return 'request-$reservation';
   }
 
   @override
   Future<void> finish(String request, SwapQuote? accepted) async {}
+}
+
+/// Incoming reservation records that accept every quote but refuse to start one,
+/// as the wallet does once a hint queued the address for another history check.
+class _HistoryPendingStartStore extends Fake
+    implements ReceiveReservationStore {
+  @override
+  Future<String> begin(BigInt reservation, DateTime deadline) async =>
+      'request-$reservation';
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) async {}
+
+  @override
+  Future<ReceiveDeposit> start(String request) async =>
+      throw const ReceiveError(
+        message: 'Checking older swap addresses. Try again in a moment.',
+        kind: ReceiveErrorKind.receiveHistory,
+      );
 }
 
 /// Reserves nothing the first time, refusing with `kind` as the wallet does while

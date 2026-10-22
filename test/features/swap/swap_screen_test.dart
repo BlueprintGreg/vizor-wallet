@@ -48,7 +48,7 @@ import 'package:zcash_wallet/src/features/swap/providers/pay_selected_asset_stor
 import 'package:zcash_wallet/src/features/swap/providers/swap_composer_preferences_store.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_receive_reservation_service.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart'
-    show ReceiveError, ReceiveErrorKind;
+    show ReceiveDeposit, ReceiveError, ReceiveErrorKind;
 import 'package:zcash_wallet/src/features/swap/providers/swap_zec_staging_address_service.dart';
 import 'package:zcash_wallet/src/features/activity/screens/activity_screen.dart';
 import 'package:zcash_wallet/src/features/activity/screens/activity_transaction_status_screen.dart';
@@ -8840,6 +8840,100 @@ void main() {
       }
     });
   }
+
+  testWidgets('a quote refused while its address is rechecked uses a new one', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    var reservations = 0;
+    final store = _StaleFirstReservationStore(ReceiveErrorKind.receiveHistory);
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        swapProvider: _SendHookSwapProvider(),
+        reservationStore: store,
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          return SwapZecStagingAddress(
+            address: 'u1incoming$reservations',
+            reservationIndex: BigInt.from(reservations),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final sync = container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+    final rounds = sync.swapRecoveryRounds;
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    final state = container.read(swapStateProvider);
+    expect(state.quoteError, isNull);
+    // The rechecked address is dropped and a recovery round runs before the
+    // wallet prepares one again.
+    expect(state.reviewAddressPlan?.oneClickRecipient, 'u1incoming2');
+    expect(store.begun, [BigInt.one, BigInt.two]);
+    expect(sync.swapRecoveryRounds, rounds + 1);
+  });
+
+  testWidgets('a start refused while its address is rechecked asks to wait', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    var reservations = 0;
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        swapProvider: _SendHookSwapProvider(),
+        reservationStore: _HistoryPendingStartStore(),
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          return SwapZecStagingAddress(
+            address: 'u1incoming$reservations',
+            reservationIndex: BigInt.from(reservations),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final sync = container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(await notifier.startIntent(), isNull);
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(swapStateProvider).statusError,
+      'Checking older swap addresses. Try again in a moment.',
+    );
+    expect(sync.swapRecoveryContinues, greaterThan(0));
+    // The next quote prepares an address again instead of reusing this one.
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(reservations, 2);
+  });
 
   testWidgets('toggling NEAR swap privacy drops the cached review address', (
     tester,

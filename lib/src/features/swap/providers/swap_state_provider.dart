@@ -909,9 +909,10 @@ class SwapNotifier extends Notifier<SwapState> {
         );
       }
       final stale = receiveError?.kind == ReceiveErrorKind.stale;
-      // An incoming reservation survives other errors and is dropped only once
-      // stale, when the next attempt needs another address.
-      if (stale) {
+      // An incoming reservation survives other errors. It is dropped once stale,
+      // when the next attempt needs another address, or once its history needs
+      // checking again, since another device may have paid it.
+      if (stale || receiveError?.kind == ReceiveErrorKind.receiveHistory) {
         _dropReviewAddress(accountUuid, direction);
       }
       if (stale && retry) {
@@ -1066,15 +1067,24 @@ class SwapNotifier extends Notifier<SwapState> {
         'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
         'error=$e',
       );
+      final receiveError = _receiveError(e);
       // A reservation another request started, or whose deposit deadline
-      // passed, cannot be quoted again.
-      if (_receiveError(e)?.kind == ReceiveErrorKind.stale) {
+      // passed, cannot be quoted again. One whose history needs checking again
+      // may have been paid elsewhere, so the next quote prepares an address
+      // after a recovery round.
+      if (receiveError?.kind == ReceiveErrorKind.stale ||
+          receiveError?.kind == ReceiveErrorKind.receiveHistory) {
         _dropReviewAddress(accountUuid, quote.direction);
+      }
+      if (receiveError?.kind == ReceiveErrorKind.receiveHistory) {
+        ref.read(syncProvider.notifier).continueSwapRecovery();
       }
       state = state.copyWith(
         startSubmitting: false,
         quoteLoading: false,
-        statusError: _providerFailureMessage(SwapFailureOperation.start, e),
+        statusError: receiveError?.kind == ReceiveErrorKind.receiveHistory
+            ? receiveError!.message
+            : _providerFailureMessage(SwapFailureOperation.start, e),
       );
       return null;
     }
