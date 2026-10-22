@@ -1346,3 +1346,30 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
     wallet.scan(&chain);
     assert_eq!(wallet.scanned(), chain.tip());
 }
+
+/// The inventory descriptor cache writes nothing for a cancelled worker and never
+/// recreates a wallet database that a reset deleted while a capture was in flight.
+#[test]
+fn descriptor_cache_never_recreates_a_reset_wallet() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "descriptor_cache_never_recreates_a_reset_wallet",
+    ) {
+        return;
+    }
+    let wallet = Wallet::new(4, activation());
+    let store = DescriptorTable::new(&wallet.path, CANCEL.load(Ordering::SeqCst));
+    store.save(b"first");
+    assert_eq!(store.load().as_deref(), Some(&b"first"[..]));
+    cancel_recovery();
+    store.save(b"cancelled");
+    assert_eq!(store.load().as_deref(), Some(&b"first"[..]));
+
+    let current = DescriptorTable::new(&wallet.path, CANCEL.load(Ordering::SeqCst));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", wallet.path));
+    }
+    current.save(b"after reset");
+    assert_eq!(current.load(), None);
+    assert!(!std::path::Path::new(&wallet.path).exists());
+}

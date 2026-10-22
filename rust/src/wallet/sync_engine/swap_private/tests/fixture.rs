@@ -1069,7 +1069,7 @@ fn run_worker(
                 manual,
                 ORIGIN,
                 service,
-                &DescriptorTable::new(path),
+                &DescriptorTable::new(path, generation),
                 generation,
                 tokio::time::Instant::now() + budget,
             )
