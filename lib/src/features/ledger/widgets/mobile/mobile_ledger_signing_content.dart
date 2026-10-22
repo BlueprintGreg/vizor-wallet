@@ -94,7 +94,7 @@ class MobileLedgerSigningContent extends StatelessWidget {
               ? 'Confirm opening Zcash on Ledger.'
               : 'Keep Ledger connected.'
         : stage == LedgerSigningStage.sending
-        ? 'It may take about ${ledgerHasShortSigningWait(deviceModel) ? 10 : 30} seconds.'
+        ? ledgerSigningWaitInstruction(deviceModel)
         : stage == LedgerSigningStage.reviewing
         ? 'When prompted, check the amount and recipient on Ledger.'
         : stage == LedgerSigningStage.finishing

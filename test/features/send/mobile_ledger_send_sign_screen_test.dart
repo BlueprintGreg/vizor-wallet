@@ -694,7 +694,12 @@ void main() {
       readiness.update(const LedgerAppReadinessState.ready('3.9.4'));
       reports.last('sending', deviceModel: 'Ledger Flex');
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('It may take about 10 seconds.'), findsOneWidget);
+      expect(
+        find.text(
+          'Ledger is preparing to sign. It may seem unresponsive for about 10 seconds.',
+        ),
+        findsOneWidget,
+      );
       reports.last('reviewing');
       await tester.pump(const Duration(milliseconds: 300));
       expect(
