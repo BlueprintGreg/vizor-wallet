@@ -16,21 +16,14 @@ import '../../rust/api/pir_config.dart' as rust;
 /// [WalletPirConfigResolver].
 
 /// Production static source (mainnet). Immutable, hash-pinned copy served
-/// from GitHub Pages; its server list starts empty.
+/// from GitHub Pages; the server list is delivered separately.
 const kProductionWalletPirConfigSource =
     'https://valargroup.github.io/wallet-pir-config/pins/prod/'
     'f0b0d989892cbccc72c17e7de7530f754d5e0b0292f682109a1f3d88025a77f9/'
     'static-wallet-pir-config.json'
     '?checksum=sha256:f0b0d989892cbccc72c17e7de7530f754d5e0b0292f682109a1f3d88025a77f9';
 
-/// Stage static source, for testnet builds.
-const kStageWalletPirConfigSource =
-    'https://valargroup.github.io/wallet-pir-config/pins/stage/'
-    'a2afac766dfc94553956d8f012b539ed87d154ffa8d38598fa01cada5e785194/'
-    'static-wallet-pir-config.json'
-    '?checksum=sha256:a2afac766dfc94553956d8f012b539ed87d154ffa8d38598fa01cada5e785194';
-
-/// Builds may opt out of the bundled sources, leaving the user to set one.
+/// Builds may opt out of the bundled production source.
 const kWalletPirBundledDefaultEnabled = bool.fromEnvironment(
   'VIZOR_WALLET_PIR_BUNDLED_DEFAULT',
   defaultValue: true,
@@ -42,6 +35,7 @@ const kWalletPirConfigSourceOverride = String.fromEnvironment(
 );
 
 /// The source used when the user has not set one, or `null` for none.
+/// Only mainnet has a bundled default; other networks need an explicit source.
 String? defaultWalletPirConfigSource() {
   if (kWalletPirConfigSourceOverride.isNotEmpty) {
     return kWalletPirConfigSourceOverride;
@@ -49,7 +43,6 @@ String? defaultWalletPirConfigSource() {
   if (!kWalletPirBundledDefaultEnabled) return null;
   return switch (kZcashDefaultNetworkRaw) {
     'main' => kProductionWalletPirConfigSource,
-    'test' => kStageWalletPirConfigSource,
     _ => null,
   };
 }
