@@ -3408,11 +3408,18 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     final recovery = _runAuthoritativeBalanceRecovery();
     _authoritativeBalanceRecovery = recovery;
     unawaited(
-      recovery.whenComplete(() {
-        if (identical(_authoritativeBalanceRecovery, recovery)) {
-          _authoritativeBalanceRecovery = null;
-        }
-      }),
+      recovery.then<void>(
+        (_) {
+          if (identical(_authoritativeBalanceRecovery, recovery)) {
+            _authoritativeBalanceRecovery = null;
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          if (identical(_authoritativeBalanceRecovery, recovery)) {
+            _authoritativeBalanceRecovery = null;
+          }
+        },
+      ),
     );
     return recovery;
   }
@@ -3461,7 +3468,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Waits until a UI-only completed-sync snapshot has been reconciled with
   /// the latest Rust balance. Editing can continue while the snapshot is
   /// visible, but proposal and Max operations call this before treating the
-  /// displayed amount as spendable.
+  /// displayed amount as spendable. Recovery runs independently so a slow
+  /// refresh cannot hide a published balance or extend this wait's deadline.
   Future<void> waitForAuthoritativeSpendable({
     required String accountUuid,
     Duration timeout = const Duration(seconds: 30),
@@ -3496,11 +3504,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           rust_sync.isSyncRunning();
       if (!syncInProgress && !requestedRecovery) {
         requestedRecovery = true;
-        await _ensureAuthoritativeBalanceRecovery();
-        final refreshed = _previousScopedState(state.value, accountUuid);
-        if (!(refreshed?.isUsingCompletedSpendableSnapshot ?? false)) {
-          return;
-        }
+        unawaited(
+          _ensureAuthoritativeBalanceRecovery().catchError((Object error) {
+            log('SyncNotifier: spendable balance recovery failed: $error');
+          }),
+        );
       }
 
       if (DateTime.now().isAfter(deadline)) {
