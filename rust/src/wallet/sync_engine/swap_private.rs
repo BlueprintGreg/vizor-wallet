@@ -77,6 +77,14 @@ impl std::fmt::Display for RecoveryError {
     }
 }
 
+/// What one finished round did, for logs and tests.
+#[derive(Debug, Default)]
+pub(super) struct Round {
+    /// Sealed-shard filter traversals. Screening the round's due lookups together
+    /// keeps this to one per filter, plus any for addresses exposed mid-round.
+    pub(super) filter_traversals: u64,
+}
+
 /// Releases worker admission even when the future is cancelled or times out.
 struct Running;
 impl Drop for Running {
@@ -296,7 +304,7 @@ pub(crate) async fn recover(
     };
     let transport = SwapTransport::new(&stop);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-    tokio::time::timeout_at(
+    let round = tokio::time::timeout_at(
         deadline,
         recover_with_transport(
             path,
@@ -312,7 +320,12 @@ pub(crate) async fn recover(
     .await
     .map_err(|_| {
         RecoveryError::from("Swap recovery is still pending. It will continue on the next check.")
-    })?
+    })??;
+    log::debug!(
+        "Swap recovery round finished with {} filter traversals",
+        round.filter_traversals
+    );
+    Ok(())
 }
 
 /// Records that the receiver service needs a newer client on every account in `accounts`.
@@ -378,7 +391,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     store: &S,
     generation: u64,
     deadline: tokio::time::Instant,
-) -> Result<(), RecoveryError> {
+) -> Result<Round, RecoveryError> {
     let accounts = wallet(path, network, generation, |db| {
         one_time_ivk::reconcile_enabled(db, network)?;
         one_time_ivk::software_accounts(db)
@@ -396,14 +409,14 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         }
     }
     if active.is_empty() {
-        return Ok(());
+        return Ok(Round::default());
     }
     const NOT_CAUGHT_UP: &str =
         "Swap history check has not started. Wait for wallet sync to catch up and try again.";
     let inventory = match capture(path, network, generation, origin, transport, store).await {
         Ok(Some(inventory)) => inventory,
         Ok(None) if manual.is_some() => return Err(NOT_CAUGHT_UP.into()),
-        Ok(None) => return Ok(()),
+        Ok(None) => return Ok(Round::default()),
         Err(DirectoryError::Unsupported) => {
             return Err(require_upgrade(path, network, generation, &active))
         }
@@ -424,7 +437,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let mut batches = BTreeMap::new();
     let mut failure = None;
     let mut ready = Vec::new();
-    let mut due = 0;
+    let mut due = Vec::new();
     for account in active {
         let result: Result<(), String> = async {
             let accepted_locally = wallet(path, network, generation, |db| {
@@ -540,11 +553,11 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                     })?;
                 }
             }
-            due += wallet(path, network, generation, |db| {
+            due.extend(wallet(path, network, generation, |db| {
                 db.one_time_recovery(account, one_time_ivk::now()?)
-                    .map(|state| state.lookups.len())
+                    .map(|state| state.lookups)
                     .map_err(|e| e.to_string())
-            })?;
+            })?);
             ready.push(account);
             Ok(())
         }
@@ -556,8 +569,10 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
             }
         }
     }
-    let filters = shard_filters_cheaper(&inventory, due);
+    let filters = shard_filters_cheaper(&inventory, due.len());
     let client = InventoryClient::new(origin, transport, inventory, filters);
+    // Every account's due lookups share one traversal of each sealed shard's filter.
+    zakura_pir_receiver::screen(&client, &due).await;
     let account_count = ready.len();
     for (index, account) in ready.iter().enumerate() {
         // Include a spare slice for commit/loop overhead. A slow earlier account
@@ -584,7 +599,12 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
             }
         }
     }
-    failure.map_or(Ok(()), Err)
+    failure.map_or(
+        Ok(Round {
+            filter_traversals: client.filter_traversals(),
+        }),
+        Err,
+    )
 }
 
 /// Settles a bounded number of `account`'s due lookups and witness reads against the
