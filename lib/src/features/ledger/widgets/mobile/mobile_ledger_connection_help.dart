@@ -275,6 +275,7 @@ class _MobileLedgerConnectionHelpState
     }
     if (widget.error case final error?) children.add(_message(error));
     return MobileLedgerSheetContent(
+      key: ValueKey(_step),
       title: _step == _HelpStep.checks || _step == _HelpStep.search
           ? 'Find your Ledger'
           : 'Reset Bluetooth pairing',
