@@ -1098,3 +1098,48 @@ fn sealed_shards_use_filters_and_inventory_descriptors_persist() {
         "a full capture replaced the corrupted value"
     );
 }
+
+/// A round screens every account's due lookups against each sealed shard's filter
+/// together, so each filter is traversed once per round rather than once per address.
+#[test]
+fn a_round_traverses_each_sealed_shard_filter_once() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "a_round_traverses_each_sealed_shard_filter_once",
+    ) {
+        return;
+    }
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.mine(2);
+    let first = chain.tip();
+    chain.mine(2);
+    let second = chain.tip();
+    chain.mine(2);
+    wallet.scan(&chain);
+    let publish = |chain: &Chain| {
+        Service::publish_shards(
+            chain,
+            &[first, second],
+            chain.tip(),
+            activation(),
+            chain.tip(),
+            &[],
+        )
+    };
+    let restore = publish(&chain);
+    let round = wallet.recover(&restore).unwrap();
+    assert!(wallet.state(&account).restore_complete);
+    // I0 to I3 skip both sealed shards and read only the recent tier.
+    assert_eq!(restore.queries(), 4);
+    assert_eq!(restore.count("shard-filter"), 2);
+    assert_eq!(round.filter_traversals, 2, "one traversal per sealed shard");
+
+    // With nothing due, the next round reads no filter.
+    let idle = publish(&chain);
+    let round = wallet.recover(&idle).unwrap();
+    assert_eq!(idle.queries(), 0);
+    assert_eq!(round.filter_traversals, 0);
+}

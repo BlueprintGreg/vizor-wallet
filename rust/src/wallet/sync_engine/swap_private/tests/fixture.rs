@@ -934,7 +934,7 @@ impl Wallet {
     }
 
     /// Runs one worker round against `service`, as `recover` does, with a 45 second budget.
-    pub(super) fn recover(&self, service: &Service) -> Result<(), RecoveryError> {
+    pub(super) fn recover(&self, service: &Service) -> Result<Round, RecoveryError> {
         self.recover_with(service, None, Duration::from_secs(45))
     }
 
@@ -944,7 +944,7 @@ impl Wallet {
         service: &Service,
         manual: Option<Option<u64>>,
         budget: Duration,
-    ) -> Result<(), RecoveryError> {
+    ) -> Result<Round, RecoveryError> {
         run_worker(&self.path, service, manual, budget)
     }
 
@@ -954,7 +954,7 @@ impl Wallet {
         service: &Arc<Service>,
         manual: Option<Option<u64>>,
         budget: Duration,
-    ) -> std::thread::JoinHandle<Result<(), RecoveryError>> {
+    ) -> std::thread::JoinHandle<Result<Round, RecoveryError>> {
         let path = self.path.clone();
         let service = service.clone();
         std::thread::spawn(move || run_worker(&path, &service, manual, budget))
@@ -1056,7 +1056,7 @@ fn run_worker(
     service: &Service,
     manual: Option<Option<u64>>,
     budget: Duration,
-) -> Result<(), RecoveryError> {
+) -> Result<Round, RecoveryError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
