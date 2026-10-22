@@ -1192,6 +1192,29 @@ void main() {
     );
   });
 
+  testWidgets('balance ready opens Send while history is loading', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        _syncedState(
+          orchardBalance: BigInt.from(100000000),
+        ).copyWith(hasRecentTransactionsData: false),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('99%'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('mobile_home_importing_background')),
+      findsNothing,
+    );
+    expect(find.text('Loading activity...'), findsOneWidget);
+    expect(find.text('No activity, yet...'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('mobile_home_send')));
+    await tester.pumpAndSettle();
+    expect(find.text('send route'), findsOneWidget);
+  });
+
   testWidgets('shows the importing state before account data exists', (
     tester,
   ) async {

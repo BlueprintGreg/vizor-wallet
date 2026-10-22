@@ -320,9 +320,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final canShieldTransparentBalance =
         sync.canShieldTransparentBalance && !isMigrationRequired;
     final isImportingForBackground =
-        activeAccountUuid != null &&
-        !sync.hasAccountScopedData &&
-        sync.failure == null;
+        activeAccountUuid != null && sync.isInitialBalanceLoading;
     final isDark = context.appTheme == AppThemeData.dark;
     final backgroundAsset = isImportingForBackground
         ? 'assets/illustrations/home_importing_background.webp'
@@ -615,8 +613,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
         }
       }
     }
-    final isImporting =
-        !widget.sync.hasAccountScopedData && widget.sync.failure == null;
+    final isImporting = widget.sync.isInitialBalanceLoading;
     final hasBalance = widget.showsIronwoodOnlyBalance
         ? widget.sync.displayIronwoodBalance +
                   widget.sync.displayIronwoodPendingBalance >

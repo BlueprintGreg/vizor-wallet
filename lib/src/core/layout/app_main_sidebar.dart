@@ -465,9 +465,7 @@ class _AppMainSidebarState extends ConsumerState<AppMainSidebar> {
     final networkPrivacy = ref.watch(networkPrivacyProvider);
     final accountSync = sync.scopedToAccount(activeAccountUuid);
     final isImporting =
-        activeAccountUuid != null &&
-        !accountSync.hasAccountScopedData &&
-        accountSync.failure == null;
+        activeAccountUuid != null && accountSync.isInitialBalanceLoading;
     final balanceText =
         '${_formatSidebarBalance(accountSync.displayTotalBalance)} '
         '$kZcashDefaultCurrencyTicker';

@@ -1063,6 +1063,11 @@ Seed-relevance rule:
 - `onHide`: stops polling (no wasted network in background)
 - `SyncState.recentTransactions`: latest 10 transactions, updated on `hasNewTx`, sync completion, and app resume
 - All balance/history queries pass `activeAccountUuid` from `AccountProvider`
+- Home and navigation use account-scoped `isInitialBalanceLoading`; activity
+  keeps its own loading state until history arrives. Visible Send controls still
+  use the existing authoritative spend and native proposal gates.
+- After unlock, either read may initialize the active account's scoped state.
+  Late history still checks the lock epoch, read version, and selected account.
 
 ### Desktop Window Bootstrap
 

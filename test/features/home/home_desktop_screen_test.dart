@@ -13,6 +13,7 @@ import 'package:zcash_wallet/app.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
+import 'package:zcash_wallet/src/core/layout/app_desktop_shell.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/core/widgets/app_pane_modal_overlay.dart';
@@ -68,6 +69,75 @@ void main() {
       await loader.load();
     }
   });
+  testWidgets('balance ready opens Send while history is loading', (
+    tester,
+  ) async {
+    final state = SyncState(
+      accountUuid: 'account-1',
+      hasBalanceData: true,
+      isSyncComplete: true,
+      percentage: 1,
+      scannedHeight: 100,
+      chainTipHeight: 100,
+      orchardBalance: BigInt.from(100000000),
+      totalBalance: BigInt.from(100000000),
+      spendableBalance: BigInt.from(100000000),
+    );
+    expect(state.hasSettledSpendableBalance, isTrue);
+    await tester.pumpWidget(_appHarness('/home', syncState: state));
+    await tester.pumpAndSettle();
+
+    expect(find.text('99%'), findsNothing);
+    expect(find.text('Importing...'), findsNothing);
+    expect(find.text('Loading activity...'), findsOneWidget);
+    expect(find.text('No activity, yet...'), findsNothing);
+    expect(
+      find.image(
+        const AssetImage('assets/illustrations/home_importing_background.webp'),
+      ),
+      findsNothing,
+    );
+    final home = tester.widget<AppSidebarItem>(
+      find.byKey(const ValueKey('sidebar_home_button')),
+    );
+    expect(home.onTap, isNotNull);
+    await tester.tap(find.byKey(const ValueKey('home_desktop_send_button')));
+    await _pumpUntilPresent(tester, find.byType(SendScreen));
+    expect(find.byType(SendScreen), findsOneWidget);
+  });
+
+  for (final otherAccount in [false, true]) {
+    testWidgets(
+      'Home waits for its own balance with otherAccount=$otherAccount',
+      (tester) async {
+        await tester.pumpWidget(
+          _appHarness(
+            '/home',
+            syncState: SyncState(
+              accountUuid: otherAccount ? 'account-2' : 'account-1',
+              hasBalanceData: otherAccount,
+              hasRecentTransactionsData: true,
+              percentage: 0.5,
+              orchardBalance: otherAccount
+                  ? BigInt.from(100000000)
+                  : BigInt.zero,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Importing...'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('home_desktop_send_button')),
+          findsNothing,
+        );
+        final home = tester.widget<AppSidebarItem>(
+          find.byKey(const ValueKey('sidebar_home_button')),
+        );
+        expect(home.onTap, isNull);
+      },
+    );
+  }
+
   testWidgets(
     'home privacy mode masks desktop balance without duplicate ticker',
     (tester) async {

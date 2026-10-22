@@ -86,9 +86,7 @@ class MobileHomeScreen extends ConsumerWidget {
     final isCurrentHomeRoute = GoRouterState.of(context).uri.path == '/home';
 
     final isImporting =
-        activeAccountUuid != null &&
-        !sync.hasAccountScopedData &&
-        sync.failure == null;
+        activeAccountUuid != null && sync.isInitialBalanceLoading;
 
     return SwapActivityStatusAutoRefresh(
       child: Stack(
@@ -1258,7 +1256,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         ),
         const SizedBox(height: AppSpacing.md),
         if (recentRows.isEmpty)
-          const _EmptyActivity()
+          _EmptyActivity(
+            isLoading:
+                activeAccountUuid != null &&
+                !sync.hasAccountScopedData &&
+                sync.failure == null,
+          )
         else
           Padding(
             padding: const EdgeInsets.symmetric(
@@ -2342,7 +2345,9 @@ class _RecentActivityHeader extends StatelessWidget {
 }
 
 class _EmptyActivity extends StatelessWidget {
-  const _EmptyActivity();
+  const _EmptyActivity({required this.isLoading});
+
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -2359,19 +2364,21 @@ class _EmptyActivity extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                'No activity, yet...',
+                isLoading ? 'Loading activity...' : 'No activity, yet...',
                 style: AppTypography.headlineSmall.copyWith(
                   color: colors.text.accent,
                 ),
               ),
-              const SizedBox(height: AppSpacing.xxs),
-              Text(
-                'How about running your\nfirst ZEC tx?',
-                textAlign: TextAlign.center,
-                style: AppTypography.bodyMedium.copyWith(
-                  color: colors.text.secondary,
+              if (!isLoading) ...[
+                const SizedBox(height: AppSpacing.xxs),
+                Text(
+                  'How about running your\nfirst ZEC tx?',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: colors.text.secondary,
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(height: AppSpacing.xxs),
               const _MobileRestImage(),
             ],

@@ -114,6 +114,11 @@ class SyncState {
   /// [accountUuid]. Activity UIs should use this instead of treating a scoped
   /// placeholder or partial refresh as renderable account data.
   bool get hasAccountScopedData => hasBalanceData && hasRecentTransactionsData;
+
+  /// Whether balance surfaces should show their initial loading state.
+  /// Use on an account-scoped state. History loads separately; this does not
+  /// replace authoritative spend readiness or native proposal checks.
+  bool get isInitialBalanceLoading => !hasBalanceData && failure == null;
   final bool isSyncing;
   final bool isBackgroundMode;
 
