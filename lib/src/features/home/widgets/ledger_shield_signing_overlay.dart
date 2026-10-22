@@ -21,6 +21,7 @@ import '../../ledger/services/ledger_signed_operation_service.dart';
 import '../../ledger/widgets/ledger_device_app_prompt.dart';
 import '../../ledger/widgets/ledger_signing_modal.dart';
 import '../../ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
+import '../../ledger/widgets/mobile/mobile_ledger_help_navigation.dart';
 import '../../../core/navigation/external_action_guard_hold.dart';
 import '../../../core/formatting/zec_amount.dart';
 import '../../../providers/account_provider.dart';
@@ -68,6 +69,7 @@ class LedgerShieldSigningOverlay extends ConsumerStatefulWidget {
 class _LedgerShieldSigningOverlayState
     extends ConsumerState<LedgerShieldSigningOverlay> {
   final LedgerConnectionScope _connectionScope = LedgerConnectionScope();
+  final _helpNavigation = MobileLedgerHelpNavigation();
   LedgerSigningModalPhase _phase = LedgerSigningModalPhase.preparing;
   bool _showSaplingParamsPrompt = false;
   bool _cancelled = false;
@@ -755,48 +757,59 @@ class _LedgerShieldSigningOverlayState
           key: const ValueKey('mobile_ledger_shield_signing_surface'),
           fit: StackFit.expand,
           children: [
-            MobileShieldScene(
-              backdrop: widget.mobileBackdrop,
-              animateHardware: true,
-              phase: !_momentStarted
-                  ? MobileShieldPhase.review
-                  : _momentComplete
-                  ? MobileShieldPhase.succeeded
-                  : _phase == LedgerSigningModalPhase.failed
-                  ? MobileShieldPhase.failed
-                  : broadcasting
-                  ? MobileShieldPhase.working
-                  : MobileShieldPhase.hardware,
-              amount: formatZecAmount(_initialAmount),
-              resultAmount: _shieldedTotal > BigInt.zero
-                  ? formatZecAmount(_shieldedTotal)
-                  : null,
-              showResultAmount: _shieldedTotalKnown,
-              title: !_momentStarted
-                  ? 'Transparent Balance'
-                  : _momentComplete
-                  ? 'Shielded successfully'
-                  : broadcasting
-                  ? 'Shielding your balance…'
-                  : 'Shield with Ledger',
-              focusChild: _momentStarted && !_momentComplete && !broadcasting
-                  ? LedgerInlinePresentation(
-                      closeLabel: _phase == LedgerSigningModalPhase.failed
-                          ? 'Close'
-                          : 'Cancel shielding',
-                      child: modal,
-                    )
-                  : null,
-              canLeave: canLeave,
-              onCommit: () {
-                if (_momentStarted) return;
-                setState(() => _momentStarted = true);
-                unawaited(_prepareAndSign());
-              },
-              onClose: _momentComplete
-                  ? widget.onComplete
-                  : () => unawaited(_cancelToHome()),
-              onComplete: widget.onComplete,
+            MobileLedgerHelpScope(
+              navigation: _helpNavigation,
+              child: MobileShieldScene(
+                backdrop: widget.mobileBackdrop,
+                animateHardware: true,
+                phase: !_momentStarted
+                    ? MobileShieldPhase.review
+                    : _momentComplete
+                    ? MobileShieldPhase.succeeded
+                    : _phase == LedgerSigningModalPhase.failed
+                    ? MobileShieldPhase.failed
+                    : broadcasting
+                    ? MobileShieldPhase.working
+                    : MobileShieldPhase.hardware,
+                amount: formatZecAmount(_initialAmount),
+                resultAmount: _shieldedTotal > BigInt.zero
+                    ? formatZecAmount(_shieldedTotal)
+                    : null,
+                showResultAmount: _shieldedTotalKnown,
+                title: !_momentStarted
+                    ? 'Transparent Balance'
+                    : _momentComplete
+                    ? 'Shielded successfully'
+                    : broadcasting
+                    ? 'Shielding your balance…'
+                    : 'Shield with Ledger',
+                focusChild: _momentStarted && !_momentComplete && !broadcasting
+                    ? LedgerInlinePresentation(
+                        closeLabel: _phase == LedgerSigningModalPhase.failed
+                            ? 'Close'
+                            : 'Cancel shielding',
+                        child: modal,
+                      )
+                    : null,
+                canLeave: canLeave,
+                onCommit: () {
+                  if (_momentStarted) return;
+                  setState(() => _momentStarted = true);
+                  unawaited(_prepareAndSign());
+                },
+                onClose: _momentComplete
+                    ? widget.onComplete
+                    : () => unawaited(_cancelToHome()),
+                onPrevious: () {
+                  if (_helpNavigation.previous()) return;
+                  if (_momentComplete) {
+                    widget.onComplete();
+                  } else {
+                    unawaited(_cancelToHome());
+                  }
+                },
+                onComplete: widget.onComplete,
+              ),
             ),
             if (_showSaplingParamsPrompt)
               Positioned.fill(

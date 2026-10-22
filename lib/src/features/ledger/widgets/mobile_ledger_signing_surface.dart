@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../core/theme/app_theme.dart';
+import 'mobile/mobile_ledger_help_navigation.dart';
 
 /// A mobile Ledger modal over its caller. The operation owner stays mounted
 /// across discovery, verification and signing; changing content never pops a
@@ -32,6 +33,7 @@ class _MobileLedgerSigningSurfaceState
     extends State<MobileLedgerSigningSurface> {
   bool _closing = false;
   double _dragDistance = 0;
+  final _helpNavigation = MobileLedgerHelpNavigation();
 
   @override
   void didUpdateWidget(covariant MobileLedgerSigningSurface oldWidget) {
@@ -50,6 +52,7 @@ class _MobileLedgerSigningSurfaceState
 
   void _previous() {
     if (!widget.canLeave || _closing) return;
+    if (_helpNavigation.previous()) return;
     _closing = true;
     (widget.onPrevious ?? widget.onBack)();
   }
@@ -86,7 +89,10 @@ class _MobileLedgerSigningSurfaceState
               child: MobileModalCard(
                 onBack: widget.onPrevious == null ? null : _previous,
                 backEnabled: widget.canLeave && !_closing,
-                child: widget.child,
+                child: MobileLedgerHelpScope(
+                  navigation: _helpNavigation,
+                  child: widget.child,
+                ),
               ),
             ),
           ),

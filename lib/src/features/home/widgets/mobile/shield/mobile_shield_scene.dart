@@ -39,6 +39,7 @@ class MobileShieldScene extends StatefulWidget {
     this.footer,
     this.onCommit,
     this.onClose,
+    this.onPrevious,
     this.onComplete,
     this.canLeave = true,
     this.animateHardware = false,
@@ -57,6 +58,9 @@ class MobileShieldScene extends StatefulWidget {
   final Widget? footer;
   final VoidCallback? onCommit;
   final VoidCallback? onClose;
+
+  /// System Back may navigate a nested hardware help step. Close stays separate.
+  final VoidCallback? onPrevious;
   final VoidCallback? onComplete;
   final bool canLeave;
   final bool animateHardware;
@@ -387,7 +391,9 @@ class _MobileShieldSceneState extends State<MobileShieldScene>
       child: PopScope(
         canPop: widget.onClose == null && widget.canLeave,
         onPopInvokedWithResult: (didPop, _) {
-          if (!didPop && widget.canLeave) widget.onClose?.call();
+          if (!didPop && widget.canLeave) {
+            (widget.onPrevious ?? widget.onClose)?.call();
+          }
         },
         child: Scaffold(
           backgroundColor: const Color(0x00000000),
