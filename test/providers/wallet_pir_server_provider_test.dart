@@ -16,6 +16,9 @@ class _MemoryStore implements WalletPirConfigStore {
   String? source;
   final cached = <String, WalletPirCachedConfig>{};
 
+  /// Holds open the next write whose selection names a key's base.
+  final writeGates = <String, Completer<void>>{};
+
   @override
   Future<String?> readSource() async => source;
 
@@ -31,7 +34,13 @@ class _MemoryStore implements WalletPirConfigStore {
     String network,
     String src,
     WalletPirCachedConfig value,
-  ) async => cached['$network|$src'] = value;
+  ) async {
+    final selection = value.selectionJson ?? '';
+    for (final base in [...writeGates.keys]) {
+      if (selection.contains(base)) await writeGates.remove(base)!.future;
+    }
+    cached['$network|$src'] = value;
+  }
 }
 
 /// Serves the static document (whose body names its source) and a dynamic
@@ -182,7 +191,14 @@ class _Harness {
         walletPirDefaultSourceProvider.overrideWithValue(defaultSource),
         walletPirNetworkProvider.overrideWithValue('mainnet'),
         walletPirServerApplierProvider.overrideWithValue((base) async {
-          applied.add(base);
+          applying++;
+          if (applying > maxApplying) maxApplying = applying;
+          try {
+            await applyGates.remove(base)?.future;
+            applied.add(base);
+          } finally {
+            applying--;
+          }
         }),
       ],
     );
@@ -190,7 +206,14 @@ class _Harness {
 
   final store = _MemoryStore();
   final fetcher = _Fetcher();
+
+  /// Servers in the order their apply finished.
   final applied = <String?>[];
+
+  /// Holds open the next apply of a base.
+  final applyGates = <String?, Completer<void>>{};
+  var applying = 0;
+  var maxApplying = 0;
   late ProviderContainer container;
 
   WalletPirServerNotifier get notifier =>
@@ -219,6 +242,12 @@ class _Harness {
 
 const _a = ['Server A', 'https://a.example'];
 const _b = ['Server B', 'https://b.example'];
+const _c = ['Server C', 'https://c.example'];
+
+String? _savedBase(_Harness h, [String source = _sourceA]) {
+  final json = h.store.cached['mainnet|$source']?.selectionJson;
+  return json == null ? null : (jsonDecode(json) as Map)['base'] as String?;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -321,6 +350,105 @@ void main() {
     expect(h.applied.last, 'https://b.example');
     expect(h.applied, isNot(contains('https://a.example')));
     expect(h.store.cached['mainnet|$_sourceA'], isNull);
+  });
+
+  test('a delayed older apply cannot outlast a newer choice', () async {
+    final h = _Harness();
+    h.fetcher.servers[_sourceA] = [_a, _b, _c];
+    await h.start();
+    expect(h.applied.last, 'https://a.example');
+
+    final slow = h.applyGates['https://b.example'] = Completer<void>();
+    final older = h.notifier.selectServer('https://b.example');
+    await pumpEventQueue();
+    final newer = h.notifier.selectServer('https://c.example');
+    await pumpEventQueue();
+    slow.complete();
+    await Future.wait([older, newer]);
+
+    expect(h.applied.last, 'https://c.example');
+    expect(h.state.selectedBaseUrl, 'https://c.example');
+    expect(_savedBase(h), 'https://c.example');
+    expect(h.maxApplying, 1, reason: 'applies never overlap');
+  });
+
+  test('a delayed older write cannot outlast a newer choice', () async {
+    final h = _Harness();
+    h.fetcher.servers[_sourceA] = [_a, _b, _c];
+    await h.start();
+
+    final slow = h.store.writeGates['https://b.example'] = Completer<void>();
+    final older = h.notifier.selectServer('https://b.example');
+    await pumpEventQueue();
+    final newer = h.notifier.selectServer('https://c.example');
+    await pumpEventQueue();
+    slow.complete();
+    await Future.wait([older, newer]);
+
+    expect(_savedBase(h), 'https://c.example');
+    expect(h.applied.last, 'https://c.example');
+    expect(h.state.selectedBaseUrl, 'https://c.example');
+  });
+
+  test('a choice made during a refresh survives the refresh', () async {
+    final h = _Harness();
+    h.fetcher.servers[_sourceA] = [_a, _b];
+    await h.start();
+
+    final gate = h.fetcher.gates[_sourceA] = Completer<void>();
+    final refreshing = h.notifier.refresh();
+    await pumpEventQueue();
+    await h.notifier.selectServer('https://b.example');
+    gate.complete();
+    await refreshing;
+
+    expect(h.state.selectedBaseUrl, 'https://b.example');
+    expect(h.applied.last, 'https://b.example');
+    expect(_savedBase(h), 'https://b.example');
+  });
+
+  test(
+    'a delayed apply for an old source cannot outlast the new one',
+    () async {
+      final h = _Harness();
+      h.fetcher.servers[_sourceA] = [_a];
+      h.fetcher.servers[_sourceB] = [_b];
+      await h.start();
+
+      final slow = h.applyGates[null] = Completer<void>();
+      final older = h.notifier.setSource(_sourceB);
+      await pumpEventQueue();
+      final newer = h.notifier.setSource(null);
+      await pumpEventQueue();
+      slow.complete();
+      await Future.wait([older, newer]);
+      await pumpEventQueue();
+
+      expect(h.state.source, _sourceA);
+      expect(h.store.source, isNull);
+      expect(h.applied.last, 'https://a.example');
+      expect(h.applied, isNot(contains('https://b.example')));
+      expect(h.maxApplying, 1);
+    },
+  );
+
+  test('commits keep running after a failed apply', () async {
+    final h = _Harness();
+    h.fetcher.servers[_sourceA] = [_a, _b];
+    await h.start();
+
+    final failing = h.applyGates['https://b.example'] = Completer<void>();
+    final failed = expectLater(
+      h.notifier.selectServer('https://b.example'),
+      throwsStateError,
+    );
+    await pumpEventQueue();
+    failing.completeError(StateError('db busy'));
+    await failed;
+    // The queue keeps going after a failure.
+    await h.notifier.selectServer('https://b.example');
+    expect(h.applied.last, 'https://b.example');
+    expect(h.state.selectedBaseUrl, 'https://b.example');
   });
 
   test('each source keeps its own choice', () async {

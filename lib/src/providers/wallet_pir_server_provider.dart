@@ -187,56 +187,85 @@ final walletPirNetworkProvider = Provider<String>(
 /// Pauses sync, applies the server in Rust (which cancels the Receiver round
 /// and forgets caches tied to the old server), then resumes sync so every
 /// product session is rebuilt against the new base.
+///
+/// A failed Rust apply leaves no server selected with its cleanup still owed,
+/// so the next call goes to Rust even for the base Rust now reports.
 final walletPirServerApplierProvider = Provider<WalletPirServerApplier>((ref) {
+  var cleanupOwed = false;
   return (baseUrl) async {
-    if (rust.selectedWalletPirServer() == baseUrl) return;
-    final hasWallet =
-        (ref.read(accountProvider).value?.accounts ?? const []).isNotEmpty;
-    if (!hasWallet) {
-      await rust.applyWalletPirServer(dbPath: null, baseUrl: baseUrl);
-      return;
-    }
-    final sync = ref.read(syncProvider.notifier);
-    final pause = await sync.pauseForWalletMutation();
+    if (!cleanupOwed && rust.selectedWalletPirServer() == baseUrl) return;
     try {
-      await rust.applyWalletPirServer(
-        dbPath: await getWalletDbPath(),
-        baseUrl: baseUrl,
-      );
-    } finally {
-      sync.resumeAfterWalletMutation(pause, forceRestart: true);
+      await _applyWalletPirServer(ref, baseUrl);
+      cleanupOwed = false;
+    } catch (_) {
+      cleanupOwed = true;
+      rethrow;
     }
   };
 });
 
+Future<void> _applyWalletPirServer(Ref ref, String? baseUrl) async {
+  final hasWallet =
+      (ref.read(accountProvider).value?.accounts ?? const []).isNotEmpty;
+  if (!hasWallet) {
+    await rust.applyWalletPirServer(dbPath: null, baseUrl: baseUrl);
+    return;
+  }
+  final sync = ref.read(syncProvider.notifier);
+  final pause = await sync.pauseForWalletMutation();
+  try {
+    await rust.applyWalletPirServer(
+      dbPath: await getWalletDbPath(),
+      baseUrl: baseUrl,
+    );
+  } finally {
+    sync.resumeAfterWalletMutation(pause, forceRestart: true);
+  }
+}
+
 class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
-  /// Bumped by every source change and refresh. Work that awaited checks it
-  /// before persisting or applying, so a superseded refresh, or one for a
-  /// source the user has since replaced, cannot restore its config.
-  int _generation = 0;
+  /// Bumped by every source change (and rebuild or disposal). A commit for
+  /// an older source does nothing.
+  int _sourceGeneration = 0;
+
+  /// Bumped by every refresh and source change, so only the latest refresh
+  /// commits what it fetched.
+  int _refreshGeneration = 0;
+
+  /// The tail of the commit queue. Every durable write and every server
+  /// apply runs inside [_commit], one at a time in call order, and checks
+  /// that its intent is still current when it starts. The last commit to run
+  /// is therefore the newest, and its server is the one Rust ends up using,
+  /// however long an earlier apply or write took.
+  Future<void> _commits = Future.value();
   AppLifecycleListener? _lifecycle;
 
   WalletPirConfigStore get _store => ref.read(walletPirConfigStoreProvider);
   WalletPirConfigResolver get _resolver =>
       ref.read(walletPirConfigResolverProvider);
   String get _network => ref.read(walletPirNetworkProvider);
+  WalletPirServerApplier get _applier =>
+      ref.read(walletPirServerApplierProvider);
 
   @override
   Future<WalletPirServerState> build() async {
     _lifecycle?.dispose();
     _lifecycle = AppLifecycleListener(onResume: () => unawaited(refresh()));
     ref.onDispose(() {
-      _generation++;
+      _sourceGeneration++;
+      _refreshGeneration++;
       _lifecycle?.dispose();
       _lifecycle = null;
     });
-    final generation = ++_generation;
+    final generation = ++_sourceGeneration;
+    _refreshGeneration++;
     final initial = await _loadCached(await _store.readSource());
-    if (generation == _generation) {
-      await _apply(initial.config, generation);
-      if (initial.source != null) {
-        scheduleMicrotask(() => unawaited(refresh()));
-      }
+    await _commit(() async {
+      if (generation != _sourceGeneration) return;
+      await _applier(initial.config?.selectedBaseUrl);
+    });
+    if (generation == _sourceGeneration && initial.source != null) {
+      scheduleMicrotask(() => unawaited(refresh()));
     }
     return initial;
   }
@@ -247,39 +276,57 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
     final current = state.value;
     final source = current?.source;
     if (current == null || source == null) return;
-    final generation = ++_generation;
+    final sourceGeneration = _sourceGeneration;
+    final refreshGeneration = ++_refreshGeneration;
+    bool live() =>
+        sourceGeneration == _sourceGeneration &&
+        refreshGeneration == _refreshGeneration;
     state = AsyncData(current.copyWith(refreshing: true));
     try {
-      final cached = await _store.readCached(_network, source);
-      final view = await fetchWalletPirConfig(
+      final fetchedWith = await _store.readCached(_network, source);
+      final fetched = await fetchWalletPirConfig(
         fetcher: ref.read(walletPirConfigFetcherProvider),
         resolver: _resolver,
         source: source,
         network: _network,
-        savedSelectionJson: cached?.selectionJson,
+        savedSelectionJson: fetchedWith?.selectionJson,
       );
-      if (generation != _generation) return;
-      await _store.writeCached(
-        _network,
-        source,
-        (cached ?? const WalletPirCachedConfig()).copyWith(
-          snapshotJson: view.snapshotJson,
-          // A removed selection stays saved, so a restart asks again.
-          selectionJson: view.selectionJson,
-        ),
-      );
-      if (generation != _generation) return;
-      await _apply(view, generation);
-      if (generation != _generation) return;
-      state = AsyncData(
-        current.copyWith(
-          config: view,
-          refreshing: false,
-          clearRefreshError: true,
-        ),
-      );
+      await _commit(() async {
+        if (!live()) return;
+        final cached = await _store.readCached(_network, source);
+        if (!live()) return;
+        // A choice the user made while this fetch ran wins over the one the
+        // fetch was resolved with.
+        final view = cached?.selectionJson == fetchedWith?.selectionJson
+            ? fetched
+            : _resolver.revalidate(
+                source: source,
+                network: _network,
+                snapshotJson: fetched.snapshotJson,
+                savedSelectionJson: cached?.selectionJson,
+              );
+        // From here the commit completes: the write, the apply and the state
+        // stay consistent, and any newer commit runs after this one.
+        await _store.writeCached(
+          _network,
+          source,
+          (cached ?? const WalletPirCachedConfig()).copyWith(
+            snapshotJson: view.snapshotJson,
+            // A removed selection stays saved, so a restart asks again.
+            selectionJson: view.selectionJson,
+          ),
+        );
+        await _applier(view.selectedBaseUrl);
+        state = AsyncData(
+          (state.value ?? current).copyWith(
+            config: view,
+            refreshing: false,
+            clearRefreshError: true,
+          ),
+        );
+      });
     } catch (error) {
-      if (generation != _generation) return;
+      if (!live()) return;
       state = AsyncData(
         (state.value ?? current).copyWith(
           refreshing: false,
@@ -290,38 +337,43 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
   }
 
   /// The user's explicit choice of an offered server.
-  Future<void> selectServer(String baseUrl) async {
-    final current = state.value;
-    final source = current?.source;
-    final config = current?.config;
-    if (current == null || source == null || config == null) return;
-    final generation = ++_generation;
-    final selectionJson = _resolver.select(
-      source: source,
-      network: _network,
-      snapshotJson: config.snapshotJson,
-      baseUrl: baseUrl,
-    );
-    final view = _resolver.revalidate(
-      source: source,
-      network: _network,
-      snapshotJson: config.snapshotJson,
-      savedSelectionJson: selectionJson,
-    );
-    final cached = await _store.readCached(_network, source);
-    if (generation != _generation) return;
-    await _store.writeCached(
-      _network,
-      source,
-      (cached ?? const WalletPirCachedConfig()).copyWith(
+  Future<void> selectServer(String baseUrl) {
+    final generation = _sourceGeneration;
+    return _commit(() async {
+      if (generation != _sourceGeneration) return;
+      // Read at commit time, so a choice is made against the latest accepted
+      // config, never one a refresh has since replaced.
+      final current = state.value;
+      final source = current?.source;
+      final config = current?.config;
+      if (current == null || source == null || config == null) return;
+      final selectionJson = _resolver.select(
+        source: source,
+        network: _network,
         snapshotJson: config.snapshotJson,
-        selectionJson: selectionJson,
-      ),
-    );
-    if (generation != _generation) return;
-    await _apply(view, generation);
-    if (generation != _generation) return;
-    state = AsyncData(current.copyWith(config: view));
+        baseUrl: baseUrl,
+      );
+      final view = _resolver.revalidate(
+        source: source,
+        network: _network,
+        snapshotJson: config.snapshotJson,
+        savedSelectionJson: selectionJson,
+      );
+      final cached = await _store.readCached(_network, source);
+      if (generation != _sourceGeneration) return;
+      await _store.writeCached(
+        _network,
+        source,
+        (cached ?? const WalletPirCachedConfig()).copyWith(
+          snapshotJson: config.snapshotJson,
+          selectionJson: selectionJson,
+        ),
+      );
+      if (generation != _sourceGeneration) return;
+      await _applier(view.selectedBaseUrl);
+      if (generation != _sourceGeneration) return;
+      state = AsyncData((state.value ?? current).copyWith(config: view));
+    });
   }
 
   /// Switches to `source`, or back to the default with `null`. The old
@@ -329,19 +381,22 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
   /// stay saved under that source only.
   Future<void> setSource(String? source) async {
     final trimmed = source?.trim();
-    final generation = ++_generation;
-    await _store.writeSource(
-      trimmed == null || trimmed.isEmpty ? null : trimmed,
-    );
-    if (generation != _generation) return;
-    // No server until the new source's config is accepted.
-    await ref.read(walletPirServerApplierProvider)(null);
-    if (generation != _generation) return;
-    final next = await _loadCached(trimmed);
-    if (generation != _generation) return;
-    state = AsyncData(next);
-    await _apply(next.config, generation);
-    await refresh();
+    final saved = trimmed == null || trimmed.isEmpty ? null : trimmed;
+    final generation = ++_sourceGeneration;
+    _refreshGeneration++;
+    await _commit(() async {
+      if (generation != _sourceGeneration) return;
+      await _store.writeSource(saved);
+      if (generation != _sourceGeneration) return;
+      // No server until the new source's config is accepted.
+      await _applier(null);
+      if (generation != _sourceGeneration) return;
+      final next = await _loadCached(saved);
+      if (generation != _sourceGeneration) return;
+      state = AsyncData(next);
+      await _applier(next.config?.selectedBaseUrl);
+    });
+    if (generation == _sourceGeneration) await refresh();
   }
 
   Future<WalletPirServerState> _loadCached(String? savedSource) async {
@@ -372,9 +427,12 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
     }
   }
 
-  Future<void> _apply(WalletPirConfigView? config, int generation) async {
-    if (generation != _generation) return;
-    await ref.read(walletPirServerApplierProvider)(config?.selectedBaseUrl);
+  /// Runs `body` after every earlier commit has finished, whether or not it
+  /// succeeded.
+  Future<void> _commit(Future<void> Function() body) {
+    final run = _commits.then((_) => body());
+    _commits = run.catchError((Object _) {});
+    return run;
   }
 }
 
