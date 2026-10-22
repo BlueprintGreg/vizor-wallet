@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use zakura_pir_client::transparent::{FilterSource, TransparentPirHttp};
 
-use super::super::pir::{test_transport, TransparentPirSource, DEFAULT_MAINNET_ORIGIN};
+use super::super::pir::{test_transport, TransparentPirSource, TEST_ORIGIN};
 use super::super::policy::POLICY_DRAIN;
 use super::pir::assert_private;
 use super::*;
@@ -51,7 +51,7 @@ async fn published() -> Vec<Shard> {
     let handle = tokio::runtime::Handle::current();
     let map: serde_json::Value = tokio::task::spawn_blocking(move || {
         let exit = || false;
-        let exchange = RoutedExchange::transparent(DEFAULT_MAINNET_ORIGIN, &exit, handle)
+        let exchange = RoutedExchange::transparent(TEST_ORIGIN, &exit, handle)
             .expect("the default origin is HTTPS");
         let mut http = TransparentPirHttp::new(exchange, MAP_LIMIT);
         let (mut filters, _) = http.split();

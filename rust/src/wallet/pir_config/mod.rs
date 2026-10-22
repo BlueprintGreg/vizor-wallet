@@ -22,7 +22,5 @@ mod selection;
 mod tests;
 
 pub(crate) use selection::{
-    clear_selected_server, client_origin, selected_server_base, set_selected_server, PirProduct,
+    client_origin, process_selection, selected_server_base, PirProduct, SelectedServer,
 };
-#[cfg(test)]
-pub(crate) use selection::ServerSelection;

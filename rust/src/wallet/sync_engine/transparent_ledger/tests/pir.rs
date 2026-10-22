@@ -225,7 +225,7 @@ fn paths(requests: &[ObservedRequest]) -> Vec<&str> {
 
 /// `uuid`'s companion file for the default origin.
 fn companion(path: &str, uuid: &str) -> PathBuf {
-    pir::companion_dir(path).companion_path(uuid, pir::DEFAULT_MAINNET_ORIGIN)
+    pir::companion_dir(path).companion_path(uuid, pir::TEST_ORIGIN)
 }
 
 fn with_suffix(base: &Path, suffix: &str) -> PathBuf {
@@ -350,6 +350,32 @@ async fn new_selects_the_origin_gates_mainnet_and_uses_the_wallet_route() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn with_no_server_selected_a_pass_sends_nothing() {
+    let wallet = main_wallet(1);
+    let account = wallet.accounts[0].1;
+    let watch = watched_by(&wallet, account);
+
+    // No seam: what a release build with no selected server sees.
+    let source = TransparentPirSource::new(&wallet.path, MAIN);
+    assert_eq!(
+        source.recover(request(account, &watch, &|| false)).await,
+        Err(SourceError::Unavailable)
+    );
+    assert!(!pir::companion_dir(&wallet.path).path().exists());
+
+    // The same with a transport that would record every request.
+    let seam = test_transport::set_unserved(&wallet.path, refusing());
+    let source = TransparentPirSource::new(&wallet.path, MAIN);
+    assert_eq!(
+        source.recover(request(account, &watch, &|| false)).await,
+        Err(SourceError::Unavailable)
+    );
+    assert!(seam.seam.observer.requests().is_empty());
+    assert_eq!(seam.seam.transports(), 0);
+    assert!(!pir::companion_dir(&wallet.path).path().exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn companions_are_per_account_and_bound_to_origin_and_schema() {
     let wallet = main_wallet(2);
     let (a_uuid, a) = wallet.accounts[0].clone();
@@ -391,15 +417,14 @@ async fn companions_are_per_account_and_bound_to_origin_and_schema() {
 
     // The adapter binds the source, the account's UUID, the origin and its
     // schema into the companion, and refuses it under any other.
-    let config = pir::recovery_config(a, pir::DEFAULT_MAINNET_ORIGIN);
+    let config = pir::recovery_config(a, pir::TEST_ORIGIN);
     assert_eq!(config.source, b"vizor/transparent-pir/v1");
     assert_eq!(config.account_binding, a.expose_uuid().as_bytes());
-    assert_eq!(config.origin, pir::DEFAULT_MAINNET_ORIGIN);
-    assert!(TransparentHistoryRecovery::open(
-        &a_path,
-        pir::recovery_config(b, pir::DEFAULT_MAINNET_ORIGIN)
-    )
-    .is_err());
+    assert_eq!(config.origin, pir::TEST_ORIGIN);
+    assert!(
+        TransparentHistoryRecovery::open(&a_path, pir::recovery_config(b, pir::TEST_ORIGIN))
+            .is_err()
+    );
     let other = "https://transparent-pir.example";
     assert!(TransparentHistoryRecovery::open(&a_path, pir::recovery_config(a, other)).is_err());
     TransparentHistoryRecovery::open(&a_path, config).unwrap();

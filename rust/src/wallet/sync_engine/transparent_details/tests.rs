@@ -696,6 +696,28 @@ async fn private_required_zero_get_transaction_even_when_pir_down() {
     assert_eq!(balance(&fixture), before);
 }
 
+/// With no server selected, a `PrivateRequired` wallet has no private
+/// source: nothing is sent to any PIR origin or to lightwalletd, and the
+/// receipt keeps no private facts.
+#[tokio::test(flavor = "multi_thread")]
+async fn private_required_with_no_server_sends_nothing() {
+    let fixture = wallet();
+    utxo_receipt(&fixture, 0xa2, TOP - 1);
+    let _mode = require_private(&fixture.path);
+    let lwd = CapturingLwd::start_with(Vec::new(), u64::from(TOP), |_| {}).await;
+    let before = balance(&fixture);
+
+    // No seam: what a release build with no selected server sees.
+    assert_eq!(followup_with(&fixture, required(), &lwd).await, None);
+
+    let service = refusing(503);
+    let _seam = test_seam::set_unserved(&fixture.path, service.clone());
+    assert_eq!(followup_with(&fixture, required(), &lwd).await, None);
+    assert!(paths(&service).is_empty());
+    assert_eq!(lwd.count("/GetTransaction"), 0);
+    assert_eq!(balance(&fixture), before);
+}
+
 /// Under `PrivateRequired`, loop 4 never asks lightwalletd; only the user's
 /// explicit public load of one transaction does, once, and the stored
 /// payload then backs the view instead of private facts.
@@ -731,7 +753,11 @@ async fn private_required_public_enhance_only_on_consent() {
     .unwrap()
     .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
-    assert_eq!(paths(&service), ["/transparent/v1/txid/init"], "no private request");
+    assert_eq!(
+        paths(&service),
+        ["/transparent/v1/txid/init"],
+        "no private request"
+    );
     let Some(TransparentDisplayView::Available(details)) = view(&fixture, &tx.txid()) else {
         panic!("the stored payload shows its outputs");
     };
@@ -2618,7 +2644,10 @@ async fn a_service_that_comes_to_support_the_client_is_found_again() {
     let outcome = followup_with(&fixture, required(), &lwd).await;
     assert!(finished_with(outcome, 1), "{outcome:?}");
     let sent = paths_since(&service, sent);
-    assert!(sent.contains(&"/transparent/v1/txid/init".to_owned()), "{sent:?}");
+    assert!(
+        sent.contains(&"/transparent/v1/txid/init".to_owned()),
+        "{sent:?}"
+    );
     assert!(sent.iter().any(|path| path.contains("/query/")), "{sent:?}");
     assert_eq!(
         work_row(&fixture.path, &txid),

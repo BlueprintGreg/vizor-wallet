@@ -14,7 +14,9 @@ use zakura_pir_config::{
 };
 use zakura_service_config::MirrorAttempt;
 
-use crate::wallet::pir_config::{clear_selected_server, selected_server_base, set_selected_server};
+use std::sync::{Mutex, PoisonError};
+
+use crate::wallet::pir_config::{process_selection, selected_server_base, SelectedServer};
 use crate::wallet::sync_engine::{
     cancel_recovery, forget_server_inventory, transparent_details::source::retain_service_for,
 };
@@ -137,7 +139,11 @@ pub fn resolve_wallet_pir_config(
         .into_iter()
         .map(|failure| format!("{}: {}", failure.url, failure.reason))
         .collect();
-    view(&resolution.value, saved_selection_json.as_deref(), passed_over)
+    view(
+        &resolution.value,
+        saved_selection_json.as_deref(),
+        passed_over,
+    )
 }
 
 /// Re-validates a persisted last good config under the current source and
@@ -151,9 +157,8 @@ pub fn resolve_wallet_pir_config_snapshot(
 ) -> Result<ApiWalletPirConfig, String> {
     let snapshot: WalletPirConfigSnapshot =
         serde_json::from_str(&snapshot_json).map_err(|error| error.to_string())?;
-    let resolved =
-        resolve_config_snapshot(&profile(), &snapshot, &source, network(&network_name)?)
-            .map_err(|error| error.to_string())?;
+    let resolved = resolve_config_snapshot(&profile(), &snapshot, &source, network(&network_name)?)
+        .map_err(|error| error.to_string())?;
     view(&resolved, saved_selection_json.as_deref(), Vec::new())
 }
 
@@ -169,9 +174,8 @@ pub fn select_wallet_pir_server(
 ) -> Result<String, String> {
     let snapshot: WalletPirConfigSnapshot =
         serde_json::from_str(&snapshot_json).map_err(|error| error.to_string())?;
-    let resolved =
-        resolve_config_snapshot(&profile(), &snapshot, &source, network(&network_name)?)
-            .map_err(|error| error.to_string())?;
+    let resolved = resolve_config_snapshot(&profile(), &snapshot, &source, network(&network_name)?)
+        .map_err(|error| error.to_string())?;
     let base = ServerBase::parse(&base_url).map_err(|error| error.to_string())?;
     let selection = resolved
         .select_server(&base)
@@ -189,9 +193,9 @@ fn view(
     // replaced by a default.
     let saved: Option<ServerSelection> = match saved_selection_json {
         None | Some("") => None,
-        Some(json) => Some(
-            serde_json::from_str(json).map_err(|error| format!("saved selection: {error}"))?,
-        ),
+        Some(json) => {
+            Some(serde_json::from_str(json).map_err(|error| format!("saved selection: {error}"))?)
+        }
     };
     let outcome = resolved.reconcile_selection(saved.as_ref());
     let (selection_state, removed) = match &outcome {
@@ -244,28 +248,40 @@ pub fn selected_wallet_pir_server() -> Option<String> {
 /// built per sync from the applied base, and Transparent companions are bound
 /// to their origin, so no coverage carries across servers. Wallet funds,
 /// keys and history are untouched.
+///
+/// The switch fails closed: the old server stops being used before cleanup
+/// starts, and the new one is installed only once cleanup succeeded. If it
+/// fails the error is returned with no server selected, and the next apply,
+/// of the same base too, runs cleanup again.
 pub fn apply_wallet_pir_server(
     db_path: Option<String>,
     base_url: Option<String>,
 ) -> Result<bool, String> {
-    let before = selected_server_base();
-    match base_url {
-        Some(base) => {
-            set_selected_server(&base)?;
+    // Concurrent applies would interleave their stages.
+    static APPLY: Mutex<()> = Mutex::new(());
+    let _applying = APPLY.lock().unwrap_or_else(PoisonError::into_inner);
+    apply_server(process_selection(), base_url.as_deref(), || {
+        cancel_recovery();
+        retain_service_for(None);
+        match &db_path {
+            Some(path) => forget_server_inventory(path),
+            None => Ok(()),
         }
-        None => {
-            clear_selected_server();
-        }
-    }
-    let after = selected_server_base();
-    if before == after {
+    })
+}
+
+/// Switches `selection` to `base_url`, running `cleanup` between dropping the
+/// old server and installing the new one.
+fn apply_server(
+    selection: &SelectedServer,
+    base_url: Option<&str>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    let Some(switch) = selection.begin_switch(base_url)? else {
         return Ok(false);
-    }
-    cancel_recovery();
-    retain_service_for(after.as_deref());
-    if let Some(path) = db_path {
-        forget_server_inventory(&path)?;
-    }
+    };
+    cleanup()?;
+    selection.finish_switch(switch);
     Ok(true)
 }
 
@@ -353,8 +369,14 @@ mod tests {
         assert_eq!(config.scope, anchor.scope);
         assert_eq!(config.dynamic_config_url, MIRROR_B);
         assert_eq!(config.passed_over.len(), 1);
-        assert_eq!(config.servers[0].base_url, "https://wallet-pir.valargroup.dev");
-        assert_eq!(config.selection_state, ApiWalletPirSelectionState::Defaulted);
+        assert_eq!(
+            config.servers[0].base_url,
+            "https://wallet-pir.valargroup.dev"
+        );
+        assert_eq!(
+            config.selection_state,
+            ApiWalletPirSelectionState::Defaulted
+        );
         assert_eq!(
             config.selected_base_url.as_deref(),
             Some("https://wallet-pir.valargroup.dev")
@@ -364,7 +386,10 @@ mod tests {
     #[test]
     fn an_empty_list_selects_nothing() {
         let config = load(dynamic(serde_json::json!([])), None);
-        assert_eq!(config.selection_state, ApiWalletPirSelectionState::NoServers);
+        assert_eq!(
+            config.selection_state,
+            ApiWalletPirSelectionState::NoServers
+        );
         assert_eq!(config.selected_base_url, None);
         assert_eq!(config.selection_json, None);
     }
@@ -461,5 +486,97 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_failed_cleanup_leaves_no_server_and_a_retry_runs_it_again() {
+        let selection = SelectedServer::new();
+        let forget = |path: &std::path::Path| {
+            let path = path.to_str().unwrap().to_owned();
+            move || forget_server_inventory(&path)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.db");
+        assert_eq!(
+            apply_server(&selection, Some("https://a.example"), forget(&first)),
+            Ok(true)
+        );
+
+        // The wallet DB cannot be opened: its directory does not exist yet.
+        let wallet_dir = dir.path().join("wallet");
+        let path = wallet_dir.join("wallet.db");
+        assert!(apply_server(&selection, Some("https://b.example"), forget(&path)).is_err());
+        assert_eq!(selection.base(), None, "neither server A nor server B");
+        assert!(selection.cleanup_pending());
+
+        // A retry of the same server runs cleanup again and installs it.
+        std::fs::create_dir(&wallet_dir).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ext_vizor_receiver_inventory (descriptor BLOB);
+             INSERT INTO ext_vizor_receiver_inventory VALUES (x'01');",
+        )
+        .unwrap();
+        assert_eq!(
+            apply_server(&selection, Some("https://b.example"), forget(&path)),
+            Ok(true)
+        );
+        assert_eq!(selection.base().as_deref(), Some("https://b.example"));
+        assert!(!selection.cleanup_pending());
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ext_vizor_receiver_inventory",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "the retry forgot server A's inventory");
+
+        // Once applied, the same server is a no-op that runs no cleanup.
+        assert_eq!(
+            apply_server(&selection, Some("https://b.example"), || {
+                panic!("cleanup ran for an unchanged server")
+            }),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_failed_switch_to_no_server_is_retried() {
+        let selection = SelectedServer::new();
+        assert_eq!(
+            apply_server(&selection, Some("https://a.example"), || Ok(())),
+            Ok(true)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("wallet.db");
+        let path = path.to_str().unwrap().to_owned();
+        assert!(apply_server(&selection, None, || forget_server_inventory(&path)).is_err());
+        assert_eq!(selection.base(), None);
+
+        let mut ran = false;
+        assert_eq!(
+            apply_server(&selection, None, || {
+                ran = true;
+                Ok(())
+            }),
+            Ok(true)
+        );
+        assert!(ran);
+        assert!(!selection.cleanup_pending());
+    }
+
+    #[test]
+    fn an_invalid_server_changes_nothing() {
+        let selection = SelectedServer::new();
+        assert_eq!(
+            apply_server(&selection, Some("https://a.example"), || Ok(())),
+            Ok(true)
+        );
+        assert!(apply_server(&selection, Some("http://a.example"), || {
+            panic!("cleanup ran for an invalid server")
+        })
+        .is_err());
+        assert_eq!(selection.base().as_deref(), Some("https://a.example"));
     }
 }

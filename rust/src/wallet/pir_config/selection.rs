@@ -41,73 +41,112 @@ fn debug_override_env(product: PirProduct) -> &'static str {
 ///
 /// The generation lets work that captured it before an await tell that its
 /// server is no longer the selected one.
-pub(crate) struct ServerSelection {
-    base: RwLock<Option<String>>,
+///
+/// A switch is staged: [`begin_switch`](Self::begin_switch) drops the old
+/// base and marks cleanup pending, and only
+/// [`finish_switch`](Self::finish_switch), after the caller's cleanup
+/// succeeded, installs the new one. A failed cleanup therefore leaves no
+/// server, and the pending mark makes the next apply of any base, the same
+/// one included, run cleanup again.
+pub(crate) struct SelectedServer {
+    state: RwLock<SelectionState>,
     generation: AtomicU64,
 }
 
-impl ServerSelection {
+struct SelectionState {
+    base: Option<String>,
+    cleanup_pending: bool,
+}
+
+/// A switch whose cleanup is under way; [`SelectedServer::finish_switch`]
+/// installs its target.
+#[must_use]
+pub(crate) struct PendingSwitch {
+    target: Option<String>,
+}
+
+impl SelectedServer {
     pub(crate) const fn new() -> Self {
         Self {
-            base: RwLock::new(None),
+            state: RwLock::new(SelectionState {
+                base: None,
+                cleanup_pending: false,
+            }),
             generation: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn base(&self) -> Option<String> {
-        self.base
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        self.read().base.clone()
     }
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
     }
 
-    /// Selects `base` and returns the new generation. Selecting the base
-    /// already selected keeps the generation, so a repeated apply at startup
-    /// or resume does not tear down sessions.
-    pub(crate) fn select(&self, base: &str) -> Result<u64, String> {
-        let normalized = ServerBase::parse(base)
-            .map_err(|error| error.to_string())?
-            .as_str()
-            .to_owned();
-        let mut selected = self
-            .base
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if selected.as_deref() == Some(normalized.as_str()) {
-            return Ok(self.generation());
+    /// Starts switching to `base`, or to no server with `None`.
+    ///
+    /// Returns `None` when `base` is already selected and no earlier cleanup
+    /// is outstanding, so a repeated apply at startup or resume does not tear
+    /// down sessions. Otherwise the old base is dropped at once, so nothing
+    /// uses it while its state is cleaned up. An invalid base changes nothing.
+    pub(crate) fn begin_switch(&self, base: Option<&str>) -> Result<Option<PendingSwitch>, String> {
+        let target = base
+            .map(|base| {
+                ServerBase::parse(base)
+                    .map(|base| base.as_str().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        let mut state = self.write();
+        if state.base == target && !state.cleanup_pending {
+            return Ok(None);
         }
-        *selected = Some(normalized);
-        Ok(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
+        state.cleanup_pending = true;
+        if state.base.take().is_some() {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(Some(PendingSwitch { target }))
     }
 
-    /// Clears the selection; private PIR work then has no server.
-    pub(crate) fn clear(&self) -> u64 {
-        let mut selected = self
-            .base
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if selected.take().is_none() {
-            return self.generation();
+    /// Installs the target of a switch whose cleanup succeeded and returns
+    /// the generation.
+    pub(crate) fn finish_switch(&self, switch: PendingSwitch) -> u64 {
+        let mut state = self.write();
+        state.cleanup_pending = false;
+        state.base = switch.target;
+        if state.base.is_some() {
+            return self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         }
-        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+        self.generation()
+    }
+
+    /// Whether a switch's cleanup failed and has not yet been re-run.
+    #[cfg(test)]
+    pub(crate) fn cleanup_pending(&self) -> bool {
+        self.read().cleanup_pending
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, SelectionState> {
+        self.state
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, SelectionState> {
+        self.state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
 /// The process's selection, applied by Dart from the user's saved choice.
-static SELECTION: ServerSelection = ServerSelection::new();
+static SELECTION: SelectedServer = SelectedServer::new();
 
 pub(crate) fn selected_server_base() -> Option<String> {
     SELECTION.base()
 }
 
-pub(crate) fn set_selected_server(base: &str) -> Result<u64, String> {
-    SELECTION.select(base)
-}
-
-pub(crate) fn clear_selected_server() -> u64 {
-    SELECTION.clear()
+pub(crate) fn process_selection() -> &'static SelectedServer {
+    &SELECTION
 }

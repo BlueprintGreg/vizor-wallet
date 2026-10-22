@@ -83,6 +83,11 @@ String? selectedWalletPirServer() =>
 /// built per sync from the applied base, and Transparent companions are bound
 /// to their origin, so no coverage carries across servers. Wallet funds,
 /// keys and history are untouched.
+///
+/// The switch fails closed: the old server stops being used before cleanup
+/// starts, and the new one is installed only once cleanup succeeded. If it
+/// fails the error is returned with no server selected, and the next apply,
+/// of the same base too, runs cleanup again.
 Future<bool> applyWalletPirServer({String? dbPath, String? baseUrl}) => RustLib
     .instance
     .api

@@ -68,10 +68,12 @@ use crate::wallet::network::WalletNetwork;
 use crate::wallet::pir_config::{client_origin, PirProduct};
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
 
-/// The live service the ignored live tests qualify against. Runtime traffic
-/// goes only to the selected server.
+/// The origin tests name through their transport seam. It is the live
+/// service the ignored live tests qualify against; every other test's
+/// transport is a fake, so nothing reaches it. Runtime traffic goes only to
+/// the selected server.
 #[cfg(test)]
-pub(crate) const DEFAULT_MAINNET_ORIGIN: &str = "https://transparent-pir.valargroup.dev";
+pub(crate) const TEST_ORIGIN: &str = "https://transparent-pir.valargroup.dev";
 
 /// The caller-chosen source identity every companion binds.
 const SOURCE: &[u8] = b"vizor/transparent-pir/v1";
@@ -150,7 +152,7 @@ impl TransparentPirSource {
         Self {
             db_path: db_path.to_owned(),
             network,
-            origin: origin_for(network, selected_origin()),
+            origin: origin_for(network, source_origin(db_path)),
             clock: Instant::now,
             parked: Default::default(),
             #[cfg(test)]
@@ -471,15 +473,23 @@ pub(crate) fn origin_for(network: WalletNetwork, selected: Option<String>) -> Op
     selected.filter(|_| network == WalletNetwork::Main)
 }
 
-/// The selected server's origin for transparent PIR.
-///
-/// Tests that select nothing get [`DEFAULT_MAINNET_ORIGIN`] as an identity
-/// for companion paths; their transports are fakes, so nothing reaches it.
+/// The selected server's origin for transparent PIR; `None` with no server
+/// selected.
 pub(crate) fn selected_origin() -> Option<String> {
-    let selected = client_origin(PirProduct::Transparent);
+    client_origin(PirProduct::Transparent)
+}
+
+/// The origin sources for the wallet at `db_path` recover from: the selected
+/// server. A test names its origin explicitly through the transport seam it
+/// sets for the path, which replaces the selection; a test without a seam
+/// sees exactly what a release build sees.
+pub(crate) fn source_origin(db_path: &str) -> Option<String> {
     #[cfg(test)]
-    let selected = selected.or_else(|| Some(DEFAULT_MAINNET_ORIGIN.to_owned()));
-    selected
+    if let Some(seam) = test_transport::get(db_path) {
+        return seam.origin;
+    }
+    let _ = db_path;
+    selected_origin()
 }
 
 /// The adapter configuration for `account`'s companion.
@@ -562,10 +572,12 @@ pub(crate) mod test_transport {
     use crate::wallet::sync_engine::enhancement::{RequestObserver, RoutedExchange};
 
     /// Every request reaches `observer`, which answers it; each pass counts
-    /// the transport it built, always on the wallet's route.
+    /// the transport it built, always on the wallet's route. `origin` stands
+    /// in for the selected server.
     #[derive(Clone)]
     pub(crate) struct Seam {
         pub(crate) observer: RequestObserver,
+        pub(crate) origin: Option<String>,
         transports: Arc<AtomicUsize>,
     }
 
@@ -589,7 +601,7 @@ pub(crate) mod test_transport {
         SEAMS.get_or_init(Default::default)
     }
 
-    pub(in crate::wallet::sync_engine::transparent_ledger) fn get(db_path: &str) -> Option<Seam> {
+    pub(crate) fn get(db_path: &str) -> Option<Seam> {
         seams()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -597,11 +609,24 @@ pub(crate) mod test_transport {
             .cloned()
     }
 
-    /// Sources built for `db_path` send through `observer` until the guard
-    /// drops.
+    /// Sources built for `db_path` recover from [`TEST_ORIGIN`] and send
+    /// through `observer` until the guard drops.
+    ///
+    /// [`TEST_ORIGIN`]: super::TEST_ORIGIN
     pub(crate) fn set(db_path: &str, observer: RequestObserver) -> SeamGuard {
+        set_origin(db_path, Some(super::TEST_ORIGIN.to_owned()), observer)
+    }
+
+    /// Like [`set`], with no server selected: sources for `db_path` have no
+    /// origin, as in a release build before the user has a server.
+    pub(crate) fn set_unserved(db_path: &str, observer: RequestObserver) -> SeamGuard {
+        set_origin(db_path, None, observer)
+    }
+
+    fn set_origin(db_path: &str, origin: Option<String>, observer: RequestObserver) -> SeamGuard {
         let seam = Seam {
             observer,
+            origin,
             transports: Default::default(),
         };
         seams()
