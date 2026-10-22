@@ -8,20 +8,19 @@ use std::{
     sync::{mpsc, Arc, Mutex},
 };
 use zakura_one_time_ivk::{KeyId, Purpose};
-use zakura_pir_receiver::{
-    receiver_directory::{
-        blocks::{BlockFilter, BlockId},
-        shards::{Coverage, ShardFilter},
-        snapshot::{assign_ordinals, Manifest, Snapshot, PROFILE},
-        witness, RawRecord,
-    },
-    receiver_pir::{
-        inventory::{FilterRef, Inventory, Shard},
-        server::{Server, WitnessServer},
-        Publication, MIN_ROWS,
-    },
+use zakura_pir_client::receiver::{
+    blocks::{BlockFilter, BlockId},
+    inventory::{FilterRef, Inventory, Shard},
+    session::{Publication, MIN_ROWS},
+    shards::{Coverage, ShardFilter},
+    snapshot::{Manifest, Snapshot, PROFILE},
+    witness, RawRecord,
 };
-use zakura_receiver_crypto::witness::payloads;
+use zakura_pir_publisher::receiver::{
+    snapshot::{assign_ordinals, SnapshotPublisherExt as _},
+    witness::{payloads, TablePublisherExt as _},
+};
+use zakura_pir_query_server::receiver::server::{Server, WitnessServer};
 use zcash_client_backend::{
     data_api::{
         chain::{BlockSource, ChainState},
@@ -548,8 +547,8 @@ impl Service {
     }
 
     /// The status and body for one request, as the receiver service answers it.
-    fn answer(&self, class: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, DirectoryError> {
-        let gone = || DirectoryError::Revision;
+    fn answer(&self, class: &str, route: &str, body: &[u8]) -> Result<Vec<u8>, session::Error> {
+        let gone = || session::Error::Revision;
         Ok(match class {
             "inventory" => {
                 let mut head = self.inventory.head().clone();
@@ -576,7 +575,7 @@ impl Service {
                     .iter()
                     .find(|(d, _)| hex::encode(d) == digest)
                     .map(|(_, f)| f.clone())
-                    .ok_or_else(|| DirectoryError::Transport("HTTP 404".into()))?
+                    .ok_or_else(|| session::Error::Transport("HTTP 404".into()))?
             }
             "head" => serde_json::to_vec(&self.head).unwrap(),
             "filters" => {
@@ -635,7 +634,7 @@ impl Service {
     }
 
     /// Answers one request, after any hold on it is released.
-    async fn reply(&self, url: &str, body: &[u8], limit: usize) -> Result<Vec<u8>, DirectoryError> {
+    async fn reply(&self, url: &str, body: &[u8], limit: usize) -> Result<Vec<u8>, session::Error> {
         let route = url.split("/v1/receiver/").nth(1).unwrap().to_owned();
         let class = route_class(&route, self.witness_server(body).is_some());
         if class == "query" {
@@ -668,7 +667,7 @@ impl Service {
         }
         let response = self.answer(class, &route, body)?;
         if response.len() > limit {
-            return Err(DirectoryError::Transport("response over its limit".into()));
+            return Err(session::Error::Transport("response over its limit".into()));
         }
         let mut requests = self.requests.lock().unwrap();
         let entry = requests
@@ -754,7 +753,7 @@ impl Service {
 
 impl Transport for Service {
     /// Returns a bounded encoded public resource.
-    async fn get(&self, url: &str, limit: usize) -> Result<Vec<u8>, DirectoryError> {
+    async fn get(&self, url: &str, limit: usize) -> Result<Vec<u8>, session::Error> {
         self.reply(url, &[], limit).await
     }
     /// Evaluates a real encrypted query without exposing its receiver to the fixture.
@@ -763,7 +762,7 @@ impl Transport for Service {
         url: &str,
         body: Vec<u8>,
         limit: usize,
-    ) -> Result<Vec<u8>, DirectoryError> {
+    ) -> Result<Vec<u8>, session::Error> {
         self.reply(url, &body, limit).await
     }
 }
