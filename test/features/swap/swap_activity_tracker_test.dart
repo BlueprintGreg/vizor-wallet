@@ -555,6 +555,46 @@ void main() {
     expect(result.intents.single.status, SwapIntentStatus.depositObserved);
   });
 
+  test('a wallet failure on a terminal status keeps the swap open', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({
+      'private': _snapshot(
+        id: 'private',
+        depositAddress: 'private',
+        status: SwapIntentStatus.refunded,
+      ),
+    });
+    var failures = 1;
+    final recorded = <SwapIntentStatus>[];
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      onProviderSnapshot: (_, snapshot, _) async {
+        if (failures-- > 0) throw StateError('database is locked');
+        recorded.add(snapshot.status);
+      },
+    );
+    final intent = _intent(
+      id: 'private',
+      depositAddress: 'private',
+    ).copyWith(privateAddress: true);
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [intent]);
+    final failed = await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: [intent],
+    );
+    expect(failed.refreshError, isNotNull);
+    final stored = await tracker.loadIntents(accountUuid: 'account-1');
+    expect(stored.single.status.isTerminal, isFalse);
+
+    final retried = await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: stored,
+    );
+    expect(retried.refreshError, isNull);
+    expect(recorded, [SwapIntentStatus.refunded]);
+  });
+
   test('status refresh over Tor names the blocked route', () async {
     final store = _MemorySwapActivityStore();
     final provider = _StatusSwapProvider({});
