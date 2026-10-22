@@ -333,7 +333,7 @@ class _LedgerAccessRecoveryModalState
             'Choose the Ledger that holds this account. Your saved connection has not changed.',
           LedgerPairingStage.failed =>
             c.pairingInvalid
-                ? 'Open Bluetooth settings and remove the saved pairing for this Ledger. Then find it again.'
+                ? 'Your Ledger no longer recognizes this Bluetooth pairing.'
                 : c.failureMessage,
         };
         final title = choosing
@@ -362,6 +362,34 @@ class _LedgerAccessRecoveryModalState
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _message(context, message),
+              if (c.stage == LedgerPairingStage.failed && c.pairingInvalid) ...[
+                const SizedBox(height: AppSpacing.sm),
+                _recoveryStep(
+                  context,
+                  '1',
+                  'Remove the old pairing',
+                  platform == TargetPlatform.iOS
+                      ? 'Open Settings > Bluetooth. If your Ledger is listed, tap its info button and forget the device.'
+                      : 'Open ${platform == TargetPlatform.macOS ? 'System Settings > Bluetooth' : 'Bluetooth settings'}. If your Ledger is listed, remove its saved pairing.',
+                ),
+                if (platform != TargetPlatform.iOS &&
+                    c.service is LedgerBluetoothPairingSettings)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: AppButton(
+                      onPressed: c.busy ? null : c.settings,
+                      variant: AppButtonVariant.ghost,
+                      child: const Text('Open settings'),
+                    ),
+                  ),
+                const SizedBox(height: AppSpacing.sm),
+                _recoveryStep(
+                  context,
+                  '2',
+                  'Come back and reconnect',
+                  'Keep your Ledger unlocked, then select Find Ledger below.',
+                ),
+              ],
               if (choosing)
                 for (final device in c.devices)
                   Padding(
@@ -408,15 +436,6 @@ class _LedgerAccessRecoveryModalState
                       ? 'Searching for nearby Ledgers…'
                       : 'Follow the prompts on Ledger.',
                 ),
-              if (c.stage == LedgerPairingStage.failed &&
-                  c.pairingInvalid &&
-                  platform != TargetPlatform.iOS &&
-                  c.service is LedgerBluetoothPairingSettings)
-                AppButton(
-                  onPressed: c.busy ? null : c.settings,
-                  variant: AppButtonVariant.ghost,
-                  child: const Text('Open settings'),
-                ),
               if (c.error != null) _message(context, c.error!),
             ],
           ),
@@ -439,6 +458,29 @@ class _LedgerAccessRecoveryModalState
     style: AppTypography.bodyMedium.copyWith(
       color: context.colors.text.secondary,
     ),
+  );
+
+  Widget _recoveryStep(
+    BuildContext context,
+    String number,
+    String title,
+    String message,
+  ) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      SizedBox(width: 24, child: _message(context, number)),
+      const SizedBox(width: AppSpacing.s),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: AppTypography.bodyMediumStrong),
+            const SizedBox(height: AppSpacing.xs),
+            _message(context, message),
+          ],
+        ),
+      ),
+    ],
   );
 
   Widget _choice(BuildContext context, LedgerConnectionTransport transport) =>

@@ -230,9 +230,7 @@ void main() {
       expect(find.text('Ledger Flex · Bluetooth'), findsOneWidget);
       expect(find.text('Did you reset pairing?'), findsNothing);
       expect(
-        find.text(
-          'Open Bluetooth settings and remove the saved pairing for this Ledger. Then find it again.',
-        ),
+        find.text('Your Ledger no longer recognizes this Bluetooth pairing.'),
         findsNothing,
       );
       expect(find.text('Open settings'), findsNothing);
@@ -421,12 +419,14 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Pair your Ledger again'), findsOneWidget);
       expect(
-        find.text(
-          'Open Bluetooth settings and remove the saved pairing for this Ledger. Then find it again.',
-        ),
+        find.text('Your Ledger no longer recognizes this Bluetooth pairing.'),
         findsOneWidget,
       );
       expect(find.text('Did you reset pairing?'), findsNothing);
+      expect(find.text('Remove the old pairing'), findsOneWidget);
+      expect(find.text('Come back and reconnect'), findsOneWidget);
+      expect(find.textContaining('If your Ledger is listed'), findsOneWidget);
+      expect(find.textContaining('Keep your Ledger unlocked'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
     testWidgets(
@@ -458,9 +458,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(
-          find.text(
-            'Open Bluetooth settings and remove the saved pairing for this Ledger. Then find it again.',
-          ),
+          find.text('Your Ledger no longer recognizes this Bluetooth pairing.'),
           findsOneWidget,
         );
         expect(
