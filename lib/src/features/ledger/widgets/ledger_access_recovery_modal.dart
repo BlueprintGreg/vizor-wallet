@@ -11,6 +11,7 @@ import '../../../core/widgets/app_modal_card.dart';
 import 'ledger_modal_content.dart';
 import 'ledger_pairing_session.dart';
 import 'ledger_bluetooth_session.dart';
+import 'ledger_bluetooth_restricted_help.dart';
 import '../ledger_device_label.dart';
 import '../ledger_capability.dart';
 import '../../../providers/account_provider.dart';
@@ -169,6 +170,16 @@ class _LedgerAccessRecoveryModalState
     }
 
     Widget footer({String? label, VoidCallback? action}) {
+      if (label == 'Close') {
+        return Center(
+          child: AppButton(
+            size: AppButtonSize.mediumLarge,
+            minWidth: kAppModalButtonMinWidth,
+            onPressed: action,
+            child: const Text('Close'),
+          ),
+        );
+      }
       if (label != null && widget.onClose != null) {
         return AppModalActions(
           onCancel: close,
@@ -228,7 +239,7 @@ class _LedgerAccessRecoveryModalState
     Widget bluetooth(VoidCallback? retry) => LedgerBluetoothSession(
       enabled: !_changing,
       onRetry: retry,
-      onClose: widget.onClose,
+      onClose: widget.onClose == null ? null : close,
       retryLabel: 'Find Ledger',
       onBusyChanged: (busy) {
         _canChange = !busy;
@@ -241,6 +252,7 @@ class _LedgerAccessRecoveryModalState
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _message(context, c.message),
+            LedgerBluetoothRestrictedHelp(model: c),
             if (c.busy)
               const LedgerProgressStatus(label: 'Checking Bluetooth access…'),
           ],

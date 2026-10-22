@@ -56,6 +56,7 @@ import 'mobile_method_selection_capture.dart';
 import 'mobile_hardware_selection_capture.dart';
 import 'mobile_onboarding_intro_capture.dart';
 import 'ledger_recovery_capture.dart';
+import 'ledger_onboarding_guidance_capture.dart';
 import 'swap_asset_icons_capture.dart';
 
 typedef FigmaCompareScenarioBuilder = Widget Function(BuildContext context);
@@ -98,6 +99,40 @@ class FigmaCompareScenario {
 /// storage, network, wallet, and Rust state. Widgetbook fixtures are preferred
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-access-preparing',
+    description: 'Ledger onboarding: Bluetooth access check before discovery',
+    builder: buildLedgerOnboardingAccessPreparation,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-access-restricted',
+    description: 'Ledger onboarding: restricted access with close and settings',
+    builder: buildLedgerOnboardingAccessRestricted,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-usb-error',
+    description: 'Ledger onboarding: USB account export recovery',
+    builder: buildLedgerOnboardingUsbError,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-recovery-restricted-android',
+    description: 'Ledger recovery: Android nearby devices restricted',
+    builder: buildLedgerPermissionRestrictedCapture,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-recovery-restricted-location',
+    description: 'Ledger recovery: legacy Android location restricted',
+    builder: buildLedgerLocationRestrictedCapture,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
   FigmaCompareScenario(
     id: 'mobile-passcode-change',
     description: 'Responsive mobile passcode change',

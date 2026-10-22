@@ -377,7 +377,8 @@ void main() {
     await tester.pumpWidget(_harness(service));
     await tester.pumpAndSettle();
     expect(find.text('Allow access'), findsNothing);
-    expect(find.textContaining('administrator'), findsOneWidget);
+    expect(find.text(service.status.message), findsOneWidget);
+    expect(find.text('Open settings'), findsOneWidget);
   });
 
   testWidgets('late read after cancellation cannot replace guidance', (

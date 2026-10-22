@@ -19,6 +19,7 @@ import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
 import '../../ledger/services/ledger_signing_service.dart';
 import '../../ledger/widgets/ledger_bluetooth_session.dart';
+import '../../ledger/widgets/ledger_bluetooth_restricted_help.dart';
 import '../../ledger/widgets/ledger_modal_content.dart';
 import '../../ledger/widgets/ledger_procedure.dart';
 
@@ -314,6 +315,7 @@ class _LedgerDesktopConnectModalState
       setState(() {
         _closing = false;
         _cleanupFailed = true;
+        _accessRecovery = false;
         _phase = _Phase.failed;
         _error = 'Could not finish cleanup. Try again.';
       });
@@ -376,12 +378,29 @@ class _LedgerDesktopConnectModalState
       return LedgerBluetoothSession(
         service: widget.service,
         onRetry: _search,
+        onClose: () => unawaited(_finish()),
         retryLabel: 'Find Ledger',
         builder: (context, model) => LedgerModalContent(
           title: model.title,
           onBack: () => unawaited(_finish()),
-          footer: _footer(label: model.label, action: model.onAction),
-          child: model.busy ? _pending(model.message) : _message(model.message),
+          footer: model.restricted
+              ? Center(
+                  child: AppButton(
+                    size: AppButtonSize.mediumLarge,
+                    minWidth: kAppModalButtonMinWidth,
+                    onPressed: model.onAction,
+                    child: const Text('Close'),
+                  ),
+                )
+              : _footer(label: model.label, action: model.onAction),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              model.busy ? _pending(model.message) : _message(model.message),
+              LedgerBluetoothRestrictedHelp(model: model),
+            ],
+          ),
         ),
       );
     }

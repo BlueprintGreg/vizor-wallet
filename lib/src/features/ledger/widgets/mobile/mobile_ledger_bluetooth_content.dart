@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../../services/ledger_bluetooth_access.dart';
 import '../../services/ledger_mobile_ble_service.dart';
 import '../ledger_bluetooth_session.dart';
+import '../ledger_bluetooth_restricted_help.dart';
 import 'mobile_ledger_sheet_content.dart';
 
 class MobileLedgerBluetoothContent extends StatelessWidget {
@@ -30,7 +31,10 @@ class MobileLedgerBluetoothContent extends StatelessWidget {
       title: model.ready ? 'Reconnect Ledger' : model.title,
       onClose: onClose,
       action: MobileLedgerAction(model.label, onPressed: model.onAction),
-      children: [MobileLedgerMessage(_message(model))],
+      children: [
+        MobileLedgerMessage(_message(model)),
+        LedgerBluetoothRestrictedHelp(model: model),
+      ],
     ),
   );
 
