@@ -768,7 +768,8 @@ class SwapNotifier extends Notifier<SwapState> {
   /// starts; the wallet also resumes its draft until the latest quote expires.
   /// A refund address serves one quote request, so [_showReview] drops it once
   /// it commits to sending one, and returns it only if the request never left
-  /// the device.
+  /// the device. An ordinary address, with no reservation, is never kept, so
+  /// each later quote gets a fresh one.
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
@@ -778,7 +779,13 @@ class SwapNotifier extends Notifier<SwapState> {
         .read(swapZecStagingAddressServiceProvider)
         .prepareForQuote(accountUuid: accountUuid, direction: direction);
     try {
-      return await pending;
+      final address = await pending;
+      if (address.reservationIndex == null &&
+          address.refundIndex == null &&
+          identical(_reviewStagingAddresses[key], pending)) {
+        _reviewStagingAddresses.remove(key);
+      }
+      return address;
     } catch (_) {
       if (identical(_reviewStagingAddresses[key], pending)) {
         _reviewStagingAddresses.remove(key);

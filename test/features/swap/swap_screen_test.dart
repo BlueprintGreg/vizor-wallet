@@ -8306,11 +8306,11 @@ void main() {
             reserveSwapAddress:
                 ({required accountUuid, required direction}) async {
                   reservations++;
+                  final index = BigInt.from(reservations);
                   return SwapZecStagingAddress(
                     address: 'u1poc$reservations',
-                    refundIndex: direction.sendsZec
-                        ? BigInt.from(reservations)
-                        : null,
+                    refundIndex: direction.sendsZec ? index : null,
+                    reservationIndex: direction.sendsZec ? null : index,
                   );
                 },
           ),
@@ -8696,11 +8696,11 @@ void main() {
         swapProvider: _FakeSwapProvider(zecDepositMemo: null),
         reserveSwapAddress: ({required accountUuid, required direction}) async {
           purposes.add(direction);
+          final index = BigInt.from(purposes.length);
           return SwapZecStagingAddress(
             address: 'u1${direction.name}${purposes.length}',
-            refundIndex: direction.sendsZec
-                ? BigInt.from(purposes.length)
-                : null,
+            refundIndex: direction.sendsZec ? index : null,
+            reservationIndex: direction.sendsZec ? null : index,
           );
         },
       ),
@@ -8736,6 +8736,46 @@ void main() {
       SwapDirection.externalToZec,
       SwapDirection.zecToExternal,
     ]);
+  });
+
+  testWidgets('ordinary swap addresses are prepared for each quote', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    var prepared = 0;
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        // Without NEAR swap privacy, the wallet prepares ordinary addresses.
+        loadShieldedAddress: ({required accountUuid}) async =>
+            'u1ordinary${++prepared}',
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    Future<String?> reviewedRecipient(String amount) async {
+      notifier.updateAmount(amount);
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+      return container
+          .read(swapStateProvider)
+          .reviewAddressPlan
+          ?.oneClickRecipient;
+    }
+
+    notifier.selectDirection(SwapDirection.externalToZec);
+    expect(await reviewedRecipient('25'), 'u1ordinary1');
+    expect(await reviewedRecipient('30'), 'u1ordinary2');
+    expect(prepared, 2);
   });
 
   testWidgets('a stale incoming reservation is replaced and quoted again', (
@@ -8956,7 +8996,10 @@ void main() {
         reserveSwapAddress: ({required accountUuid, required direction}) async {
           if (!container.read(nearSwapPrivacyProvider)) return null;
           swapReservations++;
-          return SwapZecStagingAddress(address: 'u1swap$swapReservations');
+          return SwapZecStagingAddress(
+            address: 'u1swap$swapReservations',
+            reservationIndex: BigInt.from(swapReservations),
+          );
         },
         loadShieldedAddress: ({required accountUuid}) async {
           await ordinaryGate?.future;
@@ -8982,15 +9025,16 @@ void main() {
           ?.oneClickRecipient;
     }
 
+    // Only a reserved swap address is reused across quotes.
     expect(await reviewedRecipient('25'), 'u1ordinary1');
-    expect(await reviewedRecipient('26'), 'u1ordinary1');
+    expect(await reviewedRecipient('26'), 'u1ordinary2');
     await container.read(nearSwapPrivacyProvider.notifier).set(true);
     expect(await reviewedRecipient('27'), 'u1swap1');
     expect(await reviewedRecipient('28'), 'u1swap1');
     await container.read(nearSwapPrivacyProvider.notifier).set(false);
-    expect(await reviewedRecipient('29'), 'u1ordinary2');
+    expect(await reviewedRecipient('29'), 'u1ordinary3');
     expect(swapReservations, 1);
-    expect(ordinaryReservations, 2);
+    expect(ordinaryReservations, 3);
 
     // A change while a quote is in flight discards it, rather than showing a review
     // for the other kind of address.

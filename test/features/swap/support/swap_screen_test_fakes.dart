@@ -620,6 +620,13 @@ class _FakeNetworkPrivacyNotifier extends NetworkPrivacyNotifier {
 class _FakeReceiveReservationStore extends Fake
     implements ReceiveReservationStore {
   @override
+  Future<String> begin(BigInt reservation, DateTime deadline) async =>
+      'request-$reservation';
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) async {}
+
+  @override
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {}
 }
 
