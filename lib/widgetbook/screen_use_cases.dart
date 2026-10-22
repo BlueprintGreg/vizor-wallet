@@ -1331,6 +1331,7 @@ class _MobileBackupHarness extends StatefulWidget {
 }
 
 class _MobileBackupHarnessState extends State<_MobileBackupHarness> {
+  final _privacyController = SensitivePrivacyOverlayController();
   late final _router = GoRouter(
     initialLocation: widget.intro
         ? '/setup/backup'
@@ -1345,6 +1346,7 @@ class _MobileBackupHarnessState extends State<_MobileBackupHarness> {
         builder: (_, _) => MobileSeedPhraseScreen(
           showBackupIntro: true,
           screenshotStream: const Stream.empty(),
+          privacyOverlayController: _privacyController,
           birthdayHeightLoader: (_) async => 3000000,
           birthdayBlockTimeLoader: (_) async =>
               DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
@@ -1358,6 +1360,7 @@ class _MobileBackupHarnessState extends State<_MobileBackupHarness> {
             path: 'secret-passphrase',
             builder: (_, _) => MobileSeedPhraseScreen(
               screenshotStream: const Stream.empty(),
+              privacyOverlayController: _privacyController,
               birthdayHeightLoader: (_) async => 3000000,
               birthdayBlockTimeLoader: (_) async =>
                   DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
@@ -1371,6 +1374,7 @@ class _MobileBackupHarnessState extends State<_MobileBackupHarness> {
   @override
   void dispose() {
     _router.dispose();
+    _privacyController.dispose();
     super.dispose();
   }
 
@@ -3889,6 +3893,8 @@ class _MobileImportHarness extends StatefulWidget {
 
 class _MobileImportHarnessState extends State<_MobileImportHarness> {
   late final GoRouter _router;
+  late final SensitivePrivacyOverlayController _reviewPrivacyController =
+      SensitivePrivacyOverlayController();
 
   @override
   void initState() {
@@ -3921,6 +3927,7 @@ class _MobileImportHarnessState extends State<_MobileImportHarness> {
             return MobileImportReviewScreen(
               args: args,
               screenshotStream: const Stream.empty(),
+              privacyOverlayController: _reviewPrivacyController,
             );
           },
         ),
@@ -3936,6 +3943,7 @@ class _MobileImportHarnessState extends State<_MobileImportHarness> {
   @override
   void dispose() {
     _router.dispose();
+    _reviewPrivacyController.dispose();
     super.dispose();
   }
 
@@ -4364,6 +4372,7 @@ class _MobileHomeHarness extends StatefulWidget {
 
 class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
   late final GoRouter _router;
+  final _privacyController = SensitivePrivacyOverlayController();
 
   Widget _shieldPreview(BuildContext context, GoRouterState state) {
     void submitted() =>
@@ -4447,6 +4456,7 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
           accountUuid: state.extra as String?,
           showBackupIntro: true,
           screenshotStream: const Stream.empty(),
+          privacyOverlayController: _privacyController,
           birthdayHeightLoader: (_) async => 3000000,
           birthdayBlockTimeLoader: (_) async =>
               DateTime(2026, 9, 1).millisecondsSinceEpoch ~/ 1000,
@@ -4526,6 +4536,7 @@ class _MobileHomeHarnessState extends State<_MobileHomeHarness> {
   @override
   void dispose() {
     _router.dispose();
+    _privacyController.dispose();
     super.dispose();
   }
 
@@ -5263,16 +5274,33 @@ Widget _buildMobileModalSnapshotUseCase(BuildContext context, Widget sheet) {
   );
 }
 
-class _MobileSecretPassphraseProtectedPreview extends StatelessWidget {
+class _MobileSecretPassphraseProtectedPreview extends StatefulWidget {
   const _MobileSecretPassphraseProtectedPreview();
 
   @override
+  State<_MobileSecretPassphraseProtectedPreview> createState() =>
+      _MobileSecretPassphraseProtectedPreviewState();
+}
+
+class _MobileSecretPassphraseProtectedPreviewState
+    extends State<_MobileSecretPassphraseProtectedPreview> {
+  late final SensitivePrivacyOverlayController _privacyController =
+      SensitivePrivacyOverlayController(initiallySafe: false);
+
+  @override
+  void dispose() {
+    _privacyController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const _MobilePreviewFrame(
+    return _MobilePreviewFrame(
       child: IgnorePointer(
         child: MobileSecretPassphraseScreen(
-          args: CreateSecretPassphraseArgs(mnemonic: _previewMnemonic),
-          screenshotStream: Stream.empty(),
+          args: const CreateSecretPassphraseArgs(mnemonic: _previewMnemonic),
+          screenshotStream: const Stream.empty(),
+          privacyOverlayController: _privacyController,
         ),
       ),
     );

@@ -13,6 +13,7 @@ import 'package:zcash_wallet/src/core/layout/mobile/mobile_adaptive_frame.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_wallet_sidebar.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_page_viewport.dart';
 import 'package:zcash_wallet/src/core/navigation/mobile_destinations.dart';
+import 'package:zcash_wallet/src/core/privacy/sensitive_privacy_overlay.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/services/native_mobile_navigation_geometry.dart';
 import '../../fakes/fake_sync_notifier.dart';
@@ -813,6 +814,8 @@ Future<GoRouter> _adaptiveApp(
     ],
   );
   addTearDown(container.dispose);
+  final privacy = SensitivePrivacyOverlayController(initiallySafe: true);
+  addTearDown(privacy.dispose);
   final router = GoRouter(
     initialLocation: '/settings',
     routes: [
@@ -835,6 +838,7 @@ Future<GoRouter> _adaptiveApp(
               key: state.pageKey,
               child: MobilePageViewport(
                 child: MobileViewingKeyScreen(
+                  privacyOverlayController: privacy,
                   viewingKeysLoader: (_) => keys.future,
                 ),
               ),
