@@ -475,7 +475,11 @@ SyncProvider (sync_provider.dart)
   ├── A start requested while its own stream still holds the Rust guard (its
   │   post-sync follow-ups included) is queued and runs when the stream ends;
   │   repeats coalesce, and a queued start is dropped if the app went background
-  ├── `_sensitiveStateEpoch` discards late balance/progress updates after lock/sign-out
+  ├── `_sensitiveStateEpoch` discards late balance/history/progress updates after lock/sign-out
+  ├── Balance and history refresh independently; sync completion and spend recovery
+  │   wait for the balance, while history coalesces one active and one trailing read
+  ├── History has a separate generation for account/lock transitions; new blocks
+  │   do not discard an otherwise valid history result
   ├── Passes activeAccountUuid to getBalance, getTransactionHistory
   ├── Sync itself is account-agnostic (covers all accounts)
   ├── Polling pauses on app background (onHide), resumes on foreground (onResume)

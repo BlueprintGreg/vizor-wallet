@@ -25,6 +25,8 @@ class _Api extends RustLibApi {
   int balanceReads = 0;
   bool unavailableFirstBalance = false;
   int gatedHistoryRead = 1;
+  int gatedBalanceRead = 2;
+  Completer<void>? balanceGate;
   Completer<List<rust_sync.TransactionInfo>>? historyGate;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
 
@@ -78,6 +80,9 @@ class _Api extends RustLibApi {
   }) async {
     balanceReads++;
     final unavailable = unavailableFirstBalance && balanceReads == 1;
+    if (balanceReads == gatedBalanceRead && balanceGate != null) {
+      await balanceGate!.future;
+    }
     final amount = unavailable ? BigInt.zero : BigInt.one;
     return rust_sync.WalletBalance(
       availability: unavailable
@@ -134,9 +139,16 @@ class _Api extends RustLibApi {
 class _Account extends AccountNotifier {
   @override
   AccountState build() => const AccountState(
-    accounts: [AccountInfo(uuid: _accountUuid, name: 'Account 1', order: 0)],
+    accounts: [
+      AccountInfo(uuid: _accountUuid, name: 'Account 1', order: 0),
+      AccountInfo(uuid: 'account-2', name: 'Account 2', order: 1),
+    ],
     activeAccountUuid: _accountUuid,
   );
+
+  void select(String uuid) {
+    state = AsyncData(state.requireValue.copyWith(activeAccountUuid: uuid));
+  }
 }
 
 class _Tip extends RpcEndpointFailoverNotifier {
@@ -175,7 +187,8 @@ class _Sync extends SyncNotifier {
   @override
   Future<SyncState> build() async => SyncState(
     accountUuid: _accountUuid,
-    hasAccountScopedData: true,
+    hasBalanceData: true,
+    hasRecentTransactionsData: false,
     isSyncComplete: true,
     scannedHeight: 100,
     chainTipHeight: 100,
@@ -210,10 +223,14 @@ void main() {
     api.unavailableFirstBalance = false;
     api.gatedHistoryRead = 1;
     api.historyGate = null;
+    api.balanceGate = null;
+    api.gatedBalanceRead = 2;
     api.syncs.clear();
   });
 
-  Future<({ProviderContainer container, _Sync sync})> setup() async {
+  Future<({ProviderContainer container, _Sync sync})> setup({
+    bool complete = true,
+  }) async {
     final sync = _Sync();
     final container = ProviderContainer(
       overrides: [
@@ -235,7 +252,7 @@ void main() {
     await pumpEventQueue();
     expect(api.syncs, hasLength(1));
     expect(sync.state.requireValue.isUsingCompletedSpendableSnapshot, isTrue);
-    api.syncs.single.add(_complete());
+    if (complete) api.syncs.single.add(_complete());
     await pumpEventQueue();
     unawaited(api.finish(0));
     await pumpEventQueue();
@@ -259,11 +276,10 @@ void main() {
 
   test('slow recovery respects the spend deadline', () async {
     api.unavailableFirstBalance = true;
-    api.gatedHistoryRead = 2;
-    api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+    api.balanceGate = Completer<void>();
     final (:sync, :container) = await setup();
     await Future<void>.delayed(const Duration(milliseconds: 350));
-    expect(api.historyReads, 2);
+    expect(api.balanceReads, 2);
     expect(
       container
           .read(syncProvider)
@@ -287,46 +303,168 @@ void main() {
         ),
       ),
     );
-    api.historyGate!.complete([]);
+    api.balanceGate!.complete();
     await pumpEventQueue();
   });
 
+  test('completion and spending do not wait for history', () async {
+    api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+    final (:sync, :container) = await setup();
+    sync.stopTipChecksForTesting();
+    final state = container.read(syncProvider).requireValue;
+    expect(state.isSyncComplete, isTrue);
+    expect(state.hasSettledSpendableBalance, isTrue);
+    expect(state.hasRecentTransactionsData, isFalse);
+    expect(api.historyReads, 1);
+    expect(api.historyGate!.isCompleted, isFalse);
+    expect(
+      await sync
+          .runWithAuthoritativeSpendable(
+            accountUuid: _accountUuid,
+            operation: () async => 'ready',
+          )
+          .timeout(const Duration(seconds: 2)),
+      'ready',
+    );
+    api.historyGate!.complete([]);
+    await pumpEventQueue();
+    expect(
+      container.read(syncProvider).requireValue.hasRecentTransactionsData,
+      isTrue,
+    );
+  });
+
   test(
-    'a published balance releases spending while trailing history is pending',
+    'resume and new blocks coalesce history without invalidating it',
     () async {
-      api.unavailableFirstBalance = true;
-      api.gatedHistoryRead = 2;
       api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
       final (:sync, :container) = await setup();
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      expect(api.historyReads, 2);
-      var called = false;
-      final send = sync.runWithAuthoritativeSpendable(
-        accountUuid: _accountUuid,
-        operation: () async {
-          called = true;
-        },
-      );
-      await pumpEventQueue();
       sync.stopTipChecksForTesting();
-      final finishing = api.historyGate!;
-      api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
-      api.gatedHistoryRead = 3;
       sync.handleAppHideForTesting();
       sync.handleAppResumeForTesting();
       await pumpEventQueue();
       sync.stopTipChecksForTesting();
-      finishing.complete([]);
-      await send.timeout(const Duration(seconds: 2));
-      expect(api.historyReads, 3);
-      expect(api.historyGate!.isCompleted, isFalse);
+      // Another real sync starts before the old history read completes.
+      sync.startSync();
+      await pumpEventQueue();
+      expect(api.syncs, hasLength(2));
+      api.syncs[1].add(_complete());
+      await pumpEventQueue();
+      unawaited(api.finish(1));
+      await pumpEventQueue();
+      sync.stopTipChecksForTesting();
+      expect(api.historyReads, 1);
       expect(
         container.read(syncProvider).requireValue.hasSettledSpendableBalance,
         isTrue,
       );
-      expect(called, isTrue);
+      final firstHistory = api.historyGate!;
+      api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+      api.gatedHistoryRead = 2;
+      firstHistory.complete([]);
+      await pumpEventQueue();
+      expect(api.historyReads, 2);
+      expect(api.historyGate!.isCompleted, isFalse);
+      // The active result commits even though a newer history request is queued.
+      expect(
+        container.read(syncProvider).requireValue.hasRecentTransactionsData,
+        isTrue,
+      );
       api.historyGate!.complete([]);
       await pumpEventQueue();
+      expect(api.historyReads, 2);
+    },
+  );
+
+  test(
+    'a resume balance superseding completion recovers without history',
+    () async {
+      api.balanceGate = Completer<void>();
+      api.gatedBalanceRead = 1;
+      api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+      final (:sync, :container) = await setup();
+      sync.handleAppHideForTesting();
+      sync.handleAppResumeForTesting();
+      await pumpEventQueue();
+      sync.stopTipChecksForTesting();
+      expect(api.balanceReads, 2);
+      api.balanceGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      sync.stopTipChecksForTesting();
+      expect(container.read(syncProvider).requireValue.isSyncComplete, isTrue);
+      expect(
+        container.read(syncProvider).requireValue.hasSettledSpendableBalance,
+        isTrue,
+      );
+      expect(api.historyGate!.isCompleted, isFalse);
+      api.historyGate!.complete([]);
+      await pumpEventQueue();
+    },
+  );
+
+  test(
+    'proposal release needs only balance while history is blocked',
+    () async {
+      api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+      final (:sync, :container) = await setup();
+      sync.stopTipChecksForTesting();
+      await sync
+          .refreshAfterProposalRelease(_accountUuid)
+          .timeout(const Duration(seconds: 2));
+      expect(
+        container.read(syncProvider).requireValue.hasSettledSpendableBalance,
+        isTrue,
+      );
+      expect(api.historyGate!.isCompleted, isFalse);
+      api.historyGate!.complete([]);
+      await pumpEventQueue();
+    },
+  );
+
+  test('late history cannot repopulate a locked wallet', () async {
+    api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+    final (:sync, :container) = await setup();
+    sync.stopTipChecksForTesting();
+    await sync.clearSensitiveStateForLock();
+    api.historyGate!.complete([]);
+    await pumpEventQueue();
+    expect(
+      container.read(syncProvider).requireValue.hasRecentTransactionsData,
+      isFalse,
+    );
+    expect(container.read(syncProvider).requireValue.accountUuid, isNull);
+  });
+
+  test(
+    'late history cannot populate another account or a switch back',
+    () async {
+      api.historyGate = Completer<List<rust_sync.TransactionInfo>>();
+      final (:sync, :container) = await setup();
+      sync.stopTipChecksForTesting();
+      final accounts = container.read(accountProvider.notifier) as _Account;
+      accounts.select('account-2');
+      sync.handleAccountSwitchForTesting('account-2');
+      accounts.select(_accountUuid);
+      sync.handleAccountSwitchForTesting(_accountUuid);
+      api.historyGate!.complete([]);
+      await pumpEventQueue();
+      expect(
+        container.read(syncProvider).requireValue.hasRecentTransactionsData,
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'stream closure without completion does not declare sync complete',
+    () async {
+      final (:sync, :container) = await setup(complete: false);
+      sync.stopTipChecksForTesting();
+      expect(container.read(syncProvider).requireValue.isSyncComplete, isFalse);
+      expect(
+        container.read(syncProvider).requireValue.hasSettledSpendableBalance,
+        isFalse,
+      );
     },
   );
 }

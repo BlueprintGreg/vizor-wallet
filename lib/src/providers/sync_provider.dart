@@ -1124,6 +1124,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   int _sensitiveStateEpoch = 0;
   int _progressEventVersion = 0;
   int _balanceReadVersion = 0;
+  int _historyReadVersion = 0;
+  bool _historyRefreshQueued = false;
+  Future<void>? _historyRefreshChain;
   int _authoritativeBalanceVersion = 0;
   Future<void>? _authoritativeBalanceRecovery;
   int _authoritativeSpendableOperationCount = 0;
@@ -1141,9 +1144,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   int _mempoolEvidenceEpoch = 0;
   bool _mempoolRefreshInFlight = false;
   bool _mempoolRefreshQueued = false;
-  // Coalesce balance/history refreshes through `_requestBalanceRefresh`.
-  // Mid-flight requests queue one trailing pass so callers don't adopt a
-  // stale in-flight result.
+
   /// Last known account-scoped state per account, used only when
   /// switching accounts.
   ///
@@ -1248,6 +1249,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       ++_syncGen;
       ++_progressEventVersion;
       ++_balanceReadVersion;
+      _invalidateHistoryReads();
       _isSyncing = false;
       _syncStartDeferred = false;
       _deferredSyncLatestTipHeight = null;
@@ -1414,12 +1416,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   /// Re-point account-scoped state at [accountUuid] during a switch.
   ///
-  /// Bumping `_balanceReadVersion` first is what makes restoring safe:
+  /// Invalidating balance and history reads first makes restoring safe:
   /// any refresh still in flight for the outgoing account is discarded
   /// on commit, so it cannot land on top of the incoming account's
   /// restored values. See `_lastKnownByAccount` for the full sequence.
   void _clearAccountScopedStateFor(String? accountUuid) {
     ++_balanceReadVersion;
+    _invalidateHistoryReads();
     _authoritativeBalanceRecovery = null;
     final prev = state.value;
     if (prev == null) return;
@@ -1519,6 +1522,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ++_sensitiveStateEpoch;
     ++_progressEventVersion;
     ++_balanceReadVersion;
+    _invalidateHistoryReads();
     _syncStartDeferred = false;
     _deferredSyncLatestTipHeight = null;
     _isSyncing = false;
@@ -2117,6 +2121,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ++_syncGen; // invalidate pending startSync callbacks
     ++_progressEventVersion;
     ++_balanceReadVersion;
+    _invalidateHistoryReads();
     rust_sync.cancelFullSync();
     _syncSub?.cancel();
     _syncSub = null;
@@ -2343,6 +2348,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         ++_syncGen;
         ++_progressEventVersion;
         ++_balanceReadVersion;
+        _invalidateHistoryReads();
         _stopPolling();
         await onStoppingSync?.call();
         log('SyncNotifier: pausing sync for wallet DB mutation');
@@ -2419,6 +2425,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ++_sensitiveStateEpoch;
     ++_progressEventVersion;
     ++_balanceReadVersion;
+    _invalidateHistoryReads();
     _isSyncing = false;
     _stopPolling();
     _syncSub?.cancel();
@@ -2483,6 +2490,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     ++_syncGen;
     ++_progressEventVersion;
     ++_balanceReadVersion;
+    _invalidateHistoryReads();
     rust_sync.cancelFullSync();
     await _syncSub?.cancel();
     _syncSub = null;
@@ -2839,7 +2847,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       do {
         _mempoolRefreshQueued = false;
         try {
-          await _requestBalanceRefresh();
+          await _requestAccountRefresh();
         } catch (e, st) {
           log('Mempool: refresh failed: $e\n$st');
         }
@@ -2882,7 +2890,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     }
     if (!ref.mounted || _requiresUnlock) return;
     try {
-      await _requestBalanceRefresh();
+      await _requestAccountRefresh();
     } catch (e, st) {
       log('SyncNotifier: follow-up refresh failed: $e\n$st');
     }
@@ -2892,6 +2900,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (!ref.mounted || _requiresUnlock) {
       return;
     }
+    final completionTimer = event.isComplete ? (Stopwatch()..start()) : null;
     final progressEventVersion = ++_progressEventVersion;
     final epoch = _sensitiveStateEpoch;
     if (event.scannedHeight != _lastLoggedHeight) {
@@ -2935,10 +2944,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     BigInt? shieldTransparentAmount;
     rust_sync.WalletBalance? fetchedBalance;
     var hasAuthoritativeBalance = false;
-    var didFetchRecentTxs = false;
     int? balanceReadVersion;
-    var recentTxs =
-        scopedPrev?.recentTransactions ?? const <rust_sync.TransactionInfo>[];
     if (event.hasNewTx || event.isComplete) {
       balanceReadVersion = ++_balanceReadVersion;
       try {
@@ -2975,18 +2981,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         log('SyncNotifier: balance fetch failed: $e');
       }
       if (!ref.mounted) return;
-      try {
-        recentTxs = await rust_sync.getTransactionHistory(
-          dbPath: dbPath,
-          network: network,
-          limit: 10,
-          accountUuid: accountUuid,
-        );
-        didFetchRecentTxs = true;
-      } catch (e) {
-        log('SyncNotifier: tx history fetch failed: $e');
-      }
-      if (!ref.mounted) return;
       final shieldStatus = await _getShieldTransparentStatus(
         dbPath: dbPath,
         network: network,
@@ -3007,6 +3001,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       );
       return;
     }
+    if ((event.hasNewTx || event.isComplete) &&
+        accountUuid == _getActiveAccountUuid()) {
+      unawaited(_requestHistoryRefresh());
+    }
     final stateAccountUuid = _getActiveAccountUuid();
     final useFetchedAccountData = accountUuid == stateAccountUuid;
     final balanceReadIsCurrent =
@@ -3015,8 +3013,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         useFetchedAccountData &&
         hasAuthoritativeBalance &&
         balanceReadIsCurrent;
-    final useFetchedRecentTxs =
-        useFetchedAccountData && didFetchRecentTxs && balanceReadIsCurrent;
     // A stream error can be recorded while this handler awaits DB reads. Its
     // stopped failure state must win over this older progress event.
     final currentState = state.value;
@@ -3029,23 +3025,15 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _mergeFetchedAccountDataIntoLatestState(
         accountUuid: accountUuid,
         balance: useFetchedBalance ? fetchedBalance : null,
-        recentTransactions: useFetchedRecentTxs ? recentTxs : null,
         canShieldTransparentBalance: canShieldTransparentBalance,
         shieldTransparentFee: shieldTransparentFee,
         shieldTransparentAmount: shieldTransparentAmount,
       );
       log(
         'SyncNotifier: discarded stale progress metadata'
-        '${useFetchedBalance || useFetchedRecentTxs ? ', kept account data' : ''}',
+        '${useFetchedBalance ? ', kept account data' : ''}',
       );
       return;
-    }
-    if ((event.hasNewTx || event.isComplete) &&
-        useFetchedAccountData &&
-        balanceReadIsCurrent) {
-      ref
-          .read(pendingActivityEvidenceProvider.notifier)
-          .historyReadCompleted(accountUuid, available: didFetchRecentTxs);
     }
     if (useFetchedBalance) {
       ++_authoritativeBalanceVersion;
@@ -3057,8 +3045,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     final hasBalanceData =
         useFetchedBalance || (stateScopedPrev?.hasBalanceData ?? false);
     final hasRecentTransactionsData =
-        useFetchedRecentTxs ||
-        (stateScopedPrev?.hasRecentTransactionsData ?? false);
+        stateScopedPrev?.hasRecentTransactionsData ?? false;
     if (!useFetchedAccountData) {
       log(
         'SyncNotifier: discarding account-scoped sync data after account transition',
@@ -3226,9 +3213,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
                   (orchardPending ?? BigInt.zero) +
                   (ironwoodPending ?? BigInt.zero)
             : carriedPrev?.displayShieldedBalance,
-        recentTransactions: useFetchedRecentTxs
-            ? recentTxs
-            : carriedPrev?.recentTransactions ?? const [],
+        recentTransactions: carriedPrev?.recentTransactions ?? const [],
         lastSyncStartedAt: syncStartedAt,
         lastSyncCompletedAt: syncCompletedAt,
         lastSyncFailedAt: prev?.lastSyncFailedAt,
@@ -3238,6 +3223,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
     // Handle sync completion here (not in onDone) to avoid race with async state update.
     if (event.isComplete) {
+      if (useFetchedBalance) {
+        log(
+          'Sync: completion balance published in ${completionTimer!.elapsedMilliseconds}ms',
+        );
+      }
       _isSyncing = false;
       _startPolling();
       if (!useFetchedBalance) {
@@ -3278,9 +3268,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   /// Public: refresh balance and recent transactions (e.g. after send).
   Future<void> refreshAfterSend() =>
-      _requestBalanceRefresh(releaseSnapshotOnAuthoritativeBalance: true);
+      _requestAccountRefresh(releaseSnapshotOnAuthoritativeBalance: true);
 
   /// Reconcile released inputs before a cancelled send can be retried.
+  /// Only the authoritative balance is required; history may still be loading.
   /// An outgoing account's locked snapshot must not be restored on switch-back.
   /// Never publish that account's balance over a different active account.
   Future<void> refreshAfterProposalRelease(String accountUuid) async {
@@ -3301,19 +3292,122 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   ///
   /// If its balance summary is temporarily unavailable, discard only the
   /// restored balance snapshot so it cannot remain visibly stale.
-  Future<void> refreshAfterAccountSwitch() => _requestBalanceRefresh(
+  Future<void> refreshAfterAccountSwitch() => _requestAccountRefresh(
     releaseSnapshotOnAuthoritativeBalance: true,
     clearRestoredSnapshotIfUnavailable: true,
   );
 
-  Future<void> refreshAfterUnlock() => _requestBalanceRefresh();
+  Future<void> refreshAfterUnlock() => _requestAccountRefresh();
 
   Future<void> _refreshBalanceAfterResume() async {
     if (_isShuttingDown) return;
     try {
-      await _requestBalanceRefresh();
+      await _requestAccountRefresh();
     } catch (e, st) {
       log('SyncNotifier: resume balance refresh failed: $e\n$st');
+    }
+  }
+
+  /// Keep callers that explicitly refresh account data waiting for both reads.
+  /// Balance publication and spend recovery never await the history chain.
+  Future<void> _requestAccountRefresh({
+    bool releaseSnapshotOnAuthoritativeBalance = false,
+    bool clearRestoredSnapshotIfUnavailable = false,
+    bool requireAuthoritativeBalance = false,
+  }) async {
+    await Future.wait([
+      _requestBalanceRefresh(
+        releaseSnapshotOnAuthoritativeBalance:
+            releaseSnapshotOnAuthoritativeBalance,
+        clearRestoredSnapshotIfUnavailable: clearRestoredSnapshotIfUnavailable,
+        requireAuthoritativeBalance: requireAuthoritativeBalance,
+      ),
+      _requestHistoryRefresh(),
+    ]);
+  }
+
+  void _invalidateHistoryReads() {
+    ++_historyReadVersion;
+    _historyRefreshQueued = false;
+  }
+
+  /// One history read may run at a time; new triggers request one trailing pass.
+  /// They do not invalidate the active read, so new blocks cannot starve history.
+  Future<void> _requestHistoryRefresh() {
+    if (!ref.mounted || _requiresUnlock || _isShuttingDown) {
+      return Future<void>.value();
+    }
+    final existing = _historyRefreshChain;
+    if (existing != null) {
+      _historyRefreshQueued = true;
+      return existing;
+    }
+    final chain = _runCoalescedHistoryRefresh();
+    _historyRefreshChain = chain;
+    return chain;
+  }
+
+  Future<void> _runCoalescedHistoryRefresh() async {
+    try {
+      do {
+        _historyRefreshQueued = false;
+        await _refreshHistory();
+      } while (_historyRefreshQueued &&
+          ref.mounted &&
+          !_requiresUnlock &&
+          !_isShuttingDown);
+    } finally {
+      _historyRefreshQueued = false;
+      _historyRefreshChain = null;
+    }
+  }
+
+  Future<void> _refreshHistory() async {
+    final version = _historyReadVersion;
+    final epoch = _sensitiveStateEpoch;
+    final accountUuid = _getActiveAccountUuid();
+    if (accountUuid == null) return;
+    List<rust_sync.TransactionInfo>? transactions;
+    try {
+      final dbPath = await _getDbPath();
+      if (!ref.mounted ||
+          epoch != _sensitiveStateEpoch ||
+          version != _historyReadVersion ||
+          _requiresUnlock) {
+        return;
+      }
+      transactions = await readTransactionHistory(
+        dbPath: dbPath,
+        network: _endpointConfig.networkName,
+        limit: 10,
+        accountUuid: accountUuid,
+      );
+    } catch (e) {
+      _logRefreshReadError(
+        label: 'tx history',
+        fallback: 'keeping previous list',
+        error: e,
+      );
+    }
+    if (!ref.mounted ||
+        epoch != _sensitiveStateEpoch ||
+        version != _historyReadVersion ||
+        _requiresUnlock ||
+        accountUuid != _getActiveAccountUuid()) {
+      return;
+    }
+    ref
+        .read(pendingActivityEvidenceProvider.notifier)
+        .historyReadCompleted(accountUuid, available: transactions != null);
+    if (transactions == null) return;
+    final current = _previousScopedState(state.value, accountUuid);
+    if (current != null) {
+      state = AsyncData(
+        current.copyWith(
+          hasRecentTransactionsData: true,
+          recentTransactions: transactions,
+        ),
+      );
     }
   }
 
@@ -3587,29 +3681,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     BigInt? shieldTransparentFee;
     BigInt? shieldTransparentAmount;
     var hasAuthoritativeBalance = false;
-    var didFetchRecentTxs = false;
-
-    // Balance and history are independent reads; issuing both before
-    // awaiting either removes one round trip from every refresh.
-    // `onError` is attached here rather than only in the `catch` blocks
-    // below: if the first await throws, the second future would
-    // otherwise complete with an unobserved error.
-    final balanceRead = readWalletBalance(
-      dbPath: dbPath,
-      network: network,
-      accountUuid: accountUuid,
-    ).then<Object>((value) => value, onError: (Object error) => error);
-    final historyRead = readTransactionHistory(
-      dbPath: dbPath,
-      network: network,
-      limit: 10,
-      accountUuid: accountUuid,
-    ).then<Object>((value) => value, onError: (Object error) => error);
 
     try {
-      final balanceResult = await balanceRead;
-      if (balanceResult is! rust_sync.WalletBalance) throw balanceResult;
-      final balance = balanceResult;
+      final balance = await readWalletBalance(
+        dbPath: dbPath,
+        network: network,
+        accountUuid: accountUuid,
+      );
       if (balance.availability ==
           rust_sync.WalletBalanceAvailability.available) {
         transparent = balance.transparent;
@@ -3641,23 +3719,6 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       );
     }
 
-    var recentTxs =
-        scopedPrev?.recentTransactions ?? const <rust_sync.TransactionInfo>[];
-    try {
-      final historyResult = await historyRead;
-      if (historyResult is! List<rust_sync.TransactionInfo>) {
-        throw historyResult;
-      }
-      recentTxs = historyResult;
-      didFetchRecentTxs = true;
-    } catch (e) {
-      _logRefreshReadError(
-        label: 'tx history',
-        fallback: 'keeping previous list',
-        error: e,
-      );
-    }
-
     final shieldStatus = await _getShieldTransparentStatus(
       dbPath: dbPath,
       network: network,
@@ -3671,7 +3732,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       shieldTransparentAmount = shieldStatus.amount;
     }
 
-    if (epoch != _sensitiveStateEpoch ||
+    if (!ref.mounted ||
+        epoch != _sensitiveStateEpoch ||
         _requiresUnlock ||
         accountUuid != _getActiveAccountUuid()) {
       log(
@@ -3690,10 +3752,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (requireAuthoritativeBalance && !hasAuthoritativeBalance) {
       throw StateError('Balance unavailable after releasing send proposal');
     }
-    ref
-        .read(pendingActivityEvidenceProvider.notifier)
-        .historyReadCompleted(accountUuid, available: didFetchRecentTxs);
-    // Commit against the latest state so a slow balance/history refresh
+    // Commit against the latest state so a slow balance refresh
     // cannot roll sync progress or completion metadata back to the snapshot
     // captured before the awaits above.
     final current = state.value;
@@ -3714,11 +3773,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       state = AsyncData(
         cleared.copyWith(
           hasRecentTransactionsData:
-              didFetchRecentTxs ||
-              (accountFallback?.hasRecentTransactionsData ?? false),
-          recentTransactions: didFetchRecentTxs
-              ? recentTxs
-              : accountFallback?.recentTransactions ?? const [],
+              accountFallback?.hasRecentTransactionsData ?? false,
+          recentTransactions: accountFallback?.recentTransactions ?? const [],
         ),
       );
       return;
@@ -3748,8 +3804,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             hasAuthoritativeBalance ||
             (accountFallback?.hasBalanceData ?? false),
         hasRecentTransactionsData:
-            didFetchRecentTxs ||
-            (accountFallback?.hasRecentTransactionsData ?? false),
+            accountFallback?.hasRecentTransactionsData ?? false,
         isSyncing: current?.isSyncing ?? false,
         isBackgroundMode: current?.isBackgroundMode ?? false,
         isSyncComplete: current?.isSyncComplete ?? false,
@@ -3832,9 +3887,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             : accountFallback?.displayShieldedBalance,
         failure: current?.failure,
         error: current?.error,
-        recentTransactions: didFetchRecentTxs
-            ? recentTxs
-            : accountFallback?.recentTransactions ?? const [],
+        recentTransactions: accountFallback?.recentTransactions ?? const [],
         lastSyncStartedAt: current?.lastSyncStartedAt,
         lastSyncCompletedAt: current?.lastSyncCompletedAt,
         lastSyncFailedAt: current?.lastSyncFailedAt,
