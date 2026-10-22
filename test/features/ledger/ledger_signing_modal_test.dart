@@ -184,7 +184,12 @@ void main() {
           1,
         );
         if (phase == 'sending') {
-          expect(find.text('It may take about 30 seconds.'), findsOneWidget);
+          expect(
+            find.text(
+              'Ledger is preparing to sign. It may seem unresponsive for about 30 seconds.',
+            ),
+            findsOneWidget,
+          );
         }
         expect(find.text('Open the Zcash app'), findsNothing);
       }

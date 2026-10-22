@@ -69,7 +69,7 @@ class DesktopLedgerSigningContent extends StatelessWidget {
         : opening
         ? 'Confirm opening Zcash on Ledger.'
         : stage == LedgerSigningStage.sending
-        ? 'It may take about ${ledgerHasShortSigningWait(deviceModel) ? 10 : 30} seconds.'
+        ? 'Ledger is preparing to sign. It may seem unresponsive for about ${ledgerHasShortSigningWait(deviceModel) ? 10 : 30} seconds.'
         : stage == LedgerSigningStage.reviewing
         ? 'When prompted, check the amount and recipient on Ledger.'
         : stage == LedgerSigningStage.finishing
