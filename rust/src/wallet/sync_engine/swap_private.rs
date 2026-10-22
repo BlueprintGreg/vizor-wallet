@@ -16,15 +16,12 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
-use zakura_pir_receiver::{
-    lookup,
-    receiver_directory::blocks::{Batch, Head},
-    receiver_pir::{
-        self,
-        inventory::Inventory,
-        transport::{DescriptorStore, Inventories, InventoryClient},
-    },
-    witness, DirectoryError, Transport, MAINNET_GENESIS,
+use zakura_pir_client::receiver::{
+    blocks::{Batch, Head},
+    inventory::Inventory,
+    lookup, native, session,
+    transport::{DescriptorStore, Inventories, InventoryClient, Transport},
+    witness, MAINNET_GENESIS,
 };
 use zcash_client_backend::data_api::{
     one_time_ivk::restore::{DiscoveryWork, RecoveryToken},
@@ -123,17 +120,17 @@ impl<'a, F> SwapTransport<'a, F> {
 }
 /// Maps a receiver directory failure: a session conflict means its publication changed,
 /// and anything else, including overload (HTTP 429), is a retryable transport failure.
-fn receiver_error(error: RoutedHttpError) -> DirectoryError {
+fn receiver_error(error: RoutedHttpError) -> session::Error {
     match error {
-        error if error.is_session_conflict() => DirectoryError::Revision,
-        RoutedHttpError::HttpStatus(status) => DirectoryError::Transport(format!("HTTP {status}")),
-        RoutedHttpError::Cancelled => DirectoryError::Transport("Cancelled".into()),
-        RoutedHttpError::Failed(error) => DirectoryError::Transport(error.to_string()),
+        error if error.is_session_conflict() => session::Error::Revision,
+        RoutedHttpError::HttpStatus(status) => session::Error::Transport(format!("HTTP {status}")),
+        RoutedHttpError::Cancelled => session::Error::Transport("Cancelled".into()),
+        RoutedHttpError::Failed(error) => session::Error::Transport(error.to_string()),
     }
 }
 impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
     /// A bounded public read over the wallet's route.
-    async fn get(&self, url: &str, limit: usize) -> Result<Vec<u8>, DirectoryError> {
+    async fn get(&self, url: &str, limit: usize) -> Result<Vec<u8>, session::Error> {
         self.http
             .bytes(http::Method::GET, url, vec![], limit)
             .await
@@ -145,7 +142,7 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
         url: &str,
         body: Vec<u8>,
         limit: usize,
-    ) -> Result<Vec<u8>, DirectoryError> {
+    ) -> Result<Vec<u8>, session::Error> {
         self.http
             .bytes(http::Method::POST, url, body, limit)
             .await
@@ -261,9 +258,9 @@ fn direct_cost(inventory: &Inventory, after: u32) -> Result<(usize, usize), Stri
     for shard in &shards[first..] {
         for segment in &shard.segments {
             let rows = segment.payments.directory.rows;
-            setup += receiver_pir::public_bytes(rows).map_err(|e| e.to_string())?;
-            query += receiver_pir::query_bytes(rows)
-                .and_then(|n| receiver_pir::response_bytes(rows).map(|m| n + m))
+            setup += native::public_bytes(rows).map_err(|e| e.to_string())?;
+            query += native::query_bytes(rows)
+                .and_then(|n| native::response_bytes(rows).map(|m| n + m))
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -282,8 +279,8 @@ fn shard_filters_cheaper(inventory: &Inventory, lookups: usize) -> bool {
         filters += u128::from(filter.bytes);
         for segment in &shard.segments {
             let rows = segment.payments.directory.rows;
-            let bytes = receiver_pir::query_bytes(rows)
-                .and_then(|n| receiver_pir::response_bytes(rows).map(|m| n + m))
+            let bytes = native::query_bytes(rows)
+                .and_then(|n| native::response_bytes(rows).map(|m| n + m))
                 .unwrap_or(0);
             blind += bytes as u128 * lookups as u128;
         }
@@ -368,21 +365,21 @@ async fn capture<T: Transport, S: DescriptorStore>(
     origin: &str,
     transport: &T,
     store: &S,
-) -> Result<Option<Inventory>, DirectoryError> {
+) -> Result<Option<Inventory>, session::Error> {
     let head = Inventories::head(origin, transport, &MAINNET_GENESIS).await?;
     let end = head.end_height;
     let local = wallet(path, network, generation, |db| {
         db.block_metadata(BlockHeight::from(end))
             .map_err(|e| e.to_string())
     })
-    .map_err(DirectoryError::Transport)?;
+    .map_err(session::Error::Transport)?;
     let Some(local) = local.filter(|block| block.block_hash().0 == head.end_hash) else {
         return Ok(None);
     };
     let inventory = Inventories::capture_cached(origin, transport, head, store).await?;
     let required_start = network
         .activation_height(NetworkUpgrade::Nu6_3)
-        .ok_or(DirectoryError::Malformed)?;
+        .ok_or(session::Error::Malformed)?;
     inventory.accept(
         &MAINNET_GENESIS,
         required_start.into(),
@@ -442,12 +439,12 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                 ..Round::default()
             })
         }
-        Err(DirectoryError::Unsupported) => {
+        Err(session::Error::Unsupported) => {
             return Err(require_upgrade(path, network, generation, &active))
         }
         Err(error) => return Err(error.to_string().into()),
     };
-    let publication = zakura_pir_receiver::publication(&inventory);
+    let publication = zakura_pir_client::receiver::publication(&inventory);
     let head = if discovery_enabled {
         tokio::time::timeout(
             Duration::from_secs(2),
@@ -597,7 +594,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let filters = shard_filters_cheaper(&inventory, due.len());
     let client = InventoryClient::new(origin, transport, inventory, filters);
     // Every account's due lookups share one traversal of each sealed shard's filter.
-    zakura_pir_receiver::screen(&client, &due).await;
+    zakura_pir_client::receiver::screen(&client, &due).await;
     let account_count = ready.len();
     for (index, account) in ready.iter().enumerate() {
         // Include a spare slice for commit/loop overhead. A slow earlier account
@@ -642,7 +639,7 @@ async fn drain<T: Transport>(
     client: &InventoryClient<T>,
     account: AccountUuid,
 ) -> Result<(), RecoveryError> {
-    let end = zakura_pir_receiver::publication(client.inventory())
+    let end = zakura_pir_client::receiver::publication(client.inventory())
         .end
         .height;
     for _ in 0..16 {
@@ -660,7 +657,7 @@ async fn drain<T: Transport>(
                             .map_err(|e| e.to_string())
                     })?;
                 }
-                Err(DirectoryError::Unsupported) => return Err(RecoveryError::UpgradeRequired),
+                Err(session::Error::Unsupported) => return Err(RecoveryError::UpgradeRequired),
                 Err(error) => {
                     wallet(path, network, generation, |db| {
                         db.defer_one_time_lookup(account, work, one_time_ivk::now()?)
@@ -685,14 +682,14 @@ async fn drain<T: Transport>(
                     })?;
                 }
                 // The payment's session was replaced, so its ordinal no longer applies.
-                Err(DirectoryError::Revision) => {
+                Err(session::Error::Revision) => {
                     wallet(path, network, generation, |db| {
                         db.refresh_one_time_witness(account, state.token, *request)
                             .map(|_| ())
                             .map_err(|e| e.to_string())
                     })?;
                 }
-                Err(DirectoryError::Unsupported) => return Err(RecoveryError::UpgradeRequired),
+                Err(session::Error::Unsupported) => return Err(RecoveryError::UpgradeRequired),
                 Err(error) => return Err(error.to_string().into()),
             }
         } else {
