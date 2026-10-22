@@ -2,8 +2,8 @@
 //!
 //! [`TransparentPirSource`] recovers one account per pass from the transparent
 //! PIR service through the reference adapter `zakura_pir_client::transparent`, over the
-//! wallet's routed HTTPS transport. It answers for mainnet only, from
-//! [`DEFAULT_MAINNET_ORIGIN`]; debug builds honor `VIZOR_TRANSPARENT_PIR_URL`.
+//! wallet's routed HTTPS transport. It answers for mainnet only, from the
+//! selected wallet PIR server ([`PirProduct::Transparent`]).
 //! Every commit it returns comes from that origin, which is what lets the
 //! coordinator qualify it (the trusted-indexer decision).
 //!
@@ -65,14 +65,13 @@ use crate::wallet::db::{
     WalletDatabase, READ_DB_BUSY_TIMEOUT,
 };
 use crate::wallet::network::WalletNetwork;
+use crate::wallet::pir_config::PirProduct;
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
 
-/// The transparent PIR service mainnet wallets recover from.
+/// The live service the ignored live tests qualify against. Runtime traffic
+/// goes only to the selected server.
+#[cfg(test)]
 pub(crate) const DEFAULT_MAINNET_ORIGIN: &str = "https://transparent-pir.valargroup.dev";
-
-/// Replaces the origin in debug builds only. A release build always uses
-/// [`DEFAULT_MAINNET_ORIGIN`].
-const ORIGIN_ENV: &str = "VIZOR_TRANSPARENT_PIR_URL";
 
 /// The caller-chosen source identity every companion binds.
 const SOURCE: &[u8] = b"vizor/transparent-pir/v1";
@@ -151,7 +150,7 @@ impl TransparentPirSource {
         Self {
             db_path: db_path.to_owned(),
             network,
-            origin: origin_for(network, origin_override(|name| std::env::var(name).ok())),
+            origin: origin_for(network, selected_origin()),
             clock: Instant::now,
             parked: Default::default(),
             #[cfg(test)]
@@ -465,20 +464,22 @@ impl Pass {
     }
 }
 
-/// The origin a source on `network` recovers from: `configured` or the
-/// default service, on mainnet only.
-pub(crate) fn origin_for(network: WalletNetwork, configured: Option<String>) -> Option<String> {
-    (network == WalletNetwork::Main)
-        .then(|| configured.unwrap_or_else(|| DEFAULT_MAINNET_ORIGIN.to_owned()))
+/// The origin a source on `network` recovers from: `selected`, on mainnet
+/// only. `None` makes every pass fail as unavailable; there is no default
+/// service to fall back to.
+pub(crate) fn origin_for(network: WalletNetwork, selected: Option<String>) -> Option<String> {
+    selected.filter(|_| network == WalletNetwork::Main)
 }
 
-/// The configured origin override, read with `read`, in debug builds only.
-pub(crate) fn origin_override(read: impl FnOnce(&str) -> Option<String>) -> Option<String> {
-    if cfg!(debug_assertions) {
-        read(ORIGIN_ENV)
-    } else {
-        None
-    }
+/// The selected server's origin for transparent PIR.
+///
+/// Tests that select nothing get [`DEFAULT_MAINNET_ORIGIN`] as an identity
+/// for companion paths; their transports are fakes, so nothing reaches it.
+pub(crate) fn selected_origin() -> Option<String> {
+    let selected = PirProduct::Transparent.client_origin();
+    #[cfg(test)]
+    let selected = selected.or_else(|| Some(DEFAULT_MAINNET_ORIGIN.to_owned()));
+    selected
 }
 
 /// The adapter configuration for `account`'s companion.

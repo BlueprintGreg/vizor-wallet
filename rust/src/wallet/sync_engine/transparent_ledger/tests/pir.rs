@@ -312,10 +312,8 @@ async fn settle(source: &TransparentPirSource, path: &str, account: AccountUuid)
 #[tokio::test(flavor = "multi_thread")]
 async fn new_selects_the_origin_gates_mainnet_and_uses_the_wallet_route() {
     let custom = "https://transparent-pir.example".to_owned();
-    assert_eq!(
-        pir::origin_for(MAIN, None).as_deref(),
-        Some(pir::DEFAULT_MAINNET_ORIGIN)
-    );
+    // No selected server means no origin: there is no default service.
+    assert_eq!(pir::origin_for(MAIN, None), None);
     assert_eq!(
         pir::origin_for(MAIN, Some(custom.clone())),
         Some(custom.clone())
@@ -324,12 +322,6 @@ async fn new_selects_the_origin_gates_mainnet_and_uses_the_wallet_route() {
         assert_eq!(pir::origin_for(network, None), None);
         assert_eq!(pir::origin_for(network, Some(custom.clone())), None);
     }
-    // Only a debug build reads the override.
-    let read = pir::origin_override(|name| {
-        assert_eq!(name, "VIZOR_TRANSPARENT_PIR_URL");
-        Some(custom.clone())
-    });
-    assert_eq!(read, cfg!(debug_assertions).then(|| custom.clone()));
 
     let wallet = main_wallet(1);
     let account = wallet.accounts[0].1;

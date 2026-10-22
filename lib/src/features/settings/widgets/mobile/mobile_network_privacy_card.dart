@@ -12,6 +12,7 @@ import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
 import '../settings_sub_option.dart';
 import '../swap_history_check_control.dart';
+import '../wallet_pir_server_settings.dart';
 import 'mobile_tor_control.dart';
 import 'mobile_private_queries_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
@@ -113,6 +114,11 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                   ],
                 ],
               ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
+              child: WalletPirServerSettings(),
             ),
           ],
         ],

@@ -34,7 +34,7 @@ use zakura_pir_client::transparent::{
 };
 
 use super::pir::{
-    origin_for, origin_override, MAX_PRIVATE_BYTES, MAX_QUERIES, MAX_RESPONSE_BYTES, MAX_SHARDS,
+    origin_for, selected_origin, MAX_PRIVATE_BYTES, MAX_QUERIES, MAX_RESPONSE_BYTES, MAX_SHARDS,
 };
 use crate::wallet::bounded_runtime::{run_detached, Detached};
 use crate::wallet::network::WalletNetwork;
@@ -73,7 +73,7 @@ impl PrivateAccountDiscovery {
         #[cfg(not(test))]
         let _ = db_path;
         Self {
-            origin: origin_for(network, origin_override(|name| std::env::var(name).ok())),
+            origin: origin_for(network, selected_origin()),
             #[cfg(test)]
             transport: super::pir::test_transport::get(db_path),
             #[cfg(test)]

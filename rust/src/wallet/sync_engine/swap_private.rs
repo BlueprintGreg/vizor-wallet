@@ -43,6 +43,30 @@ pub(crate) fn cancel_recovery() {
     CANCEL.fetch_add(1, Ordering::SeqCst);
 }
 
+/// Forgets the inventory descriptors verified against the previous server, so
+/// a newly selected server's inventory is captured from scratch rather than
+/// trusted on another server's word. Only the cache row is removed; the
+/// durable recovery queue and wallet funds are untouched.
+pub(crate) fn forget_server_inventory(path: &str) -> Result<(), String> {
+    with_wallet_db_write_lock("swap.inventory.forget", || {
+        let conn = open_wallet_raw_conn_with_timeout(path, WALLET_DB_BUSY_TIMEOUT)?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'ext_vizor_receiver_inventory')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists {
+            conn.execute("DELETE FROM ext_vizor_receiver_inventory", [])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .map_err(|error: String| format!("receiver inventory: {error}"))
+}
+
 /// Why a recovery round stopped early. Durable work stays pending either way.
 #[derive(Debug)]
 pub(crate) enum RecoveryError {
@@ -94,15 +118,13 @@ impl Drop for Running {
     }
 }
 
-const DEFAULT_RECEIVER_ORIGIN: &str = "https://receiver-pir.valargroup.dev";
-
-/// Selects the normal service or an explicit debug-only test endpoint.
+/// The Receiver PIR origin: the selected wallet PIR server. Empty when none
+/// is selected, which fails before any request, so a round records a failure
+/// rather than reaching a server the user did not choose.
 fn receiver_origin() -> String {
-    #[cfg(debug_assertions)]
-    if let Ok(origin) = std::env::var("VIZOR_RECEIVER_PIR_URL") {
-        return origin;
-    }
-    DEFAULT_RECEIVER_ORIGIN.into()
+    crate::wallet::pir_config::PirProduct::Receiver
+        .client_origin()
+        .unwrap_or_default()
 }
 
 /// The receiver directory uses the same Tor-aware transport as Vizor's other private

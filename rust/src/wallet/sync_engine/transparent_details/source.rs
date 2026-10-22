@@ -1,7 +1,7 @@
 //! The two sources loop 4 chooses between, once per run.
 //!
 //! - [`PirSource`] (`PrivateRequired`): txid display PIR at
-//!   [`DEFAULT_MAINNET_ORIGIN`](crate::wallet::sync_engine::transparent_ledger::pir::DEFAULT_MAINNET_ORIGIN)`/v2/txid/`, mainnet only, through the
+//!   the selected wallet PIR server's `/v2/txid/`, mainnet only, through the
 //!   process's [`TxidDisplayService`] for the origin over a [`RoutedExchange`].
 //!   It holds no lightwalletd client, so it cannot make a public request.
 //! - [`GateSource`] (every other policy): lightwalletd `GetTransaction`
@@ -32,7 +32,7 @@ use crate::wallet::bounded_runtime::CANCEL_GRACE;
 use crate::wallet::bounded_runtime::{run_detached, Detached};
 use crate::wallet::network::WalletNetwork;
 use crate::wallet::sync_engine::enhancement::{decode_enhancement_payload, RoutedExchange};
-use crate::wallet::sync_engine::transparent_ledger::pir::{origin_for, origin_override};
+use crate::wallet::sync_engine::transparent_ledger::pir::{origin_for, selected_origin};
 use crate::wallet::sync_engine::{watch_for_exit, TransparentLookupGate};
 
 #[cfg(test)]
@@ -91,6 +91,15 @@ pub(crate) trait DetailSource {
 static SERVICES: LazyLock<Mutex<HashMap<String, Arc<TxidDisplayService>>>> =
     LazyLock::new(Default::default);
 
+/// Drops every service but the one for `keep`, so nothing derived from a
+/// previously selected server outlives the switch.
+pub(crate) fn retain_service_for(keep: Option<&str>) {
+    SERVICES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|origin, _| Some(origin.as_str()) == keep);
+}
+
 /// The process-wide service for `origin`.
 pub(crate) fn service_for(origin: &str) -> Arc<TxidDisplayService> {
     SERVICES
@@ -101,10 +110,10 @@ pub(crate) fn service_for(origin: &str) -> Arc<TxidDisplayService> {
         .clone()
 }
 
-/// The txid display origin for `network`: the transparent PIR origin, with
-/// the same debug-build override. `None` off mainnet.
+/// The txid display origin for `network`: the selected wallet PIR server.
+/// `None` off mainnet or with no server selected.
 pub(crate) fn txid_origin(network: WalletNetwork) -> Option<String> {
-    origin_for(network, origin_override(|name| std::env::var(name).ok()))
+    origin_for(network, selected_origin())
 }
 
 /// Private lookups through txid display PIR.

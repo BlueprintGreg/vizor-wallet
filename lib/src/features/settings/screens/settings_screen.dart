@@ -32,6 +32,7 @@ import '../../accounts/widgets/account_profile_picture_modal.dart';
 import '../../payment_links/providers/payment_link_cards_provider.dart';
 import '../../donation/donation_config.dart';
 import '../settings_platform.dart';
+import '../widgets/wallet_pir_server_settings.dart';
 import '../widgets/near_swap_privacy_info.dart';
 import '../widgets/network_privacy_control.dart';
 import '../widgets/enhance_pir_privacy_control.dart';
@@ -673,6 +674,13 @@ class _SettingsList extends ConsumerWidget {
                   child: const SwapHistoryCheckControl(),
                 ),
               ],
+            ],
+            if (enhancePirServiceAvailable) ...[
+              const SizedBox(height: AppSpacing.md),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
+                child: WalletPirServerSettings(),
+              ),
             ],
           ],
         ),
