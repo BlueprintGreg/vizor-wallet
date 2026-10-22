@@ -218,14 +218,21 @@ class SwapActivityTracker {
     return _intentsFromRecords(records);
   }
 
-  /// Hands a provider status, fetched at `checkedAt`, to the wallet. A failure
-  /// fails the refresh that fetched it, which is retried.
+  /// Hands a provider status, fetched at `checkedAt`, to the wallet when the
+  /// swap uses a private address. Ordinary swaps never touch the wallet. A
+  /// failure is logged and never fails the status refresh. The next poll
+  /// records the status again.
   Future<void> recordProviderSnapshot(
     SwapIntent intent,
     SwapIntentSnapshot snapshot,
     DateTime checkedAt,
   ) async {
-    await _onProviderSnapshot?.call(intent, snapshot, checkedAt);
+    if (!intent.privateAddress) return;
+    try {
+      await _onProviderSnapshot?.call(intent, snapshot, checkedAt);
+    } catch (error) {
+      log('Swap status not recorded in the wallet: $error');
+    }
   }
 
   Future<void> saveIntents({

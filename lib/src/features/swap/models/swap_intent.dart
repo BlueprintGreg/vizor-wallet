@@ -38,6 +38,7 @@ class SwapIntentRecord {
     this.depositDeadline,
     this.accountUuid,
     this.payMode = false,
+    this.privateAddress = false,
     this.createdAt,
     this.updatedAt,
     this.completedAt,
@@ -81,6 +82,7 @@ class SwapIntentRecord {
       depositDeadline: intent.depositDeadline,
       accountUuid: intent.accountUuid,
       payMode: intent.payMode,
+      privateAddress: intent.privateAddress,
       createdAt: intent.createdAt,
       updatedAt: intent.updatedAt,
       completedAt: intent.completedAt,
@@ -123,6 +125,9 @@ class SwapIntentRecord {
   final DateTime? depositDeadline;
   final String? accountUuid;
   final bool payMode;
+
+  /// See [SwapIntent.privateAddress].
+  final bool privateAddress;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final DateTime? completedAt;
@@ -167,6 +172,7 @@ class SwapIntentRecord {
     DateTime? depositDeadline,
     String? accountUuid,
     bool? payMode,
+    bool? privateAddress,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? completedAt,
@@ -218,6 +224,7 @@ class SwapIntentRecord {
       depositDeadline: depositDeadline ?? this.depositDeadline,
       accountUuid: accountUuid ?? this.accountUuid,
       payMode: payMode ?? this.payMode,
+      privateAddress: privateAddress ?? this.privateAddress,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       completedAt: completedAt ?? this.completedAt,
@@ -261,6 +268,7 @@ class SwapIntent {
     this.depositDeadline,
     this.accountUuid,
     this.payMode = false,
+    this.privateAddress = false,
     this.createdAt,
     this.updatedAt,
     this.completedAt,
@@ -302,6 +310,10 @@ class SwapIntent {
   final DateTime? depositDeadline;
   final String? accountUuid;
   final bool payMode;
+
+  /// Whether the swap's ZEC side, its payout or refund, goes to a one-time address
+  /// the wallet reserved. Only these swaps share provider statuses with the wallet.
+  final bool privateAddress;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final DateTime? completedAt;
@@ -360,6 +372,7 @@ class SwapIntent {
     DateTime? depositDeadline,
     String? accountUuid,
     bool? payMode,
+    bool? privateAddress,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? completedAt,
@@ -407,6 +420,7 @@ class SwapIntent {
       depositDeadline: depositDeadline ?? this.depositDeadline,
       accountUuid: accountUuid ?? this.accountUuid,
       payMode: payMode ?? this.payMode,
+      privateAddress: privateAddress ?? this.privateAddress,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       completedAt: completedAt ?? this.completedAt,

@@ -48,6 +48,7 @@ SwapIntent _swapIntentFromRecord(SwapIntentRecord record, {DateTime? now}) {
     depositDeadline: record.depositDeadline,
     accountUuid: record.accountUuid,
     payMode: record.payMode,
+    privateAddress: record.privateAddress,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     completedAt:
@@ -153,6 +154,8 @@ SwapIntent swapIntentFromSnapshot({
     depositDeadline: depositDeadline,
     accountUuid: accountUuid,
     payMode: payMode,
+    privateAddress:
+        quote.swapRefundIndex != null || quote.receiveRequestId != null,
     createdAt: now,
     updatedAt: now,
     completedAt: status.isTerminal ? now : null,

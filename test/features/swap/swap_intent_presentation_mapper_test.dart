@@ -261,6 +261,40 @@ void main() {
     },
   );
 
+  test('marks swaps quoted with a reserved address as private', () {
+    final now = DateTime.utc(2026, 5, 7, 11);
+    final quote = _quoteWithDepositDeadline(DateTime.utc(2026, 5, 7, 12));
+    const plan = SwapAddressPlan(
+      direction: SwapDirection.zecToExternal,
+      externalAsset: SwapAsset.usdc,
+      userExternalAddress: '0xrecipient',
+      walletZecAddress: 'u1refund',
+      oneClickRecipient: '0xrecipient',
+      oneClickRefundTo: 'u1refund',
+    );
+    SwapIntent create(SwapQuote quote) => swapIntentFromSnapshot(
+      snapshot: _pendingDepositSnapshot(),
+      quote: quote,
+      addressPlan: plan,
+      accountUuid: 'account-1',
+      now: now,
+    );
+
+    expect(create(quote).privateAddress, isFalse);
+    expect(
+      create(
+        SwapQuote.withLocalIdentity(quote, swapRefundIndex: BigInt.from(3)),
+      ).privateAddress,
+      isTrue,
+    );
+    expect(
+      create(
+        SwapQuote.withLocalIdentity(quote, receiveRequestId: 'request-1'),
+      ).privateAddress,
+      isTrue,
+    );
+  });
+
   test('expires restored pending deposit records without evidence', () {
     final now = DateTime.utc(2026, 5, 7, 12, 1);
     final intent = _intentFromRecord(

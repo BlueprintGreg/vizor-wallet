@@ -502,6 +502,59 @@ void main() {
     expect(provider.statusRequests, isEmpty);
   });
 
+  test('only private swaps share statuses with the wallet', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final recorded = <String>[];
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      onProviderSnapshot: (intent, _, _) async => recorded.add(intent.id),
+    );
+    final intents = [
+      _intent(id: 'ordinary', depositAddress: 'ordinary'),
+      _intent(
+        id: 'private',
+        depositAddress: 'private',
+      ).copyWith(privateAddress: true),
+    ];
+    await tracker.saveIntents(accountUuid: 'account-1', intents: intents);
+    await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: intents,
+    );
+    expect(provider.statusRequests, unorderedEquals(['ordinary', 'private']));
+    expect(recorded, ['private']);
+  });
+
+  test('a wallet failure does not fail the status refresh', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({
+      'private': _snapshot(
+        id: 'private',
+        depositAddress: 'private',
+        status: SwapIntentStatus.depositObserved,
+      ),
+    });
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      onProviderSnapshot: (_, _, _) async =>
+          throw StateError('database is locked'),
+    );
+    final intent = _intent(
+      id: 'private',
+      depositAddress: 'private',
+    ).copyWith(privateAddress: true);
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [intent]);
+    final result = await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: [intent],
+    );
+    expect(result.refreshError, isNull);
+    expect(result.intents.single.status, SwapIntentStatus.depositObserved);
+  });
+
   test('status refresh over Tor names the blocked route', () async {
     final store = _MemorySwapActivityStore();
     final provider = _StatusSwapProvider({});

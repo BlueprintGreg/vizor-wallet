@@ -2399,13 +2399,9 @@ class SwapNotifier extends Notifier<SwapState> {
         );
     // Like a refreshed status, it decides when the swap's key stops scanning.
     // Failing to record it only delays that.
-    try {
-      await ref
-          .read(swapActivityTrackerProvider)
-          .recordProviderSnapshot(intent, snapshot, checkedAt);
-    } catch (e) {
-      log('Swap: deposit status not recorded in the wallet error=$e');
-    }
+    await ref
+        .read(swapActivityTrackerProvider)
+        .recordProviderSnapshot(intent, snapshot, checkedAt);
     return snapshot;
   }
 
