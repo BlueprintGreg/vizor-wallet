@@ -15,7 +15,7 @@ import '../../../../core/clipboard/sensitive_clipboard.dart';
 import '../../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../../core/layout/mobile/mobile_top_nav.dart';
 import '../../../../core/platform/screenshot_observer.dart';
-import '../../../../core/privacy/sensitive_capture_guard.dart';
+import '../../../../core/privacy/sensitive_privacy_overlay.dart';
 import '../../../../core/storage/wallet_paths.dart';
 import '../../../../core/feedback/app_haptics.dart';
 import '../../../../core/theme/app_theme.dart';
@@ -50,6 +50,7 @@ class MobileSeedPhraseScreen extends ConsumerStatefulWidget {
     this.accountUuid,
     this.showBackupIntro = false,
     this.screenshotStream,
+    this.privacyOverlayController,
     this.loadBirthday = true,
     this.birthdayHeightLoader,
     this.birthdayBlockTimeLoader,
@@ -64,6 +65,9 @@ class MobileSeedPhraseScreen extends ConsumerStatefulWidget {
   /// Test seam — production listens to the platform screenshot events.
   @visibleForTesting
   final Stream<void>? screenshotStream;
+
+  @visibleForTesting
+  final SensitivePrivacyOverlayController? privacyOverlayController;
 
   @visibleForTesting
   final bool loadBirthday;
@@ -100,12 +104,21 @@ class _MobileSeedPhraseScreenState
   StreamSubscription<void>? _screenshotSub;
   bool _screenshotSheetShowing = false;
 
+  // Owned in production (the test seam injects its own) so the biometric gate
+  // can suppress the privacy shield for the duration of the prompt.
+  late final bool _ownsPrivacyController;
+  late final SensitivePrivacyOverlayController _privacyController;
+
   @override
   void initState() {
     super.initState();
     _stage = widget.showBackupIntro
         ? _SeedStage.intro
         : _SeedStage.confirmAccess;
+    _ownsPrivacyController = widget.privacyOverlayController == null;
+    _privacyController =
+        widget.privacyOverlayController ??
+        SensitivePrivacyEnvironmentController();
     _screenshotSub = (widget.screenshotStream ?? screenshotEvents()).listen(
       (_) => _onScreenshot(),
     );
@@ -119,6 +132,7 @@ class _MobileSeedPhraseScreenState
   @override
   void dispose() {
     _screenshotSub?.cancel();
+    if (_ownsPrivacyController) _privacyController.dispose();
     _mnemonic = null;
     _bip39Passphrase = null;
     super.dispose();
@@ -141,10 +155,20 @@ class _MobileSeedPhraseScreenState
     }
     if (!biometric.usable) return;
     final wasEnabled = biometric.enabled;
+    // The biometric sheet pushes the app to `inactive`; suppress the privacy
+    // shield for its duration so the phrase revealed on success doesn't flash
+    // the blur cover during the inactive→resumed transition. The environment
+    // controller releases the suppression on resume.
     setState(() => _checking = true);
-    final readResult = await ref
-        .read(biometricUnlockProvider.notifier)
-        .readPasscode(reason: 'Confirm access to your secret passphrase');
+    _privacyController.beginAuthPrompt();
+    String? readResult;
+    try {
+      readResult = await ref
+          .read(biometricUnlockProvider.notifier)
+          .readPasscode(reason: 'Confirm access to your secret passphrase');
+    } finally {
+      _privacyController.endAuthPrompt();
+    }
     if (!mounted) return;
     if (accessCheckGeneration != _accessCheckGeneration ||
         _targetAccountChanged(expectedAccountUuid)) {
@@ -461,11 +485,13 @@ class _MobileSeedPhraseScreenState
     final scaffold = Scaffold(
       backgroundColor: colors.background.window,
       body: AppToastHost(
-        child: SensitiveCaptureGuard(
-          // Capture exclusion starts at reveal; background privacy applies
-          // to the whole app, including this access gate.
+        child: SensitivePrivacyOverlay(
+          // Protect only in the reveal stage. The passcode gate shows no words,
+          // so blanking its screenshot and app-switcher snapshot is needless
+          // friction. Matches the `_onScreenshot` guard.
           sensitiveContentVisible:
               _stage == _SeedStage.reveal && _mnemonic != null,
+          controller: _privacyController,
           child: SafeArea(
             child: Column(
               children: [

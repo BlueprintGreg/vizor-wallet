@@ -9,7 +9,7 @@ import '../../../core/feedback/app_haptics.dart';
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../core/platform/screenshot_observer.dart';
 import '../../../core/privacy/route_coverage_aware.dart';
-import '../../../core/privacy/sensitive_capture_guard.dart';
+import '../../../core/privacy/sensitive_privacy_overlay.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
@@ -40,6 +40,7 @@ class MobileImportManualScreen extends StatefulWidget {
     this.initialTypedWord,
     this.initialError,
     this.screenshotStream,
+    this.privacyOverlayController,
     super.key,
   });
 
@@ -66,6 +67,9 @@ class MobileImportManualScreen extends StatefulWidget {
   @visibleForTesting
   final Stream<void>? screenshotStream;
 
+  @visibleForTesting
+  final SensitivePrivacyOverlayController? privacyOverlayController;
+
   @override
   State<MobileImportManualScreen> createState() =>
       _MobileImportManualScreenState();
@@ -81,10 +85,16 @@ class _MobileImportManualScreenState extends State<MobileImportManualScreen>
 
   StreamSubscription<void>? _screenshotSub;
   bool _screenshotSheetShowing = false;
+  late final bool _ownsPrivacyController;
+  late final SensitivePrivacyOverlayController _privacyController;
 
   @override
   void initState() {
     super.initState();
+    _ownsPrivacyController = widget.privacyOverlayController == null;
+    _privacyController =
+        widget.privacyOverlayController ??
+        SensitivePrivacyEnvironmentController();
     _screenshotSub = (widget.screenshotStream ?? screenshotEvents()).listen(
       (_) => _onScreenshot(),
     );
@@ -113,6 +123,7 @@ class _MobileImportManualScreenState extends State<MobileImportManualScreen>
   @override
   void dispose() {
     _screenshotSub?.cancel();
+    if (_ownsPrivacyController) _privacyController.dispose();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -399,12 +410,13 @@ class _MobileImportManualScreenState extends State<MobileImportManualScreen>
     final colors = context.colors;
     final position = (_accepted.length + 1).clamp(1, kMnemonicMaxWords);
 
-    return SensitiveCaptureGuard(
+    return SensitivePrivacyOverlay(
       // Protect only once a word is on screen — an empty field has nothing to
       // blank. Matches the `_onScreenshot` guard. Drops once a next step has
       // fully covered this screen so it does not blank those screens.
       sensitiveContentVisible:
           (_accepted.isNotEmpty || _typed.isNotEmpty) && !isCoveredByNextRoute,
+      controller: _privacyController,
       child: MobileOnboardingStepScaffold(
         progress: MobileOnboardingProgressScope.of(
           context,
