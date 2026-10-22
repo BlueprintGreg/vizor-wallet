@@ -1253,7 +1253,7 @@ void main() {
             findsOneWidget,
           );
           expect(
-            find.textContaining('remove the saved pairing'),
+            find.textContaining('remove its saved pairing'),
             pairingInvalid ? findsOneWidget : findsNothing,
           );
         } else {
