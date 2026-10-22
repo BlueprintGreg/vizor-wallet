@@ -133,8 +133,10 @@ Future<void> reconcileSwapRecovery({
 void cancelSwapRecovery() =>
     RustLib.instance.api.crateApiOneTimeIvkCancelSwapRecovery();
 
-/// Runs a bounded private recovery step independently of ordinary wallet sync.
-Future<void> runSwapRecovery({
+/// Runs a bounded private recovery step independently of ordinary wallet sync. Returns
+/// whether any account had recovery work. `false` means the round changed nothing, and
+/// with the feature off, that no round is needed until the wallet changes.
+Future<bool> runSwapRecovery({
   required String dbPath,
   required String networkName,
 }) => RustLib.instance.api.crateApiOneTimeIvkRunSwapRecovery(

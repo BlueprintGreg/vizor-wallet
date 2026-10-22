@@ -2,7 +2,9 @@
 //! `zcash_client_sqlite::wallet::one_time_ivk`), which Vizor uses for private NEAR swap
 //! addresses.
 
-use zcash_client_backend::data_api::{Account as _, WalletRead};
+use zcash_client_backend::data_api::{
+    one_time_ivk::restore::RecoveryStatus, Account as _, WalletRead,
+};
 use zcash_client_sqlite::{wallet::one_time_ivk::OneTimeKey, AccountUuid};
 use zcash_keys::address::{Address, UnifiedAddress};
 use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
@@ -52,16 +54,19 @@ pub(crate) fn provider_amount(value: &Option<String>) -> Option<Zatoshis> {
 }
 
 /// Whether `account` is a software account: one with ZIP 32 derivation metadata, from
-/// which Vizor derives its spending key (see `execute_stored_proposal`), and without a
-/// hardware signer. That includes the first account, created as `Derived`, and accounts
-/// added later as spending UFVK imports. View-only imports have no derivation.
+/// which Vizor derives its spending key (see `execute_stored_proposal`), without a
+/// hardware signer, and with an Orchard full viewing key to derive one-time keys from.
+/// That includes the first account, created as `Derived`, and accounts added later as
+/// spending UFVK imports. View-only imports have no derivation.
 fn is_software(db: &WalletDatabase, account: AccountUuid) -> Result<bool, String> {
     let account = db
         .get_account(account)
         .map_err(|e| e.to_string())?
         .ok_or("Account not found")?;
     let source = account.source();
-    Ok(source.key_derivation().is_some() && super::keys::hardware_signer_kind(source).is_none())
+    Ok(source.key_derivation().is_some()
+        && super::keys::hardware_signer_kind(source).is_none()
+        && account.ufvk().is_some_and(|ufvk| ufvk.orchard().is_some()))
 }
 
 /// Fails unless `account` is a software account (see [`is_software`]).
@@ -119,19 +124,45 @@ pub(crate) fn with_db<T, E: From<String>>(
     })
 }
 
+/// Whether the install setting turns discovery on: where [`supported`], with both Private
+/// queries and NEAR swap privacy on.
+pub(crate) fn discovery_enabled(network: WalletNetwork) -> bool {
+    supported(network)
+        && EnhancementPolicy::current(network).is_private()
+        && crate::api::sync::near_swap_privacy_enabled()
+}
+
 /// Mirrors the install setting into every eligible account before any recovery or issuance.
 pub(crate) fn reconcile_enabled(
     db: &mut WalletDatabase,
     network: WalletNetwork,
 ) -> Result<(), String> {
-    let enabled = supported(network)
-        && EnhancementPolicy::current(network).is_private()
-        && crate::api::sync::near_swap_privacy_enabled();
+    let enabled = discovery_enabled(network);
     for account in software_accounts(db)? {
         db.set_one_time_recovery_enabled(account, enabled)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Whether an account in `state` needs a recovery round: it is enabled, or it holds
+/// receipts whose repair is due, which runs even while the feature is off.
+pub(crate) fn has_recovery_work(state: &RecoveryStatus) -> bool {
+    state.enabled || !state.lookups.is_empty() || !state.witnesses.is_empty()
+}
+
+/// Whether any software account needs a recovery round (see [`has_recovery_work`]). A
+/// pure read, so it needs no write lock.
+pub(crate) fn any_recovery_work(db: &WalletDatabase) -> Result<bool, String> {
+    for account in software_accounts(db)? {
+        let state = db
+            .one_time_recovery(account, now()?)
+            .map_err(|e| e.to_string())?;
+        if has_recovery_work(&state) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether an enabled account has unfinished seed recovery or an active manual job, and

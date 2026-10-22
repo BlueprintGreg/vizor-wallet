@@ -80,6 +80,9 @@ impl std::fmt::Display for RecoveryError {
 /// What one finished round did, for logs and tests.
 #[derive(Debug, Default)]
 pub(super) struct Round {
+    /// Whether any account had recovery work (see `one_time_ivk::has_recovery_work`).
+    /// Without it, the round only read the wallet.
+    pub(super) active: bool,
     /// Sealed-shard filter traversals. Screening the round's due lookups together
     /// keeps this to one per filter, plus any for addresses exposed mid-round.
     pub(super) filter_traversals: u64,
@@ -282,13 +285,15 @@ fn shard_filters_cheaper(inventory: &Inventory, lookups: usize) -> bool {
 
 /// Runs one bounded account round. The caller schedules it separately from block sync.
 /// A timeout leaves durable work pending and cannot be mistaken for an empty history.
+/// Returns whether any account had recovery work, so the caller can stop scheduling
+/// rounds while the feature is off and nothing is due.
 pub(crate) async fn recover(
     path: &str,
     network: WalletNetwork,
     manual: Option<Option<u64>>,
-) -> Result<(), RecoveryError> {
+) -> Result<bool, RecoveryError> {
     if !one_time_ivk::supported(network) {
-        return Ok(());
+        return Ok(false);
     }
     if RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -325,7 +330,7 @@ pub(crate) async fn recover(
         "Swap recovery round finished with {} filter traversals",
         round.filter_traversals
     );
-    Ok(())
+    Ok(round.active)
 }
 
 /// Records that the receiver service needs a newer client on every account in `accounts`.
@@ -392,6 +397,13 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     generation: u64,
     deadline: tokio::time::Instant,
 ) -> Result<Round, RecoveryError> {
+    // With the feature off and nothing due, take no write lock and write nothing.
+    if manual.is_none() && !one_time_ivk::discovery_enabled(network) {
+        let db = open_existing_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT)?;
+        if !one_time_ivk::any_recovery_work(&db)? {
+            return Ok(Round::default());
+        }
+    }
     let accounts = wallet(path, network, generation, |db| {
         one_time_ivk::reconcile_enabled(db, network)?;
         one_time_ivk::software_accounts(db)
@@ -403,7 +415,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
             db.one_time_recovery(account, one_time_ivk::now()?)
                 .map_err(|e| e.to_string())
         })?;
-        if state.enabled || !state.lookups.is_empty() || !state.witnesses.is_empty() {
+        if one_time_ivk::has_recovery_work(&state) {
             discovery_enabled |= state.enabled;
             active.push(account);
         }
@@ -416,7 +428,12 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let inventory = match capture(path, network, generation, origin, transport, store).await {
         Ok(Some(inventory)) => inventory,
         Ok(None) if manual.is_some() => return Err(NOT_CAUGHT_UP.into()),
-        Ok(None) => return Ok(Round::default()),
+        Ok(None) => {
+            return Ok(Round {
+                active: true,
+                ..Round::default()
+            })
+        }
         Err(DirectoryError::Unsupported) => {
             return Err(require_upgrade(path, network, generation, &active))
         }
@@ -601,6 +618,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     }
     failure.map_or(
         Ok(Round {
+            active: true,
             filter_traversals: client.filter_traversals(),
         }),
         Err,

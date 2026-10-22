@@ -1418,7 +1418,7 @@ abstract class RustLibApi extends BaseApi {
     required bool allowResubmit,
   });
 
-  Future<void> crateApiOneTimeIvkRunSwapRecovery({
+  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   });
@@ -10554,7 +10554,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateApiOneTimeIvkRunSwapRecovery({
+  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
@@ -10572,7 +10572,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_bool,
           decodeErrorData: sse_decode_receive_error,
         ),
         constMeta: kCrateApiOneTimeIvkRunSwapRecoveryConstMeta,

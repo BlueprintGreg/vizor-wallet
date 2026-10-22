@@ -346,10 +346,12 @@ pub fn cancel_swap_recovery() {
     crate::wallet::sync_engine::cancel_recovery();
 }
 
-/// Runs a bounded private recovery step independently of ordinary wallet sync.
-pub fn run_swap_recovery(db_path: String, network_name: String) -> Result<(), ReceiveError> {
+/// Runs a bounded private recovery step independently of ordinary wallet sync. Returns
+/// whether any account had recovery work. `false` means the round changed nothing, and
+/// with the feature off, that no round is needed until the wallet changes.
+pub fn run_swap_recovery(db_path: String, network_name: String) -> Result<bool, ReceiveError> {
     if !keys::wallet_exists(&db_path) {
-        return Ok(());
+        return Ok(false);
     }
     let network = parse_network_and_migrate(&db_path, &network_name)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -370,11 +372,12 @@ pub fn check_swap_history(
     let network = parse_network_and_migrate(&db_path, &network_name)?;
     one_time_ivk::require_new_address(network)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    Ok(runtime.block_on(crate::wallet::sync_engine::recover(
+    runtime.block_on(crate::wallet::sync_engine::recover(
         &db_path,
         network,
         Some(receive_end),
-    ))?)
+    ))?;
+    Ok(())
 }
 
 /// Cancels explicit history searches, retaining their cursors and automatic obligations.
