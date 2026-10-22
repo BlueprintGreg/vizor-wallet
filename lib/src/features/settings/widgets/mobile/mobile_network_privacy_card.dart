@@ -34,7 +34,9 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
     // the NEAR swap privacy switch also checks.
     final privateQueriesOn = ref.watch(enhancePirProvider);
     final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
-    final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
+    final nearSwapPrivacyAvailable = ref.watch(
+      nearSwapPrivacySettingAvailableProvider,
+    );
     final hardwareAccount =
         ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
     final changingRecovery =
@@ -62,7 +64,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
           const SizedBox(height: AppSpacing.s),
           const MobileTorControl(),
           const MobilePrivateQueriesControl(),
-          if (enhancePirServiceAvailable) ...[
+          if (nearSwapPrivacyAvailable) ...[
             const SizedBox(height: AppSpacing.md),
             // An option of Private queries: its icon sits under the label
             // above, and the hook starts under that row's icon.
@@ -105,9 +107,9 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  // Discovery runs for software accounts whatever the
-                  // switches say, so the check does too.
-                  if (!hardwareAccount) ...[
+                  // The check is discovery's, so it needs NEAR swap
+                  // privacy too.
+                  if (!hardwareAccount && nearSwapPrivacy) ...[
                     const SizedBox(height: AppSpacing.sm),
                     const SwapHistoryCheckControl(),
                   ],

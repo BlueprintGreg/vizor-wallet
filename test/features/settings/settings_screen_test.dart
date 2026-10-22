@@ -16,6 +16,7 @@ import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/accounts/widgets/account_edit_modal.dart';
+import 'package:zcash_wallet/src/core/config/swap_feature_config.dart';
 import 'package:zcash_wallet/src/features/settings/screens/settings_screen.dart';
 import 'package:zcash_wallet/src/features/settings/settings_platform.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/enhance_pir_privacy_control.dart';
@@ -663,11 +664,39 @@ void main() {
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
   });
 
+  testWidgets('Check swap history needs NEAR swap privacy', (tester) async {
+    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
+      findsOneWidget,
+    );
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+  });
+
+  testWidgets('NEAR swap privacy is hidden while swaps are disabled', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _settingsHarness(
+        nearSwapPrivacyEnabled: true,
+        extraOverrides: [swapFeatureEnabledProvider.overrideWithValue(false)],
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
+      findsNothing,
+    );
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+  });
+
   testWidgets('Check swap history asks for an update the service needs', (
     tester,
   ) async {
     await tester.pumpWidget(
       _settingsHarness(
+        nearSwapPrivacyEnabled: true,
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
@@ -696,6 +725,7 @@ void main() {
     var begun = 0;
     await tester.pumpWidget(
       _settingsHarness(
+        nearSwapPrivacyEnabled: true,
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
@@ -740,6 +770,7 @@ void main() {
     var paused = false;
     await tester.pumpWidget(
       _settingsHarness(
+        nearSwapPrivacyEnabled: true,
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
@@ -780,6 +811,7 @@ void main() {
     var paused = 0;
     await tester.pumpWidget(
       _settingsHarness(
+        nearSwapPrivacyEnabled: true,
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
@@ -1343,6 +1375,7 @@ Widget _settingsHarness({
   AccountState? accountState,
   String network = 'main',
   bool enhancePirEnabled = false,
+  bool nearSwapPrivacyEnabled = false,
 }) {
   final router = GoRouter(
     initialLocation: '/settings',
@@ -1376,7 +1409,8 @@ Widget _settingsHarness({
         _settingsBootstrap(
           accountState ?? _bootstrap.initialAccountState,
           network: network,
-          enhancePirEnabled: enhancePirEnabled,
+          enhancePirEnabled: enhancePirEnabled || nearSwapPrivacyEnabled,
+          nearSwapPrivacyEnabled: nearSwapPrivacyEnabled,
         ),
       ),
       syncProvider.overrideWith(FakeSyncNotifier.new),
@@ -1479,6 +1513,7 @@ AppBootstrapState _settingsBootstrap(
   AccountState accountState, {
   String network = 'main',
   bool enhancePirEnabled = false,
+  bool nearSwapPrivacyEnabled = false,
 }) => AppBootstrapState(
   initialLocation: '/settings',
   initialAccountState: accountState,
@@ -1491,6 +1526,7 @@ AppBootstrapState _settingsBootstrap(
   isUnlocked: true,
   passwordRotationRecoveryFailed: false,
   enhancePirEnabled: enhancePirEnabled,
+  nearSwapPrivacyEnabled: nearSwapPrivacyEnabled,
 );
 
 double _toggleTrackOpacity(WidgetTester tester) {

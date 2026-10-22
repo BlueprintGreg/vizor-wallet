@@ -41,10 +41,12 @@ const kNearSwapPrivacyInfoParagraphs = [
   'Addresses you enter yourself, like an Ethereum address you reuse for '
       'several swaps, are still shared with NEAR and can link those swaps. '
       "Hardware wallet accounts don't use one-time addresses.",
-  'Your recovery phrase still recovers everything. When you restore your '
-      'wallet, it finds these payments privately, even with these settings off.',
-  "Turning this off doesn't affect swaps you've already made. Their refunds "
-      'and payouts still arrive.',
+  'Your recovery phrase still recovers everything. After a restore, turn on '
+      'Private queries and NEAR swap privacy, and your wallet finds these '
+      'payments privately.',
+  'Turning this off keeps the funds you already have. Payouts and refunds '
+      'that arrive later at these addresses show up once NEAR swap privacy is '
+      'on again.',
 ];
 
 /// Shows the NEAR swap privacy explanation for this binary's form factor: a

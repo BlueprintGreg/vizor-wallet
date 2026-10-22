@@ -522,6 +522,9 @@ class _SettingsList extends ConsumerWidget {
     final privateQueriesOn = ref.watch(enhancePirProvider);
     final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
     final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
+    final nearSwapPrivacyAvailable = ref.watch(
+      nearSwapPrivacySettingAvailableProvider,
+    );
     final hardwareAccount =
         ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
     final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
@@ -638,7 +641,7 @@ class _SettingsList extends ConsumerWidget {
                     : () => unawaited(togglePrivateQueries(context, ref)),
               ),
             ],
-            if (enhancePirServiceAvailable) ...[
+            if (nearSwapPrivacyAvailable) ...[
               const SizedBox(height: AppSpacing.sm),
               // An option of Private queries: its icon sits under the label
               // above, and the hook starts under that row's icon.
@@ -664,9 +667,8 @@ class _SettingsList extends ConsumerWidget {
                         ),
                 ),
               ),
-              // Discovery runs for software accounts whatever the switches say,
-              // so the check does too.
-              if (!hardwareAccount) ...[
+              // The check is discovery's, so it needs NEAR swap privacy too.
+              if (!hardwareAccount && nearSwapPrivacy) ...[
                 const SizedBox(height: AppSpacing.sm),
                 Padding(
                   padding: const EdgeInsets.only(left: AppSpacing.xs + 20),

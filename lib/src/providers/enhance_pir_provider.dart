@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../main.dart' show log;
 import '../app_bootstrap.dart';
 import '../core/config/network_config.dart';
+import '../core/config/swap_feature_config.dart';
 import '../core/storage/enhance_pir_preference_store.dart';
 import '../core/storage/linux_keyring_coordinator.dart';
 import '../core/storage/wallet_paths.dart';
@@ -486,4 +487,12 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
 
 final nearSwapPrivacyProvider = NotifierProvider<NearSwapPrivacyNotifier, bool>(
   NearSwapPrivacyNotifier.new,
+);
+
+/// Whether Settings offers NEAR swap privacy: swaps are enabled here and the
+/// private service exists for this network.
+final nearSwapPrivacySettingAvailableProvider = Provider<bool>(
+  (ref) =>
+      ref.watch(swapFeatureEnabledProvider) &&
+      ref.watch(enhancePirAvailableProvider),
 );
