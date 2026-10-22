@@ -25,8 +25,11 @@ class LedgerDiscoveryChannel {
           await connecting;
           _connected = true;
         case 'disconnect':
+          await disconnecting;
+          if (disconnectError case final error?) throw error;
           _connected = false;
         case 'currentApp':
+          if (!_connected) throw PlatformException(code: 'disconnected');
           if (currentAppError case final error?) {
             if (error is PlatformException && error.code == 'disconnected') {
               _connected = false;
@@ -56,10 +59,15 @@ class LedgerDiscoveryChannel {
   final eventCalls = <String>[];
   Future<void>? starting;
   Future<void>? connecting;
+  Future<void>? disconnecting;
   Future<void>? stopping;
   Object? startError;
   Object? currentAppError;
+  Object? disconnectError;
   bool _connected = false;
+
+  /// Native session loss does not notify the production Dart identity cache.
+  void dropConnection() => _connected = false;
 
   Future<void> emit(Object? event) => _send(
     event == null

@@ -30,6 +30,8 @@ void main() {
     'reselect',
     'retry locked',
     'retry disconnected',
+    'retry locked after disconnect',
+    'retry rejected after disconnect',
   ]) {
     testWidgets('desktop $action drains quiet native discovery', (
       tester,
@@ -40,7 +42,7 @@ void main() {
       final retry = action.startsWith('retry ');
       if (retry) {
         native.currentAppError = PlatformException(
-          code: action.substring('retry '.length),
+          code: action.substring('retry '.length).split(' ').first,
         );
       }
       final connection = Completer<void>();
@@ -120,14 +122,15 @@ void main() {
       if (retry) {
         expect(connected, isFalse);
         expect(find.text('Try again'), findsOneWidget);
+        if (action.endsWith('after disconnect')) {
+          native.dropConnection();
+          expect(native.service.connectedDeviceId, 'stax');
+        }
         native.currentAppError = null;
         await tester.tap(find.text('Try again'));
         await pumpLedgerDiscovery(tester);
         expect(connected, isTrue);
-        expect(
-          native.calls.where((call) => call == 'connect'),
-          hasLength(action == 'retry locked' ? 1 : 2),
-        );
+        expect(native.calls.where((call) => call == 'connect'), hasLength(2));
       }
       if (holdConnection) {
         expect(native.calls.where((call) => call == 'connect'), hasLength(1));
@@ -157,6 +160,105 @@ void main() {
       } else {
         expect(closed, isTrue);
         expect(connected, isFalse);
+      }
+      await tester.pumpWidget(const SizedBox());
+      await pumpLedgerDiscovery(tester);
+      container.dispose();
+      await tester.runAsync(native.dispose);
+    });
+  }
+
+  for (final action in ['cancel', 'cleanup failure']) {
+    testWidgets('desktop retry stops after $action during cleanup', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final native = LedgerDiscoveryChannel();
+      native.currentAppError = PlatformException(code: 'locked');
+      var reads = 0;
+      var connected = false;
+      var closed = false;
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+          ledgerMobileBleServiceProvider.overrideWithValue(native.service),
+          ledgerTargetPlatformProvider.overrideWithValue(TargetPlatform.macOS),
+        ],
+      );
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: AppTheme(
+              data: AppThemeData.light,
+              child: Stack(
+                children: [
+                  LedgerDesktopConnectModal(
+                    transport: LedgerConnectionTransport.bluetooth,
+                    service: native.service,
+                    usbConnector: (_) async =>
+                        throw StateError('Unexpected USB'),
+                    bluetoothConnector: (index, device) async {
+                      reads++;
+                      await native.service.currentApp();
+                      return LedgerDeviceAccount(
+                        ufvk: 'test',
+                        seedFingerprint: const [],
+                        accountIndex: index,
+                        appVersion: '3.9.4',
+                        transport: LedgerConnectionTransport.bluetooth,
+                        device: device,
+                      );
+                    },
+                    cancelOperation: native.service.cancelSigning,
+                    accountIndex: 0,
+                    onConnected: (_) => connected = true,
+                    onClose: () => closed = true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await pumpLedgerDiscovery(tester);
+      await native.devices();
+      await pumpLedgerDiscovery(tester);
+      await tester.tap(
+        find.byKey(const ValueKey('ledger_desktop_ble_device_stax')),
+      );
+      await pumpLedgerDiscovery(tester);
+      expect(reads, 1);
+      native.currentAppError = null;
+      final cleanup = Completer<void>();
+      if (action == 'cancel') {
+        native.disconnecting = cleanup.future;
+      } else {
+        native.disconnectError = PlatformException(code: 'busy');
+      }
+      await tester.tap(find.text('Try again'));
+      await pumpLedgerDiscovery(tester);
+      expect(reads, 1);
+      expect(native.calls.where((c) => c == 'connect'), hasLength(1));
+      if (action == 'cancel') {
+        await tester.tap(find.text('Cancel'));
+        await pumpLedgerDiscovery(tester);
+        expect(closed, isFalse);
+        cleanup.complete();
+        await pumpLedgerDiscovery(tester);
+        expect(closed, isTrue);
+        expect(connected, isFalse);
+        expect(reads, 1);
+        expect(native.calls.where((c) => c == 'connect'), hasLength(1));
+      } else {
+        expect(find.text('Try again'), findsOneWidget);
+        native.disconnectError = null;
+        await tester.tap(find.text('Try again'));
+        await pumpLedgerDiscovery(tester);
+        expect(connected, isTrue);
+        expect(reads, 2);
+        expect(native.calls.where((c) => c == 'connect'), hasLength(2));
       }
       await tester.pumpWidget(const SizedBox());
       await pumpLedgerDiscovery(tester);

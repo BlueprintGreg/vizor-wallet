@@ -12,6 +12,8 @@ import '../../ledger/ledger_device_label.dart';
 import '../../ledger/services/ledger_account_service.dart';
 import '../../ledger/services/ledger_app_readiness_service.dart';
 import '../../ledger/services/ledger_bluetooth_access.dart';
+import '../../ledger/services/ledger_bluetooth_connection.dart';
+import '../../ledger/services/ledger_device_request.dart';
 import '../../../providers/account_models.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
@@ -215,16 +217,24 @@ class _LedgerDesktopConnectModalState
   Future<void> _readAccount(int generation) async {
     try {
       if (_bluetooth) {
-        await _stopDiscovery();
-        if (!_current(generation)) return;
-        await requireLedgerBluetoothAccess(widget.service);
-        if (!_current(generation)) return;
-        // A locked app or declined approval can leave the BLE link alive.
-        // Native transports reject connecting again to an existing link.
-        if (widget.service.connectedDeviceId != _device!.id) {
-          await widget.service.connect(_device!);
+        final check = ref.read(ledgerDeviceRequestsProvider).capture();
+        void checkCurrent() {
+          check();
+          if (!_current(generation)) {
+            throw const LedgerMobileException(
+              LedgerMobileFailure.cancelled,
+              'Ledger operation was cancelled.',
+            );
+          }
         }
-        if (!_current(generation)) return;
+
+        await _stopDiscovery();
+        checkCurrent();
+        await reconnectLedgerBluetoothDevice(
+          service: widget.service,
+          device: _device!,
+          checkCurrent: checkCurrent,
+        );
       }
       setState(() => _phase = _Phase.reading);
       final account = _bluetooth
