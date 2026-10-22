@@ -9,8 +9,7 @@ import '../src/features/settings/widgets/wallet_pir_server_settings.dart';
 import '../src/providers/wallet_pir_server_provider.dart';
 import '../src/services/wallet_pir/wallet_pir_config.dart';
 
-// Demo fixtures only: hosts are reserved example names, never contacted. The
-// production server list is empty until real servers are deployed.
+// Demo fixtures only: hosts are reserved example names, never contacted.
 final _source =
     'https://valargroup.github.io/wallet-pir-config/pins/demo/static.json'
     '?checksum=sha256:${'0' * 64}';
@@ -44,7 +43,6 @@ WalletPirServerState _state({
   String? source = '',
 }) => WalletPirServerState(
   source: source == '' ? _source : source,
-  sourceIsDefault: true,
   config: config,
   refreshing: refreshing,
   refreshError: error,
@@ -135,7 +133,6 @@ class _DemoPreviewState extends State<_DemoPreview> {
       state: _state,
       onSelect: _select,
       onRefresh: () {},
-      onSetSource: (_) async {},
     );
     return Center(
       child: SizedBox(

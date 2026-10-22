@@ -23,24 +23,9 @@ const kProductionWalletPirConfigSource =
     'static-wallet-pir-config.json'
     '?checksum=sha256:f0b0d989892cbccc72c17e7de7530f754d5e0b0292f682109a1f3d88025a77f9';
 
-/// Builds may opt out of the bundled production source.
-const kWalletPirBundledDefaultEnabled = bool.fromEnvironment(
-  'VIZOR_WALLET_PIR_BUNDLED_DEFAULT',
-  defaultValue: true,
-);
-
-/// A debug or harness build may name its own pinned source.
-const kWalletPirConfigSourceOverride = String.fromEnvironment(
-  'VIZOR_WALLET_PIR_CONFIG_SOURCE',
-);
-
-/// The source used when the user has not set one, or `null` for none.
-/// Only mainnet has a bundled default; other networks need an explicit source.
+/// The app's fixed source, or `null` on networks without a published config.
+/// Users choose a server from this source's list, never the source itself.
 String? defaultWalletPirConfigSource() {
-  if (kWalletPirConfigSourceOverride.isNotEmpty) {
-    return kWalletPirConfigSourceOverride;
-  }
-  if (!kWalletPirBundledDefaultEnabled) return null;
   return switch (kZcashDefaultNetworkRaw) {
     'main' => kProductionWalletPirConfigSource,
     _ => null,

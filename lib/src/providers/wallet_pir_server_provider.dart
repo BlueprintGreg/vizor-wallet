@@ -11,16 +11,12 @@ import '../services/wallet_pir/wallet_pir_config.dart';
 import 'account_provider.dart';
 import 'sync_provider.dart';
 
-const kWalletPirConfigSourceKey = 'zcash_wallet_pir_config_source';
 const kWalletPirConfigCacheKeyPrefix = 'zcash_wallet_pir_config_v1_';
 
-/// Plain (non-secret) persistence of the config source and, per source, the
-/// last good snapshot and the saved selection. Selections carry their scope
-/// (source pin, network, attestation policy), and Rust ignores one from
-/// another scope, so a source's choice can never leak into another source.
+/// Plain (non-secret) persistence of the last good snapshot and server choice,
+/// scoped to the app's fixed source and network. A future app source/pin change
+/// cannot reuse another source's cached config or choice.
 abstract interface class WalletPirConfigStore {
-  Future<String?> readSource();
-  Future<void> writeSource(String? source);
   Future<WalletPirCachedConfig?> readCached(String network, String source);
   Future<void> writeCached(
     String network,
@@ -61,14 +57,6 @@ class AppSecureStoreWalletPirConfigStore implements WalletPirConfigStore {
   const AppSecureStoreWalletPirConfigStore(this._store);
 
   final AppSecureStore _store;
-
-  @override
-  Future<String?> readSource() => _store.readPlain(kWalletPirConfigSourceKey);
-
-  @override
-  Future<void> writeSource(String? source) => source == null
-      ? _store.delete(kWalletPirConfigSourceKey)
-      : _store.writePlain(kWalletPirConfigSourceKey, source);
 
   @override
   Future<WalletPirCachedConfig?> readCached(
@@ -117,15 +105,13 @@ typedef WalletPirServerApplier = Future<void> Function(String? baseUrl);
 class WalletPirServerState {
   const WalletPirServerState({
     required this.source,
-    required this.sourceIsDefault,
     this.config,
     this.refreshing = false,
     this.refreshError,
   });
 
-  /// The pinned config source, or `null` when none is configured.
+  /// The app's fixed pinned source, or `null` on unsupported networks.
   final String? source;
-  final bool sourceIsDefault;
 
   /// The last good config for [source]; kept when a refresh fails.
   final WalletPirConfigView? config;
@@ -157,7 +143,6 @@ class WalletPirServerState {
     bool clearRefreshError = false,
   }) => WalletPirServerState(
     source: source,
-    sourceIsDefault: sourceIsDefault,
     config: config ?? this.config,
     refreshing: refreshing ?? this.refreshing,
     refreshError: clearRefreshError ? null : refreshError ?? this.refreshError,
@@ -176,7 +161,7 @@ final walletPirConfigFetcherProvider = Provider<WalletPirConfigFetcher>(
   (ref) => RoutedWalletPirConfigFetcher(),
 );
 
-final walletPirDefaultSourceProvider = Provider<String?>(
+final walletPirConfigSourceProvider = Provider<String?>(
   (ref) => defaultWalletPirConfigSource(),
 );
 
@@ -224,11 +209,10 @@ Future<void> _applyWalletPirServer(Ref ref, String? baseUrl) async {
 }
 
 class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
-  /// Bumped by every source change (and rebuild or disposal). A commit for
-  /// an older source does nothing.
-  int _sourceGeneration = 0;
+  /// A commit from a disposed or rebuilt provider does nothing.
+  int _lifecycleGeneration = 0;
 
-  /// Bumped by every refresh and source change, so only the latest refresh
+  /// Bumped by every refresh and rebuild, so only the latest refresh
   /// commits what it fetched.
   int _refreshGeneration = 0;
 
@@ -252,19 +236,19 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
     _lifecycle?.dispose();
     _lifecycle = AppLifecycleListener(onResume: () => unawaited(refresh()));
     ref.onDispose(() {
-      _sourceGeneration++;
+      _lifecycleGeneration++;
       _refreshGeneration++;
       _lifecycle?.dispose();
       _lifecycle = null;
     });
-    final generation = ++_sourceGeneration;
+    final generation = ++_lifecycleGeneration;
     _refreshGeneration++;
-    final initial = await _loadCached(await _store.readSource());
+    final initial = await _loadCached();
     await _commit(() async {
-      if (generation != _sourceGeneration) return;
+      if (generation != _lifecycleGeneration) return;
       await _applier(initial.config?.selectedBaseUrl);
     });
-    if (generation == _sourceGeneration && initial.source != null) {
+    if (generation == _lifecycleGeneration && initial.source != null) {
       scheduleMicrotask(() => unawaited(refresh()));
     }
     return initial;
@@ -276,10 +260,10 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
     final current = state.value;
     final source = current?.source;
     if (current == null || source == null) return;
-    final sourceGeneration = _sourceGeneration;
+    final lifecycleGeneration = _lifecycleGeneration;
     final refreshGeneration = ++_refreshGeneration;
     bool live() =>
-        sourceGeneration == _sourceGeneration &&
+        lifecycleGeneration == _lifecycleGeneration &&
         refreshGeneration == _refreshGeneration;
     state = AsyncData(current.copyWith(refreshing: true));
     try {
@@ -338,9 +322,9 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
 
   /// The user's explicit choice of an offered server.
   Future<void> selectServer(String baseUrl) {
-    final generation = _sourceGeneration;
+    final generation = _lifecycleGeneration;
     return _commit(() async {
-      if (generation != _sourceGeneration) return;
+      if (generation != _lifecycleGeneration) return;
       // Read at commit time, so a choice is made against the latest accepted
       // config, never one a refresh has since replaced.
       final current = state.value;
@@ -360,7 +344,7 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
         savedSelectionJson: selectionJson,
       );
       final cached = await _store.readCached(_network, source);
-      if (generation != _sourceGeneration) return;
+      if (generation != _lifecycleGeneration) return;
       await _store.writeCached(
         _network,
         source,
@@ -369,43 +353,16 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
           selectionJson: selectionJson,
         ),
       );
-      if (generation != _sourceGeneration) return;
+      if (generation != _lifecycleGeneration) return;
       await _applier(view.selectedBaseUrl);
-      if (generation != _sourceGeneration) return;
+      if (generation != _lifecycleGeneration) return;
       state = AsyncData((state.value ?? current).copyWith(config: view));
     });
   }
 
-  /// Switches to `source`, or back to the default with `null`. The old
-  /// source's server stops being used at once; its cached config and choice
-  /// stay saved under that source only.
-  Future<void> setSource(String? source) async {
-    final trimmed = source?.trim();
-    final saved = trimmed == null || trimmed.isEmpty ? null : trimmed;
-    final generation = ++_sourceGeneration;
-    _refreshGeneration++;
-    await _commit(() async {
-      if (generation != _sourceGeneration) return;
-      await _store.writeSource(saved);
-      if (generation != _sourceGeneration) return;
-      // No server until the new source's config is accepted.
-      await _applier(null);
-      if (generation != _sourceGeneration) return;
-      final next = await _loadCached(saved);
-      if (generation != _sourceGeneration) return;
-      state = AsyncData(next);
-      await _applier(next.config?.selectedBaseUrl);
-    });
-    if (generation == _sourceGeneration) await refresh();
-  }
-
-  Future<WalletPirServerState> _loadCached(String? savedSource) async {
-    final defaultSource = ref.read(walletPirDefaultSourceProvider);
-    final source = savedSource ?? defaultSource;
-    final base = WalletPirServerState(
-      source: source,
-      sourceIsDefault: savedSource == null,
-    );
+  Future<WalletPirServerState> _loadCached() async {
+    final source = ref.read(walletPirConfigSourceProvider);
+    final base = WalletPirServerState(source: source);
     if (source == null) return base;
     final cached = await _store.readCached(_network, source);
     final snapshot = cached?.snapshotJson;
@@ -413,7 +370,6 @@ class WalletPirServerNotifier extends AsyncNotifier<WalletPirServerState> {
     try {
       return WalletPirServerState(
         source: source,
-        sourceIsDefault: savedSource == null,
         config: _resolver.revalidate(
           source: source,
           network: _network,

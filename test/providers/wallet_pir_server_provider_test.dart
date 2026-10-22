@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/wallet_pir_server_settings.dart';
 import 'package:zcash_wallet/src/providers/wallet_pir_server_provider.dart';
 import 'package:zcash_wallet/src/services/wallet_pir/wallet_pir_config.dart';
@@ -13,17 +15,10 @@ const _sourceB = 'https://config.example/b/static.json?checksum=sha256:bbbb';
 const _mirror = 'https://config.example/dynamic.json';
 
 class _MemoryStore implements WalletPirConfigStore {
-  String? source;
   final cached = <String, WalletPirCachedConfig>{};
 
   /// Holds open the next write whose selection names a key's base.
   final writeGates = <String, Completer<void>>{};
-
-  @override
-  Future<String?> readSource() async => source;
-
-  @override
-  Future<void> writeSource(String? value) async => source = value;
 
   @override
   Future<WalletPirCachedConfig?> readCached(String network, String src) async =>
@@ -182,13 +177,13 @@ class _Resolver implements WalletPirConfigResolver {
 }
 
 class _Harness {
-  _Harness({String? defaultSource = _sourceA}) {
+  _Harness({String? source = _sourceA}) {
     container = ProviderContainer(
       overrides: [
         walletPirConfigStoreProvider.overrideWithValue(store),
         walletPirConfigResolverProvider.overrideWithValue(_Resolver()),
         walletPirConfigFetcherProvider.overrideWithValue(fetcher),
-        walletPirDefaultSourceProvider.overrideWithValue(defaultSource),
+        walletPirConfigSourceProvider.overrideWithValue(source),
         walletPirNetworkProvider.overrideWithValue('mainnet'),
         walletPirServerApplierProvider.overrideWithValue((base) async {
           applying++;
@@ -230,9 +225,7 @@ class _Harness {
   /// A fresh app start over the same storage.
   _Harness restart() {
     final next = _Harness();
-    next.store
-      ..source = store.source
-      ..cached.addAll(store.cached);
+    next.store.cached.addAll(store.cached);
     next.fetcher.servers.addAll(fetcher.servers);
     next.fetcher.failing.addAll(fetcher.failing);
     container.dispose();
@@ -251,6 +244,51 @@ String? _savedBase(_Harness h, [String source = _sourceA]) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('the fixed list offers both servers without a source editor', (
+    tester,
+  ) async {
+    const primary = 'https://wallet-pir.valargroup.dev';
+    const secondary = 'https://wallet-pir-secondary.valargroup.dev';
+    final h = _Harness();
+    h.fetcher.servers[_sourceA] = [
+      ['Valargroup Wallet PIR', primary],
+      ['Valargroup Wallet PIR Secondary', secondary],
+    ];
+    await tester.runAsync(h.start);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: h.container,
+        child: MaterialApp(
+          home: AppTheme(
+            data: AppThemeData.dark,
+            child: const Scaffold(body: WalletPirServerSettings()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Valargroup Wallet PIR'), findsOneWidget);
+    expect(find.text('Valargroup Wallet PIR Secondary'), findsOneWidget);
+    expect(find.text('Change server list'), findsNothing);
+    expect(find.byType(EditableText), findsNothing);
+    await tester.tap(
+      find.byKey(const ValueKey('wallet_pir_server_option_$secondary')),
+    );
+    await tester.runAsync(() => pumpEventQueue());
+    await tester.pumpAndSettle();
+    expect(h.applied.last, secondary);
+    expect(h.state.selectedBaseUrl, secondary);
+    expect(_savedBase(h), secondary);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    final restarted = h.restart();
+    await tester.runAsync(restarted.start);
+    expect(restarted.state.selectedBaseUrl, secondary);
+    expect(restarted.applied.last, secondary);
+    restarted.container.dispose();
+  });
 
   test('first load picks the first server and keeps it', () async {
     final h = _Harness();
@@ -332,24 +370,24 @@ void main() {
     );
   });
 
-  test('a superseded source cannot restore its config', () async {
+  test('an older refresh cannot replace a newer server list', () async {
     final h = _Harness();
     h.fetcher.servers[_sourceA] = [_a];
-    h.fetcher.servers[_sourceB] = [_b];
+    await h.start();
+
     final gate = h.fetcher.gates[_sourceA] = Completer<void>();
-    final started = h.start();
+    final older = h.notifier.refresh();
     await pumpEventQueue();
-
-    await h.notifier.setSource(_sourceB);
+    h.fetcher.gates.remove(_sourceA);
+    h.fetcher.servers[_sourceA] = [_a, _b];
+    await h.notifier.refresh();
+    await h.notifier.selectServer('https://b.example');
     gate.complete();
-    await started;
-    await pumpEventQueue();
+    await older;
 
-    expect(h.state.source, _sourceB);
+    expect(h.state.servers, hasLength(2));
     expect(h.state.selectedBaseUrl, 'https://b.example');
     expect(h.applied.last, 'https://b.example');
-    expect(h.applied, isNot(contains('https://a.example')));
-    expect(h.store.cached['mainnet|$_sourceA'], isNull);
   });
 
   test('a delayed older apply cannot outlast a newer choice', () async {
@@ -407,31 +445,6 @@ void main() {
     expect(_savedBase(h), 'https://b.example');
   });
 
-  test(
-    'a delayed apply for an old source cannot outlast the new one',
-    () async {
-      final h = _Harness();
-      h.fetcher.servers[_sourceA] = [_a];
-      h.fetcher.servers[_sourceB] = [_b];
-      await h.start();
-
-      final slow = h.applyGates[null] = Completer<void>();
-      final older = h.notifier.setSource(_sourceB);
-      await pumpEventQueue();
-      final newer = h.notifier.setSource(null);
-      await pumpEventQueue();
-      slow.complete();
-      await Future.wait([older, newer]);
-      await pumpEventQueue();
-
-      expect(h.state.source, _sourceA);
-      expect(h.store.source, isNull);
-      expect(h.applied.last, 'https://a.example');
-      expect(h.applied, isNot(contains('https://b.example')));
-      expect(h.maxApplying, 1);
-    },
-  );
-
   test('commits keep running after a failed apply', () async {
     final h = _Harness();
     h.fetcher.servers[_sourceA] = [_a, _b];
@@ -451,23 +464,28 @@ void main() {
     expect(h.state.selectedBaseUrl, 'https://b.example');
   });
 
-  test('each source keeps its own choice', () async {
+  test('another source cache cannot replace the fixed source', () async {
     final h = _Harness();
     h.fetcher.servers[_sourceA] = [_a, _b];
-    h.fetcher.servers[_sourceB] = [_a, _b];
+    h.store.cached['mainnet|$_sourceB'] = WalletPirCachedConfig(
+      snapshotJson: jsonEncode({
+        'source': _sourceB,
+        'servers': [_c],
+      }),
+      selectionJson: jsonEncode({'scope': _sourceB, 'base': _c[1]}),
+    );
     await h.start();
     await h.notifier.selectServer('https://b.example');
 
-    await h.notifier.setSource(_sourceB);
-    expect(h.state.selectedBaseUrl, 'https://a.example');
-
-    await h.notifier.setSource(null);
-    expect(h.state.source, _sourceA);
-    expect(h.state.selectedBaseUrl, 'https://b.example');
+    final restarted = h.restart();
+    await restarted.start();
+    expect(restarted.state.source, _sourceA);
+    expect(restarted.state.selectedBaseUrl, 'https://b.example');
+    expect(restarted.applied, isNot(contains('https://c.example')));
   });
 
   test('with no source there is no server', () async {
-    final h = _Harness(defaultSource: null);
+    final h = _Harness(source: null);
     await h.start();
     expect(h.state.source, isNull);
     expect(h.applied, [null]);

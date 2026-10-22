@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
-import '../../../core/widgets/app_text_field.dart';
 import '../../../providers/wallet_pir_server_provider.dart';
 import '../../../services/wallet_pir/wallet_pir_config.dart';
 
@@ -30,19 +29,17 @@ class WalletPirServerSettings extends ConsumerWidget {
       state: state,
       onSelect: (baseUrl) => unawaited(notifier.selectServer(baseUrl)),
       onRefresh: () => unawaited(notifier.refresh()),
-      onSetSource: (source) => notifier.setSource(source),
     );
   }
 }
 
 /// Renders a [WalletPirServerState]. Free of providers, so Widgetbook and
 /// tests drive it directly.
-class WalletPirServerSettingsView extends StatefulWidget {
+class WalletPirServerSettingsView extends StatelessWidget {
   const WalletPirServerSettingsView({
     required this.state,
     required this.onSelect,
     required this.onRefresh,
-    required this.onSetSource,
     super.key,
   }) : _message = null;
 
@@ -50,51 +47,22 @@ class WalletPirServerSettingsView extends StatefulWidget {
     : state = null,
       onSelect = null,
       onRefresh = null,
-      onSetSource = null,
       _message = message;
 
   final WalletPirServerState? state;
   final ValueChanged<String>? onSelect;
   final VoidCallback? onRefresh;
-  final Future<void> Function(String? source)? onSetSource;
   final String? _message;
-
-  @override
-  State<WalletPirServerSettingsView> createState() =>
-      _WalletPirServerSettingsViewState();
-}
-
-class _WalletPirServerSettingsViewState
-    extends State<WalletPirServerSettingsView> {
-  final _sourceController = TextEditingController();
-  bool _editingSource = false;
-  bool _savingSource = false;
-
-  @override
-  void dispose() {
-    _sourceController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveSource(String? source) async {
-    setState(() => _savingSource = true);
-    try {
-      await widget.onSetSource?.call(source);
-      if (mounted) setState(() => _editingSource = false);
-    } finally {
-      if (mounted) setState(() => _savingSource = false);
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final state = widget.state;
+    final state = this.state;
     final bodyStyle = AppTypography.bodyMedium.copyWith(
       color: colors.text.muted,
     );
     if (state == null) {
-      return Text(widget._message ?? '', style: bodyStyle);
+      return Text(_message ?? '', style: bodyStyle);
     }
     final status = walletPirServerStatusText(state);
     return Column(
@@ -108,10 +76,8 @@ class _WalletPirServerSettingsViewState
         const SizedBox(height: AppSpacing.xxs),
         Text(
           state.source == null
-              ? 'Server list: not set up'
-              : state.sourceIsDefault
-              ? 'Server list: default (${_host(state.source!)})'
-              : 'Server list: custom (${_host(state.source!)})',
+              ? 'Server list: unavailable on this network'
+              : 'Server list: ${_host(state.source!)}',
           key: const ValueKey('wallet_pir_server_source'),
           style: bodyStyle,
         ),
@@ -131,50 +97,24 @@ class _WalletPirServerSettingsViewState
             _ServerRow(
               server: server,
               selected: server.baseUrl == state.selectedBaseUrl,
-              onTap: widget.onSelect == null
-                  ? null
-                  : () => widget.onSelect!(server.baseUrl),
+              onTap: onSelect == null ? null : () => onSelect!(server.baseUrl),
             ),
             const SizedBox(height: AppSpacing.xxs),
           ],
         ],
         const SizedBox(height: AppSpacing.xs),
-        if (_editingSource)
-          _SourceEditor(
-            controller: _sourceController,
-            saving: _savingSource,
-            onSave: () => _saveSource(_sourceController.text),
-            onUseDefault: () => _saveSource(null),
-            onCancel: () => setState(() => _editingSource = false),
-          )
-        else
-          Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
-              AppButton(
-                key: const ValueKey('wallet_pir_server_refresh'),
-                onPressed: state.source == null || state.refreshing
-                    ? null
-                    : widget.onRefresh,
-                variant: AppButtonVariant.secondary,
-                size: AppButtonSize.small,
-                child: const Text('Check for updates'),
-              ),
-              AppButton(
-                key: const ValueKey('wallet_pir_server_change_source'),
-                onPressed: () => setState(() {
-                  _sourceController.text = state.sourceIsDefault
-                      ? ''
-                      : state.source ?? '';
-                  _editingSource = true;
-                }),
-                variant: AppButtonVariant.secondary,
-                size: AppButtonSize.small,
-                child: const Text('Change server list'),
-              ),
-            ],
+        Align(
+          alignment: Alignment.centerLeft,
+          child: AppButton(
+            key: const ValueKey('wallet_pir_server_refresh'),
+            onPressed: state.source == null || state.refreshing
+                ? null
+                : onRefresh,
+            variant: AppButtonVariant.secondary,
+            size: AppButtonSize.small,
+            child: const Text('Check for updates'),
           ),
+        ),
       ],
     );
   }
@@ -187,7 +127,7 @@ class _WalletPirServerSettingsViewState
 ) {
   if (state.source == null) {
     return (
-      text: 'Private queries can\'t run until a server list is set up.',
+      text: 'Private queries are unavailable on this network.',
       warning: true,
     );
   }
@@ -340,68 +280,6 @@ class _SelectionDot extends StatelessWidget {
               : null,
         ),
       ),
-    );
-  }
-}
-
-class _SourceEditor extends StatelessWidget {
-  const _SourceEditor({
-    required this.controller,
-    required this.saving,
-    required this.onSave,
-    required this.onUseDefault,
-    required this.onCancel,
-  });
-
-  final TextEditingController controller;
-  final bool saving;
-  final VoidCallback onSave;
-  final VoidCallback onUseDefault;
-  final VoidCallback onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(
-          height: 66,
-          child: AppTextField(
-            key: const ValueKey('wallet_pir_server_source_field'),
-            label: 'Server list link',
-            hintText: 'https://…?checksum=sha256:…',
-            controller: controller,
-            keyboardType: TextInputType.url,
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => onSave(),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.xs),
-        Wrap(
-          spacing: AppSpacing.xs,
-          runSpacing: AppSpacing.xs,
-          children: [
-            AppButton(
-              onPressed: saving ? null : onCancel,
-              variant: AppButtonVariant.secondary,
-              size: AppButtonSize.small,
-              child: const Text('Cancel'),
-            ),
-            AppButton(
-              onPressed: saving ? null : onUseDefault,
-              variant: AppButtonVariant.secondary,
-              size: AppButtonSize.small,
-              child: const Text('Use default'),
-            ),
-            AppButton(
-              key: const ValueKey('wallet_pir_server_source_save'),
-              onPressed: saving ? null : onSave,
-              size: AppButtonSize.small,
-              child: Text(saving ? 'Saving…' : 'Save'),
-            ),
-          ],
-        ),
-      ],
     );
   }
 }
