@@ -4,7 +4,7 @@
 use super::enhancement::transport::{RoutedHttpError, RoutedTransport};
 use crate::wallet::{
     db::{
-        open_existing_wallet_db_with_timeout, open_wallet_raw_conn_with_timeout,
+        open_existing_wallet_db_with_timeout, open_existing_wallet_raw_conn_with_timeout,
         with_wallet_db_write_lock, WalletDatabase, WALLET_DB_BUSY_TIMEOUT,
     },
     network::WalletNetwork,
@@ -154,22 +154,26 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
 }
 
 /// Verified inventory descriptors kept in the wallet database, so a capture downloads
-/// only chunks that can have changed. Losing the row only costs a full capture.
+/// only chunks that can have changed. Losing the row only costs a full capture. Like
+/// [`wallet`], it never creates a database and writes nothing after a cancellation, so
+/// a capture still in flight cannot recreate a wallet a reset deleted.
 pub(super) struct DescriptorTable<'a> {
     path: &'a str,
+    generation: u64,
 }
 
 impl<'a> DescriptorTable<'a> {
-    /// The store of the wallet at `path`.
-    pub(super) fn new(path: &'a str) -> Self {
-        Self { path }
+    /// The store of the wallet at `path`, for the worker started at `generation`.
+    pub(super) fn new(path: &'a str, generation: u64) -> Self {
+        Self { path, generation }
     }
 }
 
 impl DescriptorStore for DescriptorTable<'_> {
     /// Reads the saved descriptors. A missing table or unreadable row is no cache.
     fn load(&self) -> Option<Vec<u8>> {
-        let conn = open_wallet_raw_conn_with_timeout(self.path, WALLET_DB_BUSY_TIMEOUT).ok()?;
+        let conn =
+            open_existing_wallet_raw_conn_with_timeout(self.path, WALLET_DB_BUSY_TIMEOUT).ok()?;
         conn.query_row(
             "SELECT descriptors FROM ext_vizor_receiver_inventory WHERE id = 0",
             [],
@@ -183,7 +187,11 @@ impl DescriptorStore for DescriptorTable<'_> {
     /// Replaces the saved descriptors. A failed save is dropped, as the store allows.
     fn save(&self, value: &[u8]) {
         let saved = with_wallet_db_write_lock("swap.inventory", || {
-            let conn = open_wallet_raw_conn_with_timeout(self.path, WALLET_DB_BUSY_TIMEOUT)?;
+            if CANCEL.load(Ordering::SeqCst) != self.generation {
+                return Err("Swap recovery was cancelled.".to_string());
+            }
+            let conn =
+                open_existing_wallet_raw_conn_with_timeout(self.path, WALLET_DB_BUSY_TIMEOUT)?;
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS ext_vizor_receiver_inventory (
                     id INTEGER PRIMARY KEY CHECK (id = 0),
@@ -317,7 +325,7 @@ pub(crate) async fn recover(
             manual,
             &receiver_origin(),
             &transport,
-            &DescriptorTable::new(path),
+            &DescriptorTable::new(path, generation),
             generation,
             deadline,
         ),
