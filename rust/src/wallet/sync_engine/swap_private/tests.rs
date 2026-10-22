@@ -1219,3 +1219,51 @@ fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
     .unwrap();
     assert_eq!(reserved.reservation_index, Some(1));
 }
+
+/// With the feature off, a round on a wallet with nothing due only reads it: no write
+/// lock, no receiver request, and no reported work, so the app can stop scheduling
+/// rounds. An account still enabled from before the setting changed gets one round that
+/// disables it.
+#[test]
+fn feature_off_rounds_without_work_take_no_lock_or_request() {
+    if crate::wallet::db::isolated_test(
+        module_path!(),
+        "feature_off_rounds_without_work_take_no_lock_or_request",
+    ) {
+        return;
+    }
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    wallet.add_account(5, activation());
+    wallet.scan(&chain);
+    let publish =
+        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
+
+    // Another writer holds the wallet lock for the whole round.
+    let off = publish(&chain);
+    let round = crate::wallet::db::with_wallet_db_write_lock("test.writer", || {
+        let worker = wallet.spawn(&off, None, Duration::from_secs(45));
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(worker.join().unwrap()).unwrap());
+        result.recv_timeout(Duration::from_secs(20))
+    })
+    .expect("the round waited for the wallet write lock")
+    .unwrap();
+    assert!(!round.active);
+    assert_eq!(off.bytes(), 0, "no receiver request");
+    assert!(
+        !crate::api::one_time_ivk::run_swap_recovery(wallet.path.clone(), "main".into()).unwrap()
+    );
+
+    // An account left enabled is disabled by the next round, which then reports no work.
+    enable_feature();
+    wallet.recover(&publish(&chain)).unwrap();
+    assert!(wallet.state(&account).enabled);
+    crate::api::sync::set_near_swap_privacy_enabled(false);
+    let disabling = publish(&chain);
+    assert!(!wallet.recover(&disabling).unwrap().active);
+    assert!(!wallet.state(&account).enabled);
+    assert_eq!(disabling.bytes(), 0);
+}
