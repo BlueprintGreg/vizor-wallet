@@ -4732,6 +4732,7 @@ version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
+ "android_logger",
  "anyhow",
  "base64 0.22.1",
  "bip0039",
@@ -4755,6 +4756,7 @@ dependencies = [
  "log",
  "minicbor",
  "nonempty",
+ "oslog",
  "pbkdf2",
  "prost 0.13.5",
  "prost 0.14.4",

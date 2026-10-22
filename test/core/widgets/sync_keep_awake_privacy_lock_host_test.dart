@@ -608,6 +608,93 @@ void main() {
     expect(container.read(syncKeepAwakePrivacyLockProvider).isLocked, isTrue);
   });
 
+  for (final viewport in [
+    (size: const Size(951, 669), insets: const EdgeInsets.only(bottom: 24)),
+    (
+      size: const Size(466, 678),
+      insets: const EdgeInsets.only(right: 84, bottom: 34),
+    ),
+  ]) {
+    testWidgets(
+      'Duo sync-complete passcode fits with an error and large text ${viewport.size}',
+      (tester) async {
+        _setMobileViewport(tester, size: viewport.size);
+        final security = _FakeSecurityNotifier(confirmResult: false);
+        final syncNotifier = FakeSyncNotifier(
+          _sync(lastSyncStartedAt: DateTime(2026, 7, 9, 12)),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            appBootstrapProvider.overrideWithValue(_bootstrap()),
+            appSecurityProvider.overrideWith(() => security),
+            biometricUnlockProvider.overrideWith(
+              () => _FakeBiometricUnlockNotifier(_disabledBiometricState),
+            ),
+            syncProvider.overrideWith(() => syncNotifier),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: MaterialApp(
+              builder: (context, child) => AppTheme(
+                data: AppThemeData.dark,
+                child: MediaQuery(
+                  data: MediaQuery.of(context).copyWith(
+                    textScaler: TextScaler.linear(1.5),
+                    padding: viewport.insets,
+                    viewPadding: viewport.insets,
+                  ),
+                  child: child!,
+                ),
+              ),
+              home: const SyncKeepAwakePrivacyLockHost(
+                idleTimeout: Duration(milliseconds: 50),
+                child: Scaffold(body: Text('Home')),
+              ),
+            ),
+          ),
+        );
+        await _settleInitialSync(tester);
+        await tester.pump(const Duration(milliseconds: 60));
+        await tester.pump();
+        syncNotifier.emit(
+          _sync(percentage: 1).copyWith(
+            scannedHeight: 200,
+            chainTipHeight: 200,
+            remainingScanBlocks: 0,
+            isSyncComplete: true,
+            isSyncing: false,
+          ),
+        );
+        await tester.pump();
+        await tester.tap(find.text('Unlock Vizor'));
+        await tester.pumpAndSettle();
+        expect(find.text('Synced'), findsOneWidget);
+        await _enterPasscode(tester, '999999');
+        await tester.pumpAndSettle();
+        expect(find.text('Incorrect Passcode'), findsOneWidget);
+        expect(
+          tester.getRect(find.text('Incorrect Passcode')).bottom,
+          lessThan(tester.getRect(find.bySemanticsLabel('Digit 1')).top),
+        );
+        expect(
+          tester.widget<PasscodeNumpad>(find.byType(PasscodeNumpad)).keySize,
+          lessThan(80),
+        );
+        await tester.ensureVisible(find.bySemanticsLabel('Digit 0'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(find.bySemanticsLabel('Digit 0')).bottom,
+          lessThanOrEqualTo(viewport.size.height - viewport.insets.bottom),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
   testWidgets('wrong passcode keeps the virtual privacy lock visible', (
     tester,
   ) async {

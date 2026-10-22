@@ -2632,7 +2632,9 @@ fn keystone_transparent_shielding_pczt_targets_orchard_before_nu6_3() {
     let mut db = open_wallet_db(db_path, network).unwrap();
     let tip = BlockHeight::from_u32(120);
     db.update_chain_tip(tip).unwrap();
+    // Supply a scanned checkpoint one block behind the tip for the anchor.
     {
+        let checkpoint_height = tip - 1;
         type CheckpointError = WalletError<
             (),
             commitment_tree::Error,
@@ -2642,13 +2644,13 @@ fn keystone_transparent_shielding_pczt_targets_orchard_before_nu6_3() {
             ReceivedNoteId,
         >;
         let result: Result<_, CheckpointError> =
-            db.with_sapling_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_sapling_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         assert!(result.unwrap(), "checkpointing the empty Sapling tree");
         let result: Result<_, CheckpointError> =
-            db.with_orchard_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_orchard_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         assert!(result.unwrap(), "checkpointing the empty Orchard tree");
         let result: Result<_, CheckpointError> =
-            db.with_ironwood_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_ironwood_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         result.unwrap();
     }
 
@@ -2708,10 +2710,9 @@ fn keystone_transparent_shielding_pczt_targets_ironwood_after_nu6_3() {
     let mut db = open_wallet_db(db_path, network).unwrap();
     let tip = BlockHeight::from_u32(120);
     db.update_chain_tip(tip).unwrap();
-    // Shielding now derives the target/anchor heights from scan progress
-    // (shard-tree checkpoints) rather than the raw chain tip; checkpoint
-    // the empty Orchard tree at the tip to stand in for a scan.
+    // Supply a scanned checkpoint one block behind the tip for the anchor.
     {
+        let checkpoint_height = tip - 1;
         type CheckpointError = WalletError<
             (),
             commitment_tree::Error,
@@ -2721,13 +2722,13 @@ fn keystone_transparent_shielding_pczt_targets_ironwood_after_nu6_3() {
             ReceivedNoteId,
         >;
         let result: Result<_, CheckpointError> =
-            db.with_sapling_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_sapling_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         assert!(result.unwrap(), "checkpointing the empty Sapling tree");
         let result: Result<_, CheckpointError> =
-            db.with_orchard_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_orchard_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         assert!(result.unwrap(), "checkpointing the empty Orchard tree");
         let result: Result<_, CheckpointError> =
-            db.with_ironwood_tree_mut(|tree| Ok(tree.checkpoint(tip)?));
+            db.with_ironwood_tree_mut(|tree| Ok(tree.checkpoint(checkpoint_height)?));
         result.unwrap();
     }
 

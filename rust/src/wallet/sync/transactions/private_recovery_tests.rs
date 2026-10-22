@@ -987,11 +987,16 @@ fn listed_detail_work(path: &str) -> Vec<TxId> {
 /// the wallet shares one transparent PIR session. A lower tip releases it.
 #[test]
 fn a_lookup_a_reply_queued_stays_held_on_new_handles_until_the_tip_changes() {
+    use crate::wallet::sync_engine::enhancement::test_mode;
+
     let (mut st, account) = private_wallet();
+    cover(&mut st, account, vec![]);
     promote(&mut st, account);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wallet.db").to_str().unwrap().to_owned();
     let other = dir.path().join("other.db").to_str().unwrap().to_owned();
+    let _path_mode = test_mode::set(&path, TransparentLedgerMode::PrivateRequired);
+    let _other_mode = test_mode::set(&other, TransparentLedgerMode::PrivateRequired);
     for copy in [&path, &other] {
         st.wallet()
             .conn()
