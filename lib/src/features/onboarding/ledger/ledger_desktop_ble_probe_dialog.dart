@@ -425,9 +425,13 @@ class _LedgerDesktopConnectModalState
                     ),
                   ),
                 ),
-              if (_discovering ||
-                  _phase == _Phase.preparing ||
-                  _phase == _Phase.scanning)
+              if (_phase == _Phase.preparing) ...[
+                _pending('Checking Bluetooth access…'),
+                const SizedBox(height: AppSpacing.s),
+                _message(
+                  'macOS may ask for Bluetooth access. If prompted, allow access for Vizor.',
+                ),
+              ] else if (_discovering || _phase == _Phase.scanning)
                 _pending('Searching for nearby Ledgers…'),
             ],
           ],
