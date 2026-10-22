@@ -178,6 +178,7 @@ Widget buildLedgerSigningPreview({
   int roundNumber = 1,
   int roundCount = 1,
   bool mobile = false,
+  TargetPlatform? platform,
   LedgerSigningFailurePresentation? failureOverride,
   String mobileTitle = 'Ledger',
   LedgerMobileBleService? bluetoothService,
@@ -226,7 +227,7 @@ Widget buildLedgerSigningPreview({
         ),
       ),
       ledgerTargetPlatformProvider.overrideWithValue(
-        mobile ? TargetPlatform.iOS : TargetPlatform.macOS,
+        platform ?? (mobile ? TargetPlatform.iOS : TargetPlatform.macOS),
       ),
       ledgerAppReadinessStateProvider.overrideWith(
         () => _LedgerPreviewReadinessController(_readinessState(readiness)),
