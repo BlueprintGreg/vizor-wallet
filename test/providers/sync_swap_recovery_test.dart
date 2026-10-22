@@ -23,14 +23,15 @@ const _second = 'account-2';
 class _Api extends RustLibApi {
   bool running = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
-  final recoveries = <Completer<void>>[];
+  final recoveries = <Completer<bool>>[];
   final manual = <(BigInt?, Completer<void>)>[];
   final events = <String>[];
   final balanceReads = <String>[];
   int cancels = 0;
 
-  /// The newest automatic round, which the test completes to release it.
-  Completer<void> get round => recoveries.last;
+  /// The newest automatic round, which the test completes with whether it had
+  /// work to release it.
+  Completer<bool> get round => recoveries.last;
 
   /// Whether this fake's ordinary sync still holds the Rust guard.
   @override
@@ -88,12 +89,12 @@ class _Api extends RustLibApi {
 
   /// Starts a receiver round that stays pending until the test completes it.
   @override
-  Future<void> crateApiOneTimeIvkRunSwapRecovery({
+  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
     events.add('recover');
-    final round = Completer<void>();
+    final round = Completer<bool>();
     recoveries.add(round);
     return round.future;
   }
@@ -241,6 +242,12 @@ class _NoPrivateQueries extends EnhancePirNotifier {
   bool build() => false;
 }
 
+class _PrivacyOn extends NearSwapPrivacyNotifier {
+  /// Keeps NEAR swap privacy on without a private service or wallet.
+  @override
+  bool build() => true;
+}
+
 class _Sync extends SyncNotifier {
   _Sync()
     : super(
@@ -298,8 +305,8 @@ void main() {
   late ProviderContainer container;
 
   /// A notifier whose first ordinary sync has scanned block 101, which starts a
-  /// receiver round the test holds.
-  Future<_Sync> recovering() async {
+  /// receiver round the test holds. NEAR swap privacy is off unless `privacy`.
+  Future<_Sync> recovering({bool privacy = false}) async {
     final sync = _Sync();
     container = ProviderContainer(
       overrides: [
@@ -309,6 +316,7 @@ void main() {
         rpcEndpointFailoverProvider.overrideWith(_Tip.new),
         chainUpgradeStatusProvider.overrideWith(_Upgrade.new),
         enhancePirProvider.overrideWith(_NoPrivateQueries.new),
+        if (privacy) nearSwapPrivacyProvider.overrideWith(_PrivacyOn.new),
         syncProvider.overrideWith(() => sync),
       ],
     );
@@ -336,9 +344,10 @@ void main() {
     await pumpEventQueue();
   }
 
-  /// Releases the held round, as Rust does once it stops.
-  Future<void> releaseRound() async {
-    api.round.complete();
+  /// Releases the held round, as Rust does once it stops, reporting whether
+  /// any account had recovery work.
+  Future<void> releaseRound({bool work = true}) async {
+    api.round.complete(work);
     await pumpEventQueue();
   }
 
@@ -388,6 +397,52 @@ void main() {
       await pumpEventQueue();
       sync.stopTipChecksForTesting();
       expect(api.recoveries, hasLength(2));
+    },
+  );
+
+  test('with NEAR swap privacy off, a round without work skips the refresh '
+      'and stops batch and poll rounds until a sync completes', () async {
+    final sync = await recovering();
+    final reads = api.balanceReads.length;
+    final followups = container.read(syncFollowupProvider);
+    await releaseRound(work: false);
+    expect(container.read(syncFollowupProvider), followups);
+    expect(api.balanceReads.length, reads);
+
+    for (final height in [102, 103]) {
+      api.syncs[0].add(_scanned(height));
+      await pumpEventQueue();
+    }
+    await sync.checkTipForTesting();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(1), reason: 'nothing is due');
+
+    // A completed sync may have queued repair, so Rust is asked once more.
+    api.syncs[0].add(_scanned(103, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(work: false);
+
+    // Callers waiting on recovery still start a round.
+    sync.continueSwapRecovery();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(3));
+    await releaseRound(work: false);
+    await settle(sync);
+  });
+
+  test(
+    'with NEAR swap privacy on, rounds keep following sync batches',
+    () async {
+      final sync = await recovering(privacy: true);
+      await releaseRound(work: false);
+      api.syncs[0].add(_scanned(102));
+      await pumpEventQueue();
+      sync.stopTipChecksForTesting();
+      expect(api.recoveries, hasLength(2));
+      await releaseRound();
+      await settle(sync);
     },
   );
 

@@ -1100,14 +1100,25 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   int _swapRecoveryGeneration = 0;
   int _swapRecoveryTransitions = 0;
 
+  /// Whether the last automatic round found no recovery work. While NEAR swap
+  /// privacy is off, sync batches and idle polls then start no round. A
+  /// completed sync, which may have queued repair of received swap notes, and
+  /// every stop for a wallet or setting change ask Rust again.
+  bool _swapRecoveryIdle = false;
+
   /// Starts receiver work without occupying the ordinary sync lifecycle.
-  void _startSwapRecovery() {
+  /// `force` starts a round even while an idle wallet would skip it, for
+  /// callers waiting on recovery.
+  void _startSwapRecovery({bool force = false}) {
     if (_swapRecovery != null ||
         _swapRecoveryTransitions > 0 ||
         _requiresUnlock ||
         _walletMutationPauseCount > 0 ||
         !canRunAppProcessWork(isInForeground: _isInForeground) ||
         _getActiveAccountUuid() == null) {
+      return;
+    }
+    if (!force && _swapRecoveryIdle && !ref.read(nearSwapPrivacyProvider)) {
       return;
     }
     _swapRecovery = _runSwapRecovery(_swapRecoveryGeneration);
@@ -1130,6 +1141,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         return;
       }
       final network = _endpointConfig.networkName;
+      var hadWork = true;
       try {
         if (manual) {
           await rust_swap.checkSwapHistory(
@@ -1138,7 +1150,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             receiveEnd: receiveEnd,
           );
         } else {
-          await rust_swap.runSwapRecovery(dbPath: path, networkName: network);
+          hadWork = await rust_swap.runSwapRecovery(
+            dbPath: path,
+            networkName: network,
+          );
+          if (generation == _swapRecoveryGeneration) {
+            _swapRecoveryIdle = !hadWork;
+          }
         }
         if (ref.mounted) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
@@ -1150,7 +1168,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         }
         rethrow;
       }
-      if (ref.mounted && !_requiresUnlock && _walletMutationPauseCount == 0) {
+      // A round without work changed nothing to show.
+      if (hadWork &&
+          ref.mounted &&
+          !_requiresUnlock &&
+          _walletMutationPauseCount == 0) {
         await _onSyncFollowupUpdated();
       }
     } catch (error) {
@@ -1162,12 +1184,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   }
 
   /// Continues durable receiver work without starting or waiting for a block sync.
-  void continueSwapRecovery() => _startSwapRecovery();
+  void continueSwapRecovery() => _startSwapRecovery(force: true);
 
   /// Starts a receiver round unless one is running, then waits for the current
   /// round to end. Its outcome stays with the round.
   Future<void> awaitSwapRecovery() async {
-    _startSwapRecovery();
+    _startSwapRecovery(force: true);
     try {
       await _swapRecovery;
     } catch (_) {
@@ -1205,6 +1227,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Cancels network work and invalidates a worker still resolving its wallet path.
   Future<void> _stopSwapRecovery() async {
     ++_swapRecoveryGeneration;
+    _swapRecoveryIdle = false;
     rust_swap.cancelSwapRecovery();
     try {
       await _swapRecovery;
@@ -3041,6 +3064,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (!ref.mounted || _requiresUnlock) {
       return;
     }
+    if (event.isComplete) _swapRecoveryIdle = false;
     _startSwapRecovery();
     final progressEventVersion = ++_progressEventVersion;
     final epoch = _sensitiveStateEpoch;

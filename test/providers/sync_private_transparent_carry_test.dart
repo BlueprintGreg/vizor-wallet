@@ -33,10 +33,10 @@ class _Api extends RustLibApi {
 
   /// Finishes a receiver round at once without wallet work.
   @override
-  Future<void> crateApiOneTimeIvkRunSwapRecovery({
+  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
-  }) async {}
+  }) async => false;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
