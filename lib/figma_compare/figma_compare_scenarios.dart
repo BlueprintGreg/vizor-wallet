@@ -100,6 +100,34 @@ class FigmaCompareScenario {
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
   FigmaCompareScenario(
+    id: 'mobile-shield-ledger-connection-help',
+    description: 'Ledger pairing recovery inside the mobile shielding scene',
+    builder: buildLedgerInlineConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-mobile-connection-help-ios',
+    description: 'Mobile Ledger discovery and manual pairing recovery on iOS',
+    builder: buildLedgerMobileConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-mobile-connection-help-android',
+    description:
+        'Mobile Ledger discovery and manual pairing recovery on Android',
+    builder: buildLedgerMobileConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
     id: 'ledger-onboarding-access-preparing',
     description: 'Ledger onboarding: Bluetooth access check before discovery',
     builder: buildLedgerOnboardingAccessPreparation,

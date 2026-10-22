@@ -65,12 +65,11 @@ void registerLedgerWaitGuidanceTests() {
             model == 'Ledger Flex / Stax';
         expect(
           find.text(
-            kAppFormFactor == AppFormFactor.mobile
-                ? 'It may take about ${fast ? 10 : 30} seconds.'
-                : 'Ledger is preparing to sign. It may seem unresponsive for about ${fast ? 10 : 30} seconds.',
+            'Ledger is preparing to sign. It may seem unresponsive for about ${fast ? 10 : 30} seconds.',
           ),
           findsOneWidget,
         );
+        expect(find.text('Keep Ledger connected.'), findsOneWidget);
         expect(find.text('Sign transaction'), findsOneWidget);
         expect(tester.takeException(), isNull);
 

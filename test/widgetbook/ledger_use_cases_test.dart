@@ -82,7 +82,8 @@ void main() {
     await _pumpUseCase(tester, buildLedgerDevicePickerEmptyUseCase);
     await _pumpAsyncState(tester);
     expect(find.text('No Ledger devices found'), findsOne);
-    expect(find.text('Try again'), findsOne);
+    expect(find.text('Search again'), findsOne);
+    expect(find.text('Connection help'), findsOne);
 
     await _pumpUseCase(tester, buildLedgerDevicePickerPermissionDeniedUseCase);
     await _pumpAsyncState(tester);
