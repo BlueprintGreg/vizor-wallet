@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -96,7 +95,9 @@ class AppSecureStoreWalletPirConfigStore implements WalletPirConfigStore {
   }
 
   Future<Map<String, Object?>> _readEntries(String network) async {
-    final raw = await _store.readPlain('$kWalletPirConfigCacheKeyPrefix$network');
+    final raw = await _store.readPlain(
+      '$kWalletPirConfigCacheKeyPrefix$network',
+    );
     if (raw == null) return {};
     try {
       final decoded = jsonDecode(raw);

@@ -65,7 +65,7 @@ use crate::wallet::db::{
     WalletDatabase, READ_DB_BUSY_TIMEOUT,
 };
 use crate::wallet::network::WalletNetwork;
-use crate::wallet::pir_config::PirProduct;
+use crate::wallet::pir_config::{client_origin, PirProduct};
 use crate::wallet::sync_engine::enhancement::RoutedExchange;
 
 /// The live service the ignored live tests qualify against. Runtime traffic
@@ -476,7 +476,7 @@ pub(crate) fn origin_for(network: WalletNetwork, selected: Option<String>) -> Op
 /// Tests that select nothing get [`DEFAULT_MAINNET_ORIGIN`] as an identity
 /// for companion paths; their transports are fakes, so nothing reaches it.
 pub(crate) fn selected_origin() -> Option<String> {
-    let selected = PirProduct::Transparent.client_origin();
+    let selected = client_origin(PirProduct::Transparent);
     #[cfg(test)]
     let selected = selected.or_else(|| Some(DEFAULT_MAINNET_ORIGIN.to_owned()));
     selected

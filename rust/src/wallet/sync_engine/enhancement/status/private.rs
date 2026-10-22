@@ -1,7 +1,7 @@
 //! Private status observation. A selected private lookup never issues a txid RPC.
 use super::super::{super::WalletDatabase, transport::StatusPirTransport};
 use crate::wallet::network::WalletNetwork;
-use crate::wallet::pir_config::PirProduct;
+use crate::wallet::pir_config::{client_origin, PirProduct};
 use crate::wallet::transaction_data::{LookupError, TransactionObservation};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zakura_pir_client::status::policy::{
@@ -20,7 +20,7 @@ const MAINNET_GENESIS_DISPLAY: &str =
 /// The Status PIR endpoint: the selected wallet PIR server. Empty when none
 /// is selected, which fails before any request (see `enhance_endpoint`).
 fn status_endpoint() -> String {
-    PirProduct::Status.client_origin().unwrap_or_default()
+    client_origin(PirProduct::Status).unwrap_or_default()
 }
 
 fn now_ms() -> Result<u64, LookupError> {

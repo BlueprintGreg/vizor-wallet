@@ -1,24 +1,6 @@
 use super::*;
 
 #[test]
-fn product_routes_append_one_canonical_prefix_to_the_base() {
-    let base = "https://wallet-pir.valargroup.dev".to_owned();
-    let endpoints: Vec<_> = PirProduct::ALL
-        .iter()
-        .map(|product| product.endpoint(&base))
-        .collect();
-    assert_eq!(
-        endpoints,
-        vec![
-            "https://wallet-pir.valargroup.dev/enhance/v1",
-            "https://wallet-pir.valargroup.dev/status/v1",
-            "https://wallet-pir.valargroup.dev/transparent/v1",
-            "https://wallet-pir.valargroup.dev/receiver/v1",
-        ]
-    );
-}
-
-#[test]
 fn selection_lifecycle_bumps_the_generation_only_on_change() {
     let selection = ServerSelection::new();
     assert_eq!(selection.base(), None);

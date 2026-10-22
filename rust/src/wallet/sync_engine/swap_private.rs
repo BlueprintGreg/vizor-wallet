@@ -122,9 +122,8 @@ impl Drop for Running {
 /// is selected, which fails before any request, so a round records a failure
 /// rather than reaching a server the user did not choose.
 fn receiver_origin() -> String {
-    crate::wallet::pir_config::PirProduct::Receiver
-        .client_origin()
-        .unwrap_or_default()
+    use crate::wallet::pir_config::{client_origin, PirProduct};
+    client_origin(PirProduct::Receiver).unwrap_or_default()
 }
 
 /// The receiver directory uses the same Tor-aware transport as Vizor's other private

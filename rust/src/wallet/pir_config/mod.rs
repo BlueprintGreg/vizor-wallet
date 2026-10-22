@@ -4,7 +4,7 @@
 //! explicit selection rules) is the shared `zakura-pir-config` profile; the
 //! FRB adapter in `crate::api::pir_config` exposes it to Dart. This module
 //! holds only the process's applied choice. That one base serves every
-//! product:
+//! product, each client composing its own canonical route below it:
 //!
 //! ```text
 //!   selected base ──▶ Enhance      <base>/enhance/v1
@@ -22,7 +22,7 @@ mod selection;
 mod tests;
 
 pub(crate) use selection::{
-    clear_selected_server, selected_server_base, set_selected_server, PirProduct,
+    clear_selected_server, client_origin, selected_server_base, set_selected_server, PirProduct,
 };
 #[cfg(test)]
 pub(crate) use selection::ServerSelection;

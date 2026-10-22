@@ -14,7 +14,7 @@ use super::{
     diagnostics::{mark_routing_refresh, routing_refresh_due, set_phase, RecoveryPhase},
 };
 use crate::wallet::network::WalletNetwork;
-use crate::wallet::pir_config::PirProduct;
+use crate::wallet::pir_config::{client_origin, PirProduct};
 use futures::StreamExt;
 use std::collections::BTreeSet;
 use zakura_pir_client::enhance::transport::{self, PendingClient};
@@ -32,7 +32,7 @@ use zcash_protocol::consensus::BlockHeight;
 /// the sync defers exactly as for an unreachable service. It never turns
 /// into public transaction retrieval.
 fn enhance_endpoint() -> String {
-    PirProduct::Enhance.client_origin().unwrap_or_default()
+    client_origin(PirProduct::Enhance).unwrap_or_default()
 }
 
 const REDISCOVERY_COVER_BLOCKS: u32 = 100;

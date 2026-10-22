@@ -394,7 +394,7 @@ mod byte_tests {
         crate::network_privacy::fail_tor_enable();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!(
-            "https://{}/v1/receiver/init",
+            "https://{}/receiver/v1/inventory",
             listener.local_addr().unwrap()
         );
         let active = || false;

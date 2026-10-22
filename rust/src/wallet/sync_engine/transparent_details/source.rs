@@ -1,7 +1,7 @@
 //! The two sources loop 4 chooses between, once per run.
 //!
 //! - [`PirSource`] (`PrivateRequired`): txid display PIR at
-//!   the selected wallet PIR server's `/v2/txid/`, mainnet only, through the
+//!   the selected wallet PIR server's `/transparent/v1/txid/`, mainnet only, through the
 //!   process's [`TxidDisplayService`] for the origin over a [`RoutedExchange`].
 //!   It holds no lightwalletd client, so it cannot make a public request.
 //! - [`GateSource`] (every other policy): lightwalletd `GetTransaction`

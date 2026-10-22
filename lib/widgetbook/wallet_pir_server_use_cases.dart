@@ -1,3 +1,5 @@
+// ignore_for_file: depend_on_referenced_packages
+
 import 'package:flutter/material.dart';
 import 'package:widgetbook/widgetbook.dart';
 
@@ -9,7 +11,7 @@ import '../src/services/wallet_pir/wallet_pir_config.dart';
 
 // Demo fixtures only: hosts are reserved example names, never contacted. The
 // production server list is empty until real servers are deployed.
-const _source =
+final _source =
     'https://valargroup.github.io/wallet-pir-config/pins/demo/static.json'
     '?checksum=sha256:${'0' * 64}';
 const _first = WalletPirServerOption(
@@ -39,9 +41,9 @@ WalletPirServerState _state({
   WalletPirConfigView? config,
   bool refreshing = false,
   String? error,
-  String? source = _source,
+  String? source = '',
 }) => WalletPirServerState(
-  source: source,
+  source: source == '' ? _source : source,
   sourceIsDefault: true,
   config: config,
   refreshing: refreshing,
@@ -144,7 +146,10 @@ class _DemoPreviewState extends State<_DemoPreview> {
                 padding: const EdgeInsets.all(AppSpacing.sm),
                 child: view,
               )
-            : Padding(padding: const EdgeInsets.all(AppSpacing.md), child: view),
+            : Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: view,
+              ),
       ),
     );
   }

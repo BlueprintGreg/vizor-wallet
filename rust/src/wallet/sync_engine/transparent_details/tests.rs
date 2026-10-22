@@ -682,7 +682,7 @@ async fn private_required_zero_get_transaction_even_when_pir_down() {
         matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.lookups == 1),
         "{outcome:?}"
     );
-    assert_eq!(paths(&service), ["/v2/txid/init"]);
+    assert_eq!(paths(&service), ["/transparent/v1/txid/init"]);
     assert_eq!(
         view(&fixture, &tx.txid()),
         Some(TransparentDisplayView::Unavailable)
@@ -731,7 +731,7 @@ async fn private_required_public_enhance_only_on_consent() {
     .unwrap()
     .unwrap();
     assert_eq!(lwd.count("/GetTransaction"), 1);
-    assert_eq!(paths(&service), ["/v2/txid/init"], "no private request");
+    assert_eq!(paths(&service), ["/transparent/v1/txid/init"], "no private request");
     let Some(TransparentDisplayView::Available(details)) = view(&fixture, &tx.txid()) else {
         panic!("the stored payload shows its outputs");
     };
@@ -1249,7 +1249,7 @@ async fn stage_failure_protocol_sync_ok_balances_unchanged() {
         matches!(outcome, Some(RunOutcome::Unavailable(stats)) if stats.deferred == 1),
         "{outcome:?}"
     );
-    assert_eq!(paths(&service), ["/v2/txid/init"]);
+    assert_eq!(paths(&service), ["/transparent/v1/txid/init"]);
     assert_eq!(
         view(&fixture, &tx.txid()),
         Some(TransparentDisplayView::Unavailable)
@@ -2476,7 +2476,7 @@ async fn held_work_learns_of_new_coverage_through_the_cached_client() {
         "{outcome:?}"
     );
     let sent = paths_since(&service, sent);
-    assert_eq!(sent[0], "/v2/txid/map", "{sent:?}");
+    assert_eq!(sent[0], "/transparent/v1/txid/map", "{sent:?}");
     assert!(sent.iter().any(|path| path.contains("/query/")), "{sent:?}");
     assert_eq!(
         work_row(&fixture.path, &txid),
@@ -2507,7 +2507,7 @@ async fn held_work_learns_of_new_coverage_after_a_restart() {
     let sent = service.requests().len();
     let outcome = followup_with(&fixture, required(), &lwd).await;
     assert!(finished_with(outcome, 1), "{outcome:?}");
-    assert_eq!(paths_since(&service, sent)[0], "/v2/txid/map");
+    assert_eq!(paths_since(&service, sent)[0], "/transparent/v1/txid/map");
     assert_eq!(
         work_row(&fixture.path, &txid),
         Some((Some(ABSENT_CODE), Some(new_map)))
@@ -2533,7 +2533,7 @@ async fn map_refresh_honors_cancellation() {
             if !refreshing.load(Ordering::SeqCst) {
                 return (held.answer)(request);
             }
-            if request.path == "/v2/txid/map" {
+            if request.path == "/transparent/v1/txid/map" {
                 exit.store(true, Ordering::SeqCst);
             }
             covering(request)
@@ -2558,7 +2558,7 @@ async fn map_refresh_honors_cancellation() {
     )
     .await;
     assert_eq!(outcome, Some(RunOutcome::Exited(RunStats::default())));
-    assert_eq!(paths_since(&service, sent), ["/v2/txid/map"]);
+    assert_eq!(paths_since(&service, sent), ["/transparent/v1/txid/map"]);
     assert_eq!(
         work_row(&fixture.path, &txid),
         Some((Some(NOT_COVERED_CODE), Some(map)))
@@ -2594,7 +2594,7 @@ async fn a_service_that_comes_to_support_the_client_is_found_again() {
         let supported = supported.clone();
         let covering = covering.answer;
         move |request| {
-            if request.path == "/v2/txid/init" && !supported.load(Ordering::SeqCst) {
+            if request.path == "/transparent/v1/txid/init" && !supported.load(Ordering::SeqCst) {
                 return response(unsupported_txid_init());
             }
             covering(request)
@@ -2618,7 +2618,7 @@ async fn a_service_that_comes_to_support_the_client_is_found_again() {
     let outcome = followup_with(&fixture, required(), &lwd).await;
     assert!(finished_with(outcome, 1), "{outcome:?}");
     let sent = paths_since(&service, sent);
-    assert!(sent.contains(&"/v2/txid/init".to_owned()), "{sent:?}");
+    assert!(sent.contains(&"/transparent/v1/txid/init".to_owned()), "{sent:?}");
     assert!(sent.iter().any(|path| path.contains("/query/")), "{sent:?}");
     assert_eq!(
         work_row(&fixture.path, &txid),

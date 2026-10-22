@@ -46,9 +46,10 @@ class _Fetcher implements WalletPirConfigFetcher {
   Future<Uint8List> fetch(Uri uri) async {
     final url = uri.toString();
     if (url != _mirror) {
-      final source = [_sourceA, _sourceB].firstWhere(
-        (s) => walletPirConfigTransportUri(s).toString() == url,
-      );
+      final source = [
+        _sourceA,
+        _sourceB,
+      ].firstWhere((s) => walletPirConfigTransportUri(s).toString() == url);
       await gates[source]?.future;
       if (failing.contains(source)) throw Exception('offline');
       _lastStatic = source;
@@ -117,7 +118,8 @@ class _Resolver implements WalletPirConfigResolver {
         ? null
         : jsonDecode(savedSelectionJson) as Map<String, dynamic>;
     final inScope = saved != null && saved['scope'] == source ? saved : null;
-    String selection(String base) => jsonEncode({'scope': source, 'base': base});
+    String selection(String base) =>
+        jsonEncode({'scope': source, 'base': base});
     final base = inScope?['base'] as String?;
     if (base != null) {
       final kept = servers.any((s) => s.baseUrl == base);
