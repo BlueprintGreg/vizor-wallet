@@ -72,6 +72,7 @@ class _LedgerDesktopConnectModalState
       _closing = false,
       _stoppingSearch = false,
       _cleanupFailed = false,
+      _retryable = true,
       _reselectAfterCleanup = false,
       _requestStarted = false;
   int _generation = 0;
@@ -127,6 +128,7 @@ class _LedgerDesktopConnectModalState
       _devices = const [];
       _device = null;
       _error = null;
+      _retryable = true;
       _accessRecovery = false;
       _declinedStep = null;
       _resumingStep = null;
@@ -254,6 +256,9 @@ class _LedgerDesktopConnectModalState
     );
     setState(() {
       _phase = _Phase.failed;
+      _retryable =
+          guidance?.retryable ??
+          LedgerRequestFailure.fromError(error).retryable;
       _declinedStep =
           LedgerRequestFailure.fromError(error) == LedgerRequestFailure.declined
           ? error is LedgerAppReadinessException
@@ -268,7 +273,14 @@ class _LedgerDesktopConnectModalState
           : guidance?.message ??
                 (error is LedgerAppReadinessException
                     ? error.message
-                    : 'Vizor could not read this Ledger account. Try again.');
+                    : _bluetooth
+                    ? 'Vizor could not read this Ledger account. Try again.'
+                    : ledgerUsbErrorMessage(
+                            error,
+                            appInstruction:
+                                'Open the Zcash app, then try again.',
+                          ) ??
+                          'Vizor could not read this Ledger account. Reconnect Ledger with a USB cable, unlock it with your PIN, and open the Zcash app. Then try again.');
     });
   }
 
@@ -440,9 +452,11 @@ class _LedgerDesktopConnectModalState
       backLabel: 'Choose another Ledger',
       footer: failed
           ? _footer(
-              label: 'Try again',
+              label: !_cleanupFailed && !_retryable ? 'Back' : 'Try again',
               action: _cleanupFailed
                   ? () => unawaited(_finish(reselect: _reselectAfterCleanup))
+                  : !_retryable
+                  ? () => unawaited(_finish())
                   : _choosing
                   ? _search
                   : () => _read(),
