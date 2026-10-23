@@ -1147,6 +1147,40 @@ Widget buildDesktopHomeSetupUseCase(BuildContext context) =>
 Widget buildDesktopHomeSetupImportingUseCase(BuildContext context) =>
     _buildDesktopSetupHomeUseCase(importing: true);
 
+Widget buildDesktopHomeCachedBalanceUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true);
+
+Widget buildDesktopHomeUnknownBalanceUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase();
+
+Widget buildDesktopHomeInitialScanUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(initialScan: true);
+
+Widget _buildDesktopHomeStartupUseCase({
+  bool cached = false,
+  bool initialScan = false,
+}) {
+  final balance = cached ? BigInt.from(250000000) : BigInt.zero;
+  return _buildDesktopHomeUseCase(
+    accountState: _accountsDesignState,
+    syncState: SyncState(
+      accountUuid: _accountsDesignState.activeAccountUuid,
+      hasCachedBalance: cached,
+      hasBalanceData: false,
+      hasRecentTransactionsData: false,
+      isSyncing: true,
+      percentage: cached || initialScan ? .32 : 0,
+      remainingScanBlocks: cached || initialScan ? 100 : null,
+      displaySpendableBalance: balance,
+      displayOrchardBalance: balance,
+      displayShieldedBalance: balance,
+      displayTotalBalance: balance,
+    ),
+    migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+    zecUsdPrice: 70,
+  );
+}
+
 Widget buildDesktopZcashEducationIntroUseCase(BuildContext context) =>
     _buildDesktopSetupHomeUseCase(initialLocation: '/setup/education/intro');
 

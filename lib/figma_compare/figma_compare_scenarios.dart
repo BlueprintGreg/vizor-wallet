@@ -367,6 +367,24 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
+    id: 'desktop-home-cached-balance',
+    description: 'Home and sidebar show cached balance before history loads',
+    builder: buildDesktopHomeCachedBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-unknown-balance',
+    description: 'Home and sidebar do not turn an unknown balance into zero',
+    builder: buildDesktopHomeUnknownBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-initial-scan',
+    description: 'Home and sidebar keep the actual initial scan presentation',
+    builder: buildDesktopHomeInitialScanUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
     id: 'desktop-home-setup-importing',
     description: 'Desktop setup reminders during the initial scan',
     builder: buildDesktopHomeSetupImportingUseCase,

@@ -183,6 +183,170 @@ void main() {
     );
   });
 
+  for (final (name, state, balance, importing) in [
+    (
+      'cached balance',
+      SyncState(
+        accountUuid: 'account-1',
+        hasCachedBalance: true,
+        remainingScanBlocks: 100,
+        displayTotalBalance: BigInt.from(250000000),
+      ),
+      '2.5 ZEC',
+      false,
+    ),
+    (
+      'live balance without history',
+      SyncState(
+        accountUuid: 'account-1',
+        hasBalanceData: true,
+        displayTotalBalance: BigInt.from(250000000),
+      ),
+      '2.5 ZEC',
+      false,
+    ),
+    (
+      'history error',
+      SyncState(
+        accountUuid: 'account-1',
+        hasBalanceData: true,
+        hasRecentTransactionsError: true,
+        displayTotalBalance: BigInt.from(250000000),
+      ),
+      '2.5 ZEC',
+      false,
+    ),
+    ('unknown balance', SyncState(accountUuid: 'account-1'), '— ZEC', false),
+    (
+      'initial scan',
+      SyncState(
+        accountUuid: 'account-1',
+        remainingScanBlocks: 100,
+        isSyncing: true,
+      ),
+      '— ZEC',
+      true,
+    ),
+    (
+      'known zero balance',
+      SyncState(accountUuid: 'account-1', hasBalanceData: true),
+      '0 ZEC',
+      false,
+    ),
+    (
+      'cached zero balance',
+      SyncState(accountUuid: 'account-1', hasCachedBalance: true),
+      '0 ZEC',
+      false,
+    ),
+    (
+      'another account cache',
+      SyncState(
+        accountUuid: 'account-2',
+        hasCachedBalance: true,
+        displayTotalBalance: BigInt.from(9900000000),
+      ),
+      '— ZEC',
+      false,
+    ),
+    (
+      'failed initial scan',
+      SyncState(
+        accountUuid: 'account-1',
+        remainingScanBlocks: 100,
+        failure: const SyncFailure(
+          kind: SyncFailureKind.endpoint,
+          rawMessage: 'offline',
+          userMessage: 'Endpoint unavailable.',
+        ),
+      ),
+      '— ZEC',
+      false,
+    ),
+  ]) {
+    testWidgets('sidebar startup state: $name', (tester) async {
+      await tester.pumpWidget(_sidebarHarness(state));
+      await tester.pump();
+      expect(find.text(balance), findsOneWidget);
+      final home = tester.widget<AppSidebarItem>(
+        find.byKey(const ValueKey('sidebar_home_button')),
+      );
+      expect(home.label, importing ? 'Importing...' : 'Home');
+      for (final key in ['home', 'swap', 'pay', 'voting', 'activity']) {
+        final item = tester.widget<AppSidebarItem>(
+          find.byKey(ValueKey('sidebar_${key}_button')),
+        );
+        expect(
+          item.onTap,
+          importing ? isNull : isNotNull,
+          reason: '$name: $key',
+        );
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final available in [false, true]) {
+    for (final hidden in [false, true]) {
+      testWidgets(
+        'migration balances respect availability=$available privacy=$hidden',
+        (tester) async {
+          await tester.pumpWidget(
+            _sidebarHarness(
+              SyncState(
+                accountUuid: 'account-1',
+                hasCachedBalance: available,
+                displayTotalBalance: BigInt.from(250000000),
+                displayOrchardBalance: BigInt.from(200000000),
+                displayIronwoodBalance: BigInt.from(50000000),
+              ),
+              privacyModeEnabled: hidden,
+              migrationCoordinatorState: IronwoodMigrationCoordinatorState(
+                statuses: {'account-1': _readyMigrationStatus},
+              ),
+            ),
+          );
+          await tester.pump();
+          expect(
+            tester
+                .widget<Text>(
+                  find.byKey(const ValueKey('sidebar_orchard_balance')),
+                )
+                .data,
+            hidden
+                ? '****** ZEC'
+                : available
+                ? '2 ZEC'
+                : '— ZEC',
+          );
+          expect(
+            tester
+                .widget<Text>(
+                  find.byKey(const ValueKey('sidebar_ironwood_balance')),
+                )
+                .data,
+            hidden
+                ? '****** ZEC'
+                : available
+                ? '0.5 ZEC'
+                : '— ZEC',
+          );
+          expect(
+            find.text(
+              hidden
+                  ? '****** ZEC'
+                  : available
+                  ? '2.5 ZEC'
+                  : '— ZEC',
+            ),
+            hidden || !available ? findsNWidgets(3) : findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   testWidgets('sidebar limits visible balance fractions to four places', (
     tester,
   ) async {
@@ -806,6 +970,7 @@ void main() {
           hasAccountScopedData: false,
           isSyncing: true,
           percentage: 0.32,
+          remainingScanBlocks: 1500,
         ),
       ),
     );
@@ -1275,6 +1440,7 @@ Widget _sidebarHarness(
   SyncState syncState, {
   AppThemeData themeData = AppThemeData.light,
   bool swapEnabled = true,
+  bool privacyModeEnabled = false,
   AccountState? accountState,
   String initialLocation = '/home',
   bool disableAnimations = true,
@@ -1289,7 +1455,10 @@ Widget _sidebarHarness(
   bool suppressActiveSelection = false,
   LinuxKeyringCoordinator? keyringCoordinator,
 }) {
-  final bootstrap = _bootstrapFor(accountState ?? _singleAccountState);
+  final bootstrap = _bootstrapFor(
+    accountState ?? _singleAccountState,
+    privacyModeEnabled: privacyModeEnabled,
+  );
   final router = GoRouter(
     initialLocation: initialLocation,
     routes: [
@@ -1661,14 +1830,17 @@ const _manyAccountState = AccountState(
   activeAddress: 'u1accountsaddress',
 );
 
-AppBootstrapState _bootstrapFor(AccountState accountState) => AppBootstrapState(
+AppBootstrapState _bootstrapFor(
+  AccountState accountState, {
+  bool privacyModeEnabled = false,
+}) => AppBootstrapState(
   initialLocation: '/home',
   initialAccountState: accountState,
   initialSyncSnapshot: AppSyncSnapshot.empty,
   network: 'main',
   rpcEndpointConfig: defaultRpcEndpointConfig('main'),
   themeMode: ThemeMode.system,
-  privacyModeEnabled: false,
+  privacyModeEnabled: privacyModeEnabled,
   isPasswordConfigured: true,
   isUnlocked: true,
   passwordRotationRecoveryFailed: false,
