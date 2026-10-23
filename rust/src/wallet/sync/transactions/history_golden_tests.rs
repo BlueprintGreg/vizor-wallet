@@ -603,6 +603,13 @@ impl W {
         let history = get_transaction_history(&self.path, NETWORK, limit, &account).unwrap();
         if limit.is_none() {
             assert_rows_read_alone_match(&self.path, &account, &history);
+            // The unchanged unlimited path is the oracle for every golden's
+            // bounded read, including all fields and intra-transaction rows.
+            for limit in [0, 1, 2, 10, u32::MAX] {
+                let recent =
+                    get_transaction_history(&self.path, NETWORK, Some(limit), &account).unwrap();
+                assert_eq!(recent, history[..history.len().min(limit as usize)]);
+            }
         }
         history
     }
@@ -692,6 +699,129 @@ fn tex_pair(w: &mut W, funding: u8, send: u8, eph: i64, amount: u64, fees: (u64,
         amount - send_fee,
         None,
     );
+}
+
+/// Exercise the candidate loader with real library reads and record which
+/// transactions it asks for. The unlimited production read remains the oracle.
+fn recent_batches(w: &W, limit: u32) -> (Vec<TransactionInfo>, Vec<usize>) {
+    let conn = open_readonly_conn(&w.path).unwrap();
+    let read = conn.unchecked_transaction().unwrap();
+    let bases = read_history_bases(&read, &w.path, NETWORK, w.a).unwrap();
+    let mut seen = HashSet::new();
+    let mut batches = Vec::new();
+    let rows = recent_history::assemble_recent_history(
+        bases,
+        w.a.expose_uuid().as_bytes(),
+        limit,
+        |batch| {
+            batches.push(batch.len());
+            for base in batch.iter() {
+                assert!(
+                    seen.insert(base.txid.clone()),
+                    "must not load a transaction twice"
+                );
+            }
+            attach_history_details(&read, &w.path, NETWORK, w.a, batch)?;
+            read_history_outputs(
+                &read,
+                w.a.expose_uuid().as_bytes(),
+                batch.iter().map(|b| b.txid.as_slice()),
+            )
+        },
+    )
+    .unwrap();
+    let all =
+        get_transaction_history(&w.path, NETWORK, None, &w.a.expose_uuid().to_string()).unwrap();
+    assert_eq!(rows, all[..all.len().min(limit as usize)]);
+    (rows, batches)
+}
+
+fn recent_receipts(w: &W) {
+    for tag in 0x60..0xa0 {
+        let tx = w.tx(tag, Some(190), None, None);
+        w.recv(tx, Pool::Orchard, 0, w.a, 100_000, Recv::Ext, None);
+    }
+}
+
+fn hidden_funding(w: &mut W, tag: u8) {
+    let input = w.fund(w.a, Pool::Orchard, 1_010_000);
+    let tx = w.tx(tag, None, Some(CREATED), Some(10_000));
+    w.spend(input, tx);
+    w.recv(tx, Pool::Transparent, 0, w.a, 1_000_000, Recv::Eph(0), None);
+    let eph = w.eph(w.a, 0).address;
+    w.sent(
+        tx,
+        Pool::Transparent,
+        0,
+        w.a,
+        Some(w.a),
+        Some(&eph),
+        1_000_000,
+        None,
+    );
+}
+
+#[test]
+fn golden_recent_history_loads_only_latest_receipts() {
+    let w = wallet();
+    recent_receipts(&w);
+    assert_eq!(recent_batches(&w, 10).1, [20]);
+    assert!(recent_batches(&w, 0).1.is_empty());
+    assert_eq!(recent_batches(&w, u32::MAX).0.len(), 64);
+    // A second account has no history, even with the first account populated.
+    assert!(w.history(w.b, Some(10)).is_empty());
+}
+
+#[test]
+fn golden_recent_history_expands_and_reuses_hidden_dependencies() {
+    let mut w = wallet();
+    recent_receipts(&w);
+    for tag in 0xb0..0xdd {
+        hidden_funding(&mut w, tag);
+    }
+    let (rows, batches) = recent_batches(&w, 10);
+    assert_eq!(rows.len(), 10);
+    // The 45 hidden pending transactions form one dependency group. Expanding
+    // through them must neither re-read the group nor stop before visible rows.
+    assert!(batches.len() > 1, "{batches:?}");
+    assert_eq!(batches[0], 45);
+}
+
+#[test]
+fn golden_recent_history_does_not_fill_quota_with_older_tex_peers() {
+    let mut w = wallet();
+    recent_receipts(&w);
+    tex_pair(&mut w, 0xa2, 0xa1, 0, 10_010_000, (40_000, 10_000));
+    w.set(
+        0xa1,
+        "mined_height = 101, tx_index = 1, min_observed_height = 101",
+    );
+    for tag in 0xb0..0xc3 {
+        hidden_funding(&mut w, tag);
+    }
+    let (rows, batches) = recent_batches(&w, 1);
+    assert_eq!(rows[0].tx_kind, "received");
+    assert_eq!(rows[0].mined_height, 190);
+    assert_eq!(batches[0], 21);
+    assert!(batches.len() > 1);
+}
+
+#[test]
+fn golden_recent_history_keeps_distant_same_amount_tex_pairs() {
+    let mut w = wallet();
+    recent_receipts(&w);
+    tex_pair(&mut w, 0xa8, 0xa7, 0, 10_010_000, (40_000, 10_000));
+    tex_pair(&mut w, 0xaa, 0xa9, 1, 10_010_000, (50_000, 10_000));
+    for tag in [0xa8, 0xaa] {
+        w.set(
+            tag,
+            "mined_height = 101, tx_index = 1, min_observed_height = 101",
+        );
+    }
+    let (rows, batches) = recent_batches(&w, 1);
+    assert_eq!(rows[0].fee, 60_000);
+    assert_eq!(rows[0].funding_parent_txid, Some(hex::encode(txid(0xaa))));
+    assert_eq!(batches, [22]);
 }
 
 /// Was `history_suppresses_funding_step_after_limit_filtering`.

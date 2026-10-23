@@ -315,6 +315,11 @@ fn history_summaries_do_not_select_raw_payloads() {
 
 #[test]
 fn history_summaries_details_and_outputs_share_snapshot_during_sync_commit() {
+    assert_history_snapshot(None);
+    assert_history_snapshot(Some(1));
+}
+
+fn assert_history_snapshot(limit: Option<u32>) {
     let wallet = wallet();
     populate(&wallet);
     let conn = open_readonly_conn(&wallet.path).unwrap();
@@ -378,14 +383,14 @@ fn history_summaries_details_and_outputs_share_snapshot_during_sync_commit() {
         }
         Authorization::Allow
     }));
-    let rows = read_transaction_history(&conn, &wallet.path, NETWORK, None, wallet.sender);
+    let rows = read_transaction_history(&conn, &wallet.path, NETWORK, limit, wallet.sender);
     writer.join().unwrap();
     assert!(
         fired.load(Ordering::SeqCst),
         "must commit between library reads"
     );
     let rows = rows.unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), limit.unwrap_or(2) as usize);
     let payment = &rows[0];
     assert_eq!(payment.mined_height, 101);
     assert_eq!(payment.block_time, 600101);
@@ -469,5 +474,69 @@ fn batch_transaction_rows_match_full_history_without_unrequested_rows() {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+/// Local synthetic-wallet benchmark, without nodes, network, or proofs. Run
+/// explicitly with `cargo test --lib benchmark_recent_history -- --ignored --nocapture`.
+#[test]
+#[ignore = "diagnostic performance measurement"]
+fn benchmark_recent_history() {
+    use std::time::Instant;
+
+    for count in [100, 1_000] {
+        let wallet = wallet();
+        populate(&wallet);
+        let mut conn = Connection::open(&wallet.path).unwrap();
+        let tx = conn.transaction().unwrap();
+        let account = account_id(&tx, wallet.sender);
+        for i in 0..count {
+            let mut id = [0x77; 32];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            tx.execute(
+                "INSERT INTO transactions (txid, mined_height, min_observed_height, tx_index)
+                 VALUES (?1, 102, 102, ?2)",
+                params![id.as_slice(), i + 10],
+            )
+            .unwrap();
+            let transaction = tx.last_insert_rowid();
+            for output in 0..4 {
+                tx.execute(
+                    "INSERT INTO orchard_received_notes (transaction_id, action_index,
+                         account_id, diversifier, value, rho, rseed, is_change, memo, note_version)
+                     VALUES (?1, ?2, ?3, zeroblob(11), 100000, zeroblob(32), zeroblob(32), 0, X'F6', 2)",
+                    params![transaction, output, account],
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+        drop(conn);
+        let reader = open_readonly_conn(&wallet.path).unwrap();
+        let mut expected = None;
+        // Alternate order to reduce warm-cache ordering bias. Fixture creation
+        // and Rust compilation are outside the timed region.
+        for recent in [false, true, true, false] {
+            let start = Instant::now();
+            let mut rows = read_transaction_history(
+                &reader,
+                &wallet.path,
+                NETWORK,
+                recent.then_some(10),
+                wallet.sender,
+            )
+            .unwrap();
+            rows.truncate(10);
+            let elapsed = start.elapsed();
+            if let Some(expected) = &expected {
+                assert_eq!(&rows, expected);
+            } else {
+                expected = Some(rows);
+            }
+            println!(
+                "RECENT_HISTORY_BENCH transactions={} recent={recent} elapsed_us={}",
+                count + 2,
+                elapsed.as_micros()
+            );
+        }
     }
 }

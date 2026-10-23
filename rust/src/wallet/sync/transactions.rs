@@ -558,6 +558,7 @@ pub fn set_transaction_status(
 
 // ======================== Transaction History ========================
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(crate) struct TransactionInfo {
     pub txid_hex: String,
     pub mined_height: u64,
@@ -1056,12 +1057,25 @@ struct ClassifiedTx {
     info: TransactionInfo,
     /// The outputs this row counted, which its receipt shows.
     outputs: Vec<OutputKey>,
-    sort_pending_rank: u8,
-    sort_timestamp: u64,
-    sort_mined_height: u64,
-    tx_index: i64,
+    sort_key: HistorySortKey,
     row_order: u8,
 }
+
+/// Transaction-level order shared by candidate selection and final Activity
+/// rows. Detail attachment never changes these fields. Lower row_order breaks
+/// ties only between the rows of the same transaction.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct HistorySortKey {
+    pending_rank: u8,
+    timestamp: u64,
+    mined_height: u64,
+    tx_index: i64,
+    // Byte order is the same as the lowercase hex string order used by rows.
+    txid: Vec<u8>,
+}
+
+#[path = "transactions/recent_history.rs"]
+mod recent_history;
 
 pub(crate) fn get_transaction_history(
     db_path: &str,
@@ -1174,6 +1188,16 @@ fn read_history(
     }
     if bases.is_empty() {
         return Ok(Vec::new());
+    }
+    if let (HistoryScope::All, Some(limit)) = (scope, limit) {
+        return recent_history::assemble_recent_history(bases, uuid_bytes, limit, |batch| {
+            attach_history_details(&read_tx, db_path, network, account, batch)?;
+            read_history_outputs(
+                &read_tx,
+                uuid_bytes,
+                batch.iter().map(|base| base.txid.as_slice()),
+            )
+        });
     }
     attach_history_details(&read_tx, db_path, network, account, &mut bases)?;
 
@@ -1330,12 +1354,8 @@ fn assemble_history(
     }
 
     visible.sort_by(|a, b| {
-        b.sort_pending_rank
-            .cmp(&a.sort_pending_rank)
-            .then_with(|| b.sort_timestamp.cmp(&a.sort_timestamp))
-            .then_with(|| b.sort_mined_height.cmp(&a.sort_mined_height))
-            .then_with(|| b.tx_index.cmp(&a.tx_index))
-            .then_with(|| b.info.txid_hex.cmp(&a.info.txid_hex))
+        b.sort_key
+            .cmp(&a.sort_key)
             .then_with(|| a.row_order.cmp(&b.row_order))
     });
 
@@ -2602,7 +2622,6 @@ fn build_classified_tx_with_fee(
     row_order: u8,
     fee: Fee,
 ) -> ClassifiedTx {
-    let sort_timestamp = base.display_timestamp();
     ClassifiedTx {
         outputs: Vec::new(),
         info: TransactionInfo {
@@ -2626,15 +2645,22 @@ fn build_classified_tx_with_fee(
             provisional: base.history.provisional,
             amount_includes_fee: false,
         },
-        sort_pending_rank: u8::from(base.mined_height.is_none() && !base.expired_unmined),
-        sort_timestamp,
-        sort_mined_height: base.mined_height.unwrap_or(0) as u64,
-        tx_index: base.tx_index,
+        sort_key: base.history_sort_key(),
         row_order,
     }
 }
 
 impl TxBase {
+    fn history_sort_key(&self) -> HistorySortKey {
+        HistorySortKey {
+            pending_rank: u8::from(self.mined_height.is_none() && !self.expired_unmined),
+            timestamp: self.display_timestamp(),
+            mined_height: self.mined_height.unwrap_or(0).into(),
+            tx_index: self.tx_index,
+            txid: self.txid.clone(),
+        }
+    }
+
     /// Records the history read's view of this transaction. A shielding is
     /// inferred only where the payment details justify it.
     fn attach_history(&mut self, history: HistoryCompleteness) {
