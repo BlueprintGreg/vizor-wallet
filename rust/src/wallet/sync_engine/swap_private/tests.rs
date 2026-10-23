@@ -6,6 +6,16 @@ use super::*;
 use std::collections::BTreeSet;
 use zakura_one_time_ivk::Purpose;
 
+/// Reruns the calling test alone in a child process and returns from it in this one (see
+/// [`crate::wallet::db::isolated_test`]).
+macro_rules! isolated {
+    ($test:ident) => {
+        if crate::wallet::db::isolated_test(module_path!(), stringify!($test)) {
+            return;
+        }
+    };
+}
+
 mod fixture;
 use fixture::*;
 
@@ -14,12 +24,7 @@ const RECEIVE: bool = true;
 /// Runs near-head negative/positive hints and unavailable-history catch-up through the app worker.
 #[test]
 fn worker_filters_and_direct_catchup_use_real_pir() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "worker_filters_and_direct_catchup_use_real_pir",
-    ) {
-        return;
-    }
+    isolated!(worker_filters_and_direct_catchup_use_real_pir);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -59,12 +64,7 @@ fn worker_filters_and_direct_catchup_use_real_pir() {
 /// releasing the answers credits the payment without another block or a manual action.
 #[test]
 fn held_filter_and_pir_responses_leave_ordinary_sync_running() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "held_filter_and_pir_responses_leave_ordinary_sync_running",
-    ) {
-        return;
-    }
+    isolated!(held_filter_and_pir_responses_leave_ordinary_sync_running);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -130,12 +130,7 @@ fn held_filter_and_pir_responses_leave_ordinary_sync_running() {
 /// queued positive for one. The settings action later finds the skipped repeat.
 #[test]
 fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "route_choice_follows_measured_costs_and_skips_completed_addresses",
-    ) {
-        return;
-    }
+    isolated!(route_choice_follows_measured_costs_and_skips_completed_addresses);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -290,12 +285,7 @@ fn execute(wallet: &Wallet, account: &fixture::Account, proposal: u64, flow: &st
 /// matches instead of resurrecting the spent notes.
 #[test]
 fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "paid_receipts_are_credited_spent_and_not_resurrected_on_another_device",
-    ) {
-        return;
-    }
+    isolated!(paid_receipts_are_credited_spent_and_not_resurrected_on_another_device);
     enable_feature();
     let mut chain = Chain::new();
     let mut phone = Wallet::new(4, activation());
@@ -520,12 +510,7 @@ fn enhance_publicly(
 /// the next round after re-enabling or restarting resumes the saved work.
 #[test]
 fn toggle_and_cancellation_reject_held_answers_and_resume() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "toggle_and_cancellation_reject_held_answers_and_resume",
-    ) {
-        return;
-    }
+    isolated!(toggle_and_cancellation_reject_held_answers_and_resume);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -599,12 +584,7 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
 /// account is credited with the other's payment.
 #[test]
 fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "accounts_share_filter_downloads_but_not_cursors_budgets_or_credit",
-    ) {
-        return;
-    }
+    isolated!(accounts_share_filter_downloads_but_not_cursors_budgets_or_credit);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -684,12 +664,7 @@ fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
 /// app's FFI then recycles the hole and never derives past the payment-backed window.
 #[test]
 fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "seed_restore_walks_holes_and_issuance_recycles_within_the_window",
-    ) {
-        return;
-    }
+    isolated!(seed_restore_walks_holes_and_issuance_recycles_within_the_window);
     enable_feature();
     let mut chain = Chain::new();
     let seed = Wallet::new(4, activation()).account().clone();
@@ -796,12 +771,7 @@ fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
 /// reports busy until it ends, and a later check resumes from the cursor.
 #[test]
 fn manual_history_check_honours_bounds_and_resumes_after_pause() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "manual_history_check_honours_bounds_and_resumes_after_pause",
-    ) {
-        return;
-    }
+    isolated!(manual_history_check_honours_bounds_and_resumes_after_pause);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -888,12 +858,7 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
 /// path is restoring the seed from that birthday, which credits the payment.
 #[test]
 fn prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore",
-    ) {
-        return;
-    }
+    isolated!(prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore);
     enable_feature();
     let mut chain = Chain::new();
     let seed = Wallet::new(4, activation()).account().clone();
@@ -926,12 +891,7 @@ fn prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore(
 /// reports the update state, and a supported publication resumes and clears it.
 #[test]
 fn unsupported_service_requires_an_upgrade_and_keeps_pending_work() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "unsupported_service_requires_an_upgrade_and_keeps_pending_work",
-    ) {
-        return;
-    }
+    isolated!(unsupported_service_requires_an_upgrade_and_keeps_pending_work);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -977,12 +937,7 @@ fn unsupported_service_requires_an_upgrade_and_keeps_pending_work() {
 /// corrupted saved value only costs a full capture.
 #[test]
 fn sealed_shards_use_filters_and_inventory_descriptors_persist() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "sealed_shards_use_filters_and_inventory_descriptors_persist",
-    ) {
-        return;
-    }
+    isolated!(sealed_shards_use_filters_and_inventory_descriptors_persist);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -1067,12 +1022,7 @@ fn sealed_shards_use_filters_and_inventory_descriptors_persist() {
 /// together, so each filter is traversed once per round rather than once per address.
 #[test]
 fn a_round_traverses_each_sealed_shard_filter_once() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "a_round_traverses_each_sealed_shard_filter_once",
-    ) {
-        return;
-    }
+    isolated!(a_round_traverses_each_sealed_shard_filter_once);
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
@@ -1116,12 +1066,7 @@ fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
     use zcash_client_backend::data_api::{
         AccountBirthday, AccountPurpose, WalletWrite as _, Zip32Derivation,
     };
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "an_account_without_an_orchard_key_leaves_other_accounts_working",
-    ) {
-        return;
-    }
+    isolated!(an_account_without_an_orchard_key_leaves_other_accounts_working);
     let mut chain = Chain::new();
     chain.mine(3);
     let mut wallet = Wallet::new(4, activation());
@@ -1188,12 +1133,7 @@ fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
 /// disables it.
 #[test]
 fn feature_off_rounds_without_work_take_no_lock_or_request() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "feature_off_rounds_without_work_take_no_lock_or_request",
-    ) {
-        return;
-    }
+    isolated!(feature_off_rounds_without_work_take_no_lock_or_request);
     let mut chain = Chain::new();
     chain.mine(3);
     let mut wallet = Wallet::new(4, activation());
@@ -1234,12 +1174,7 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
 /// rows exist, and ordinary scanning pays no per-account one-time work.
 #[test]
 fn feature_off_entry_points_leave_the_wallet_untouched() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "feature_off_entry_points_leave_the_wallet_untouched",
-    ) {
-        return;
-    }
+    isolated!(feature_off_entry_points_leave_the_wallet_untouched);
     use crate::api::one_time_ivk as api;
     let mut chain = Chain::new();
     chain.mine(3);
@@ -1302,12 +1237,7 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
 /// recreates a wallet database that a reset deleted while a capture was in flight.
 #[test]
 fn descriptor_cache_never_recreates_a_reset_wallet() {
-    if crate::wallet::db::isolated_test(
-        module_path!(),
-        "descriptor_cache_never_recreates_a_reset_wallet",
-    ) {
-        return;
-    }
+    isolated!(descriptor_cache_never_recreates_a_reset_wallet);
     let wallet = Wallet::new(4, activation());
     let store = DescriptorTable::new(&wallet.path, CANCEL.load(Ordering::SeqCst));
     store.save(b"first");
