@@ -1150,9 +1150,6 @@ fn a_round_traverses_each_sealed_shard_filter_once() {
 /// for the wallet's other accounts, with the feature off and on.
 #[test]
 fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
-    use zcash_client_backend::data_api::{
-        AccountBirthday, AccountPurpose, WalletWrite as _, Zip32Derivation,
-    };
     if crate::wallet::db::isolated_test(
         module_path!(),
         "an_account_without_an_orchard_key_leaves_other_accounts_working",
@@ -1163,31 +1160,8 @@ fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
     chain.mine(3);
     let mut wallet = Wallet::new(4, activation());
     let account = wallet.account().clone();
-    let seed = [9; 32];
-    let usk =
-        zcash_keys::keys::UnifiedSpendingKey::from_seed(&NETWORK, &seed, zip32::AccountId::ZERO)
-            .unwrap();
-    let ufvk = zcash_keys::keys::UnifiedFullViewingKey::new(
-        Some(usk.transparent().to_account_pubkey()),
-        Some(usk.sapling().to_diversifiable_full_viewing_key()),
-        None,
-    )
-    .unwrap();
-    wallet
-        .db()
-        .import_account_ufvk(
-            "No Orchard",
-            &ufvk,
-            &AccountBirthday::from_parts(chain.state(activation()).clone(), None),
-            AccountPurpose::Spending {
-                derivation: Some(Zip32Derivation::new(
-                    zip32::fingerprint::SeedFingerprint::from_seed(&seed).unwrap(),
-                    zip32::AccountId::ZERO,
-                )),
-            },
-            None,
-        )
-        .unwrap();
+    // The birthday is one past activation, so the account starts from activation's tree.
+    wallet.import_without_orchard(9, activation() + 1, &chain);
     assert_eq!(
         one_time_ivk::software_accounts(&wallet.db()).unwrap(),
         [account.id]

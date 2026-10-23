@@ -418,6 +418,40 @@ struct Quote {
 }
 
 impl Quote {
+    /// A quote `dev` asked for on key `index`, before any answer or provider progress.
+    fn new(
+        dev: usize,
+        uuid: String,
+        seed: u8,
+        incoming: bool,
+        index: u64,
+        deposit: String,
+        deadline: i64,
+    ) -> Self {
+        Self {
+            dev,
+            uuid,
+            seed,
+            incoming,
+            index,
+            request: None,
+            deposit,
+            deadline,
+            accepted: false,
+            started: false,
+            rejected: false,
+            funded: false,
+            status: "PENDING_DEPOSIT",
+            refunded: None,
+            amount_out: None,
+            omit_refund: false,
+            hashes: vec![],
+            owed: vec![],
+            released: false,
+            funded_seen: false,
+        }
+    }
+
     /// Whether the provider has reported a final status.
     fn concluded(&self) -> bool {
         matches!(self.status, "SUCCESS" | "REFUNDED" | "FAILED")
@@ -570,20 +604,10 @@ fn evidence_high(wallet: &Wallet, account: &AccountUuid) -> Option<u64> {
 
 /// Refund indexes `account` has registered with funding evidence.
 fn funded_refunds(wallet: &Wallet, account: &AccountUuid) -> BTreeSet<u64> {
-    let conn = rusqlite::Connection::open(&wallet.path).unwrap();
-    let mut statement = conn
-        .prepare(
-            "SELECT k.key_index FROM ironwood_one_time_keys k JOIN accounts a ON a.id = k.account_id
-             WHERE a.uuid = ?1 AND k.purpose = 0 AND k.funding_height IS NOT NULL",
-        )
-        .unwrap();
-    statement
-        .query_map([account.expose_uuid().as_bytes()], |r| {
-            Ok(u64::from_be_bytes(r.get::<_, [u8; 8]>(0)?))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+    funding_heights(wallet, account)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Each refund index `account` holds funding evidence for, with its funding height.
@@ -623,17 +647,17 @@ fn receive_pending(wallet: &Wallet, account: &AccountUuid, index: u64) -> bool {
         .unwrap()
 }
 
-/// The height through which filters have checked `account`'s keys, or 0 before any.
-fn filter_frontier(wallet: &Wallet, account: &AccountUuid) -> u32 {
-    rusqlite::Connection::open(&wallet.path)
+/// The refund indexes the worker still monitors for `account`.
+fn monitored_refunds(wallet: &Wallet, account: &AccountUuid) -> BTreeSet<u64> {
+    wallet
+        .db()
+        .one_time_receivers(*account)
         .unwrap()
-        .query_row(
-            "SELECT IFNULL(r.filter_height, 0) FROM ironwood_one_time_recovery r
-             JOIN accounts a ON a.id = r.account_id WHERE a.uuid = ?1",
-            [account.expose_uuid().as_bytes()],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
+        .1
+        .iter()
+        .filter(|w| w.key.purpose() == Purpose::Refund)
+        .map(|w| w.key.index())
+        .collect()
 }
 
 /// The earlier of now and the latest block time, which quote deadlines are compared with.
@@ -1235,26 +1259,8 @@ impl World {
         self.deposits += 1;
         let deposit = format!("deposit-{}.near", self.deposits);
         let mut quote = Quote {
-            dev,
-            uuid: uuid.clone(),
-            seed,
-            incoming: true,
-            index,
             request: Some(request.clone()),
-            deposit: deposit.clone(),
-            deadline: deadline - 60,
-            accepted: false,
-            started: false,
-            rejected: false,
-            funded: false,
-            status: "PENDING_DEPOSIT",
-            refunded: None,
-            amount_out: None,
-            omit_refund: false,
-            hashes: vec![],
-            owed: vec![],
-            released: false,
-            funded_seen: false,
+            ..Quote::new(dev, uuid.clone(), seed, true, index, deposit, deadline - 60)
         };
         let line = match reply {
             Reply::Accept => self.accept(&mut quote),
@@ -1483,29 +1489,11 @@ impl World {
             ));
         }
         self.deposits += 1;
+        // The deposit count, a marker byte, then 1 through 17.
+        let mut hash: [u8; 20] = std::array::from_fn(|i| (i as u8).wrapping_sub(2));
+        hash[..3].copy_from_slice(&[(self.deposits % 251) as u8, (self.deposits / 251) as u8, 77]);
         let deposit = zcash_keys::address::Address::Transparent(
-            transparent::address::TransparentAddress::PublicKeyHash([
-                (self.deposits % 251) as u8,
-                (self.deposits / 251) as u8,
-                77,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-            ]),
+            transparent::address::TransparentAddress::PublicKeyHash(hash),
         )
         .encode(&NETWORK);
         let deadline = now() + ttl;
@@ -1521,26 +1509,9 @@ impl World {
             return Ok(format!("R{index} quote not recorded: {}", e.message));
         }
         self.quotes.push(Quote {
-            dev,
-            uuid,
-            seed,
-            incoming: false,
-            index,
-            request: None,
-            deposit,
-            deadline,
             accepted: true,
             started: true,
-            rejected: false,
-            funded: false,
-            status: "PENDING_DEPOSIT",
-            refunded: None,
-            amount_out: None,
-            omit_refund: false,
-            hashes: vec![],
-            owed: vec![],
-            released: false,
-            funded_seen: false,
+            ..Quote::new(dev, uuid, seed, false, index, deposit, deadline)
         });
         Ok(format!("R{index} quote {}", self.quotes.len() - 1))
     }
@@ -2078,20 +2049,10 @@ impl World {
 
     /// Whether `dev`'s scanned tip is on the current chain.
     fn on_chain(&self, dev: usize) -> bool {
-        let wallet = &self.devices[dev].wallet;
-        let Some(height) = wallet
-            .db()
-            .block_fully_scanned()
-            .unwrap()
-            .map(|b| u32::from(b.block_height()))
-        else {
+        let Some(block) = self.devices[dev].wallet.db().block_fully_scanned().unwrap() else {
             return true;
         };
-        wallet
-            .db()
-            .block_metadata(height.into())
-            .unwrap()
-            .is_some_and(|b| Some(b.block_hash().0) == self.chain.hash_at(height))
+        Some(block.block_hash().0) == self.chain.hash_at(u32::from(block.block_height()))
     }
 
     /// Promises checked after every step: credit only real payments, nothing orphaned
@@ -2474,16 +2435,12 @@ impl World {
     /// [`MEMO_REFUND_WINDOW`] past the funding.
     fn check_retired(&self, dev: usize, acct: &Acct) -> Result<(), Violation> {
         let device = &self.devices[dev];
-        let monitored: BTreeSet<u64> = device
-            .wallet
-            .db()
-            .one_time_receivers(acct.account.id)
-            .unwrap()
-            .1
-            .iter()
-            .filter(|w| w.key.purpose() == Purpose::Refund)
-            .map(|w| w.key.index())
-            .collect();
+        let monitored = monitored_refunds(&device.wallet, &acct.account.id);
+        let orphaned = |index: u64| {
+            notes(&device.wallet, &acct.account.id)
+                .iter()
+                .any(|n| !n.receive && n.index == index && !n.mined)
+        };
         for quote in self
             .quotes
             .iter()
@@ -2492,10 +2449,7 @@ impl World {
             // A `SUCCESS` without a refunded amount expects no refund, so it is conclusive
             // too (SPEC Q-3).
             if quote.concluded() && monitored.contains(&quote.index) {
-                let orphaned = notes(&device.wallet, &acct.account.id)
-                    .iter()
-                    .any(|n| !n.receive && n.index == quote.index && !n.mined);
-                if orphaned {
+                if orphaned(quote.index) {
                     // A refund the reorg replaced leaves its old note unmined, which keeps
                     // the key in repair (see REPORT, finding F2).
                     self.note("refund-key-kept-by-orphaned-receipt");
@@ -2512,7 +2466,11 @@ impl World {
         }
         // A key learned from another device's funding memo has no local operation, so it
         // cannot learn the swap ended. It retires after NEAR's refund window (SPEC Q-2).
-        let frontier = filter_frontier(&device.wallet, &acct.account.id);
+        let frontier = device
+            .wallet
+            .state(&acct.account)
+            .filter_frontier
+            .map_or(0, |point| u32::from(point.height));
         for (index, funded) in funding_heights(&device.wallet, &acct.account.id) {
             let local = self.quotes.iter().any(|q| {
                 q.dev == dev && q.uuid == acct.account.uuid && !q.incoming && q.index == index
@@ -2520,10 +2478,7 @@ impl World {
             if local || !monitored.contains(&index) || frontier <= funded + MEMO_REFUND_WINDOW {
                 continue;
             }
-            if notes(&device.wallet, &acct.account.id)
-                .iter()
-                .any(|n| !n.receive && n.index == index && !n.mined)
-            {
+            if orphaned(index) {
                 self.note("refund-key-kept-by-orphaned-receipt");
                 continue;
             }

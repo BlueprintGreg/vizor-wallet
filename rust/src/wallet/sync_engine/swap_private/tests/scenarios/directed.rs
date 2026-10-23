@@ -9,6 +9,16 @@ fn settle(world: &mut World, dev: usize) {
     }
 }
 
+impl World {
+    /// A new world whose first device has synced and settled.
+    fn ready() -> Self {
+        let mut world = Self::new();
+        world.sync(0, false);
+        settle(&mut world, 0);
+        world
+    }
+}
+
 /// Four incoming quotes shown to the user and never paid fill the four-slot window.
 /// Two days after their deadlines, a new private quote must still find a slot once the
 /// app refreshes their statuses, so a full window cannot stay blocked.
@@ -17,9 +27,7 @@ fn expired_unpaid_quotes_release_their_slots_days_later() {
     if isolated("directed::expired_unpaid_quotes_release_their_slots_days_later") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     for _ in 0..4 {
         let line = world.quote_in(0, 0, Reply::Accept, 3_600).unwrap();
         assert!(line.contains("accepted and shown"), "{line}");
@@ -59,9 +67,7 @@ fn a_reorged_payout_is_credited_once_from_the_new_branch() {
     if isolated("directed::a_reorged_payout_is_credited_once_from_the_new_branch") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     let line = world
         .act(&Action::Swap {
             dev: 0,
@@ -193,18 +199,9 @@ fn local_refund_keys_retire_when_conclusive_and_memo_learned_ones_after_the_wind
         world.poll(dev, 0).unwrap();
         settle(&mut world, dev);
     }
-    let monitored = |world: &World, dev: usize| -> BTreeSet<u64> {
+    let monitored = |world: &World, dev: usize| {
         let device = &world.devices[dev];
-        device
-            .wallet
-            .db()
-            .one_time_receivers(device.accts[0].account.id)
-            .unwrap()
-            .1
-            .iter()
-            .filter(|w| w.key.purpose() == Purpose::Refund)
-            .map(|w| w.key.index())
-            .collect()
+        monitored_refunds(&device.wallet, &device.accts[0].account.id)
     };
     assert!(
         monitored(&world, 0).is_empty(),
@@ -241,9 +238,7 @@ fn private_addresses_need_both_switches() {
     if isolated("directed::private_addresses_need_both_switches") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     world.devices[0].queries = false;
     world.toggled(0);
     let refused = world.reserve_in(0, 0, false).unwrap();
@@ -260,9 +255,7 @@ fn a_started_quote_without_any_status_releases_its_slot_a_day_later() {
     if isolated("directed::a_started_quote_without_any_status_releases_its_slot_a_day_later") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     for _ in 0..4 {
         let line = world.quote_in(0, 0, Reply::Accept, 3_600).unwrap();
         assert!(line.contains("accepted and shown"), "{line}");
@@ -306,9 +299,7 @@ fn a_feature_off_round_repairs_a_displaced_receipt() {
     if isolated("directed::a_feature_off_round_repairs_a_displaced_receipt") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     world
         .act(&Action::Swap {
             dev: 0,
@@ -369,9 +360,7 @@ fn a_restore_between_funding_input_and_funding_recovers_the_refund() {
     if isolated("directed::a_restore_between_funding_input_and_funding_recovers_the_refund") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     let birthday = world.chain.tip() - 2;
     let restored = world.add_device(birthday, true);
     let line = world
@@ -412,9 +401,7 @@ fn a_refund_replaced_by_a_reorg_still_retires() {
     if isolated("directed::a_refund_replaced_by_a_reorg_still_retires") {
         return;
     }
-    let mut world = World::new();
-    world.sync(0, false);
-    settle(&mut world, 0);
+    let mut world = World::ready();
     world
         .act(&Action::SwapOut {
             dev: 0,
@@ -433,16 +420,7 @@ fn a_refund_replaced_by_a_reorg_still_retires() {
     world.poll(0, 0).unwrap();
     settle(&mut world, 0);
     let device = &world.devices[0];
-    let monitored: Vec<_> = device
-        .wallet
-        .db()
-        .one_time_receivers(device.accts[0].account.id)
-        .unwrap()
-        .1
-        .iter()
-        .filter(|w| w.key.purpose() == Purpose::Refund)
-        .map(|w| w.key.index())
-        .collect();
+    let monitored = monitored_refunds(&device.wallet, &device.accts[0].account.id);
     assert!(monitored.is_empty(), "R0 still monitored: {monitored:?}");
 }
 
