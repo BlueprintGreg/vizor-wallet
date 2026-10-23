@@ -429,7 +429,7 @@ class PaymentLinkMessageDesktopView extends StatelessWidget {
     this.subtitle = 'Enter amount & select the design.',
     this.skipLabel = 'Skip message',
     this.emptyContinueLabel = 'Continue',
-    this.continueLabel = 'Confirm & review',
+    this.continueLabel = 'Review & confirm',
     super.key,
   });
 

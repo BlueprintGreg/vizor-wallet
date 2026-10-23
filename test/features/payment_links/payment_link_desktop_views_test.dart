@@ -916,7 +916,7 @@ void main() {
       expect(
         tester
             .widget<AppButton>(
-              find.widgetWithText(AppButton, 'Confirm & review'),
+              find.widgetWithText(AppButton, 'Review & confirm'),
             )
             .onPressed,
         isNotNull,
@@ -939,7 +939,7 @@ void main() {
       expect(
         tester
             .widget<AppButton>(
-              find.widgetWithText(AppButton, 'Confirm & review'),
+              find.widgetWithText(AppButton, 'Review & confirm'),
             )
             .onPressed,
         isNull,
