@@ -177,7 +177,9 @@ class SwapActivityTracker {
     LedgerOperationLifecycle? lifecycle,
     Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
     onProviderSnapshot,
-  }) : _activityStore = activityStore,
+  }) : _activityStore = activityStore is DeletionSafeSwapActivityStore
+           ? activityStore
+           : DeletionSafeSwapActivityStore(activityStore),
        _swapProvider = swapProvider,
        _isTorEnabled = isTorEnabled,
        _onRecordsChanged = onRecordsChanged,
@@ -193,7 +195,8 @@ class SwapActivityTracker {
   /// from its request through its saved activity (see [refreshIntents]).
   final LedgerOperationLifecycle? _lifecycle;
 
-  final SwapActivityStore _activityStore;
+  /// Every write is one atomic [DeletionSafeSwapActivityStore.update].
+  final DeletionSafeSwapActivityStore _activityStore;
   final SwapProvider _swapProvider;
 
   /// Read per refresh, not captured once: Tor can be toggled while an intent is
@@ -237,16 +240,27 @@ class SwapActivityTracker {
     }
   }
 
+  /// Replaces `accountUuid`'s saved swaps with `intents`.
   Future<void> saveIntents({
     required String? accountUuid,
     required List<SwapIntent> intents,
+  }) => updateIntents(accountUuid: accountUuid, transform: (_) => intents);
+
+  /// Replaces `accountUuid`'s saved swaps with what `transform` makes of them,
+  /// as one atomic step of the store (see
+  /// [DeletionSafeSwapActivityStore.update]), so a concurrent writer's swaps
+  /// are never overwritten by an older list. Every swap activity write goes
+  /// through here.
+  Future<void> updateIntents({
+    required String? accountUuid,
+    required List<SwapIntent> Function(List<SwapIntent> saved) transform,
   }) async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid == null) return;
-    await _activityStore.saveRecords(
+    await _activityStore.update(
       accountUuid: scopedAccountUuid,
-      records: [
-        for (final intent in intents)
+      transform: (records) => [
+        for (final intent in transform(_intentsFromRecords(records)))
           if (_isPersistableIntent(intent, accountUuid: scopedAccountUuid))
             swapIntentRecordForPersistence(
               intent,
@@ -420,14 +434,18 @@ class SwapActivityTracker {
     required List<SwapIntent> refreshedIntents,
     required Set<String> refreshedIds,
   }) async {
-    final latestIntents = await loadIntents(accountUuid: accountUuid);
-    var mergedIntents = latestIntents;
-    for (final id in refreshedIds) {
-      final refreshed = refreshedIntents.swapIntentById(id);
-      if (refreshed == null) continue;
-      mergedIntents = mergedIntents.replaceSwapIntent(id, refreshed);
-    }
-    await saveIntents(accountUuid: accountUuid, intents: mergedIntents);
+    await updateIntents(
+      accountUuid: accountUuid,
+      transform: (latestIntents) {
+        var mergedIntents = latestIntents;
+        for (final id in refreshedIds) {
+          final refreshed = refreshedIntents.swapIntentById(id);
+          if (refreshed == null) continue;
+          mergedIntents = mergedIntents.replaceSwapIntent(id, refreshed);
+        }
+        return mergedIntents;
+      },
+    );
   }
 
   Future<SwapIntent> _refreshProviderBackedIntent(

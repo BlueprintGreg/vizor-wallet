@@ -2225,16 +2225,16 @@ class SwapNotifier extends Notifier<SwapState> {
     String accountUuid,
     SwapIntent intent,
   ) async {
-    final tracker = ref.read(swapActivityTrackerProvider);
-    final saved = await tracker.loadIntents(accountUuid: accountUuid);
-    await tracker.saveIntents(
-      accountUuid: accountUuid,
-      intents: [
-        intent,
-        for (final stored in saved)
-          if (stored.id != intent.id) stored,
-      ],
-    );
+    await ref
+        .read(swapActivityTrackerProvider)
+        .updateIntents(
+          accountUuid: accountUuid,
+          transform: (saved) => [
+            intent,
+            for (final stored in saved)
+              if (stored.id != intent.id) stored,
+          ],
+        );
   }
 
   bool _isAccountActive(String? accountUuid) {

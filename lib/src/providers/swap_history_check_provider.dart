@@ -128,6 +128,10 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// Whether a check is being watched, so the saved state is already followed.
   bool _observing = false;
 
+  /// Whether a pause is waiting for the wallet, during which no saved-state
+  /// read starts.
+  bool _cancelling = false;
+
   /// Saved-state reads refused in a row, which [_reconcile] retries.
   int _refusedReads = 0;
 
@@ -138,7 +142,9 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// nothing. A refused read, such as one made while a wallet change holds
   /// admission, is tried again shortly.
   Future<void> _reconcile() async {
-    if (_observing || !ref.read(nearSwapPrivacyProvider)) return;
+    if (_observing || _cancelling || !ref.read(nearSwapPrivacyProvider)) {
+      return;
+    }
     final generation = _generation;
     final rust_swap.SwapRecoveryStatus? status;
     try {
@@ -284,9 +290,13 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   Future<void> cancel() async {
     final generation = ++_generation;
     _observing = false;
+    _cancelling = true;
     try {
       await ref.read(swapHistoryApiProvider).cancel();
       if (ref.mounted && generation == _generation) {
+        // Drops any saved-state read that started before the pause landed,
+        // which could still report the job active.
+        _generation++;
         _setJobSaved(false);
         state = SwapHistoryCheck.paused;
       }
@@ -295,6 +305,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       if (ref.mounted && generation == _generation) {
         state = SwapHistoryCheck.failed;
       }
+    } finally {
+      _cancelling = false;
     }
   }
 }
