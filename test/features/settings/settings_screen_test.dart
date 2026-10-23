@@ -889,19 +889,32 @@ void main() {
     final privacy = _SwapPrivacyToggle(true);
     var finished = false;
     var begins = 0;
+    // The wallet saves the user's job once a check begins.
+    var saved = false;
     await tester.pumpWidget(
       _settingsHarness(
         nearSwapPrivacyEnabled: true,
         extraOverrides: [
           nearSwapPrivacyProvider.overrideWith(() => privacy),
+          // The wallet's saved state, which the check reads to follow the job.
+          swapRecoveryStatusReaderProvider.overrideWithValue(
+            () async => SwapRecoveryStatus(
+              checkingHistory: privacy.on && saved && !finished,
+              manualCheckActive: privacy.on && saved && !finished,
+              upgradeRequired: false,
+            ),
+          ),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: () async => begins++,
+              begin: () async {
+                begins++;
+                saved = true;
+              },
               cancel: () async {},
               // The wallet reports a check only while the feature is on.
               status: () async => SwapRecoveryStatus(
-                checkingHistory: privacy.on && !finished,
-                manualCheckActive: privacy.on && !finished,
+                checkingHistory: privacy.on && saved && !finished,
+                manualCheckActive: privacy.on && saved && !finished,
                 upgradeRequired: false,
               ),
               pollInterval: const Duration(seconds: 1),

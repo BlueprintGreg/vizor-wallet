@@ -360,6 +360,14 @@ void main() {
           api.events.add('reconcile:${api.swapPrivacy}');
         }),
         syncProvider.overrideWith(() => sync),
+        // The wallet's saved state, which the check reads to follow the job.
+        swapRecoveryStatusReaderProvider.overrideWithValue(
+          () async => rust_swap.SwapRecoveryStatus(
+            checkingHistory: api.checking && api.swapPrivacy,
+            manualCheckActive: api.checking && api.swapPrivacy,
+            upgradeRequired: false,
+          ),
+        ),
         // The production calls behind Check swap history, polled quickly.
         swapHistoryApiProvider.overrideWith(
           (ref) => SwapHistoryApi(
