@@ -14,9 +14,9 @@ Seed recovery starts at receive index zero and stops after four consecutive comp
 
 ## Refund addresses
 
-The funding transaction records the refund index in an authenticated memo to the account's ordinary internal Ironwood address. Another device with the same seed learns that index by syncing the funding transaction. The wallet never sweeps arbitrary refund indexes.
+The funding transaction records the refund index in an authenticated memo to the account's ordinary internal Ironwood address. Another device with the same seed learns that index by syncing the funding transaction, even before it has recovered the notes the funding spent. The wallet never sweeps arbitrary refund indexes.
 
-A funded refund address stays monitored while any of its operations is active or inconclusive, or a receipt on it is disputed or unplaced. It stops being monitored automatically once every operation is conclusive: the provider reported that no refund is coming, or the expected refund was received and settled. Check swap history still covers retired refund addresses. If the funding transaction predates the wallet birthday, restore from an earlier birthday first. Seeing only the later refund isn't enough to derive the refund index.
+A funded refund address stays monitored while any of its operations is active or inconclusive, or a receipt on it is disputed or unplaced. It stops being monitored automatically once every operation is conclusive: the provider reported that no refund is coming, or the expected refund was received and settled. A refund address known only from its funding memo, with no swap on this device, stops being monitored once filters have checked seven days of chain time past the funding. Check swap history still covers retired refund addresses. If the funding transaction predates the wallet birthday, restore from an earlier birthday first. Seeing only the later refund isn't enough to derive the refund index.
 
 ## Discovery
 
