@@ -749,31 +749,30 @@ void main() {
           uuid: 'claim-wallet',
           birthdayHeight: 0,
           name: 'Gift Card claim',
-          unifiedAddress: 'u1orchardatlegacyindex',
           isSeedAnchor: true,
           isHardware: false,
         );
-        api.validGiftAddresses.addAll({
-          _link().address,
-          migratedProjection.unifiedAddress,
-        });
+        api.validGiftAddresses.addAll({_link().address, 'u1legacy-projection'});
 
+        api.claimWalletAddress = 'u1legacy-projection';
         expect(
           await wallet.matchesLink(
+            dbPath: 'claim-wallet.db',
             link: _link(),
             accounts: [migratedProjection],
           ),
           isTrue,
         );
+        api.claimWalletAddress = 'u1wrong-wallet';
         expect(
           await wallet.matchesLink(
+            dbPath: 'claim-wallet.db',
             link: _link(),
             accounts: [
               rust_wallet.AccountInfo(
                 uuid: 'claim-wallet',
                 birthdayHeight: 0,
                 name: 'Gift Card claim',
-                unifiedAddress: 'u1same-receiver-but-noncanonical',
                 isSeedAnchor: true,
                 isHardware: false,
               ),
@@ -783,6 +782,7 @@ void main() {
         );
         expect(
           await wallet.matchesLink(
+            dbPath: 'claim-wallet.db',
             link: _link().withResolvedMetadata(address: 'u1wrong-advertised'),
             accounts: [migratedProjection],
           ),
@@ -791,6 +791,7 @@ void main() {
         expect(
           await wallet.matchesLink(
             link: _link(),
+            dbPath: 'claim-wallet.db',
             accounts: [migratedProjection, migratedProjection],
           ),
           isFalse,
@@ -3229,7 +3230,6 @@ class _ClaimDestinationRustApi implements RustLibApi {
         uuid: isClaimWallet ? 'claim-wallet' : 'receiver',
         birthdayHeight: 0,
         name: 'Test',
-        unifiedAddress: isClaimWallet ? _link().address : 'u1receiveraddress',
         isSeedAnchor: true,
         isHardware: false,
       ),
@@ -3367,6 +3367,7 @@ class _ClaimDestinationRustApi implements RustLibApi {
   }) async {}
 
   void reset() {
+    claimWalletAddress = _link().address;
     requestedAccounts.clear();
     cancelledClaimSyncs.clear();
     validatedAddresses.clear();
@@ -3423,12 +3424,15 @@ class _ClaimDestinationRustApi implements RustLibApi {
     }
   }
 
+  String claimWalletAddress = _link().address;
+
   @override
   Future<String> crateApiWalletGetUnifiedAddress({
     required String dbPath,
     required String network,
     String? accountUuid,
   }) async {
+    if (accountUuid == 'claim-wallet') return claimWalletAddress;
     requestedAccounts.add(accountUuid!);
     if (!lookupStarted.isCompleted) lookupStarted.complete();
     if (failures > 0) {

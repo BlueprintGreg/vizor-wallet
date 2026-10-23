@@ -1175,6 +1175,7 @@ Widget _buildDesktopSetupHomeUseCase({
     syncState: SyncState(
       accountUuid: accounts.activeAccountUuid,
       hasAccountScopedData: !importing,
+      remainingScanBlocks: importing ? 70 : null,
       percentage: importing ? .3 : 1,
       totalBalance: BigInt.zero,
     ),
@@ -2436,6 +2437,7 @@ Widget buildMobileHomeImportingUseCase(BuildContext context) {
       accountUuid: _accountsDesignState.activeAccountUuid,
       isSyncing: true,
       percentage: 0.34,
+      remainingScanBlocks: 66,
     ),
   );
 }
@@ -2447,6 +2449,7 @@ Widget buildMobileHomeImportingResponsiveUseCase(BuildContext context) {
       accountUuid: _accountsDesignState.activeAccountUuid,
       isSyncing: true,
       percentage: 0.34,
+      remainingScanBlocks: 66,
     ),
     constrainToPreviewFrame: false,
   );
@@ -3798,6 +3801,7 @@ Widget _buildIronwoodMigrationUseCase({
             hasAccountScopedData: true,
             isSyncing: true,
             percentage: 0.34,
+            remainingScanBlocks: 66,
             displayTargetPercentage: 0.34,
             scannedHeight: 3_000_000,
             chainTipHeight: 3_000_000,
@@ -6605,6 +6609,7 @@ class _PreviewSyncNotifier extends SyncNotifier {
         hasAccountScopedData: activeAccountUuid != null,
         isSyncing: true,
         percentage: 0.34,
+        remainingScanBlocks: 66,
         totalBalance: BigInt.from(14223000000),
       );
 

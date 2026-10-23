@@ -1276,6 +1276,25 @@ void main() {
     );
   });
 
+  testWidgets(
+    'cache miss shows Home with an unloaded balance independently of history',
+    (tester) async {
+      await tester.pumpWidget(
+        _appHarness('/home', syncState: SyncState(accountUuid: 'account-1')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('home_desktop_balance_amount_text')),
+        findsOneWidget,
+      );
+      final amount = tester.widget<Text>(
+        find.byKey(const ValueKey('home_desktop_balance_amount_text')),
+      );
+      expect(amount.data, '—');
+      expect(find.text('Loading activity...'), findsOneWidget);
+    },
+  );
+
   testWidgets('home desktop keeps sync failure notice visible', (tester) async {
     await tester.pumpWidget(
       _appHarness(

@@ -85,10 +85,7 @@ class MobileHomeScreen extends ConsumerWidget {
     );
     final isCurrentHomeRoute = GoRouterState.of(context).uri.path == '/home';
 
-    final isImporting =
-        activeAccountUuid != null &&
-        !sync.hasAccountScopedData &&
-        sync.failure == null;
+    final isImporting = activeAccountUuid != null && sync.isImportingAccount;
 
     return SwapActivityStatusAutoRefresh(
       child: Stack(
@@ -997,13 +994,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     // button does.
     final sendDisabled = ref.watch(migrationSendGateProvider);
     final shieldedBalance = migrationRequired
-        ? sync.orchardBalance + sync.orchardPendingBalance
-        : sync.saplingBalance +
-              sync.orchardBalance +
-              sync.ironwoodBalance +
-              sync.saplingPendingBalance +
-              sync.orchardPendingBalance +
-              sync.ironwoodPendingBalance;
+        ? sync.displayOrchardBalance + sync.displayOrchardPendingBalance
+        : sync.displayShieldedBalance;
     final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
         shieldedBalance > BigInt.zero ||
@@ -1117,7 +1109,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         Column(
           children: [
             _BalanceCard(
-              balanceText: privacyModeEnabled
+              balanceText: !sync.hasDisplayBalance
+                  ? '—'
+                  : privacyModeEnabled
                   ? fixedPrivacyMask()
                   : ZecAmount.fromZatoshi(
                       shieldedBalance,
@@ -1150,7 +1144,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               ),
             ),
             const SizedBox(height: AppSpacing.s),
-            if (hasBalance)
+            if (hasBalance || !sync.hasDisplayBalance)
               Row(
                 children: [
                   Expanded(
@@ -1258,7 +1252,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         ),
         const SizedBox(height: AppSpacing.md),
         if (recentRows.isEmpty)
-          const _EmptyActivity()
+          _EmptyActivity(
+            isLoading:
+                !sync.hasRecentTransactionsData &&
+                !sync.hasRecentTransactionsError,
+            isUnavailable: sync.hasRecentTransactionsError,
+          )
         else
           Padding(
             padding: const EdgeInsets.symmetric(
@@ -2342,7 +2341,10 @@ class _RecentActivityHeader extends StatelessWidget {
 }
 
 class _EmptyActivity extends StatelessWidget {
-  const _EmptyActivity();
+  const _EmptyActivity({this.isLoading = false, this.isUnavailable = false});
+
+  final bool isLoading;
+  final bool isUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -2359,21 +2361,27 @@ class _EmptyActivity extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                'No activity, yet...',
+                isUnavailable
+                    ? 'Unable to load activity.'
+                    : isLoading
+                    ? 'Loading activity...'
+                    : 'No activity, yet...',
                 style: AppTypography.headlineSmall.copyWith(
                   color: colors.text.accent,
                 ),
               ),
-              const SizedBox(height: AppSpacing.xxs),
-              Text(
-                'How about running your\nfirst ZEC tx?',
-                textAlign: TextAlign.center,
-                style: AppTypography.bodyMedium.copyWith(
-                  color: colors.text.secondary,
+              if (!isLoading && !isUnavailable) ...[
+                const SizedBox(height: AppSpacing.xxs),
+                Text(
+                  'How about running your\nfirst ZEC tx?',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: colors.text.secondary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.xxs),
-              const _MobileRestImage(),
+                const SizedBox(height: AppSpacing.xxs),
+                const _MobileRestImage(),
+              ],
             ],
           ),
         ),

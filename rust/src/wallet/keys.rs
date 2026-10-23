@@ -722,7 +722,6 @@ pub fn import_derived_account_at_index(
 pub struct AccountInfo {
     pub uuid: String,
     pub name: String,
-    pub unified_address: String,
     pub birthday_height: u32,
     pub zip32_account_index: Option<u32>,
     pub is_seed_anchor: bool,
@@ -824,42 +823,58 @@ pub fn software_account_uuid_for_seed(
 }
 
 /// List all accounts in the wallet database.
-pub fn list_accounts(db_path: &str, network: WalletNetwork) -> Result<Vec<AccountInfo>, String> {
-    let db = open_wallet_db_for_read(db_path, network)?;
-
-    let account_ids = db
-        .get_account_ids()
-        .map_err(|e| format!("Failed to list accounts: {e}"))?;
-
-    let mut accounts = Vec::new();
-    for id in account_ids {
-        let account = db
-            .get_account(id)
-            .map_err(|e| format!("Failed to get account: {e}"))?
-            .ok_or_else(|| format!("Account not found: {}", id.expose_uuid()))?;
-
-        let address = match account.ufvk() {
-            Some(ufvk) => addresses::current_receive_address(&db, db_path, network, id, ufvk)?,
-            None => String::new(),
-        };
-
-        let source = account.source();
-        let hardware_signer_kind = hardware_signer_kind(source);
-        accounts.push(AccountInfo {
-            uuid: id.expose_uuid().to_string(),
-            name: account.name().unwrap_or("").to_string(),
-            unified_address: address,
-            birthday_height: u32::from(account.birthday_height()),
-            zip32_account_index: source
-                .key_derivation()
-                .map(|derivation| u32::from(derivation.account_index())),
-            is_seed_anchor: matches!(source, AccountSource::Derived { .. }),
-            is_hardware: hardware_signer_kind.is_some(),
-            hardware_signer_kind,
-        });
-    }
-
-    Ok(accounts)
+pub fn list_accounts(db_path: &str, _network: WalletNetwork) -> Result<Vec<AccountInfo>, String> {
+    // A list needs metadata, not decoded viewing keys or receive addresses.
+    // Keep this projection aligned with the pinned wallet schema. In particular,
+    // imported view-only accounts do not expose a spending derivation.
+    let conn = open_readonly_conn_with_timeout(db_path, Some(READ_DB_BUSY_TIMEOUT))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT uuid, name, birthday_height, account_kind, key_source,
+                CASE WHEN account_kind = 0 OR has_spend_key
+                     THEN hd_account_index END AS account_index
+         FROM accounts ORDER BY id",
+        )
+        .map_err(|e| format!("Failed to prepare account metadata: {e}"))?;
+    let accounts = stmt
+        .query_map([], |row| {
+            let uuid: Vec<u8> = row.get(0)?;
+            let key_source: Option<String> = row.get(4)?;
+            let signer = match key_source.as_deref() {
+                Some(KEY_SOURCE_KEYSTONE) => Some(HardwareSignerKind::Keystone),
+                Some(KEY_SOURCE_LEDGER) => Some(HardwareSignerKind::Ledger),
+                _ => None,
+            };
+            Ok((
+                uuid,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, Option<u32>>(5)?,
+                signer,
+            ))
+        })
+        .map_err(|e| format!("Failed to list account metadata: {e}"))?;
+    accounts
+        .map(|row| {
+            let (uuid, name, birthday_height, kind, index, signer) =
+                row.map_err(|e| format!("Failed to read account metadata: {e}"))?;
+            if kind > 1 || index.is_some_and(|i| i >= (1 << 31)) {
+                return Err("Invalid account metadata".to_string());
+            }
+            Ok(AccountInfo {
+                uuid: uuid::Uuid::from_slice(&uuid)
+                    .map_err(|e| e.to_string())?
+                    .to_string(),
+                name: name.unwrap_or_default(),
+                birthday_height,
+                zip32_account_index: index,
+                is_seed_anchor: kind == 0,
+                is_hardware: signer.is_some(),
+                hardware_signer_kind: signer,
+            })
+        })
+        .collect()
 }
 
 /// Preserve stored hardware accounts while moving signer identity into the
@@ -876,11 +891,35 @@ pub fn backfill_legacy_hardware_accounts(
         return Ok(0);
     }
 
+    // Stored UI metadata may keep offering already-migrated hardware accounts
+    // on every launch. Filter with metadata before opening/decoding any key.
+    let missing_signers = {
+        let conn = open_readonly_conn_with_timeout(db_path, Some(READ_DB_BUSY_TIMEOUT))?;
+        let mut stmt = conn
+            .prepare("SELECT uuid FROM accounts WHERE key_source IS NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let accounts: Vec<_> = accounts
+        .iter()
+        .filter(|(uuid, _)| {
+            uuid::Uuid::parse_str(uuid)
+                .is_ok_and(|id| missing_signers.contains(id.as_bytes().as_slice()))
+        })
+        .collect();
+    if accounts.is_empty() {
+        return Ok(0);
+    }
+
     with_wallet_db_write_lock("keys.backfill_legacy_hardware_accounts", || {
         let db = open_wallet_db_for_mutation(db_path, network)?;
         let mut validated_account_ids = Vec::new();
 
-        for (account_uuid, hardware_signer_kind) in accounts {
+        for (account_uuid, hardware_signer_kind) in &accounts {
             let Ok(account_id) = parse_account_uuid(account_uuid) else {
                 continue;
             };
@@ -1107,6 +1146,7 @@ fn delete_account_rows(
     }
 
     addresses::delete_account(&tx, account_uuid_bytes)?;
+    crate::wallet::balance_cache::delete_account(&tx, account_uuid_bytes)?;
     crate::wallet::sync_engine::ledger_discovery::delete_account(&tx, account_uuid_bytes)?;
     crate::wallet::sync::delete_account_migration_rows_with_tx(&tx, &account_uuid_text)?;
     crate::wallet::ledger::delete_signed_operations_for_account_with_tx(
@@ -1893,15 +1933,6 @@ mod tests {
             renewed_address,
             get_address_from_db(db_path_str, WalletNetwork::Main, Some(&uuid)).unwrap()
         );
-        assert_eq!(
-            renewed_address,
-            list_accounts(db_path_str, WalletNetwork::Main)
-                .unwrap()
-                .into_iter()
-                .find(|account| account.uuid == uuid)
-                .unwrap()
-                .unified_address
-        );
     }
 
     #[test]
@@ -2361,6 +2392,17 @@ mod tests {
             .unwrap(),
             2
         );
+        // Already-migrated keys are not even decoded on a later startup.
+        let conn = rusqlite::Connection::open(db_path_str).unwrap();
+        conn.execute(
+            "UPDATE accounts SET ufvk = 'invalid' WHERE uuid = ?1",
+            [uuid::Uuid::parse_str(&keystone_uuid)
+                .unwrap()
+                .as_bytes()
+                .as_slice()],
+        )
+        .unwrap();
+        drop(conn);
         assert_eq!(
             backfill_legacy_hardware_accounts(
                 db_path_str,
@@ -2529,7 +2571,10 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert!(accounts.iter().all(|account| account.uuid != second_uuid));
         assert_eq!(accounts[0].uuid, first_uuid);
-        assert_eq!(accounts[0].unified_address, first_address);
+        assert_eq!(
+            get_address_from_db(db_path_str, WalletNetwork::Main, Some(&accounts[0].uuid)).unwrap(),
+            first_address
+        );
     }
 
     #[test]
@@ -3477,6 +3522,80 @@ mod tests {
     }
 
     #[test]
+    fn test_list_accounts_does_not_decode_viewing_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let path = path.to_str().unwrap();
+        let seed = mnemonic_to_seed(&generate_mnemonic()).unwrap();
+        let (uuid, _) =
+            init_db_and_create_account(path, WalletNetwork::Main, &seed, None, "test").unwrap();
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute("UPDATE accounts SET ufvk = 'not-a-viewing-key'", [])
+            .unwrap();
+        let listed = list_accounts(path, WalletNetwork::Main).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].uuid, uuid);
+        assert!(listed[0].is_seed_anchor);
+        assert_eq!(listed[0].zip32_account_index, Some(0));
+        assert!(get_address_from_db(path, WalletNetwork::Main, Some(&uuid)).is_err());
+    }
+
+    #[test]
+    fn test_startup_metadata_and_cache_reads_with_many_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let path = path.to_str().unwrap();
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        // Deliberately omit viewing keys and address tables: listing must not
+        // depend on either. This measures only our startup SQL, not full unlock.
+        conn.execute_batch(
+            "CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY, uuid BLOB UNIQUE, name TEXT,
+            birthday_height INTEGER, account_kind INTEGER, key_source TEXT,
+            hd_account_index INTEGER, has_spend_key INTEGER)",
+        )
+        .unwrap();
+        let first = uuid::Uuid::new_v4();
+        let mut inserted = 0;
+        for count in [1, 10, 100, 1000] {
+            let tx = conn.transaction().unwrap();
+            for i in inserted..count {
+                let uuid = if i == 0 { first } else { uuid::Uuid::new_v4() };
+                tx.execute(
+                    "INSERT INTO accounts VALUES (?1, ?2, 'Account', 3000000, ?3, NULL, 0, 1)",
+                    rusqlite::params![
+                        i + 1,
+                        uuid.as_bytes().as_slice(),
+                        if i == 0 { 0 } else { 1 }
+                    ],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            inserted = count;
+            crate::wallet::balance_cache::save(path, "main", &first.to_string(), "snapshot")
+                .unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                let accounts = list_accounts(path, WalletNetwork::Main).unwrap();
+                assert_eq!(accounts.len(), count as usize);
+                assert_eq!(accounts[0].uuid, first.to_string());
+            }
+            let metadata_us = start.elapsed().as_micros() / 20;
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                assert_eq!(
+                    crate::wallet::balance_cache::load(path, "main", &first.to_string())
+                        .unwrap()
+                        .as_deref(),
+                    Some("snapshot")
+                );
+            }
+            eprintln!("startup SQL fixture: accounts={count}, metadata_mean_us={metadata_us}, cache_mean_us={}", start.elapsed().as_micros() / 20);
+        }
+    }
+
+    #[test]
     fn test_receive_address_is_orchard_only() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("wallet.db");
@@ -3511,7 +3630,6 @@ mod tests {
             "UA should NOT contain transparent receiver"
         );
 
-        assert_eq!(listed_account.unified_address, address);
         assert_eq!(
             get_address_from_db(db_path_str, WalletNetwork::Main, Some(&listed_account.uuid))
                 .unwrap(),

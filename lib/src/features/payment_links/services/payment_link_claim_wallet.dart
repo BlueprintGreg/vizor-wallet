@@ -192,13 +192,18 @@ class PaymentLinkClaimWallet {
   Future<bool> matchesLink({
     required VizorPaymentLink link,
     required List<rust_wallet.AccountInfo> accounts,
+    required String dbPath,
   }) async {
     if (accounts.length != 1) return false;
     try {
       await rust_wallet.validateGiftAddress(
         mnemonic: link.mnemonic,
         network: link.network,
-        address: accounts.single.unifiedAddress,
+        address: await rust_wallet.getUnifiedAddress(
+          dbPath: dbPath,
+          network: link.network,
+          accountUuid: accounts.single.uuid,
+        ),
       );
       final advertisedAddress = link.knownAddress;
       if (advertisedAddress != null) {
@@ -299,7 +304,11 @@ class PaymentLinkClaimWallet {
       dbPath: tempWallet.dbPath,
       network: network,
     );
-    if (!await matchesLink(link: link, accounts: accounts)) {
+    if (!await matchesLink(
+      link: link,
+      accounts: accounts,
+      dbPath: tempWallet.dbPath,
+    )) {
       log(
         'PaymentLinkService: retained claim wallet no longer matches its '
         'Gift Card identity; leaving it recoverable from the stored link',
@@ -365,7 +374,11 @@ class PaymentLinkClaimWallet {
         log('PaymentLinkClaimWallet: reopening the claim wallet failed: $e');
       }
       if (accounts != null &&
-          await matchesLink(link: link, accounts: accounts)) {
+          await matchesLink(
+            link: link,
+            accounts: accounts,
+            dbPath: tempWallet.dbPath,
+          )) {
         accountUuid = accounts.single.uuid;
       } else {
         // An import that died between creating the file and the account, or a

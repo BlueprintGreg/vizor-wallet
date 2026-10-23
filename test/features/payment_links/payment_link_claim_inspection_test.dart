@@ -1008,7 +1008,6 @@ class _InspectRustApi implements RustLibApi {
       uuid: 'claim-wallet',
       birthdayHeight: _link().birthdayHeight,
       name: 'Claim',
-      unifiedAddress: _link().address,
       isSeedAnchor: true,
       isHardware: false,
     ),
@@ -1020,6 +1019,7 @@ class _InspectRustApi implements RustLibApi {
     required String network,
     String? accountUuid,
   }) async {
+    if (accountUuid == 'claim-wallet') return _link().address;
     mainWalletLookups++;
     if (!lookupStarted.isCompleted) lookupStarted.complete();
     return lookupGate == null ? 'u1${accountUuid}address' : lookupGate!.future;

@@ -1192,6 +1192,48 @@ void main() {
     );
   });
 
+  testWidgets(
+    'cache miss keeps Home visible with an unloaded balance and activity',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(393, 852));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(SyncState(accountUuid: 'account-1')));
+      await tester.pump();
+      final amount = tester.widget<Text>(
+        find.byKey(const ValueKey('mobile_home_shielded_balance')),
+      );
+      expect(amount.textSpan!.toPlainText(), contains('—'));
+      expect(find.text('Loading activity...'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('mobile_home_importing_background')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('cached balance is visible while activity is still loading', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        SyncState(
+          accountUuid: 'account-1',
+          hasCachedBalance: true,
+          displayShieldedBalance: BigInt.from(250000000),
+        ),
+      ),
+    );
+    await tester.pump();
+    final amount = tester.widget<Text>(
+      find.byKey(const ValueKey('mobile_home_shielded_balance')),
+    );
+    expect(amount.textSpan!.toPlainText(), contains('2.5'));
+    expect(find.text('Loading activity...'), findsOneWidget);
+    expect(find.text('No activity, yet...'), findsNothing);
+  });
+
   testWidgets('shows the importing state before account data exists', (
     tester,
   ) async {
@@ -1202,7 +1244,12 @@ void main() {
 
     await tester.pumpWidget(
       _app(
-        SyncState(accountUuid: 'account-1', isSyncing: true, percentage: 0.32),
+        SyncState(
+          accountUuid: 'account-1',
+          isSyncing: true,
+          percentage: 0.32,
+          remainingScanBlocks: 68,
+        ),
       ),
     );
     await tester.pump();
@@ -2698,6 +2745,8 @@ void main() {
     );
     await tester.pump();
     await tester.pump();
+    // The transparent tray enters when the asynchronous balance arrives.
+    await tester.pump(const Duration(milliseconds: 500));
 
     await tester.tap(
       find.byKey(const ValueKey('mobile_home_shield_balance_button')),
@@ -2746,6 +2795,8 @@ void main() {
     );
     await tester.pump();
     await tester.pump();
+    // The transparent tray enters when the asynchronous balance arrives.
+    await tester.pump(const Duration(milliseconds: 500));
 
     final stripFinder = find.byKey(
       const ValueKey('mobile_home_transparent_balance_strip'),

@@ -509,7 +509,6 @@ class AccountExportMetadata {
 class AccountInfo {
   final String uuid;
   final String name;
-  final String unifiedAddress;
   final int birthdayHeight;
   final int? zip32AccountIndex;
   final bool isSeedAnchor;
@@ -519,7 +518,6 @@ class AccountInfo {
   const AccountInfo({
     required this.uuid,
     required this.name,
-    required this.unifiedAddress,
     required this.birthdayHeight,
     this.zip32AccountIndex,
     required this.isSeedAnchor,
@@ -531,7 +529,6 @@ class AccountInfo {
   int get hashCode =>
       uuid.hashCode ^
       name.hashCode ^
-      unifiedAddress.hashCode ^
       birthdayHeight.hashCode ^
       zip32AccountIndex.hashCode ^
       isSeedAnchor.hashCode ^
@@ -545,7 +542,6 @@ class AccountInfo {
           runtimeType == other.runtimeType &&
           uuid == other.uuid &&
           name == other.name &&
-          unifiedAddress == other.unifiedAddress &&
           birthdayHeight == other.birthdayHeight &&
           zip32AccountIndex == other.zip32AccountIndex &&
           isSeedAnchor == other.isSeedAnchor &&

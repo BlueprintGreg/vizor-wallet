@@ -280,11 +280,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
     final syncState = syncAsync.value;
     final sync = (syncState ?? SyncState()).scopedToAccount(activeAccountUuid);
-    final hasActivitySyncData =
-        syncState?.hasDataForAccount(activeAccountUuid) ?? false;
+    final hasActivitySyncData = sync.hasRecentTransactionsData;
     final isActivityLoading =
         activeAccountUuid != null &&
         !hasActivitySyncData &&
+        !sync.hasRecentTransactionsError &&
         sync.failure == null;
     final privacyModeEnabled = ref.watch(privacyModeProvider);
     final ironwoodHomeMigrationCta = ref.watch(
@@ -320,9 +320,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final canShieldTransparentBalance =
         sync.canShieldTransparentBalance && !isMigrationRequired;
     final isImportingForBackground =
-        activeAccountUuid != null &&
-        !sync.hasAccountScopedData &&
-        sync.failure == null;
+        activeAccountUuid != null && sync.isImportingAccount;
     final isDark = context.appTheme == AppThemeData.dark;
     final backgroundAsset = isImportingForBackground
         ? 'assets/illustrations/home_importing_background.webp'
@@ -615,8 +613,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
         }
       }
     }
-    final isImporting =
-        !widget.sync.hasAccountScopedData && widget.sync.failure == null;
+    final isImporting = widget.sync.isImportingAccount;
     final hasBalance = widget.showsIronwoodOnlyBalance
         ? widget.sync.displayIronwoodBalance +
                   widget.sync.displayIronwoodPendingBalance >
@@ -637,6 +634,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
       isImporting: isImporting,
       importingAccountName: activeAccountName,
       hasBalance: hasBalance,
+      balanceIsAvailable: widget.sync.hasDisplayBalance,
       showsIronwoodOnlyBalance: widget.showsIronwoodOnlyBalance,
       shieldedBalanceText: widget.shieldedBalanceText,
       shieldedFiatBalanceText: widget.shieldedFiatBalanceText,
@@ -651,6 +649,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
       privacyModeEnabled: widget.privacyModeEnabled,
       activityRows: rows,
       isActivityLoading: widget.isActivityLoading,
+      isActivityUnavailable: widget.sync.hasRecentTransactionsError,
       notice: notice,
       onTogglePrivacyMode: widget.onTogglePrivacyMode,
       onShieldBalancePressed: widget.onShieldBalancePressed,
@@ -1173,6 +1172,7 @@ class _HomeDesktopPane extends StatelessWidget {
     required this.hasSetupReminders,
     required this.importingAccountName,
     required this.hasBalance,
+    this.balanceIsAvailable = true,
     required this.showsIronwoodOnlyBalance,
     required this.shieldedBalanceText,
     required this.shieldedFiatBalanceText,
@@ -1187,6 +1187,7 @@ class _HomeDesktopPane extends StatelessWidget {
     required this.privacyModeEnabled,
     required this.activityRows,
     required this.isActivityLoading,
+    this.isActivityUnavailable = false,
     required this.notice,
     required this.onTogglePrivacyMode,
     required this.onShieldBalancePressed,
@@ -1203,6 +1204,7 @@ class _HomeDesktopPane extends StatelessWidget {
   final bool hasSetupReminders;
   final String? importingAccountName;
   final bool hasBalance;
+  final bool balanceIsAvailable;
   final bool showsIronwoodOnlyBalance;
   final String shieldedBalanceText;
   final String? shieldedFiatBalanceText;
@@ -1219,6 +1221,7 @@ class _HomeDesktopPane extends StatelessWidget {
   final bool privacyModeEnabled;
   final List<ActivityRowData> activityRows;
   final bool isActivityLoading;
+  final bool isActivityUnavailable;
   final _HomeNoticeData? notice;
   final VoidCallback onTogglePrivacyMode;
   final VoidCallback onShieldBalancePressed;
@@ -1265,6 +1268,7 @@ class _HomeDesktopPane extends StatelessWidget {
                     ),
                     child: _HomeDesktopBalanceCard(
                       hasBalance: hasBalance,
+                      balanceIsAvailable: balanceIsAvailable,
                       showsIronwoodOnlyBalance: showsIronwoodOnlyBalance,
                       shieldedBalanceText: shieldedBalanceText,
                       shieldedFiatBalanceText: shieldedFiatBalanceText,
@@ -1315,6 +1319,7 @@ class _HomeDesktopPane extends StatelessWidget {
                   sliver: activityRows.isEmpty
                       ? _HomeDesktopEmptyActivitySliver(
                           isLoading: isActivityLoading,
+                          isUnavailable: isActivityUnavailable,
                         )
                       : _HomeDesktopCenteredSliver(
                           padding: const EdgeInsets.fromLTRB(
@@ -1490,6 +1495,7 @@ class _HomeImportingContent extends StatelessWidget {
 class _HomeDesktopBalanceCard extends StatefulWidget {
   const _HomeDesktopBalanceCard({
     required this.hasBalance,
+    this.balanceIsAvailable = true,
     required this.showsIronwoodOnlyBalance,
     required this.shieldedBalanceText,
     required this.shieldedFiatBalanceText,
@@ -1513,6 +1519,7 @@ class _HomeDesktopBalanceCard extends StatefulWidget {
   });
 
   final bool hasBalance;
+  final bool balanceIsAvailable;
   final bool showsIronwoodOnlyBalance;
   final String shieldedBalanceText;
   final String? shieldedFiatBalanceText;
@@ -1724,7 +1731,11 @@ class _HomeDesktopBalanceCardState extends State<_HomeDesktopBalanceCard> {
                                 textBaseline: TextBaseline.alphabetic,
                                 children: [
                                   Text(
-                                    widget.hasBalance ? visibleBalance : '0',
+                                    !widget.balanceIsAvailable
+                                        ? '—'
+                                        : widget.hasBalance
+                                        ? visibleBalance
+                                        : '0',
                                     key: const ValueKey(
                                       'home_desktop_balance_amount_text',
                                     ),
@@ -1825,7 +1836,7 @@ class _HomeDesktopBalanceCardState extends State<_HomeDesktopBalanceCard> {
               animateIndicator: widget.animateMigrationCta,
               onTap: widget.onIronwoodMigrationCta,
             ),
-          ] else if (!widget.hasBalance)
+          ] else if (widget.balanceIsAvailable && !widget.hasBalance)
             _HomeDesktopActionButton(
               key: const ValueKey('home_desktop_receive_first_button'),
               icon: AppIcons.arrowDownCircle,
@@ -2390,9 +2401,13 @@ class _HomeDesktopInteractiveTargetState
 }
 
 class _HomeDesktopEmptyActivitySliver extends StatelessWidget {
-  const _HomeDesktopEmptyActivitySliver({required this.isLoading});
+  const _HomeDesktopEmptyActivitySliver({
+    required this.isLoading,
+    this.isUnavailable = false,
+  });
 
   final bool isLoading;
+  final bool isUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -2417,7 +2432,10 @@ class _HomeDesktopEmptyActivitySliver extends StatelessWidget {
                 ),
                 child: SizedBox(
                   height: height,
-                  child: _HomeDesktopEmptyActivity(isLoading: isLoading),
+                  child: _HomeDesktopEmptyActivity(
+                    isLoading: isLoading,
+                    isUnavailable: isUnavailable,
+                  ),
                 ),
               ),
             ),
@@ -2429,9 +2447,13 @@ class _HomeDesktopEmptyActivitySliver extends StatelessWidget {
 }
 
 class _HomeDesktopEmptyActivity extends StatelessWidget {
-  const _HomeDesktopEmptyActivity({required this.isLoading});
+  const _HomeDesktopEmptyActivity({
+    required this.isLoading,
+    this.isUnavailable = false,
+  });
 
   final bool isLoading;
+  final bool isUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -2441,7 +2463,11 @@ class _HomeDesktopEmptyActivity extends StatelessWidget {
         if (constraints.maxHeight < 160) {
           return Center(
             child: Text(
-              isLoading ? 'Loading activity...' : 'No activity, yet...',
+              isUnavailable
+                  ? 'Unable to load activity.'
+                  : isLoading
+                  ? 'Loading activity...'
+                  : 'No activity, yet...',
               textAlign: TextAlign.center,
               style: AppTypography.headlineSmall.copyWith(
                 color: colors.text.accent,
@@ -2468,12 +2494,16 @@ class _HomeDesktopEmptyActivity extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  isLoading ? 'Loading activity...' : 'No activity, yet...',
+                  isUnavailable
+                      ? 'Unable to load activity.'
+                      : isLoading
+                      ? 'Loading activity...'
+                      : 'No activity, yet...',
                   style: AppTypography.headlineSmall.copyWith(
                     color: colors.text.accent,
                   ),
                 ),
-                if (!isLoading) ...[
+                if (!isLoading && !isUnavailable) ...[
                   const SizedBox(height: AppSpacing.xxs),
                   SizedBox(
                     width: 188,

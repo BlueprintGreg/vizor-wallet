@@ -1798,7 +1798,11 @@ class PaymentLinkService
         }
         requirePreparation();
         if (accounts == null ||
-            !await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+            !await _claimWallet.matchesLink(
+              link: link,
+              accounts: accounts,
+              dbPath: tempWallet.dbPath,
+            )) {
           requirePreparation();
           if (accounts != null) {
             log(
@@ -1818,7 +1822,11 @@ class PaymentLinkService
           importedAddress = imported.address;
           importedAccountUuid = imported.accountUuid;
         } else {
-          importedAddress = accounts.single.unifiedAddress;
+          importedAddress = await rust_wallet.getUnifiedAddress(
+            dbPath: tempWallet.dbPath,
+            network: endpoint.networkName,
+            accountUuid: accounts.single.uuid,
+          );
           importedAccountUuid = accounts.single.uuid;
         }
       } else {
@@ -2508,7 +2516,11 @@ class PaymentLinkService
       dbPath: tempWallet.dbPath,
       network: network,
     );
-    if (!await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+    if (!await _claimWallet.matchesLink(
+      link: link,
+      accounts: accounts,
+      dbPath: tempWallet.dbPath,
+    )) {
       return;
     }
     final evidence = await rust_sync.getPaymentLinkSpendEvidence(
@@ -2662,7 +2674,11 @@ class PaymentLinkService
         dbPath: tempWallet.dbPath,
         network: network,
       );
-      if (!await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+      if (!await _claimWallet.matchesLink(
+        link: link,
+        accounts: accounts,
+        dbPath: tempWallet.dbPath,
+      )) {
         return null;
       }
       final claimAccount = accounts.single;
