@@ -905,7 +905,7 @@ class SwapNotifier extends Notifier<SwapState> {
       );
     } catch (e) {
       if (generation != _quoteGeneration) return;
-      final receiveError = _receiveError(e);
+      final kind = _receiveError(e)?.kind;
       // Only a request that never left the device returns its refund key.
       // Once sent, NEAR may have seen the address even without a response, so
       // a refusal, timeout or bad response retires it. An outdated request
@@ -915,30 +915,24 @@ class SwapNotifier extends Notifier<SwapState> {
           takenRefund,
         );
       }
-      final stale = receiveError?.kind == ReceiveErrorKind.stale;
       // An incoming reservation survives other errors. It is dropped once stale,
       // when the next attempt needs another address, or once its history needs
       // checking again, since another device may have paid it.
-      if (stale || receiveError?.kind == ReceiveErrorKind.receiveHistory) {
+      if (kind == ReceiveErrorKind.stale ||
+          kind == ReceiveErrorKind.receiveHistory) {
         _dropReviewAddress(accountUuid, direction);
       }
-      if (stale && retry) {
-        state = state.copyWith(quoteLoading: false);
-        return _showReview(
-          preserveCurrentReview: preserveCurrentReview,
-          retry: false,
-        );
-      }
-      // Issuance can wait on work the wallet finishes itself, so do it once and
-      // ask again: a recovery round for an address whose history is unchecked,
-      // or fresh statuses for started quotes holding every eligible address.
-      final kind = receiveError?.kind;
+      // A stale reservation is quoted once more with a new address. Issuance
+      // can also wait on work the wallet finishes itself, so do it once and ask
+      // again: a recovery round for an address whose history is unchecked, or
+      // fresh statuses for started quotes holding every eligible address.
       if (retry &&
-          (kind == ReceiveErrorKind.receiveHistory ||
+          (kind == ReceiveErrorKind.stale ||
+              kind == ReceiveErrorKind.receiveHistory ||
               kind == ReceiveErrorKind.limit)) {
         if (kind == ReceiveErrorKind.limit) {
           await _refreshReceiveQuoteStatuses();
-        } else {
+        } else if (kind == ReceiveErrorKind.receiveHistory) {
           await ref.read(syncProvider.notifier).awaitSwapRecovery();
         }
         if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
@@ -1078,21 +1072,22 @@ class SwapNotifier extends Notifier<SwapState> {
         'error=$e',
       );
       final receiveError = _receiveError(e);
+      final historyPending =
+          receiveError?.kind == ReceiveErrorKind.receiveHistory;
       // A reservation another request started, or whose deposit deadline
       // passed, cannot be quoted again. One whose history needs checking again
       // may have been paid elsewhere, so the next quote prepares an address
       // after a recovery round.
-      if (receiveError?.kind == ReceiveErrorKind.stale ||
-          receiveError?.kind == ReceiveErrorKind.receiveHistory) {
+      if (historyPending || receiveError?.kind == ReceiveErrorKind.stale) {
         _dropReviewAddress(accountUuid, quote.direction);
       }
-      if (receiveError?.kind == ReceiveErrorKind.receiveHistory) {
+      if (historyPending) {
         ref.read(syncProvider.notifier).continueSwapRecovery();
       }
       state = state.copyWith(
         startSubmitting: false,
         quoteLoading: false,
-        statusError: receiveError?.kind == ReceiveErrorKind.receiveHistory
+        statusError: historyPending
             ? receiveError!.message
             : _providerFailureMessage(SwapFailureOperation.start, e),
       );

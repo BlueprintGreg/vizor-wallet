@@ -517,17 +517,9 @@ class _SettingsList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final enhancePirEnabled = ref.watch(privateQueriesControlEnabledProvider);
-    // New swap addresses follow the private queries setting itself, which
-    // the NEAR swap privacy switch also checks.
-    final privateQueriesOn = ref.watch(enhancePirProvider);
-    final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
-    final enhancePirServiceAvailable = ref.watch(enhancePirAvailableProvider);
-    final nearSwapPrivacyAvailable = ref.watch(
-      nearSwapPrivacySettingAvailableProvider,
-    );
-    final hardwareAccount =
-        ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
-    final enhancePirAvailable = enhancePirServiceAvailable || enhancePirEnabled;
+    final enhancePirAvailable =
+        ref.watch(enhancePirAvailableProvider) || enhancePirEnabled;
+    final nearSwapPrivacy = ref.watch(nearSwapPrivacySettingProvider);
     final recoveryTransition = ref.watch(enhancePirTransitionProvider);
     final changingRecovery = recoveryTransition == kEnhancePirChangingMessage;
     return Column(
@@ -641,7 +633,7 @@ class _SettingsList extends ConsumerWidget {
                     : () => unawaited(togglePrivateQueries(context, ref)),
               ),
             ],
-            if (nearSwapPrivacyAvailable) ...[
+            if (nearSwapPrivacy != null) ...[
               const SizedBox(height: AppSpacing.sm),
               // An option of Private queries: its icon sits under the label
               // above, and the hook starts under that row's icon.
@@ -653,22 +645,18 @@ class _SettingsList extends ConsumerWidget {
                 child: EnhancePirPrivacyControl(
                   label: 'NEAR swap privacy',
                   keyPrefix: 'settings_near_swap_privacy',
-                  description: nearSwapPrivacyDescription(
-                    hardwareAccount: hardwareAccount,
-                    privateQueriesOn: privateQueriesOn,
-                  ),
+                  description: nearSwapPrivacy.description,
                   onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
-                  enabled: nearSwapPrivacy,
+                  enabled: nearSwapPrivacy.enabled,
                   transition: null,
-                  onToggle: changingRecovery || !privateQueriesOn
-                      ? null
-                      : () => unawaited(
+                  onToggle: nearSwapPrivacy.canToggle
+                      ? () => unawaited(
                           ref.read(nearSwapPrivacyProvider.notifier).toggle(),
-                        ),
+                        )
+                      : null,
                 ),
               ),
-              // The check is discovery's, so it needs NEAR swap privacy too.
-              if (!hardwareAccount && nearSwapPrivacy) ...[
+              if (nearSwapPrivacy.showHistoryCheck) ...[
                 const SizedBox(height: AppSpacing.sm),
                 Padding(
                   padding: const EdgeInsets.only(left: AppSpacing.xs + 20),

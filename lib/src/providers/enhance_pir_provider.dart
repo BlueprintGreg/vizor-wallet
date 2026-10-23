@@ -441,12 +441,7 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
               () async {
                 // Recheck after draining work so a new address cannot race its parent setting.
                 if (enabled && !ref.read(enhancePirProvider)) return;
-                await ref
-                    .read(nearSwapPrivacyPreferenceStoreProvider)
-                    .writeEnabled(enabled);
-                rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
-                state = enabled;
-                reconciled = await _reconcileRecovery();
+                reconciled = await _apply(enabled);
               },
             ),
           );
@@ -464,10 +459,16 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
   /// Called while the parent already holds the shared recovery pause.
   Future<void> disableWithParent() async {
     if (!state) return;
-    await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(false);
-    rust_sync.setNearSwapPrivacyEnabled(enabled: false);
-    state = false;
-    await _reconcileRecovery();
+    await _apply(false);
+  }
+
+  /// Saves `enabled`, applies it to sync and this provider, then reconciles
+  /// the wallet. Returns whether reconciling succeeded.
+  Future<bool> _apply(bool enabled) async {
+    await ref.read(nearSwapPrivacyPreferenceStoreProvider).writeEnabled(enabled);
+    rust_sync.setNearSwapPrivacyEnabled(enabled: enabled);
+    state = enabled;
+    return _reconcileRecovery();
   }
 
   /// Leaves the applied preference visible when a short DB update needs retry.

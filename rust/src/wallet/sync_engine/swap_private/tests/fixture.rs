@@ -345,6 +345,12 @@ impl Service {
         Self::publish_shards(chain, &[], pir_end, first, filter_tip, extra)
     }
 
+    /// [`Self::publish`] of everything mined through the chain tip, with filters from
+    /// activation and no extra hits.
+    pub(super) fn at_tip(chain: &Chain) -> Arc<Self> {
+        Self::publish(chain, chain.tip(), activation(), chain.tip(), &[])
+    }
+
     /// [`Self::publish`], with history before the recent tier split into sealed shards
     /// ending at each of `sealed`, each with its receiver filter. Every witness table is
     /// built at `pir_end`.
