@@ -778,11 +778,9 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     let mut wallet = Wallet::new(4, activation());
     let account = wallet.account().clone();
     let path = wallet.path.clone();
-    let checking = || {
-        crate::api::one_time_ivk::get_swap_recovery_status(path.clone(), "main".into())
-            .unwrap()
-            .checking_history
-    };
+    let status =
+        || crate::api::one_time_ivk::get_swap_recovery_status(path.clone(), "main".into()).unwrap();
+    let checking = || status().checking_history;
     chain.pay(&account.key(Purpose::Receive, 9), 900_000, true);
     chain.mine(1);
     wallet.scan(&chain);
@@ -790,6 +788,7 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     assert_eq!(wallet.state(&account).restore_next, 4);
     assert_eq!(wallet.one_time_unspent(&account), 0);
     assert!(!checking());
+    assert!(!status().manual_check_active);
 
     let known = Service::at_tip(&chain);
     wallet
@@ -813,6 +812,10 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     let worker = wallet.spawn(&bounded, Some(Some(10)), Duration::from_secs(45));
     held.wait();
     assert!(checking());
+    assert!(
+        status().manual_check_active,
+        "the saved job is the user's check, which the app can offer to pause"
+    );
     cancel_recovery();
     held.release();
     assert!(worker.join().unwrap().is_err());
@@ -825,6 +828,7 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
         "the cursor stays on the interrupted address"
     );
     assert!(!checking());
+    assert!(!status().manual_check_active);
 
     let resumed = Service::at_tip(&chain);
     resumed.trace(&wallet, &account);

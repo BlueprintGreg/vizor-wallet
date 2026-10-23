@@ -36,8 +36,15 @@ List<Override> _wallet() => [
 ];
 
 /// The wallet's recovery state, as the status call reports it.
-SwapRecoveryStatus _status({bool checking = false, bool upgrade = false}) =>
-    SwapRecoveryStatus(checkingHistory: checking, upgradeRequired: upgrade);
+SwapRecoveryStatus _status({
+  bool checking = false,
+  bool manual = false,
+  bool upgrade = false,
+}) => SwapRecoveryStatus(
+  checkingHistory: checking || manual,
+  manualCheckActive: manual,
+  upgradeRequired: upgrade,
+);
 
 void main() {
   /// A container whose wallet reports `checking` until it runs out, and whose
@@ -384,5 +391,63 @@ void main() {
       container.read(swapHistoryCheckProvider),
       SwapHistoryCheck.waitingForSync,
     );
+  });
+
+  group('after a restart', () {
+    /// A container whose wallet saved `saved` before the restart and answers
+    /// polls with `polls`, recording cancellations in `cancels`.
+    ProviderContainer restarted(
+      SwapRecoveryStatus saved,
+      List<SwapRecoveryStatus> polls,
+      List<String> cancels,
+    ) {
+      final container = ProviderContainer(
+        overrides: [
+          nearSwapPrivacyProvider.overrideWith(_Privacy.new),
+          swapRecoveryStatusReaderProvider.overrideWithValue(() async => saved),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (_) async {},
+              cancel: () async => cancels.add('cancel'),
+              status: () async => polls.removeAt(0),
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test(
+      'a resumed manual check shows as checking and can be paused',
+      () async {
+        final cancels = <String>[];
+        final container = restarted(_status(manual: true), [
+          for (var i = 0; i < 50; i++) _status(manual: true),
+        ], cancels);
+        container.read(swapHistoryCheckProvider);
+        await pumpEventQueue();
+        expect(
+          container.read(swapHistoryCheckProvider),
+          SwapHistoryCheck.checking,
+          reason: 'shown with Pause while later rounds resume it',
+        );
+        await container.read(swapHistoryCheckProvider.notifier).cancel();
+        expect(cancels, ['cancel']);
+        expect(
+          container.read(swapHistoryCheckProvider),
+          SwapHistoryCheck.paused,
+        );
+      },
+    );
+
+    test('seed recovery alone leaves the check idle', () async {
+      final container = restarted(_status(checking: true), [], []);
+      container.read(swapHistoryCheckProvider);
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
+    });
   });
 }

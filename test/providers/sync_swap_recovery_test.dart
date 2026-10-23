@@ -562,6 +562,7 @@ void main() {
     await releaseRound(work: false);
     const idle = rust_swap.SwapRecoveryStatus(
       checkingHistory: false,
+      manualCheckActive: false,
       upgradeRequired: false,
     );
     // The round's answer starts the saved-state read.
@@ -604,6 +605,7 @@ void main() {
       read.complete(
         const rust_swap.SwapRecoveryStatus(
           checkingHistory: false,
+          manualCheckActive: false,
           upgradeRequired: false,
         ),
       );

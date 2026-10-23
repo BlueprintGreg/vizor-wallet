@@ -420,6 +420,9 @@ fn with_existing_wallet(
 pub struct SwapRecoveryStatus {
     /// An enabled account has unfinished seed recovery or an active history check.
     pub checking_history: bool,
+    /// An enabled account has an active history check the user started, which
+    /// later rounds resume, apart from automatic seed recovery.
+    pub manual_check_active: bool,
     /// The receiver service needs a newer app. Recovery resumes after an update.
     pub upgrade_required: bool,
 }
@@ -431,6 +434,7 @@ pub fn get_swap_recovery_status(
 ) -> Result<SwapRecoveryStatus, ReceiveError> {
     let idle = SwapRecoveryStatus {
         checking_history: false,
+        manual_check_active: false,
         upgrade_required: false,
     };
     if !keys::wallet_exists(&db_path) {
@@ -442,9 +446,10 @@ pub fn get_swap_recovery_status(
     }
     // A reset may delete the wallet after the existence check, so never create one.
     let db = open_existing_wallet_db_with_timeout(&db_path, network, WALLET_DB_BUSY_TIMEOUT)?;
-    let (checking_history, upgrade_required) = one_time_ivk::recovery_flags(&db)?;
+    let flags = one_time_ivk::recovery_flags(&db)?;
     Ok(SwapRecoveryStatus {
-        checking_history,
-        upgrade_required,
+        checking_history: flags.checking,
+        manual_check_active: flags.manual,
+        upgrade_required: flags.upgrade,
     })
 }

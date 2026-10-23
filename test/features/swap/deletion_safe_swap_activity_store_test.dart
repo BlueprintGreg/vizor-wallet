@@ -1,0 +1,74 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_activity_store.dart';
+
+/// Activity kept in memory, whose saves wait for [hold] when it is set.
+class _MemoryStore implements SwapActivityStore {
+  final records = <String, List<SwapIntentRecord>>{};
+  Completer<void>? hold;
+
+  @override
+  Future<List<SwapIntentRecord>> loadRecords({
+    required String accountUuid,
+  }) async => records[accountUuid] ?? const [];
+
+  @override
+  Future<void> saveRecords({
+    required String accountUuid,
+    required List<SwapIntentRecord> records,
+  }) async {
+    await hold?.future;
+    this.records[accountUuid] = records;
+  }
+
+  @override
+  Future<void> deleteForAccount({required String accountUuid}) async {
+    records.remove(accountUuid);
+  }
+}
+
+/// One saved swap.
+const _record = SwapIntentRecord(
+  id: 'swap',
+  providerLabel: 'NEAR Intents',
+  pairText: 'USDC -> ZEC',
+  sellAmountText: '70 USDC',
+  receiveEstimateText: '0.7 ZEC',
+  status: SwapIntentStatus.awaitingExternalDeposit,
+  nextAction: 'Send USDC',
+);
+
+void main() {
+  test('deleting an account waits for a save under way', () async {
+    final inner = _MemoryStore()..hold = Completer<void>();
+    final store = DeletionSafeSwapActivityStore(inner);
+    final save = store.saveRecords(accountUuid: 'a', records: [_record]);
+    var deleted = false;
+    final delete = store
+        .deleteForAccount(accountUuid: 'a')
+        .then((_) => deleted = true);
+    await pumpEventQueue();
+    expect(deleted, isFalse, reason: 'the held save is still writing');
+
+    inner.hold!.complete();
+    await save;
+    await delete;
+    expect(inner.records.containsKey('a'), isFalse, reason: 'deleted last');
+  });
+
+  test('a save for a deleted account writes nothing', () async {
+    final inner = _MemoryStore();
+    final store = DeletionSafeSwapActivityStore(inner);
+    await store.saveRecords(accountUuid: 'b', records: [_record]);
+    await store.deleteForAccount(accountUuid: 'a');
+
+    // A save prepared before the deletion arrives after it.
+    await store.saveRecords(accountUuid: 'a', records: [_record]);
+    expect(inner.records.containsKey('a'), isFalse);
+    // Other accounts save as before.
+    await store.saveRecords(accountUuid: 'b', records: const []);
+    expect(inner.records['b'], isEmpty);
+  });
+}

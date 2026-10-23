@@ -19,6 +19,7 @@ void main() {
     final c = container(
       () async => const SwapRecoveryStatus(
         checkingHistory: false,
+        manualCheckActive: false,
         upgradeRequired: true,
       ),
     );
@@ -35,7 +36,11 @@ void main() {
       c.read(swapRecoveryUpdateRequiredProvider);
       c.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
       saved.complete(
-        const SwapRecoveryStatus(checkingHistory: false, upgradeRequired: true),
+        const SwapRecoveryStatus(
+          checkingHistory: false,
+          manualCheckActive: false,
+          upgradeRequired: true,
+        ),
       );
       await pumpEventQueue();
       expect(c.read(swapRecoveryUpdateRequiredProvider), isFalse);

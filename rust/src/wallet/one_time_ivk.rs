@@ -175,19 +175,34 @@ pub(crate) fn idle_while_off(path: &str, network: WalletNetwork) -> Result<bool,
     Ok(!any_recovery_work(&db)?)
 }
 
-/// Whether an enabled account has unfinished seed recovery or an active manual job, and
-/// whether the receiver service asked any account for a newer client.
-pub(crate) fn recovery_flags(db: &WalletDatabase) -> Result<(bool, bool), String> {
-    let (mut checking, mut upgrade) = (false, false);
+/// Saved swap recovery state across the software accounts (see
+/// `api::one_time_ivk::SwapRecoveryStatus`).
+pub(crate) struct RecoveryFlags {
+    /// An enabled account has unfinished seed recovery or an active manual job.
+    pub(crate) checking: bool,
+    /// An enabled account has an active manual history check.
+    pub(crate) manual: bool,
+    /// The receiver service asked an account for a newer client.
+    pub(crate) upgrade: bool,
+}
+
+/// Reads [`RecoveryFlags`] from the wallet without network access.
+pub(crate) fn recovery_flags(db: &WalletDatabase) -> Result<RecoveryFlags, String> {
+    let mut flags = RecoveryFlags {
+        checking: false,
+        manual: false,
+        upgrade: false,
+    };
     for account in software_accounts(db)? {
         let state = db
             .one_time_recovery(account, now()?)
             .map_err(|e| e.to_string())?;
-        checking |=
-            state.enabled && (!state.restore_complete || state.manual.is_some_and(|m| m.active));
-        upgrade |= state.upgrade_required;
+        let manual = state.enabled && state.manual.is_some_and(|m| m.active);
+        flags.manual |= manual;
+        flags.checking |= manual || (state.enabled && !state.restore_complete);
+        flags.upgrade |= state.upgrade_required;
     }
-    Ok((checking, upgrade))
+    Ok(flags)
 }
 
 #[cfg(test)]
