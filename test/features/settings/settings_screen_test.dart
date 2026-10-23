@@ -707,7 +707,7 @@ void main() {
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (_) async {},
+              begin: () async {},
               cancel: () async {},
               status: () async => _idleRecovery,
             ),
@@ -737,7 +737,7 @@ void main() {
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (_) async =>
+              begin: () async =>
                   throw StateError('lookup failed after job was saved'),
               cancel: () async {
                 paused = true;
@@ -768,9 +768,10 @@ void main() {
     );
   });
 
-  testWidgets('Check swap history passes an entered bound, rejects zero and '
-      'resumes with it after pause', (tester) async {
-    final bounds = <BigInt?>[];
+  testWidgets('Check swap history checks everything, pauses and resumes', (
+    tester,
+  ) async {
+    var begun = 0;
     final polls = <Completer<SwapRecoveryStatus>>[];
     var paused = 0;
     await tester.pumpWidget(
@@ -779,7 +780,7 @@ void main() {
         extraOverrides: [
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (end) async => bounds.add(end),
+              begin: () async => begun++,
               cancel: () async => paused++,
               status: () {
                 final poll = Completer<SwapRecoveryStatus>();
@@ -793,10 +794,15 @@ void main() {
       ),
     );
     await tester.pump();
-    final field = find.descendant(
-      of: find.byKey(const ValueKey('settings_swap_history_bound')),
-      matching: find.byType(EditableText),
+    // No address count to choose: one explanation line and the button.
+    expect(
+      find.descendant(
+        of: find.byType(SwapHistoryCheckControl),
+        matching: find.byType(EditableText),
+      ),
+      findsNothing,
     );
+    expect(find.text(kSwapHistoryCheckExplanation), findsOneWidget);
     final start = find.byKey(const ValueKey('settings_check_swap_history'));
     final status = find.byKey(
       const ValueKey('settings_check_swap_history_status'),
@@ -805,17 +811,10 @@ void main() {
       tester.widget<Text>(status).data,
       swapHistoryCheckStatus(SwapHistoryCheck.idle),
     );
-    await tester.ensureVisible(field);
-    await tester.enterText(field, '0');
+    await tester.ensureVisible(start);
     await tester.tap(start);
     await tester.pump();
-    expect(bounds, isEmpty);
-    expect(find.text('Enter a positive address count.'), findsOneWidget);
-
-    await tester.enterText(field, '12');
-    await tester.tap(start);
-    await tester.pump();
-    expect(bounds, [BigInt.from(12)]);
+    expect(begun, 1);
     expect(
       tester.widget<Text>(status).data,
       swapHistoryCheckStatus(SwapHistoryCheck.checking),
@@ -835,7 +834,7 @@ void main() {
     await tester.ensureVisible(start);
     await tester.tap(start);
     await tester.pump();
-    expect(bounds, [BigInt.from(12), BigInt.from(12)]);
+    expect(begun, 2);
     // The resumed check polls once its zero-length interval elapses.
     await tester.pump(const Duration(milliseconds: 1));
     expect(polls.length, earlierPolls + 1);

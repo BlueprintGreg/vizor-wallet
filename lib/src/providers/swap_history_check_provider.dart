@@ -18,7 +18,7 @@ class SwapHistoryApi {
   });
 
   /// Starts or resumes the durable explicit history job for eligible accounts.
-  final Future<void> Function(BigInt? receiveEnd) begin;
+  final Future<void> Function() begin;
 
   /// Cancels the job without discarding its durable position.
   final Future<void> Function() cancel;
@@ -36,8 +36,7 @@ class SwapHistoryApi {
 
 final swapHistoryApiProvider = Provider<SwapHistoryApi>((ref) {
   return SwapHistoryApi(
-    begin: (end) =>
-        ref.read(syncProvider.notifier).checkSwapHistory(receiveEnd: end),
+    begin: () => ref.read(syncProvider.notifier).checkSwapHistory(),
     cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
     // Without a wallet there is no history left to check.
     status: () async =>
@@ -141,14 +140,14 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
 
   /// Starts a check and polls until the wallet reports it done, or until
   /// [SwapHistoryApi.maxWait] passes. Does nothing while one is running.
-  Future<void> check({BigInt? receiveEnd}) async {
+  Future<void> check() async {
     if (state == SwapHistoryCheck.checking) return;
     final generation = ++_generation;
     _pausedBySetting = false;
     state = SwapHistoryCheck.checking;
     final api = ref.read(swapHistoryApiProvider);
     try {
-      await api.begin(receiveEnd);
+      await api.begin();
       if (!ref.mounted || generation != _generation) return;
       await _observe(generation, api);
     } catch (error) {
