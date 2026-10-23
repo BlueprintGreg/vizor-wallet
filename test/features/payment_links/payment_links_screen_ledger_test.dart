@@ -413,6 +413,9 @@ class _StoreBackedOperations extends FakePaymentLinkOperations {
   final PaymentLinkRecoveryStore store;
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() => store.load();
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() =>
       store.load();
 }

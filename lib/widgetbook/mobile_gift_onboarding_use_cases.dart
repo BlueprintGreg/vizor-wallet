@@ -810,6 +810,13 @@ class _GiftPreviewOperations implements PaymentLinkOperations {
   static const claimTxid =
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() =>
+      loadCreatedLinkRecoveries();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() async => const [];
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() async =>
       const [];
   @override

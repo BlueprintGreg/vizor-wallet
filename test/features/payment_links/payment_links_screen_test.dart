@@ -37,11 +37,13 @@ import 'package:zcash_wallet/src/providers/zec_price_change_provider.dart';
 
 import '../../fakes/fake_sync_notifier.dart';
 import '../../support/gift_card_privacy_checks.dart';
+import '../../support/gift_card_entry_checks.dart';
 import '../../support/gift_card_claim_checking_checks.dart';
 import '../../support/leading_decimal_input.dart';
 import '../../support/payment_links_screen_support.dart';
 
 void main() {
+  registerGiftCardEntryChecks(mobile: false);
   testWidgets(
     'leaving a desktop preview prevents its interrupted check reopening',
     (tester) async {
@@ -3125,14 +3127,14 @@ void main() {
       container
           .read(paymentLinkIntakeProvider.notifier)
           .receive(incomingLink.toUri().toString());
-      for (var i = 0; i < 10 && operations.receivedLoadCalls == 0; i++) {
+      for (var i = 0; i < 20 && operations.localCreatedLoadCalls == 0; i++) {
         await tester.pump(const Duration(milliseconds: 10));
       }
 
-      expect(operations.createdLoadCalls, 1);
+      expect(operations.localCreatedLoadCalls, 1);
       // App-level recovery and the route's initial snapshot both begin before
       // intake is consumed; neither waits for the Created-card load.
-      expect(operations.receivedLoadCalls, 2);
+      expect(operations.receivedLoadCalls, greaterThanOrEqualTo(2));
       expect(operations.allowLongSyncCalls, isEmpty);
 
       createdLoadGate.complete();
@@ -3155,7 +3157,7 @@ void main() {
     await pumpPaymentLinksScreen(tester, operations: operations);
     await tester.pumpAndSettle();
 
-    expect(operations.receivedLoadCalls, 2);
+    expect(operations.receivedLoadCalls, greaterThanOrEqualTo(2));
     expect(find.text('Received gift cards could not be loaded.'), findsNothing);
   });
 

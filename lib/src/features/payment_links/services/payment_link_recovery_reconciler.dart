@@ -197,6 +197,7 @@ class PaymentLinkRecoveryReconciler {
   /// the list forever.
   Future<List<PaymentLinkRecoveryRecord>> _dropInertDrafts(
     List<PaymentLinkRecoveryRecord> records,
+    void Function() ensureActive,
   ) async {
     final now = DateTime.now().toUtc();
     final inert = records.where(
@@ -207,6 +208,7 @@ class PaymentLinkRecoveryReconciler {
     var changed = false;
     final handledBatches = <String>{};
     for (final record in inert) {
+      ensureActive();
       try {
         final batchId = record.batchId;
         if (batchId != null) {
@@ -245,6 +247,7 @@ class PaymentLinkRecoveryReconciler {
   /// neither a draft being signed nor one awaiting broadcast is touched.
   Future<List<PaymentLinkRecoveryRecord>> _dropAbandonedPreparedDrafts(
     List<PaymentLinkRecoveryRecord> records,
+    void Function() ensureActive,
   ) async {
     final loadLedgerOperationRefs = _loadLedgerOperationRefs;
     final isFundingSurfaceOpen = _isFundingSurfaceOpen;
@@ -272,9 +275,11 @@ class PaymentLinkRecoveryReconciler {
       log('PaymentLinkRecoveryReconciler: Ledger outbox lookup failed: $error');
       return records;
     }
+    ensureActive();
     var changed = false;
     final handledBatches = <String>{};
     for (final record in candidates) {
+      ensureActive();
       final address = record.link.address;
       final batchId = record.batchId;
       if (batchId != null && !handledBatches.add(batchId)) continue;
@@ -344,10 +349,19 @@ class PaymentLinkRecoveryReconciler {
             .length;
   }
 
-  Future<List<PaymentLinkRecoveryRecord>> load() async {
+  Future<List<PaymentLinkRecoveryRecord>> load({
+    void Function()? ensureActive,
+    PaymentLinkOwnFundingHistoryLoader? loadLinkFundingHistory,
+  }) async {
+    final check = ensureActive ?? () {};
+    final fundingHistory = loadLinkFundingHistory ?? _loadLinkFundingHistory;
+    check();
     var records = await _store.load();
-    records = await _dropInertDrafts(records);
-    records = await _dropAbandonedPreparedDrafts(records);
+    check();
+    records = await _dropInertDrafts(records, check);
+    check();
+    records = await _dropAbandonedPreparedDrafts(records, check);
+    check();
     final preparedDrafts = records
         .where(
           (record) =>
@@ -397,9 +411,11 @@ class PaymentLinkRecoveryReconciler {
             lookupResults[2] as Map<String, List<rust_sync.TransactionInfo>>;
       }
 
+      check();
       var changed = false;
       final handledPreparedBatches = <String>{};
       for (final record in preparedDrafts) {
+        check();
         if (record.batchId case final batchId?) {
           if (!handledPreparedBatches.add(batchId)) continue;
           final members = records
@@ -478,6 +494,7 @@ class PaymentLinkRecoveryReconciler {
       }
       final handledAmbiguousBatches = <String>{};
       for (final record in ambiguousDrafts) {
+        check();
         if (record.batchId case final batchId?) {
           if (!handledAmbiguousBatches.add(batchId)) continue;
           final members = records
@@ -492,12 +509,14 @@ class PaymentLinkRecoveryReconciler {
             // wallets one at a time and stop at the first that disagrees.
             Set<String>? common;
             for (final entry in members) {
+              check();
               final funding = _paymentLinkOwnFundingTxids(
-                await _loadLinkFundingHistory(entry.link),
+                await fundingHistory(entry.link),
                 expectedZatoshi: paymentLinkFundingAmountZatoshi(
                   entry.link.amountZatoshi,
                 ),
               ).toSet();
+              check();
               common = common == null ? funding : common.intersection(funding);
               if (common.isEmpty) break;
             }
@@ -507,6 +526,7 @@ class PaymentLinkRecoveryReconciler {
               batchId: batchId,
               fundingTxids: txid,
             );
+            check();
             await _store.markBatchFunded(batchId: batchId, fundingTxids: txid);
             changed = true;
           } catch (error) {
@@ -518,11 +538,12 @@ class PaymentLinkRecoveryReconciler {
         }
         try {
           final fundingTxids = _paymentLinkOwnFundingTxids(
-            await _loadLinkFundingHistory(record.link),
+            await fundingHistory(record.link),
             expectedZatoshi: paymentLinkFundingAmountZatoshi(
               record.link.amountZatoshi,
             ),
           );
+          check();
           if (fundingTxids.isNotEmpty) {
             final txids = fundingTxids.join(',');
             // Record the recovered id before promoting, so a failure between
@@ -531,6 +552,7 @@ class PaymentLinkRecoveryReconciler {
               address: record.link.address,
               fundingTxids: txids,
             );
+            check();
             await _store.markFunded(
               address: record.link.address,
               fundingTxids: txids,
@@ -552,6 +574,7 @@ class PaymentLinkRecoveryReconciler {
         }
       }
       for (final record in unsharedFundings) {
+        check();
         final fundingTxids = record.fundingTxids!.trim();
         if (!paymentLinkFundingExpired(
           fundingTxids: fundingTxids,
@@ -573,8 +596,10 @@ class PaymentLinkRecoveryReconciler {
           );
         }
       }
+      check();
       return changed ? await _store.load() : records;
     } catch (error) {
+      check();
       // Retain the bearer secret and retry on the next foreground refresh when
       // chain height or wallet history is temporarily unavailable.
       log(

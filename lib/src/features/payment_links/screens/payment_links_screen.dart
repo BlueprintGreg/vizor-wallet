@@ -16,11 +16,13 @@ import '../../../core/layout/app_layout.dart';
 import '../../../core/layout/app_main_sidebar.dart';
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../core/privacy/privacy_mask.dart';
+import '../../../core/storage/app_secure_store.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_toast.dart';
 import '../../../providers/account_provider.dart';
+import '../../../providers/app_security_provider.dart';
 import '../../../providers/privacy_mode_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/sync_provider.dart';
@@ -227,6 +229,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   bool _claimConfirmationRefreshInProgress = false;
   bool _pendingIntakeScheduled = false;
   bool _initialCardsLoaded = false;
+  Future<void>? _createdRecoveryInFlight;
+  bool _createdRecoveryNeedsResume = false;
+  int _cardReadEpoch = 0;
   // Whether funding progress has been read once. Until then a batch's
   // readiness is unknown, not pending.
   bool _fundingProgressChecked = false;
@@ -532,6 +537,13 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
               !identical(_receivedLink, request.link))) {
         _clearDeferredPreparation();
       }
+      if (_claimCoordinator.canStartPreparation &&
+          _initialCardsLoaded &&
+          _createdRecoveryNeedsResume &&
+          _createdRecoveryInFlight == null) {
+        _createdRecoveryNeedsResume = false;
+        unawaited(_loadRecoveries(showError: false));
+      }
       if (!_claimCoordinator.canStartPreparation || _operationInProgress) {
         return;
       }
@@ -617,15 +629,17 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   ) async {
     if (initialCards == null) {
       await Future.wait<void>([
-        _loadRecoveries(),
-        _loadReceivedCardsWithRetry(),
+        _loadLocalCreatedCards(),
+        _loadLocalReceivedCards(),
       ]);
       if (!mounted) return;
       _initialCardsLoaded = true;
-    } else {
-      unawaited(_refreshFundingProgress(records: initialCards.created));
-      unawaited(_refreshReceivedClaims(records: initialCards.received));
     }
+    // The first frame uses only persisted cards. Recovery can query the chain
+    // or scan an isolated wallet, and must never hold up route entry/intake.
+    unawaited(_loadRecoveries(showError: false));
+    unawaited(_refreshFundingProgress());
+    unawaited(_refreshReceivedClaims(force: initialCards == null));
     final address = widget.initialReceivedCardAddress;
     if (address != null) {
       final card = _receivedCards
@@ -657,20 +671,83 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     _showError('This group wasn’t funded. Create it again.');
   }
 
-  @override
-  Future<void> _loadRecoveries({bool showError = true}) async {
+  bool _acceptsCardRead(int epoch, int storageGeneration) =>
+      mounted &&
+      epoch == _cardReadEpoch &&
+      !ref.read(appSecurityProvider).requiresUnlock &&
+      storageGeneration == AppSecureStore.instance.sessionGeneration;
+
+  Future<void> _loadLocalCreatedCards() async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
     try {
-      final records = await ref
-          .read(paymentLinkOperationsProvider)
-          .loadCreatedLinkRecoveries();
-      if (!mounted) return;
+      final records = await _paymentLinkOperations.loadCreatedLinks();
+      if (!_acceptsCardRead(epoch, generation)) return;
+      setState(() {
+        _recoveries = records.toList()..sort(compareCreatedPaymentLinks);
+      });
+    } catch (_) {
+      if (_acceptsCardRead(epoch, generation)) {
+        _showError('Gift cards could not be loaded.');
+      }
+    }
+  }
+
+  Future<void> _loadLocalReceivedCards() async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final records = await _paymentLinkOperations
+            .loadReceivedLinkRecoveries();
+        if (!_acceptsCardRead(epoch, generation)) return;
+        final sorted = records.toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        setState(() => _applyReceivedCards(sorted));
+        return;
+      } catch (error) {
+        log(
+          'PaymentLinkCards: local received load failed '
+          'attempt=$attempt type=${error.runtimeType}',
+        );
+        if (!_acceptsCardRead(epoch, generation)) return;
+        if (attempt == 2) {
+          _showError('Received gift cards could not be loaded.');
+        }
+      }
+    }
+  }
+
+  @override
+  Future<void> _loadRecoveries({bool showError = true}) {
+    return _createdRecoveryInFlight ??=
+        _recoverCreatedCards(showError: showError).whenComplete(() {
+          _createdRecoveryInFlight = null;
+          if (mounted &&
+              _createdRecoveryNeedsResume &&
+              _claimCoordinator.canStartPreparation) {
+            _schedulePreparationResume();
+          }
+        });
+  }
+
+  Future<void> _recoverCreatedCards({required bool showError}) async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
+    bool acceptsResult() => _acceptsCardRead(epoch, generation);
+    try {
+      final records = await _paymentLinkOperations.recoverCreatedLinks();
+      if (!acceptsResult()) return;
       final visible = records.toList()..sort(compareCreatedPaymentLinks);
       final hadOpenBatch = _openBatchLoaded;
       setState(() => _recoveries = visible);
       if (hadOpenBatch) _leaveVanishedBatch();
       unawaited(_refreshFundingProgress(records: visible));
+    } on GiftCardPreparationInterrupted {
+      _createdRecoveryNeedsResume = true;
+      // Keep the persisted list while locked, backgrounded, or changing wallets.
     } catch (_) {
-      if (mounted && showError) {
+      if (acceptsResult() && showError) {
         _showError('Gift cards could not be loaded.');
       }
     }
@@ -744,47 +821,15 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     }
   }
 
-  Future<void> _loadReceivedCardsWithRetry() async {
-    final loaded = await _loadReceivedCards(showError: false, attempt: 1);
-    if (!loaded && mounted) {
-      await _loadReceivedCards(attempt: 2);
-    }
-  }
-
-  Future<bool> _loadReceivedCards({
-    bool showError = true,
-    required int attempt,
-  }) async {
-    try {
-      final records = await ref
-          .read(paymentLinkClaimCoordinatorProvider)
-          .refresh();
-      if (!mounted) return true;
-      final sorted = List<PaymentLinkReceivedRecord>.of(records)
-        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      setState(() => _applyReceivedCards(sorted));
-      unawaited(_refreshReceivedClaims(records: sorted));
-      return true;
-    } catch (error) {
-      log(
-        'PaymentLinkCards: received load failed '
-        'attempt=$attempt type=${error.runtimeType}',
-      );
-      if (mounted && showError) {
-        _showError('Received gift cards could not be loaded.');
-      }
-      return false;
-    }
-  }
-
   Future<void> _refreshReceivedClaims({
     List<PaymentLinkReceivedRecord>? records,
+    bool force = false,
   }) async {
     final receivedCards = records ?? _receivedCards;
     final needsRecovery = receivedCards.any(
       (record) => record.needsClaimRecovery,
     );
-    if (!needsRecovery || _receivedRefreshInProgress) {
+    if ((!needsRecovery && !force) || _receivedRefreshInProgress) {
       return;
     }
     _receivedRefreshInProgress = true;
@@ -2679,6 +2724,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       GiftCardTrackingScope(child: _buildContent(context));
 
   Widget _buildContent(BuildContext context) {
+    ref.listen(appSecurityProvider, (_, next) {
+      if (next.requiresUnlock) _cardReadEpoch++;
+    });
     ref.listen<String?>(
       accountProvider.select((state) => state.value?.activeAccountUuid),
       _handleActiveAccountChanged,

@@ -134,7 +134,13 @@ abstract interface class PaymentLinkOperations {
     required String fundingTxids,
   });
 
+  /// Reads persisted cards without cleanup, chain queries, or recovery.
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks();
+
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries();
+
+  /// Deferred management recovery, owned by the lock/reset preparation lifecycle.
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks();
 
   Future<PaymentLinkRecoveryRecord> markCreatedLinkShared(
     VizorPaymentLink link,
@@ -634,6 +640,7 @@ class PaymentLinkService
   final Ref _ref;
   final Set<String> _activeClaims = {};
   Future<void> _claimInspectionTail = Future<void>.value();
+  Future<List<PaymentLinkRecoveryRecord>>? _createdRecoveryInFlight;
   final PaymentLinkRecoveryStore _recoveryStore;
   final PaymentLinkReceivedStore _receivedStore;
   final PaymentLinkRecoveryReconciler _recoveryReconciler;
@@ -1119,8 +1126,52 @@ class PaymentLinkService
   }
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() =>
+      _recoveryStore.load();
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() =>
       _recoveryReconciler.load();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() {
+    final existing = _createdRecoveryInFlight;
+    if (existing != null) return existing;
+    final coordinator = _ref.read(paymentLinkClaimCoordinatorProvider);
+    late final Future<List<PaymentLinkRecoveryRecord>> tracked;
+    tracked = coordinator
+        .trackPreparation(() async {
+          final generation = coordinator.beginPreparation();
+          void ensureActive() => coordinator.requirePreparation(generation);
+          final unregister = coordinator.registerCheckCancellation(
+            _claimWallet.cancelAllSyncs,
+          );
+          try {
+            await _recoveryReconciler.load(
+              ensureActive: ensureActive,
+              loadLinkFundingHistory: (link) => _claimWallet.loadFundingHistory(
+                link,
+                ensureActive: ensureActive,
+              ),
+            );
+            ensureActive();
+            // A user can create/share cards while deferred chain checks run.
+            // Publish the persisted result, never the pass's initial snapshot.
+            final records = await _recoveryStore.load();
+            ensureActive();
+            return records;
+          } finally {
+            unregister();
+          }
+        })
+        .whenComplete(() {
+          if (identical(_createdRecoveryInFlight, tracked)) {
+            _createdRecoveryInFlight = null;
+          }
+        });
+    _createdRecoveryInFlight = tracked;
+    return tracked;
+  }
 
   @override
   Future<PaymentLinkRecoveryRecord> markCreatedLinkShared(

@@ -568,6 +568,8 @@ class FakePaymentLinkOperations implements PaymentLinkOperations {
   final List<bool> allowLongSyncCalls = [];
   final List<VizorPaymentLink> preparedLinks = [];
   int createdLoadCalls = 0;
+  int localCreatedLoadCalls = 0;
+  Completer<void>? createdRecoveryGate;
   int receivedLoadCalls = 0;
   int fundingMetadataRetries = 0;
 
@@ -677,9 +679,20 @@ class FakePaymentLinkOperations implements PaymentLinkOperations {
   }
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() =>
+      loadCreatedLinkRecoveries();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() async {
+    localCreatedLoadCalls += 1;
+    await createdLoadGate?.future;
+    return List.unmodifiable(records);
+  }
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() async {
     createdLoadCalls += 1;
-    await createdLoadGate?.future;
+    await createdRecoveryGate?.future;
     return List.unmodifiable(records);
   }
 
