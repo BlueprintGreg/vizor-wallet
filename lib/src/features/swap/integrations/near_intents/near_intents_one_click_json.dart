@@ -72,9 +72,6 @@ List<String> _chainTxHashes(Map<String, dynamic> json, String key) {
   return hashes;
 }
 
-String? _firstChainTxHash(Map<String, dynamic> json, String key) =>
-    _chainTxHashes(json, key).firstOrNull;
-
 SwapQuoteMode _oneClickSwapMode(String? value) {
   return switch (value?.trim().toUpperCase()) {
     'EXACT_OUTPUT' => SwapQuoteMode.exactOutput,
