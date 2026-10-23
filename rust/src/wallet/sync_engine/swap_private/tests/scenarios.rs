@@ -1219,19 +1219,18 @@ impl World {
         }
     }
 
-    /// Whether a feature-off round on `dev` may make receiver requests, because a receipt
-    /// a reorg displaced needs repair. An account whose wallet still says enabled, as after
-    /// the app died before reconciling a turn-off, lists every lookup until the round
-    /// reconciles, so only its receipts count.
+    /// Whether a feature-off round on `dev` may make receiver requests and write, because
+    /// a receipt a reorg displaced needs repair. Such a receipt counts even while its repair
+    /// lookup is not due, since a round still queues catch-up for it. An account whose
+    /// wallet still says enabled, as after the app died before reconciling a turn-off,
+    /// lists every lookup until the round reconciles, so only its receipts count.
     fn repair_due(&self, dev: usize) -> bool {
         let device = &self.devices[dev];
         device.accts.iter().any(|a| {
             let state = device.wallet.state(&a.account);
-            if state.enabled && !device.discovery() {
-                repair_owed(&device.wallet, &a.account.id)
-            } else {
-                !state.lookups.is_empty() || !state.witnesses.is_empty()
-            }
+            repair_owed(&device.wallet, &a.account.id)
+                || (!(state.enabled && !device.discovery())
+                    && (!state.lookups.is_empty() || !state.witnesses.is_empty()))
         })
     }
 
