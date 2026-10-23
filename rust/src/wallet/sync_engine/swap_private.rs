@@ -472,11 +472,8 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     deadline: tokio::time::Instant,
 ) -> Result<Round, RecoveryError> {
     // With the feature off and nothing due, take no write lock and write nothing.
-    if manual.is_none() && !one_time_ivk::discovery_enabled(network) {
-        let db = open_existing_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT)?;
-        if !one_time_ivk::any_recovery_work(&db)? {
-            return Ok(Round::default());
-        }
+    if manual.is_none() && one_time_ivk::idle_while_off(path, network)? {
+        return Ok(Round::default());
     }
     let accounts = wallet(path, network, generation, |db| {
         one_time_ivk::reconcile_enabled(db, network)?;

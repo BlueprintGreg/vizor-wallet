@@ -1208,6 +1208,25 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
     assert_eq!(disabling.bytes(), 0);
 }
 
+/// With the feature off and nothing due, the production entry point returns before it
+/// builds a Tokio runtime or an HTTPS client. So it also returns from inside a runtime,
+/// where starting another one would panic.
+#[test]
+fn feature_off_idle_entry_point_builds_no_runtime() {
+    isolated!(feature_off_idle_entry_point_builds_no_runtime);
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let mut wallet = Wallet::new(4, activation());
+    wallet.scan(&chain);
+    let path = wallet.path.clone();
+    let had_work = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async move { crate::api::one_time_ivk::run_swap_recovery(path, "main".into()) })
+        .unwrap();
+    assert!(!had_work);
+}
+
 /// With the feature off, no app entry point commits to a wallet that never enabled it:
 /// the round, the production entry point, the status read, reconciling the setting,
 /// pausing a history check, and a provider status for an ordinary swap. So no recovery
