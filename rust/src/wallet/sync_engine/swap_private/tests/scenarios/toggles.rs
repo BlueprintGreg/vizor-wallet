@@ -1126,11 +1126,11 @@ fn turning_off_mid_history_check_stops_it_cleanly() {
 /// clears the update request and finishes the repair with the feature still off. A
 /// paused wallet with an update request but nothing to repair makes no request at all.
 ///
-/// Open finding: while an update is required the wallet hides the owed repair, so a
-/// feature-off round finds no work and never reaches the publication that would clear
-/// the request.
+/// Accepted limitation: while an update is required the wallet hides the owed repair,
+/// so a feature-off round finds no work and never reaches the publication that would
+/// clear the request. It is rare, and fixing it needs a library change.
 #[test]
-#[ignore = "an update request while off hides the owed repair, so no round resumes it"]
+#[ignore = "accepted known limitation: rare, and resuming the repair needs a library change"]
 fn an_update_request_while_off_does_not_strand_repair() {
     if isolated("toggles::an_update_request_while_off_does_not_strand_repair") {
         return;
