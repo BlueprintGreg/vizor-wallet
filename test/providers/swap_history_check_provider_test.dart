@@ -359,4 +359,30 @@ void main() {
     container.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
   });
+
+  test('a check ahead of wallet sync waits instead of failing', () async {
+    final container = ProviderContainer(
+      overrides: [
+        ..._wallet(),
+        syncProvider.overrideWith(_Sync.new),
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: (_) async => throw const ReceiveError(
+              message: 'Swap history check has not started.',
+              kind: ReceiveErrorKind.waitingForSync,
+            ),
+            cancel: () async {},
+            status: () async => _status(),
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(swapHistoryCheckProvider.notifier).check();
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.waitingForSync,
+    );
+  });
 }
