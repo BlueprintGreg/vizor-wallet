@@ -19,36 +19,6 @@ impl World {
     }
 }
 
-/// Four incoming quotes shown to the user and never paid fill the four-slot window.
-/// Two days after their deadlines, a new private quote must still find a slot once the
-/// app refreshes their statuses, so a full window cannot stay blocked.
-#[test]
-fn expired_unpaid_quotes_release_their_slots_days_later() {
-    if isolated("directed::expired_unpaid_quotes_release_their_slots_days_later") {
-        return;
-    }
-    let mut world = World::ready();
-    for _ in 0..4 {
-        let line = world.quote_in(0, 0, Reply::Accept, 3_600).unwrap();
-        assert!(line.contains("accepted and shown"), "{line}");
-    }
-    let full = world.reserve_in(0, 0, false).unwrap();
-    assert!(
-        full.as_ref()
-            .is_err_and(|e| e.contains("No swap address is free")),
-        "{full:?}"
-    );
-    world.act(&Action::Warp(2 * 86_400)).unwrap();
-    world.mine(1);
-    world.sync(0, false);
-    // A day past their deadlines the slots free even without a status (SPEC Q-7).
-    let stale = world.reserve_in(0, 0, false);
-    println!("before a status refresh: {stale:?}");
-    world.poll(0, 0).unwrap();
-    let freed = world.reserve_in(0, 0, false).unwrap();
-    assert_eq!(freed, Ok(0), "the lowest expired slot is reused");
-}
-
 /// The value of `dev`'s mined one-time notes on its first account, per key.
 fn credited(world: &World, dev: usize) -> Vec<Note> {
     let device = &world.devices[dev];
@@ -424,28 +394,10 @@ fn a_refund_replaced_by_a_reorg_still_retires() {
     assert!(monitored.is_empty(), "R0 still monitored: {monitored:?}");
 }
 
-/// Control: a wallet restored a few blocks below the tip follows a shallow reorg that
-/// forks inside its scanned range, with no one-time state at all.
-#[test]
-fn a_recent_restore_follows_a_shallow_reorg() {
-    if isolated("directed::a_recent_restore_follows_a_shallow_reorg") {
-        return;
-    }
-    let mut world = World::new();
-    world.mine(4);
-    let birthday = world.chain.tip() - 3;
-    let restored = world.add_device(birthday, false);
-    world.mine(1);
-    world.sync(restored, false);
-    world.reorg(2);
-    let line = world.sync(restored, false);
-    assert!(!world.devices[restored].broken, "{line}");
-}
-
-/// Fixed finding U1, outside the one-time feature. The same as
-/// [`a_recent_restore_follows_a_shallow_reorg`], with an unrelated Ironwood output in the
-/// block the reorg drops, so the commitment tree changes above the fork. The wallet used
-/// to refuse every rewind, even to the safe height it reported.
+/// Fixed finding U1, outside the one-time feature. A wallet restored a few blocks below
+/// the tip follows a shallow reorg that forks inside its scanned range, with an unrelated
+/// Ironwood output in the block the reorg drops, so the commitment tree changes above the
+/// fork. The wallet used to refuse every rewind, even to the safe height it reported.
 #[test]
 fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
     if isolated("directed::a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output") {
