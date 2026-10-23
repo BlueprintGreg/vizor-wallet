@@ -164,7 +164,54 @@ void main() {
     expect(updated.providerStatusRaw, 'SUCCESS');
     expect(updated.pair, 'USDC -> ZEC');
     expect(updated.sellAmount, '2.3 USDC');
-    expect(updated.receiveEstimate, '0.0115 ZEC');
+    // The quoted payout is no result, so it is not reported.
+    expect(updated.receiveEstimate, 'Not reported');
+    expect(updated.totalFeesText, '0.01 USDC');
+  });
+
+  test('a flexible swap completed status-only reports neither amount', () {
+    final intent = _intentFromRecord(
+      const SwapIntentRecord(
+        id: 'unlisted-swap',
+        providerLabel: 'NEAR Intents',
+        pairText: 'USDC -> ZEC',
+        sellAmountText: '2.3 USDC',
+        receiveEstimateText: '0.0115 ZEC',
+        status: SwapIntentStatus.processing,
+        nextAction: 'Swap is processing',
+        totalFeesText: '0.01 USDC',
+      ),
+    );
+    final updated = updateSwapIntentFromSnapshot(
+      intent,
+      const SwapIntentSnapshot(
+        id: 'unlisted-swap',
+        providerLabel: 'NEAR Intents',
+        pairText: 'Unlisted token -> ZEC',
+        sellAmountText: 'Not reported',
+        receiveEstimateText: 'Not reported',
+        status: SwapIntentStatus.complete,
+        nextAction: 'Swap complete',
+        depositInstruction: SwapDepositInstruction(
+          asset: SwapAsset.usdc,
+          address: '0xdeposit',
+          expiresInLabel: 'expired',
+          reuseWarning: 'Do not reuse',
+        ),
+        providerStatusRaw: 'SUCCESS',
+        // The user deposited 1.15 USDC of the quoted 2.3 and got 0.00575 ZEC.
+        providerSwapType: 'FLEX_INPUT',
+        amountOutBaseUnits: '575000',
+        statusOnly: true,
+      ),
+    );
+
+    expect(updated.status, SwapIntentStatus.complete);
+    expect(updated.providerStatusRaw, 'SUCCESS');
+    expect(updated.pair, 'USDC -> ZEC');
+    expect(updated.sellAmount, 'Not reported');
+    // The quoted payout is no result, so it is not reported.
+    expect(updated.receiveEstimate, 'Not reported');
     expect(updated.totalFeesText, '0.01 USDC');
   });
 

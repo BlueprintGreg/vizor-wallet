@@ -268,11 +268,21 @@ SwapIntent updateSwapIntentFromSnapshot(
   final nextAction = _nextActionForResolvedStatus(status, snapshot);
   // Null fields leave the stored values in place.
   final presentation = snapshot.statusOnly ? null : snapshot;
+  // A status-only snapshot cannot state a finished swap's amounts, and the
+  // saved quote is no result: it shows the payout, and a flexible input's
+  // deposit, as the snapshot's "not reported" text instead.
+  final unsettled = snapshot.statusOnly && status == SwapIntentStatus.complete;
   final record = SwapIntentRecord.fromIntent(intent).copyWith(
     providerLabel: presentation?.providerLabel,
     pairText: presentation?.pairText,
-    sellAmountText: presentation?.sellAmountText,
-    receiveEstimateText: presentation?.receiveEstimateText,
+    sellAmountText:
+        presentation?.sellAmountText ??
+        (unsettled && snapshot.providerSwapType == 'FLEX_INPUT'
+            ? snapshot.sellAmountText
+            : null),
+    receiveEstimateText:
+        presentation?.receiveEstimateText ??
+        (unsettled ? snapshot.receiveEstimateText : null),
     status: status,
     nextAction: nextAction,
     sellAmountBaseUnits: presentation?.sellAmountBaseUnits,

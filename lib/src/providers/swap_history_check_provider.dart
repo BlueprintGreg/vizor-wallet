@@ -69,6 +69,10 @@ enum SwapHistoryCheck {
   /// A round failed. A previously saved job may still need pausing or resuming.
   failed,
 
+  /// The check could not start because wallet sync has not caught up with the
+  /// receiver service yet. Nothing was lost; checking again shortly starts it.
+  waitingForSync,
+
   /// The receiver service needs a newer app. The saved job resumes after an update.
   updateRequired,
 }
@@ -176,13 +180,16 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   }
 
   /// Ends the check under `generation` with `error`: an update request when
-  /// the service needs a newer app, else failed.
+  /// the service needs a newer app, waiting when wallet sync has not caught up,
+  /// else failed.
   void _fail(int generation, Object error) {
     log('Swap history check failed: $error');
     if (ref.mounted && generation == _generation) {
-      if (error is rust_swap.ReceiveError &&
-          error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
+      final kind = error is rust_swap.ReceiveError ? error.kind : null;
+      if (kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
         _requireUpdate();
+      } else if (kind == rust_swap.ReceiveErrorKind.waitingForSync) {
+        state = SwapHistoryCheck.waitingForSync;
       } else {
         state = SwapHistoryCheck.failed;
       }

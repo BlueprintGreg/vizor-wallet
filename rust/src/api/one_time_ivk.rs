@@ -28,6 +28,9 @@ pub enum ReceiveErrorKind {
     ReceiveHistory,
     /// The receiver service needs a newer app. Pending recovery work is kept.
     UpgradeRequired,
+    /// A swap history check cannot start until wallet sync catches up with the
+    /// receiver service. Ask again shortly.
+    WaitingForSync,
 }
 
 /// A private swap failure. `message` is display text, never a parsing protocol. `kind`
@@ -54,12 +57,16 @@ impl From<String> for ReceiveError {
     }
 }
 impl From<RecoveryError> for ReceiveError {
-    /// Keeps an upgrade outcome distinct so the app can ask for an update.
+    /// Keeps the upgrade and waiting-for-sync outcomes distinct so the app can act on them.
     fn from(error: RecoveryError) -> Self {
         match error {
             RecoveryError::UpgradeRequired => Self {
                 message: "Update Vizor to keep checking private swap addresses.".into(),
                 kind: ReceiveErrorKind::UpgradeRequired,
+            },
+            RecoveryError::NotCaughtUp => Self {
+                message: error.to_string(),
+                kind: ReceiveErrorKind::WaitingForSync,
             },
             RecoveryError::Other(message) => message.into(),
         }

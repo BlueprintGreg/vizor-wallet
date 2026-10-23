@@ -49,6 +49,9 @@ pub(crate) enum RecoveryError {
     /// The receiver service speaks a format this app does not support. Every active
     /// account recorded it (see `require_one_time_upgrade`).
     UpgradeRequired,
+    /// A history check could not start because the wallet has not scanned the
+    /// receiver service's latest publication yet. It can start once sync catches up.
+    NotCaughtUp,
     /// Any other failure, as display text.
     Other(String),
 }
@@ -72,6 +75,9 @@ impl std::fmt::Display for RecoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UpgradeRequired => f.write_str("The swap recovery service needs a newer app."),
+            Self::NotCaughtUp => f.write_str(
+                "Swap history check has not started. Wait for wallet sync to catch up and try again.",
+            ),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -157,38 +163,79 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
 /// work, so a slow one is abandoned well inside the 45 second round budget.
 const SHARD_FILTER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The most time one round spends on all its optional filter downloads together. The
-/// library fetches filters one at a time, so many downloads that each finish within
-/// [`SHARD_FILTER_TIMEOUT`] could otherwise fill the round before any PIR work commits.
-const SHARD_FILTER_BUDGET: Duration = Duration::from_secs(10);
+/// How long one optional rolling block-filter request may take.
+const BLOCK_FILTER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The most time one round spends on all its optional filter downloads together (see
+/// [`FilterBudget`]).
+const FILTER_BUDGET: Duration = Duration::from_secs(10);
 
 /// The route the library fetches sealed-shard filters from (see `InventoryClient::filter`).
 const SHARD_FILTER_ROUTE: &str = "/v1/receiver/shard-filters/";
 
+/// The time one round may spend on optional filters: the rolling block-filter head and
+/// batches, and sealed-shard filters. Filters only save PIR work, and they are fetched
+/// one at a time, per account and per shard, so many waits that each stay within their
+/// own timeout could otherwise fill the round before any PIR work commits. Every filter
+/// wait draws on this one deadline, and once it passes or a filter request stalls, no
+/// further filter is requested this round.
+struct FilterBudget {
+    deadline: tokio::time::Instant,
+    stalled: AtomicBool,
+}
+
+impl FilterBudget {
+    /// A budget for a round ending at `deadline`: [`FILTER_BUDGET`] at most, and never
+    /// more than a third of the time left, so the rest stays for PIR.
+    fn new(deadline: tokio::time::Instant) -> Self {
+        let now = tokio::time::Instant::now();
+        Self {
+            deadline: now + FILTER_BUDGET.min(deadline.saturating_duration_since(now) / 3),
+            stalled: AtomicBool::new(false),
+        }
+    }
+
+    /// Runs the optional filter request `request` for at most `cap`, or what is left of
+    /// the budget if that is less. Refuses it without a request once the budget is spent
+    /// or a filter stalled, and marks a request that runs out of time as stalled.
+    async fn run<R, E: std::fmt::Display>(
+        &self,
+        cap: Duration,
+        request: impl std::future::Future<Output = Result<R, E>>,
+    ) -> Result<R, String> {
+        let left = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() || self.stalled.load(Ordering::SeqCst) {
+            return Err("Receiver filters unavailable this round.".into());
+        }
+        match tokio::time::timeout(cap.min(left), request).await {
+            Ok(result) => result.map_err(|e| e.to_string()),
+            Err(_) => {
+                self.stalled.store(true, Ordering::SeqCst);
+                Err("Receiver filter request timed out.".into())
+            }
+        }
+    }
+}
+
 /// One round's lookup transport. Sealed-shard filters are optional: the library reads a
 /// shard over PIR when its filter cannot be fetched, but retries the download on every
-/// later step. So this bounds each filter download by [`SHARD_FILTER_TIMEOUT`] and all
-/// of them together by the round's filter deadline. For the rest of the round it refuses
-/// a filter that failed, and every filter once one stalls or the deadline passes, without
-/// another request. Other requests pass through unchanged.
+/// later step. So each filter download draws on the round's [`FilterBudget`], and a
+/// filter that failed is refused for the rest of the round without another request.
+/// Other requests pass through unchanged.
 struct RoundTransport<'a, T> {
     inner: &'a T,
-    filter_deadline: tokio::time::Instant,
-    stalled: AtomicBool,
+    budget: &'a FilterBudget,
     failed: Mutex<HashSet<String>>,
 }
 
 impl<'a, T> RoundTransport<'a, T> {
-    /// A fresh round over `inner` ending at `deadline`, with every filter still available.
-    /// Filters get [`SHARD_FILTER_BUDGET`] at most, and never more than a third of the
-    /// time left, so the rest stays for PIR.
-    fn new(inner: &'a T, deadline: tokio::time::Instant) -> Self {
-        let now = tokio::time::Instant::now();
-        let budget = SHARD_FILTER_BUDGET.min(deadline.saturating_duration_since(now) / 3);
+    /// A fresh round over `inner` whose filters draw on `budget`.
+    fn new(inner: &'a T, budget: &'a FilterBudget) -> Self {
         Self {
             inner,
-            filter_deadline: now + budget,
-            stalled: AtomicBool::new(false),
+            budget,
             failed: Mutex::new(HashSet::new()),
         }
     }
@@ -200,31 +247,19 @@ impl<T: Transport> Transport for RoundTransport<'_, T> {
         if !url.contains(SHARD_FILTER_ROUTE) {
             return self.inner.get(url, limit).await;
         }
-        let left = self
-            .filter_deadline
-            .saturating_duration_since(tokio::time::Instant::now());
-        if left.is_zero()
-            || self.stalled.load(Ordering::SeqCst)
-            || self.failed.lock().unwrap().contains(url)
-        {
+        if self.failed.lock().unwrap().contains(url) {
             return Err(session::Error::Transport(
                 "Receiver filter unavailable this round.".into(),
             ));
         }
-        let wait = SHARD_FILTER_TIMEOUT.min(left);
-        match tokio::time::timeout(wait, self.inner.get(url, limit)).await {
-            Ok(Ok(body)) => Ok(body),
-            Ok(Err(error)) => {
-                self.failed.lock().unwrap().insert(url.to_owned());
-                Err(error)
-            }
-            Err(_) => {
-                self.stalled.store(true, Ordering::SeqCst);
-                Err(session::Error::Transport(
-                    "Receiver filter request timed out.".into(),
-                ))
-            }
+        let result = self
+            .budget
+            .run(SHARD_FILTER_TIMEOUT, self.inner.get(url, limit))
+            .await;
+        if result.is_err() {
+            self.failed.lock().unwrap().insert(url.to_owned());
         }
+        result.map_err(session::Error::Transport)
     }
 
     /// Passes encrypted queries through unchanged.
@@ -513,11 +548,9 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     if active.is_empty() {
         return Ok(Round::default());
     }
-    const NOT_CAUGHT_UP: &str =
-        "Swap history check has not started. Wait for wallet sync to catch up and try again.";
     let inventory = match capture(path, network, generation, origin, transport, store).await {
         Ok(Some(inventory)) => inventory,
-        Ok(None) if manual.is_some() => return Err(NOT_CAUGHT_UP.into()),
+        Ok(None) if manual.is_some() => return Err(RecoveryError::NotCaughtUp),
         Ok(None) => {
             return Ok(Round {
                 active: true,
@@ -530,14 +563,15 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         Err(error) => return Err(error.to_string().into()),
     };
     let publication = zakura_pir_client::receiver::publication(&inventory);
+    let filter_budget = FilterBudget::new(deadline);
     let head = if discovery_enabled {
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            Inventories::block_head(origin, transport, &MAINNET_GENESIS),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
+        filter_budget
+            .run(
+                BLOCK_FILTER_TIMEOUT,
+                Inventories::block_head(origin, transport, &MAINNET_GENESIS),
+            )
+            .await
+            .ok()
     } else {
         None
     };
@@ -546,14 +580,14 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let mut ready = Vec::new();
     let mut due = Vec::new();
     for account in active {
-        let result: Result<(), String> = async {
+        let result: Result<(), RecoveryError> = async {
             let accepted_locally = wallet(path, network, generation, |db| {
                 db.begin_one_time_recovery(account, publication, false)
                     .map_err(|e| e.to_string())
             })?;
             if !accepted_locally {
                 return if manual.is_some() {
-                    Err(NOT_CAUGHT_UP.into())
+                    Err(RecoveryError::NotCaughtUp)
                 } else {
                     Ok(())
                 };
@@ -592,7 +626,6 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                             || frontier.is_some_and(|f| f.saturating_add(1) < h.first)
                     });
                 if let Some((head, from, to)) = range {
-                    let hint_timeout = Duration::from_secs(2);
                     let (setup, query) = direct_cost(&inventory, from - 1)?;
                     let filtered: Result<bool, String> = async {
                         // Sample bytes are shared by accounts and committed even when direct
@@ -600,7 +633,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                         let sample = match batches.entry((from, 1)) {
                             Entry::Occupied(cached) => cached.into_mut(),
                             Entry::Vacant(slot) => slot.insert(
-                                filter_batch(origin, transport, head, from, 1, hint_timeout)
+                                filter_batch(origin, transport, &filter_budget, head, from, 1)
                                     .await?,
                             ),
                         };
@@ -627,10 +660,10 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
                                     filter_batch(
                                         origin,
                                         transport,
+                                        &filter_budget,
                                         head,
                                         next,
                                         limit,
-                                        hint_timeout,
                                     )
                                     .await?,
                                 ),
@@ -670,7 +703,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         }
         .await;
         if let Err(error) = result {
-            failure.get_or_insert(error.into());
+            failure.get_or_insert(error);
             if CANCEL.load(Ordering::SeqCst) != generation {
                 return Err(failure.expect("recorded"));
             }
@@ -679,7 +712,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let filters = shard_filters_cheaper(&inventory, due.len());
     let client = InventoryClient::new(
         origin,
-        RoundTransport::new(transport, deadline),
+        RoundTransport::new(transport, &filter_budget),
         inventory,
         filters,
     );
@@ -827,22 +860,23 @@ fn apply_filters(
     Ok(())
 }
 
-/// Bounds optional hints independently so an outage leaves time for direct PIR work.
+/// Fetches rolling block filters `from` for `limit` blocks, drawing on the round's
+/// optional filter `budget` (see [`FilterBudget`]), so an outage leaves time for direct
+/// PIR work.
 async fn filter_batch<T: Transport>(
     origin: &str,
     transport: &T,
+    budget: &FilterBudget,
     head: &Head,
     from: u32,
     limit: u32,
-    timeout: Duration,
 ) -> Result<Batch, String> {
-    tokio::time::timeout(
-        timeout,
-        Inventories::block_batch(origin, transport, head, from, limit),
-    )
-    .await
-    .map_err(|_| "Receiver filter request timed out.".to_string())?
-    .map_err(|e| e.to_string())
+    budget
+        .run(
+            BLOCK_FILTER_TIMEOUT,
+            Inventories::block_batch(origin, transport, head, from, limit),
+        )
+        .await
 }
 
 #[cfg(test)]

@@ -1151,16 +1151,24 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       var hadWork = true;
       try {
         if (manual) {
-          await rust_swap.checkSwapHistory(
-            dbPath: path,
-            networkName: network,
-            receiveEnd: receiveEnd,
+          await _trackedWalletCall(
+            () async => path,
+            (path) => rust_swap.checkSwapHistory(
+              dbPath: path,
+              networkName: network,
+              receiveEnd: receiveEnd,
+            ),
           );
         } else {
-          hadWork = await rust_swap.runSwapRecovery(
-            dbPath: path,
-            networkName: network,
-          );
+          hadWork =
+              await _trackedWalletCall(
+                () async => path,
+                (path) => rust_swap.runSwapRecovery(
+                  dbPath: path,
+                  networkName: network,
+                ),
+              ) ??
+              false;
           if (generation == _swapRecoveryGeneration) {
             _swapRecoveryIdle = !hadWork;
           }
@@ -1255,9 +1263,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _swapRecoveryTransitions++;
     try {
       await _stopSwapRecovery();
-      await rust_swap.cancelSwapHistory(
-        dbPath: await _getDbPath(),
-        networkName: _endpointConfig.networkName,
+      await _trackedWalletCall(
+        _getDbPath,
+        (path) => rust_swap.cancelSwapHistory(
+          dbPath: path,
+          networkName: _endpointConfig.networkName,
+        ),
       );
     } finally {
       _swapRecoveryTransitions--;
@@ -2392,34 +2403,49 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         network: _endpointConfig.networkName,
       );
     } finally {
-      _endRecoveryStatusRead();
+      _endTrackedWalletCall();
     }
   }
 
   /// Reads the wallet's saved swap recovery state without network access, or
-  /// null without a wallet. Like [recoveryStatus], it registers before its
-  /// first await, so wallet mutations drain it before touching the wallet DB.
-  /// While one holds admission it throws rather than reporting idle state.
-  Future<rust_swap.SwapRecoveryStatus?> swapRecoveryStatus() async {
-    const busy = 'Swap recovery status is unavailable during a wallet change.';
+  /// null without a wallet (see [_trackedWalletCall]). While a wallet mutation
+  /// holds admission it throws rather than reporting idle state.
+  Future<rust_swap.SwapRecoveryStatus?> swapRecoveryStatus() =>
+      _trackedWalletCall(
+        _existingWalletDbPathResolver,
+        (path) => rust_swap.getSwapRecoveryStatus(
+          dbPath: path,
+          networkName: _endpointConfig.networkName,
+        ),
+      );
+
+  /// Runs `call`, a native call on the wallet DB at the path `resolvePath`
+  /// gives, or returns null when it gives none. Every native wallet call of the
+  /// swap recovery code goes through here. It registers with the drain that
+  /// wallet mutations wait on (see [pauseForWalletMutation]) before its first
+  /// await, so deletion or reset can never remove the DB under it, and it
+  /// throws a [StateError] instead of starting while a mutation holds
+  /// admission.
+  Future<T?> _trackedWalletCall<T>(
+    Future<String?> Function() resolvePath,
+    Future<T> Function(String path) call,
+  ) async {
+    const busy = 'The wallet is changing. Try again in a moment.';
     if (_walletMutationPauseCount > 0) throw StateError(busy);
     _recoveryStatusReadCount++;
     try {
-      final path = await _existingWalletDbPathResolver();
+      final path = await resolvePath();
       if (_walletMutationPauseCount > 0) throw StateError(busy);
       if (path == null) return null;
-      return await rust_swap.getSwapRecoveryStatus(
-        dbPath: path,
-        networkName: _endpointConfig.networkName,
-      );
+      return await call(path);
     } finally {
-      _endRecoveryStatusRead();
+      _endTrackedWalletCall();
     }
   }
 
-  /// Ends one registered wallet status read and releases a drain waiting on
-  /// the last one.
-  void _endRecoveryStatusRead() {
+  /// Ends one registered wallet call and releases a drain waiting on the last
+  /// one.
+  void _endTrackedWalletCall() {
     _recoveryStatusReadCount--;
     if (_recoveryStatusReadCount == 0) {
       _recoveryStatusReadsDrained?.complete();
