@@ -4,15 +4,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_activity_store.dart';
 
-/// Activity kept in memory, whose saves wait for [hold] when it is set.
+/// Activity kept in memory, whose saves wait for [hold] and whose reads of
+/// [slowAccount] wait for [holdRead] when they are set.
 class _MemoryStore implements SwapActivityStore {
   final records = <String, List<SwapIntentRecord>>{};
   Completer<void>? hold;
+  Completer<void>? holdRead;
+  String? slowAccount;
 
   @override
   Future<List<SwapIntentRecord>> loadRecords({
     required String accountUuid,
-  }) async => records[accountUuid] ?? const [];
+  }) async {
+    if (accountUuid == slowAccount) await holdRead?.future;
+    return records[accountUuid] ?? const [];
+  }
 
   @override
   Future<void> saveRecords({
@@ -124,5 +130,17 @@ void main() {
     await store.deleteForAccount(accountUuid: 'a');
     await store.update(accountUuid: 'a', transform: (_) => [_record]);
     expect(inner.records.containsKey('a'), isFalse);
+  });
+
+  test("one account's slow read does not hold up another's", () async {
+    final inner = _MemoryStore()
+      ..slowAccount = 'a'
+      ..holdRead = Completer<void>();
+    final store = DeletionSafeSwapActivityStore(inner);
+    await store.saveRecords(accountUuid: 'b', records: [_record]);
+    final slow = store.loadRecords(accountUuid: 'a');
+    expect(await store.loadRecords(accountUuid: 'b'), [_record]);
+    inner.holdRead!.complete();
+    expect(await slow, isEmpty);
   });
 }
