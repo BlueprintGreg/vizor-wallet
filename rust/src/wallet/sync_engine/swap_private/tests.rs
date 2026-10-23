@@ -1179,6 +1179,33 @@ fn stalled_rolling_filters_leave_every_account_time_to_drain() {
     assert_eq!(wallet.one_time_unspent(&first), 1_000_000);
 }
 
+/// A history check against a publication the wallet has not scanned yet reports that
+/// it is waiting for sync, a kind of its own the app can show honestly, rather than a
+/// failure.
+#[test]
+fn a_history_check_ahead_of_sync_waits_for_sync() {
+    isolated!(a_history_check_ahead_of_sync_waits_for_sync);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    chain.mine(2);
+    wallet.scan(&chain);
+    chain.mine(2);
+    let error = wallet
+        .recover_with(
+            &Service::at_tip(&chain),
+            Some(None),
+            Duration::from_secs(45),
+        )
+        .unwrap_err();
+    assert!(matches!(error, RecoveryError::NotCaughtUp), "{error}");
+    let error = crate::api::one_time_ivk::ReceiveError::from(error);
+    assert_eq!(
+        error.kind,
+        crate::api::one_time_ivk::ReceiveErrorKind::WaitingForSync
+    );
+}
+
 /// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
 /// can be, is not a software account. Recovery, the status read and issuance keep working
 /// for the wallet's other accounts, with the feature off and on.
