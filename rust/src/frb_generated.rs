@@ -14451,6 +14451,7 @@ impl SseDecode for crate::api::one_time_ivk::ReceiveErrorKind {
             2 => crate::api::one_time_ivk::ReceiveErrorKind::Limit,
             3 => crate::api::one_time_ivk::ReceiveErrorKind::ReceiveHistory,
             4 => crate::api::one_time_ivk::ReceiveErrorKind::UpgradeRequired,
+            5 => crate::api::one_time_ivk::ReceiveErrorKind::WaitingForSync,
             _ => unreachable!("Invalid variant for ReceiveErrorKind: {}", inner),
         };
     }
@@ -19262,6 +19263,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::one_time_ivk::ReceiveErrorKin
             Self::Limit => 2.into_dart(),
             Self::ReceiveHistory => 3.into_dart(),
             Self::UpgradeRequired => 4.into_dart(),
+            Self::WaitingForSync => 5.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -23915,6 +23917,7 @@ impl SseEncode for crate::api::one_time_ivk::ReceiveErrorKind {
                 crate::api::one_time_ivk::ReceiveErrorKind::Limit => 2,
                 crate::api::one_time_ivk::ReceiveErrorKind::ReceiveHistory => 3,
                 crate::api::one_time_ivk::ReceiveErrorKind::UpgradeRequired => 4,
+                crate::api::one_time_ivk::ReceiveErrorKind::WaitingForSync => 5,
                 _ => {
                     unimplemented!("");
                 }

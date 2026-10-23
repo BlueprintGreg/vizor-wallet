@@ -6,7 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `with_existing_wallet`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`
 
 /// Reserves the lowest eligible receive slot or a refund key after funding history sync.
 /// Receive issuance uses the mined four-index window and performs no network request.
@@ -243,6 +244,10 @@ enum ReceiveErrorKind {
 
   /// The receiver service needs a newer app. Pending recovery work is kept.
   upgradeRequired,
+
+  /// A swap history check cannot start until wallet sync catches up with the
+  /// receiver service. Ask again shortly.
+  waitingForSync,
 }
 
 /// A durably reserved swap address. A refund address carries its refund key index, an

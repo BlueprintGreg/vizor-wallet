@@ -49,6 +49,9 @@ pub(crate) enum RecoveryError {
     /// The receiver service speaks a format this app does not support. Every active
     /// account recorded it (see `require_one_time_upgrade`).
     UpgradeRequired,
+    /// A history check could not start because the wallet has not scanned the
+    /// receiver service's latest publication yet. It can start once sync catches up.
+    NotCaughtUp,
     /// Any other failure, as display text.
     Other(String),
 }
@@ -72,6 +75,9 @@ impl std::fmt::Display for RecoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UpgradeRequired => f.write_str("The swap recovery service needs a newer app."),
+            Self::NotCaughtUp => f.write_str(
+                "Swap history check has not started. Wait for wallet sync to catch up and try again.",
+            ),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -542,11 +548,9 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     if active.is_empty() {
         return Ok(Round::default());
     }
-    const NOT_CAUGHT_UP: &str =
-        "Swap history check has not started. Wait for wallet sync to catch up and try again.";
     let inventory = match capture(path, network, generation, origin, transport, store).await {
         Ok(Some(inventory)) => inventory,
-        Ok(None) if manual.is_some() => return Err(NOT_CAUGHT_UP.into()),
+        Ok(None) if manual.is_some() => return Err(RecoveryError::NotCaughtUp),
         Ok(None) => {
             return Ok(Round {
                 active: true,
@@ -576,14 +580,14 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     let mut ready = Vec::new();
     let mut due = Vec::new();
     for account in active {
-        let result: Result<(), String> = async {
+        let result: Result<(), RecoveryError> = async {
             let accepted_locally = wallet(path, network, generation, |db| {
                 db.begin_one_time_recovery(account, publication, false)
                     .map_err(|e| e.to_string())
             })?;
             if !accepted_locally {
                 return if manual.is_some() {
-                    Err(NOT_CAUGHT_UP.into())
+                    Err(RecoveryError::NotCaughtUp)
                 } else {
                     Ok(())
                 };
@@ -699,7 +703,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         }
         .await;
         if let Err(error) = result {
-            failure.get_or_insert(error.into());
+            failure.get_or_insert(error);
             if CANCEL.load(Ordering::SeqCst) != generation {
                 return Err(failure.expect("recorded"));
             }
