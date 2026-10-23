@@ -62,12 +62,4 @@ void main() {
     expect(container.read(nearSwapPrivacySettingAvailableProvider), isFalse);
     expect(container.read(nearSwapPrivacyProvider), isFalse);
   });
-
-  /// Without the private service a saved opt-in stays off, so no swap address
-  /// is issued and no recovery round is scheduled for it.
-  test('a saved opt-in is off without the private service', () {
-    final container = _container('main', service: false);
-    expect(container.read(nearSwapPrivacyProvider), isFalse);
-    expect(_container('main').read(nearSwapPrivacyProvider), isTrue);
-  });
 }

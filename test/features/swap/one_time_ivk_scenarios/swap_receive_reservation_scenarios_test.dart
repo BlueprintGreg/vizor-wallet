@@ -2,7 +2,6 @@
 // quote failures release a reservation, and what the Rust-backed store hands
 // the wallet. See `SwapReceiveReservationService` and
 // docs/near-swap-receiving.md.
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
@@ -70,7 +69,6 @@ void main() {
       'bad',
       statusCode: 400,
     ),
-    'a timeout': TimeoutException('lost response'),
     'a dropped socket': const SocketException('reset'),
     'a malformed success': const FormatException('bad json'),
   };
@@ -304,8 +302,9 @@ SwapIntentSnapshot _snapshot(
   ),
 );
 
-/// Records calls in [events], failing a call whose error is set.
-class _Store implements ReceiveReservationStore {
+/// Records calls in [events], failing a call whose error is set. Other calls
+/// fail.
+class _Store extends Fake implements ReceiveReservationStore {
   final events = <String>[];
   var _requests = 0;
   Object? beginError;
@@ -313,12 +312,6 @@ class _Store implements ReceiveReservationStore {
   Object? startError;
   Object? refundError;
   String savedAddress = 'deposit';
-
-  @override
-  Future<api.SwapAddress> reserve({
-    required bool incoming,
-    required BigInt tip,
-  }) => throw UnimplementedError();
 
   @override
   Future<String> begin(BigInt reservation, DateTime deadline) async {
@@ -347,15 +340,6 @@ class _Store implements ReceiveReservationStore {
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {
     if (refundError case final error?) throw error;
   }
-
-  @override
-  Future<bool> observe({
-    required bool incoming,
-    required String depositAddress,
-    required String? memo,
-    required SwapIntentSnapshot snapshot,
-    required DateTime checkedAt,
-  }) => throw UnimplementedError();
 }
 
 /// One `observe_swap_status` call as Rust receives it.

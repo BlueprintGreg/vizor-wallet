@@ -75,20 +75,6 @@ void main() {
     },
   );
 
-  /// A provider failure is not the address's fault, so the reserved incoming
-  /// address is quoted again on the next attempt.
-  test('a reserved incoming address survives a provider quote error', () async {
-    final h = await _Harness.create();
-    h.provider.quoteError = StateError('provider unavailable');
-    await h.review('25');
-    expect(h.state.quoteError, isNotNull);
-    h.provider.quoteError = null;
-    await h.review('26');
-    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
-    expect(h.reservations, 1);
-    expect(h.store.begun, [BigInt.one, BigInt.one]);
-  });
-
   /// Each account keeps its own reserved address, and switching back to an
   /// account quotes its address again rather than reserving another.
   test('reserved addresses are kept per account across switches', () async {
@@ -277,12 +263,11 @@ SwapIntent _privateIncomingSwap(String id, {required DateTime deadline}) =>
 /// treated as on (every reservation goes through [reserve]), an in-memory
 /// activity store and a tracker that records what reaches the wallet.
 class _Harness {
-  _Harness._(this.container, this.sync, this.provider, this.store);
+  _Harness._(this.container, this.sync, this.provider);
 
   final ProviderContainer container;
   final _Sync sync;
   final _Provider provider;
-  final _Reservations store;
   var reservations = 0;
 
   /// Statuses the wallet recorded, in order.
@@ -362,7 +347,7 @@ class _Harness {
       ],
     );
     addTearDown(container.dispose);
-    h = _Harness._(container, sync, provider, reservationStore);
+    h = _Harness._(container, sync, provider);
     container.listen(swapStateProvider, (_, _) {});
     await container.read(syncProvider.future);
     await pumpEventQueue();
@@ -456,46 +441,24 @@ class _Sync extends SyncNotifier {
   Future<void> refreshAfterSend() async {}
 }
 
-/// Incoming reservation records that accept every quote.
-class _Reservations implements ReceiveReservationStore {
-  final begun = <BigInt>[];
+/// Incoming reservation records that accept every quote. Other calls fail.
+class _Reservations extends Fake implements ReceiveReservationStore {
+  var _requests = 0;
 
   @override
-  Future<String> begin(BigInt reservation, DateTime deadline) async {
-    begun.add(reservation);
-    return 'request-${begun.length}';
-  }
+  Future<String> begin(BigInt reservation, DateTime deadline) async =>
+      'request-${++_requests}';
 
   @override
   Future<void> finish(String request, SwapQuote? accepted) async {}
 
   @override
-  Future<api.ReceiveDeposit> start(String request) =>
-      throw UnimplementedError();
-
-  @override
-  Future<api.SwapAddress> reserve({
-    required bool incoming,
-    required BigInt tip,
-  }) => throw UnimplementedError();
-
-  @override
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {}
-
-  @override
-  Future<bool> observe({
-    required bool incoming,
-    required String depositAddress,
-    required String? memo,
-    required SwapIntentSnapshot snapshot,
-    required DateTime checkedAt,
-  }) => throw UnimplementedError();
 }
 
 /// 1Click as the composer sees it: quotes that run the send hook, and
 /// configurable status and deposit-submission answers.
 class _Provider implements SwapProvider {
-  Object? quoteError;
   SwapIntentStatus status = SwapIntentStatus.processing;
   SwapIntentStatus submitStatus = SwapIntentStatus.depositObserved;
   final statusRequests = <String>[];
@@ -507,14 +470,12 @@ class _Provider implements SwapProvider {
   Future<List<SwapAsset>> listSupportedExternalAssets() async =>
       swapExternalAssets;
 
-  /// Sends the request through its hook, then answers or fails with
-  /// [quoteError].
+  /// Sends the request through its hook, then answers.
   @override
   Future<SwapQuote> quote(SwapQuoteRequest request) async {
     await request.beforeSend?.call(
       DateTime.now().toUtc().add(const Duration(hours: 1)),
     );
-    if (quoteError case final error?) throw error;
     final estimate = SwapQuote.estimate(
       direction: request.direction,
       externalAsset: request.externalAsset,

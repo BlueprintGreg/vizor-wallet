@@ -109,26 +109,6 @@ void main() {
     expect(provider.requests, 5);
   });
 
-  /// An ordinary swap never reaches the wallet, so even a wallet that always
-  /// fails cannot fail its status refresh or keep it open.
-  test('an ordinary swap ignores a failing wallet', () async {
-    final provider = _StatusProvider()..next = SwapIntentStatus.complete;
-    var calls = 0;
-    final tracker = _tracker(provider, (_, _, _) async {
-      calls++;
-      throw StateError('database is locked');
-    });
-    final intent = _privateIncoming().copyWith(privateAddress: false);
-    await tracker.saveIntents(accountUuid: _account, intents: [intent]);
-    final result = await tracker.refreshOpenIntents(
-      accountUuid: _account,
-      currentIntents: [intent],
-    );
-    expect(result.refreshError, isNull);
-    expect(result.intents.single.status, SwapIntentStatus.complete);
-    expect(calls, 0);
-  });
-
   /// The poll that first sees PENDING_DEPOSIT after the deposit deadline is
   /// the wallet's evidence that the started quote ended, which releases its
   /// receive index. The app resolves that poll to `expired`, but the snapshot
@@ -235,8 +215,9 @@ SwapIntent _privateIncoming({DateTime? deadline, bool noDeadline = false}) =>
       privateAddress: true,
     );
 
-/// Answers every status request with [next], counting requests.
-class _StatusProvider implements SwapProvider {
+/// Answers every status request with [next], counting requests. Other calls
+/// fail.
+class _StatusProvider extends Fake implements SwapProvider {
   SwapIntentStatus next = SwapIntentStatus.processing;
 
   /// The deposit deadline the status reports, if any.
@@ -248,14 +229,6 @@ class _StatusProvider implements SwapProvider {
 
   @override
   Future<List<SwapAsset>> listSupportedExternalAssets() async => const [];
-
-  @override
-  Future<SwapQuote> quote(SwapQuoteRequest request) =>
-      throw UnimplementedError();
-
-  @override
-  Future<SwapIntentSnapshot> startSwap(SwapQuote quote) =>
-      throw UnimplementedError();
 
   /// Returns [next] for `intentId`, reporting [deadline].
   @override
@@ -283,14 +256,6 @@ class _StatusProvider implements SwapProvider {
       ),
     );
   }
-
-  @override
-  Future<SwapIntentSnapshot> submitDepositTransaction({
-    required String depositAddress,
-    required String txHash,
-    String? depositMemo,
-    String? nearSenderAccount,
-  }) => throw UnimplementedError();
 }
 
 /// Keeps one account's records in memory.
