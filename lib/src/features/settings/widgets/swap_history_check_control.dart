@@ -13,7 +13,7 @@ import '../../../providers/sync_provider.dart'
 String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.idle => 'Check older addresses for repeat payments.',
   SwapHistoryCheck.checking => 'Checking swap history…',
-  SwapHistoryCheck.done => 'The selected swap history check is complete.',
+  SwapHistoryCheck.done => 'Swap history check complete.',
   SwapHistoryCheck.continuing => 'The check will continue in the background.',
   SwapHistoryCheck.paused => 'Paused. Check again to resume.',
   SwapHistoryCheck.failed =>
@@ -75,12 +75,9 @@ class SwapHistoryCheckControl extends ConsumerWidget {
                 size: AppButtonSize.medium,
                 child: const Text('Check swap history'),
               ),
-              // A check waiting for sync may follow a saved job that later
-              // rounds resume, so it can still be paused.
-              if (running ||
-                  check == SwapHistoryCheck.continuing ||
-                  check == SwapHistoryCheck.failed ||
-                  check == SwapHistoryCheck.waitingForSync)
+              // Only a call in flight or a job the wallet still has can be
+              // paused.
+              if (running || ref.watch(swapHistoryJobSavedProvider))
                 AppButton(
                   key: const ValueKey('settings_cancel_swap_history'),
                   onPressed: () => unawaited(notifier.cancel()),

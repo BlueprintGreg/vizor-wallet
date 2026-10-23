@@ -335,6 +335,42 @@ void main() {
   );
 
   test(
+    'a check left to continue shows done once a round ends the job',
+    () async {
+      var saved = true;
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(saved: () async => _status(manual: saved)),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async {},
+              cancel: () async {},
+              status: () async => _status(manual: saved),
+              pollInterval: Duration.zero,
+              maxWait: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.continuing,
+      );
+      expect(container.read(swapHistoryJobSavedProvider), isTrue);
+
+      // A background round finishes the job.
+      saved = false;
+      container.read(swapRecoveryRoundsProvider.notifier).ended();
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+      expect(container.read(swapHistoryJobSavedProvider), isFalse);
+    },
+  );
+
+  test(
     'a failed read then a privacy toggle still shows the saved job',
     () async {
       var failNext = true;
@@ -360,10 +396,12 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
-      // The startup read sees the saved job, then a status read fails.
+      // The startup read sees the saved job, then a status read fails. The job
+      // is still saved, so it stays offered for pausing rather than failed.
       container.read(swapHistoryCheckProvider);
       await pumpEventQueue();
-      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.failed);
+      expect(failNext, isFalse, reason: 'the failing read happened');
+      expect(container.read(swapHistoryJobSavedProvider), isTrue);
 
       final privacy =
           container.read(nearSwapPrivacyProvider.notifier) as _Privacy;
