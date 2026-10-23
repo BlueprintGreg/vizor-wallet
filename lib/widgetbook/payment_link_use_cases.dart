@@ -762,8 +762,8 @@ class _PaymentLinkBatchDetailPreview extends StatelessWidget {
             : 'Unused',
         used: used,
         note: detected ? 'Use detected' : null,
-        onCopyLink: _noop,
-        onShowQr: _noop,
+        onCopyLink: ready ? _noop : null,
+        onShowQr: ready ? _noop : null,
       );
     }
 

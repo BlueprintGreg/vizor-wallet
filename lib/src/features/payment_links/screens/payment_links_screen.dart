@@ -3090,16 +3090,10 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
           batches.add(_buildBatchRow(members));
           continue;
         }
-        final fundingReady =
-            _fundingProgressByAddress[record.link.address]?.isReady ?? false;
-        final usage = ref
-            .watch(giftCardUsageProvider(record.link.address))
-            .value;
-        final status = usage?.status ?? record.usage.status;
-        final cards = switch ((fundingReady, status)) {
-          (true, GiftCardUsageStatus.unused) => unusedCards,
-          (true, GiftCardUsageStatus.spendDetected) => usedCards,
-          (true, GiftCardUsageStatus.used) => usedCards,
+        final cards = switch (_usageOf(record).status) {
+          GiftCardUsageStatus.unused => unusedCards,
+          GiftCardUsageStatus.spendDetected => usedCards,
+          GiftCardUsageStatus.used => usedCards,
           _ => pendingCards,
         };
         cards.add(recoveryRow(record));
@@ -3165,8 +3159,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   /// Whether a created Card's link can be shared yet, plus the status the row
   /// shows while it cannot. Shared by the desktop and mobile rows.
   ({bool canUseLink, String statusText, bool showLoader}) _recoveryRowState(
-    PaymentLinkRecoveryRecord record,
-  ) {
+    PaymentLinkRecoveryRecord record, {
+    GiftCardUsage? usage,
+  }) {
     final fundingReady =
         _fundingProgressByAddress[record.link.address]?.isReady ?? false;
     final canUseLink =
@@ -3182,7 +3177,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
           ? kPaymentLinkCheckingLabel
           : record.state == PaymentLinkRecoveryState.draft
           ? kPaymentLinkFundingIncompleteStatus
-          : kPaymentLinkPreparingStatus,
+          : (usage ?? record.usage).label,
       showLoader: !canUseLink && record.state != PaymentLinkRecoveryState.draft,
     );
   }
@@ -3259,7 +3254,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   }
 
   Widget _buildRecoveryRow(PaymentLinkRecoveryRecord record) {
-    final state = _recoveryRowState(record);
+    final state = _recoveryRowState(record, usage: _usageOf(record));
     final actionsEnabled = state.canUseLink && !_operationInProgress;
     final copyEnabled =
         actionsEnabled && !_copyingLinkAddresses.contains(record.link.address);
@@ -3280,6 +3275,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       usageStatus: state.canUseLink
           ? GiftCardUsageStatusView(
               address: record.link.address,
+              savedUsage: record.usage,
               inline: true,
               hideStableLabel: true,
             )
@@ -3300,16 +3296,37 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       status == GiftCardUsageStatus.used ||
       status == GiftCardUsageStatus.spendDetected;
 
+  GiftCardUsage _usageOf(PaymentLinkRecoveryRecord record) =>
+      record.usage.withLatestObservation(
+        ref.watch(giftCardUsageProvider(record.link.address)).value,
+      );
+
   Widget _buildBatchRow(List<PaymentLinkRecoveryRecord> members) {
     final first = members.first;
     final count = first.batchCount ?? members.length;
     final ready = _batchMembersReady(members);
-    final statuses = [
-      for (final record in members)
-        ref.watch(giftCardUsageProvider(record.link.address)).value?.status ??
-            record.usage.status,
-    ];
+    final statuses = [for (final record in members) _usageOf(record).status];
     final usedCount = statuses.where(_isUsedStatus).length;
+    final unusedCount = statuses
+        .where((status) => status == GiftCardUsageStatus.unused)
+        .length;
+    final usageSummary = usedCount > 0
+        ? usedCount == count
+              ? 'All used'
+              : '$usedCount of $count used'
+        : unusedCount > 0
+        ? unusedCount == count
+              ? kPaymentLinkUnusedSectionLabel
+              : '$unusedCount of $count unused'
+        : null;
+    final checkingFunding =
+        !_fundingProgressChecked ||
+        members.any(
+          (record) => _checkingCreatedDrafts.contains(record.link.address),
+        );
+    final checkingUsage =
+        ref.watch(giftCardTrackingStateProvider).checking &&
+        members.any((record) => !_usageOf(record).cleaned);
     final secondArtworkId = members.length > 1
         ? members[1].link.presentation?.artworkId
         : null;
@@ -3326,29 +3343,22 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
         privacyModeEnabled: ref.watch(privacyModeProvider),
       ),
       dateText: _formatCardDate(first.link.createdAt),
+      showLoader: usageSummary != null && (checkingFunding || checkingUsage),
       // An initial funding read or draft recovery has no result yet.
       statusText:
-          !ready &&
-              (!_fundingProgressChecked ||
-                  members.any(
-                    (record) =>
-                        record.state == PaymentLinkRecoveryState.draft &&
-                        _checkingCreatedDrafts.contains(record.link.address),
-                  ))
-          ? kPaymentLinkCheckingLabel
-          : ready
-          ? switch (usedCount) {
-              0 => 'Ready to share',
-              _ when usedCount == count => 'All used',
-              _ => '$usedCount of $count used',
-            }
-          : switch (_batchPendingKind(members)) {
-              PaymentLinkBatchPendingKind.incomplete =>
-                'Some cards aren’t ready',
-              PaymentLinkBatchPendingKind.unconfirmedBroadcast =>
-                'Payment status pending',
-              PaymentLinkBatchPendingKind.confirming => 'Confirming payment',
-            },
+          usageSummary ??
+          (!ready && checkingFunding
+              ? kPaymentLinkCheckingLabel
+              : ready
+              ? 'Ready to share'
+              : switch (_batchPendingKind(members)) {
+                  PaymentLinkBatchPendingKind.incomplete =>
+                    'Some cards aren’t ready',
+                  PaymentLinkBatchPendingKind.unconfirmedBroadcast =>
+                    'Payment status pending',
+                  PaymentLinkBatchPendingKind.confirming =>
+                    'Confirming payment',
+                }),
       onOpen: () => _openBatchDetail(first.batchId!),
     );
   }
@@ -3410,12 +3420,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     final first = members.first;
     final ready = _batchMembersReady(members);
     final privacyMode = ref.watch(privacyModeProvider);
-    GiftCardUsage usageOf(PaymentLinkRecoveryRecord record) =>
-        ref.watch(giftCardUsageProvider(record.link.address)).value ??
-        record.usage;
     final tracking = ref.watch(giftCardTrackingStateProvider);
     final lastChecked = members
-        .map((record) => usageOf(record).checkedAt)
+        .map((record) => _usageOf(record).checkedAt)
         .whereType<DateTime>()
         .fold<DateTime?>(
           null,
@@ -3428,7 +3435,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     final unusedCards = <Widget>[];
     final usedCards = <Widget>[];
     for (final record in members) {
-      final usage = usageOf(record);
+      final usage = _usageOf(record);
       final used = _isUsedStatus(usage.status);
       final pending = usage.status == GiftCardUsageStatus.unknown;
       (used
@@ -3454,10 +3461,15 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
                   !usage.cleaned &&
                   !tracking.checking &&
                   tracking.failedFor(record.link.address),
-              onCopyLink: !_copyingLinkAddresses.contains(record.link.address)
+              onCopyLink:
+                  ready &&
+                      !_operationInProgress &&
+                      !_copyingLinkAddresses.contains(record.link.address)
                   ? () => _copyPaymentLink(record.link)
                   : null,
-              onShowQr: () => _openShareQr(record),
+              onShowQr: ready && !_operationInProgress
+                  ? () => _openShareQr(record)
+                  : null,
             ),
           );
     }
@@ -3496,7 +3508,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
             members.any((record) => tracking.failedFor(record.link.address)),
         checkedText: lastChecked == null ? null : _checkedAgoText(lastChecked),
       ),
-      // Only shown once every card is ready to share.
+      // Saved classifications are visible before sharing becomes available.
       sections: [
         PaymentLinkCardsSection(
           label: kPaymentLinkPendingSectionLabel,
@@ -3560,7 +3572,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   }
 
   Widget _buildMobileRecoveryRow(PaymentLinkRecoveryRecord record) {
-    final state = _recoveryRowState(record);
+    final state = _recoveryRowState(record, usage: _usageOf(record));
     final actionsEnabled = state.canUseLink && !_operationInProgress;
     final copyEnabled =
         actionsEnabled && !_copyingLinkAddresses.contains(record.link.address);
@@ -3580,6 +3592,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       metadata: state.canUseLink
           ? GiftCardUsageStatusView(
               address: record.link.address,
+              savedUsage: record.usage,
               inline: true,
               dateText: _formatCardDate(record.link.createdAt),
               hideStableLabel: true,
