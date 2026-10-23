@@ -5,10 +5,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:zcash_wallet/src/features/payment_links/providers/payment_link_claim_coordinator_provider.dart';
 import 'package:go_router/go_router.dart';
+import 'package:zcash_wallet/src/features/payment_links/models/vizor_payment_link.dart';
 import 'package:zcash_wallet/src/features/payment_links/providers/payment_link_cards_provider.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_recovery_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/services/payment_link_received_store.dart';
 import 'package:zcash_wallet/src/features/payment_links/widgets/mobile/payment_link_mobile_views.dart';
+import 'package:zcash_wallet/src/features/payment_links/widgets/payment_link_desktop_views.dart';
+import 'package:zcash_wallet/src/features/payment_links/services/payment_link_service.dart';
 
 import 'payment_links_screen_support.dart';
 import 'package:zcash_wallet/src/providers/app_security_provider.dart';
@@ -97,6 +100,105 @@ void registerGiftCardEntryChecks({required bool mobile}) {
     expect(find.byKey(screenKey), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  for (final outcome in ['complete', 'fail', 'interrupt']) {
+    testWidgets('draft checking ends when recovery $outcome', (tester) async {
+      final gate = Completer<void>();
+      final draft = fundedRecovery.copyWith(
+        state: PaymentLinkRecoveryState.draft,
+        updatedAt: fundedRecovery.updatedAt,
+      );
+      final operations = FakePaymentLinkOperations(records: [draft])
+        ..createdRecoveryGate = gate;
+      await pumpPaymentLinksScreen(
+        tester,
+        operations: operations,
+        logicalSize: logicalSize,
+      );
+      Finder status(String label) =>
+          find.descendant(of: row(), matching: find.text(label));
+      expect(status('Checking…'), findsOneWidget);
+      expect(status('Funding incomplete'), findsNothing);
+      if (outcome == 'complete') {
+        gate.complete();
+      } else if (outcome == 'fail') {
+        gate.completeError(StateError('network unavailable'));
+      } else {
+        final container = ProviderScope.containerOf(
+          tester.element(find.byKey(screenKey)),
+        );
+        container.read(paymentLinkClaimCoordinatorProvider).pauseForLifecycle();
+        gate.completeError(
+          GiftCardPreparationInterrupted(
+            GiftCardPreparationPauseReason.lifecycle,
+          ),
+        );
+      }
+      await pumpFrames(tester);
+      expect(status('Checking…'), findsNothing);
+      expect(status('Funding incomplete'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  if (!mobile) {
+    testWidgets('batch keeps checking while its draft recovery is pending', (
+      tester,
+    ) async {
+      final fundingGate = Completer<void>()..complete();
+      final recoveryGate = Completer<void>();
+      final operations = _PendingFundingOperations(fundingGate, draft: true)
+        ..createdRecoveryGate = recoveryGate;
+      await pumpPaymentLinksScreen(
+        tester,
+        operations: operations,
+        logicalSize: logicalSize,
+      );
+      final batch = find.byKey(
+        const ValueKey('payment_link_batch_entry-check'),
+      );
+      Finder status(String label) =>
+          find.descendant(of: batch, matching: find.text(label));
+      expect(status('Checking…'), findsOneWidget);
+      recoveryGate.complete();
+      await pumpFrames(tester);
+      expect(status('Checking…'), findsNothing);
+      expect(status('Payment status pending'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final failed in [false, true]) {
+      testWidgets('batch first funding check is visible (failed=$failed)', (
+        tester,
+      ) async {
+        final gate = Completer<void>();
+        final operations = _PendingFundingOperations(gate);
+        await pumpPaymentLinksScreen(
+          tester,
+          operations: operations,
+          logicalSize: logicalSize,
+        );
+        final batch = find.byKey(
+          const ValueKey('payment_link_batch_entry-check'),
+        );
+        Finder status(String label) =>
+            find.descendant(of: batch, matching: find.text(label));
+        expect(status('Checking…'), findsOneWidget);
+        if (failed) {
+          gate.completeError(StateError('funding read unavailable'));
+        } else {
+          gate.complete();
+        }
+        await pumpFrames(tester);
+        expect(status('Checking…'), findsNothing);
+        expect(
+          status(failed ? 'Confirming payment' : 'Ready to share'),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 
   testWidgets('interrupted created recovery resumes on the open screen', (
     tester,
@@ -211,6 +313,82 @@ void registerGiftCardEntryChecks({required bool mobile}) {
     expect(router.routerDelegate.currentConfiguration.uri.path, '/home');
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('late share metadata can finish after leaving the screen', (
+    tester,
+  ) async {
+    final gate = Completer<void>();
+    final operations = _PendingShareMetadataOperations(gate);
+    await pumpPaymentLinksScreen(
+      tester,
+      operations: operations,
+      logicalSize: logicalSize,
+    );
+    await pumpFrames(tester);
+    if (mobile) {
+      tester.widget<PaymentLinkCardListMobileRow>(row()).onCopyLink!();
+    } else {
+      tester.widget<PaymentLinkCardListRow>(row()).onCopyLink!();
+    }
+    await pumpFrames(tester);
+    expect(operations.sharedLinks, isNotEmpty);
+    final router = GoRouter.of(tester.element(find.byKey(screenKey)));
+    router.go('/home');
+    await pumpFrames(tester);
+    final calls = operations.createdLoadCalls;
+    gate.complete();
+    await pumpFrames(tester);
+    expect(operations.createdLoadCalls, calls + 1);
+    expect(find.byKey(screenKey), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+class _PendingShareMetadataOperations extends FakePaymentLinkOperations {
+  _PendingShareMetadataOperations(this.gate) : super(records: [fundedRecovery]);
+
+  final Completer<void> gate;
+
+  @override
+  Future<PaymentLinkRecoveryRecord> markCreatedLinkShared(
+    VizorPaymentLink link,
+  ) async {
+    final record = await super.markCreatedLinkShared(link);
+    await gate.future;
+    return record;
+  }
+}
+
+class _PendingFundingOperations extends FakePaymentLinkOperations {
+  _PendingFundingOperations(this.gate, {bool draft = false})
+    : super(
+        records: [
+          for (var i = 0; i < batchTestLinks.length; i++)
+            PaymentLinkRecoveryRecord(
+              link: batchTestLinks[i],
+              sourceAccountUuid: 'account-1',
+              state: draft
+                  ? PaymentLinkRecoveryState.draft
+                  : PaymentLinkRecoveryState.funded,
+              updatedAt: fundedRecovery.updatedAt,
+              fundingTxids: 'funding-txid',
+              claimFeeReserveZatoshi: BigInt.from(10000),
+              batchId: 'entry-check',
+              batchIndex: i + 1,
+              batchCount: batchTestLinks.length,
+            ),
+        ],
+      );
+
+  final Completer<void> gate;
+
+  @override
+  Future<Map<String, PaymentLinkFundingProgress>> inspectCreatedLinkFundings(
+    List<PaymentLinkRecoveryRecord> records,
+  ) async {
+    await gate.future;
+    return super.inspectCreatedLinkFundings(records);
+  }
 }
 
 class _InterruptedCreatedOperations extends FakePaymentLinkOperations {

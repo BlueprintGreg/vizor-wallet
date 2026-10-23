@@ -230,6 +230,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   bool _pendingIntakeScheduled = false;
   bool _initialCardsLoaded = false;
   Future<void>? _createdRecoveryInFlight;
+  Set<String> _checkingCreatedDrafts = const {};
   bool _createdRecoveryNeedsResume = false;
   int _cardReadEpoch = 0;
   // Whether funding progress has been read once. Until then a batch's
@@ -735,6 +736,15 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     final epoch = _cardReadEpoch;
     final generation = AppSecureStore.instance.sessionGeneration;
     bool acceptsResult() => _acceptsCardRead(epoch, generation);
+    if (mounted) {
+      setState(() {
+        _checkingCreatedDrafts = {
+          for (final record in _recoveries)
+            if (record.state == PaymentLinkRecoveryState.draft)
+              record.link.address,
+        };
+      });
+    }
     try {
       final records = await _paymentLinkOperations.recoverCreatedLinks();
       if (!acceptsResult()) return;
@@ -750,6 +760,8 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       if (acceptsResult() && showError) {
         _showError('Gift cards could not be loaded.');
       }
+    } finally {
+      if (mounted) setState(() => _checkingCreatedDrafts = const {});
     }
   }
 
@@ -3161,9 +3173,14 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
         fundingReady &&
         (record.state == PaymentLinkRecoveryState.funded ||
             record.state == PaymentLinkRecoveryState.shared);
+    final checkingDraft =
+        record.state == PaymentLinkRecoveryState.draft &&
+        _checkingCreatedDrafts.contains(record.link.address);
     return (
       canUseLink: canUseLink,
-      statusText: record.state == PaymentLinkRecoveryState.draft
+      statusText: checkingDraft
+          ? kPaymentLinkCheckingLabel
+          : record.state == PaymentLinkRecoveryState.draft
           ? kPaymentLinkFundingIncompleteStatus
           : kPaymentLinkPreparingStatus,
       showLoader: !canUseLink && record.state != PaymentLinkRecoveryState.draft,
@@ -3309,10 +3326,16 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
         privacyModeEnabled: ref.watch(privacyModeProvider),
       ),
       dateText: _formatCardDate(first.link.createdAt),
-      // Before funding is read once, a batch is unknown rather than pending,
-      // so the row does not flash a pending status on entry.
-      statusText: !ready && !_fundingProgressChecked
-          ? ''
+      // An initial funding read or draft recovery has no result yet.
+      statusText:
+          !ready &&
+              (!_fundingProgressChecked ||
+                  members.any(
+                    (record) =>
+                        record.state == PaymentLinkRecoveryState.draft &&
+                        _checkingCreatedDrafts.contains(record.link.address),
+                  ))
+          ? kPaymentLinkCheckingLabel
           : ready
           ? switch (usedCount) {
               0 => 'Ready to share',
