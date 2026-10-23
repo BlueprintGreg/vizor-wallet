@@ -581,6 +581,45 @@ void main() {
     expect(recorded, ['private']);
   });
 
+  test('wallet deletion waits for saved private swap activity', () async {
+    final lifecycle = LedgerOperationLifecycle();
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      lifecycle: lifecycle,
+      onProviderSnapshot: (_, _, _) async => true,
+    );
+    final private = _intent(
+      id: 'private',
+      depositAddress: 'private',
+    ).copyWith(privateAddress: true);
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [private]);
+    final held = Completer<void>();
+    var saving = false;
+    store.onSave = () {
+      saving = true;
+      return held.future;
+    };
+    final refresh = tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: [private],
+    );
+    await pumpEventQueue();
+    expect(saving, isTrue, reason: 'the status arrived and its save started');
+
+    var drained = false;
+    unawaited(lifecycle.quiesceAndDrain().then((_) => drained = true));
+    await pumpEventQueue();
+    expect(drained, isFalse, reason: 'deletion waits for the activity write');
+    held.complete();
+    await refresh;
+    await pumpEventQueue();
+    expect(drained, isTrue);
+    lifecycle.resume();
+  });
+
   test('ordinary swaps stay outside the wallet deletion drain', () async {
     final lifecycle = LedgerOperationLifecycle();
     final store = _MemorySwapActivityStore();
@@ -899,6 +938,9 @@ class _MemorySwapActivityStore implements SwapActivityStore {
   var saveCount = 0;
   List<SwapIntentRecord> savedRecords = const [];
 
+  /// Runs before each save, for tests that hold a write.
+  Future<void> Function()? onSave;
+
   @override
   Future<List<SwapIntentRecord>> loadRecords({
     required String accountUuid,
@@ -911,6 +953,7 @@ class _MemorySwapActivityStore implements SwapActivityStore {
     required String accountUuid,
     required List<SwapIntentRecord> records,
   }) async {
+    await onSave?.call();
     saveCount++;
     savedRecords = records;
   }
