@@ -318,17 +318,34 @@ impl WorkModel {
 
     /// Estimated work left in the pending ranges, up to the chain tip.
     pub(super) fn pending_work(&self, ranges: &[ScanRange], tip_height: u64) -> f64 {
-        let tip_end = tip_height.saturating_add(1);
-        ranges
-            .iter()
-            .filter(|range| is_pending_scan_range(range))
-            .map(|range| {
-                let start = u64::from(u32::from(range.block_range().start));
-                let end = u64::from(u32::from(range.block_range().end)).min(tip_end);
-                self.range_work(start, end)
-            })
+        pending_blocks_up_to_tip(ranges, tip_height)
+            .map(|(start, end)| self.range_work(start, end))
             .sum()
     }
+
+    /// Estimated compact-block bytes left to download in the pending ranges,
+    /// up to the chain tip.
+    pub(super) fn pending_download_bytes(&self, ranges: &[ScanRange], tip_height: u64) -> f64 {
+        pending_blocks_up_to_tip(ranges, tip_height)
+            .map(|(start, end)| self.download_bytes(start, end))
+            .sum()
+    }
+}
+
+/// The `[start, end)` blocks of each pending range, cut at the chain tip.
+fn pending_blocks_up_to_tip(
+    ranges: &[ScanRange],
+    tip_height: u64,
+) -> impl Iterator<Item = (u64, u64)> + '_ {
+    let tip_end = tip_height.saturating_add(1);
+    ranges
+        .iter()
+        .filter(|range| is_pending_scan_range(range))
+        .map(move |range| {
+            let start = u64::from(u32::from(range.block_range().start));
+            let end = u64::from(u32::from(range.block_range().end)).min(tip_end);
+            (start, end)
+        })
 }
 
 /// One past the last compiled checkpoint, or 0 without one.
@@ -1080,6 +1097,27 @@ mod tests {
         ];
         let expected = model.range_work(10_000, 12_000) + model.range_work(13_000, 15_001);
         assert!((model.pending_work(&ranges, 15_000) - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pending_download_bytes_count_only_pending_ranges_up_to_the_tip() {
+        let model = WorkModel::from_points(
+            [
+                vec![(10_000, 0.0), (20_000, 1_000_000.0)],
+                vec![(10_000, 0.0), (20_000, 500_000.0)],
+                vec![],
+            ],
+            1_000,
+            u64::MAX,
+        );
+        let ranges = [
+            range(10_000, 12_000, ScanPriority::Historic),
+            range(12_000, 13_000, ScanPriority::Scanned),
+            range(13_000, 20_000, ScanPriority::ChainTip),
+        ];
+        let expected = model.download_bytes(10_000, 12_000) + model.download_bytes(13_000, 15_001);
+        assert!(expected > 0.0);
+        assert!((model.pending_download_bytes(&ranges, 15_000) - expected).abs() < 1e-6);
     }
 
     #[test]

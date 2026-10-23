@@ -674,8 +674,47 @@ Swift BackgroundMigrationPreparationManager
 Tor covers the app's foreground traffic only. The desired route lives in Rust
 process memory, applied by the Dart layer at startup and by the settings
 toggle; every foreground lightwalletd and HTTP path goes through the
-policy-aware openers and fails closed while Tor is starting or broken.
+policy-aware openers and fails closed while Tor is starting or broken, except
+a sync's large block download (below).
 
+- **Large block downloads leave Tor.** A sync session whose estimated
+  compact-block download, counting only the ranges it may fetch directly
+  (`direct_download_bytes`), reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` fetches its
+  main-scan batches (`GetBlockRange`, the batch-start `GetTreeState`, and
+  `GetBlock` for the predecessor's hash when the first block carries none) over
+  `open_block_download_lwd_transport`, which skips the direct-route lease and
+  never dials an onion server (`block_download_can_go_direct`): only Tor
+  reaches one, and a direct dial would send its name to the system resolver.
+  Compact blocks are public, and one circuit would take hours for a restore.
+  The threshold is per platform, like the batch sizes: 256 MiB on desktop,
+  which keeps syncing in the background (about 13 minutes on one circuit,
+  roughly seven months of recent blocks), and 8 MiB on mobile, where sync runs
+  only on screen (about 25 seconds, roughly five days). It applies only under
+  Private queries: the direct connection opens alongside the session's Tor
+  one, so the server can tie the two together by timing, and Private queries
+  keep address and txid lookups off that Tor connection. Without them every
+  block download stays on Tor. The session still opens its Tor route first
+  and fails closed with it. If the direct connection cannot open, the
+  session downloads over Tor. A direct batch that fails, queued or not, is
+  downloaded again over Tor, and three failures in a row
+  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the rest of the session to Tor.
+  Only main-scan batches of ChainTip, Historic and
+  LatestPoolActivation ranges, and Verify batches above the blocks scanned
+  before the session (the frontier continuity check, often merged into a full
+  queued batch), use it (`batch_uses_direct_connection`). Checking-stage
+  batches, Verify batches over already-scanned blocks (witness repairs a
+  stopped session left), FoundNote and OpenAdjacent ranges, and every request
+  that carries an address, txid or transaction stay on Tor, though timing can
+  still tie them to a direct session. Their absence still shows: a FoundNote
+  range scanned out of order ends a direct batch, or leaves a gap, at a public
+  subtree boundary, so the server can infer which shards hold the wallet's
+  notes. The connection opens once per session, before the Checking stage,
+  only if Tor was already on when the session opened its route, and its open
+  stops with the session. A direct session shows the server the device's IP
+  address with the birthday bucket or resume height, so the connected
+  settings copy says Vizor uses Tor to protect the IP address rather than
+  promising that every request goes through Tor; it does not list this
+  exception.
 - **Voting SDK network clients are constructed only in**
   `rust/src/wallet/voting/network_clients.rs`. Chain, helper, PIR, and
   vote-tree are separate transport roles; injecting a chain transport does

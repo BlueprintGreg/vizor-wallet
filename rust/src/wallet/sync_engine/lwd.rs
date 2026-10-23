@@ -223,7 +223,8 @@ pub(crate) async fn open_isolated_lwd_transport(
 
 /// [`open_isolated_lwd_transport`] that stops waiting for the route once
 /// `cancelled` reports true, for a user-started request that a lock or a
-/// destructive wallet change must not wait out.
+/// destructive wallet change must not wait out, and for a sync attempt
+/// retrying on a fresh circuit.
 pub(crate) async fn open_isolated_lwd_transport_until(
     lightwalletd_url: &str,
     cancelled: impl Fn() -> bool,
@@ -245,7 +246,9 @@ pub(crate) async fn open_isolated_lwd_transport_until(
 ///
 /// Nothing in the foreground may use this: every foreground path goes through
 /// [`open_lwd_channel`] or [`open_isolated_lwd_channel`], which respect the
-/// user's chosen route and fail closed while Tor is starting or broken.
+/// user's chosen route and fail closed while Tor is starting or broken. The
+/// one foreground exception, a sync session's bulk block download, has its
+/// own opener, [`open_block_download_lwd_transport`].
 pub(crate) async fn open_background_direct_lwd_channel(
     lightwalletd_url: &str,
 ) -> Result<CompactTxStreamerClient<Channel>, SyncError> {
@@ -259,6 +262,48 @@ pub(crate) async fn open_background_direct_lwd_channel(
 pub(crate) async fn open_background_direct_lwd_transport(
     lightwalletd_url: &str,
 ) -> Result<Channel, SyncError> {
+    open_unleased_direct_transport(lightwalletd_url).await
+}
+
+/// Opens the direct transport a sync session downloads its compact blocks on
+/// while Tor is on and the session's download is large.
+///
+/// Compact blocks are public, and one Tor circuit would take hours to deliver
+/// a restore. Only main-scan batches use this transport: `GetBlockRange` and
+/// the `GetTreeState` before a batch that does not start at a compiled
+/// checkpoint, by height or by the first block's predecessor hash, with
+/// `GetBlock` for that hash when the first block does not carry it. Every
+/// other request of the session stays on the Tor route, which
+/// the session opens first, so a Tor route that is still starting or broken
+/// still stops the sync. Like the background opener it skips the direct-route
+/// lease, which exists to abort clearnet traffic once Tor is desired. It never
+/// dials an onion service ([`block_download_can_go_direct`]).
+pub(crate) async fn open_block_download_lwd_transport(
+    lightwalletd_url: &str,
+) -> Result<Channel, SyncError> {
+    if !block_download_can_go_direct(lightwalletd_url) {
+        return Err(SyncError::net(
+            "an onion lightwalletd is reachable only over Tor",
+        ));
+    }
+    open_unleased_direct_transport(lightwalletd_url).await
+}
+
+/// Whether a sync session may download its blocks from `lightwalletd_url`
+/// directly. An onion service is reachable only over Tor, and dialing one
+/// directly would send its name to the system resolver. The fully qualified
+/// spelling, with a trailing dot, names the same service.
+pub(crate) fn block_download_can_go_direct(lightwalletd_url: &str) -> bool {
+    Endpoint::from_shared(lightwalletd_url.to_string()).is_ok_and(|endpoint| {
+        !endpoint.uri().host().is_some_and(|host| {
+            host.trim_end_matches('.')
+                .to_ascii_lowercase()
+                .ends_with(".onion")
+        })
+    })
+}
+
+async fn open_unleased_direct_transport(lightwalletd_url: &str) -> Result<Channel, SyncError> {
     static RUSTLS_INIT: std::sync::Once = std::sync::Once::new();
     RUSTLS_INIT.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1156,6 +1201,30 @@ mod tests {
             let endpoint = Endpoint::from_shared(url.to_string()).expect("valid endpoint");
             assert_eq!(endpoint_allows_onion_services(&endpoint), expected, "{url}");
         }
+    }
+
+    #[test]
+    fn block_downloads_never_go_direct_to_an_onion_service() {
+        for (url, expected) in [
+            ("https://zec.rocks:443", true),
+            ("https://lightwalletd.example.onion:443", false),
+            ("https://LIGHTWALLETD.EXAMPLE.ONION:443", false),
+            ("https://lightwalletd.example.onion.:443", false),
+        ] {
+            assert_eq!(block_download_can_go_direct(url), expected, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_block_download_opener_refuses_an_onion_service_before_dialing() {
+        let error = open_block_download_lwd_transport("https://lightwalletd.example.onion:443")
+            .await
+            .expect_err("an onion service is reachable only over Tor");
+        let message = error.to_string();
+        assert!(
+            !message.contains("gRPC connect failed"),
+            "the opener dialed the onion service: {message}"
+        );
     }
 
     #[tokio::test]
