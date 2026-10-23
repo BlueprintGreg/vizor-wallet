@@ -1742,7 +1742,19 @@ impl World {
             }
         }
         for q in seen {
-            self.quotes[q].funded_seen = true;
+            // Once a later quote reserved the same address, this quote's reservation was
+            // released, and a late funded status no longer holds the address. The wallet
+            // still records it for attribution, since the key is reserved again.
+            let quote = &self.quotes[q];
+            let reissued = self.quotes[q + 1..].iter().any(|later| {
+                later.dev == quote.dev
+                    && later.uuid == quote.uuid
+                    && later.incoming
+                    && later.index == quote.index
+            });
+            if !reissued {
+                self.quotes[q].funded_seen = true;
+            }
         }
         let clock = deadline_clock(&self.devices[dev].wallet);
         for q in released {
