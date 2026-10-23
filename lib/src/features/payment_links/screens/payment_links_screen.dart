@@ -3076,17 +3076,25 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       final pendingCards = <Widget>[];
       final unusedCards = <Widget>[];
       final usedCards = <Widget>[];
+      final visibleRecoveries = _visibleRecoveries;
+      final membersByBatch = <String, List<PaymentLinkRecoveryRecord>>{};
+      if (kAppFormFactor == AppFormFactor.desktop) {
+        for (final record in visibleRecoveries) {
+          if (record.batchId case final batchId?) {
+            (membersByBatch[batchId] ??= []).add(record);
+          }
+        }
+        for (final members in membersByBatch.values) {
+          members.sort(
+            (a, b) => (a.batchIndex ?? 0).compareTo(b.batchIndex ?? 0),
+          );
+        }
+      }
       final seenBatchIds = <String>{};
-      for (final record in _visibleRecoveries) {
+      for (final record in visibleRecoveries) {
         if (kAppFormFactor == AppFormFactor.desktop && record.batchId != null) {
           if (!seenBatchIds.add(record.batchId!)) continue;
-          final members =
-              _visibleRecoveries
-                  .where((candidate) => candidate.batchId == record.batchId)
-                  .toList()
-                ..sort(
-                  (a, b) => (a.batchIndex ?? 0).compareTo(b.batchIndex ?? 0),
-                );
+          final members = membersByBatch[record.batchId]!;
           batches.add(_buildBatchRow(members));
           continue;
         }

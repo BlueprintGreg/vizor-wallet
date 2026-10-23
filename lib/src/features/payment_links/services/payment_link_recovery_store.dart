@@ -822,12 +822,16 @@ class PaymentLinkRecoveryStore {
     List<({PaymentLinkRecoveryRecord expected, GiftCardUsage usage})> updates,
   ) => _runExclusive(() async {
     if (updates.isEmpty) return const <String>{};
-    var records = await _loadUnlocked();
+    final records = (await _loadUnlocked()).toList();
+    final indexesByAddress = {
+      for (final (index, record) in records.indexed) record.link.address: index,
+    };
     final saved = <String>{};
     for (final (:expected, :usage) in updates) {
-      final current = _findByAddress(records, expected.link.address);
-      if (current == null ||
-          !current.link.hasSameCanonicalPayload(expected.link) ||
+      final index = indexesByAddress[expected.link.address];
+      if (index == null) continue;
+      final current = records[index];
+      if (!current.link.hasSameCanonicalPayload(expected.link) ||
           current.fundingTxids != expected.fundingTxids ||
           jsonEncode(current.usage.toJson()) !=
               jsonEncode(expected.usage.toJson())) {
@@ -835,13 +839,10 @@ class PaymentLinkRecoveryStore {
       }
       // Apply the same validation to writes and reads.
       GiftCardUsage.fromJson(usage.toJson());
-      records = _replaceByAddress(
-        records,
-        current.copyWith(
-          state: current.state,
-          updatedAt: current.updatedAt,
-          usage: usage,
-        ),
+      records[index] = current.copyWith(
+        state: current.state,
+        updatedAt: current.updatedAt,
+        usage: usage,
       );
       saved.add(expected.link.address);
     }
