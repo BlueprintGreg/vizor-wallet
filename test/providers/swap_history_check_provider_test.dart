@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart';
@@ -14,6 +16,21 @@ class _Sync extends SyncNotifier {
   @override
   void continueSwapRecovery() => starts++;
 }
+
+/// NEAR swap privacy, on until a test turns it off.
+class _Privacy extends NearSwapPrivacyNotifier {
+  @override
+  bool build() => true;
+
+  /// Turns the setting off, as the Settings toggle does.
+  void turnOff() => state = false;
+}
+
+/// The setting and a wallet with no saved recovery state, for every container.
+List<Override> _wallet() => [
+  nearSwapPrivacyProvider.overrideWith(_Privacy.new),
+  swapRecoveryStatusReaderProvider.overrideWithValue(() async => null),
+];
 
 /// The wallet's recovery state, as the status call reports it.
 SwapRecoveryStatus _status({bool checking = false, bool upgrade = false}) =>
@@ -31,6 +48,7 @@ void main() {
     final calls = <String>[];
     final container = ProviderContainer(
       overrides: [
+        ..._wallet(),
         syncProvider.overrideWith(() => sync),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
@@ -102,6 +120,7 @@ void main() {
       final sync = _Sync();
       final container = ProviderContainer(
         overrides: [
+          ..._wallet(),
           syncProvider.overrideWith(() => sync),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
@@ -129,6 +148,7 @@ void main() {
     var cancelled = false;
     final container = ProviderContainer(
       overrides: [
+        ..._wallet(),
         syncProvider.overrideWith(() => sync),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
@@ -158,6 +178,7 @@ void main() {
     final poll = Completer<SwapRecoveryStatus>();
     final container = ProviderContainer(
       overrides: [
+        ..._wallet(),
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
@@ -182,32 +203,37 @@ void main() {
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
   });
 
-  test('stops with an update request when the service needs a newer app', () async {
-    final sync = _Sync();
-    final container = ProviderContainer(
-      overrides: [
-        syncProvider.overrideWith(() => sync),
-        swapHistoryApiProvider.overrideWithValue(
-          SwapHistoryApi(
-            begin: (_) async {},
-            cancel: () async {},
-            status: () async => _status(checking: true, upgrade: true),
-            pollInterval: Duration.zero,
+  test(
+    'stops with an update request when the service needs a newer app',
+    () async {
+      final sync = _Sync();
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(),
+          syncProvider.overrideWith(() => sync),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (_) async {},
+              cancel: () async {},
+              status: () async => _status(checking: true, upgrade: true),
+              pollInterval: Duration.zero,
+            ),
           ),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
-    await container.read(swapHistoryCheckProvider.notifier).check();
-    expect(
-      container.read(swapHistoryCheckProvider),
-      SwapHistoryCheck.updateRequired,
-    );
-  });
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.updateRequired,
+      );
+    },
+  );
 
   test('a start the service refuses as outdated asks for an update', () async {
     final container = ProviderContainer(
       overrides: [
+        ..._wallet(),
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
@@ -228,5 +254,70 @@ void main() {
       container.read(swapHistoryCheckProvider),
       SwapHistoryCheck.updateRequired,
     );
+  });
+
+  test(
+    'turning NEAR swap privacy off between polls pauses the check',
+    () async {
+      final polls = <Completer<SwapRecoveryStatus>>[];
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (_) async {},
+              cancel: () async {},
+              status: () {
+                final poll = Completer<SwapRecoveryStatus>();
+                polls.add(poll);
+                return poll.future;
+              },
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final running = container.read(swapHistoryCheckProvider.notifier).check();
+      await pumpEventQueue();
+      polls.single.complete(_status(checking: true));
+      await pumpEventQueue();
+      expect(polls, hasLength(2));
+
+      (container.read(nearSwapPrivacyProvider.notifier) as _Privacy).turnOff();
+      // A disabled account reports no unfinished check.
+      polls.last.complete(_status());
+      await running;
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    },
+  );
+
+  test('a round that finds the service compatible ends a manual update '
+      'request', () async {
+    final container = ProviderContainer(
+      overrides: [
+        ..._wallet(),
+        syncProvider.overrideWith(_Sync.new),
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: (_) async {},
+            cancel: () async {},
+            status: () async => _status(checking: true, upgrade: true),
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(swapHistoryCheckProvider.notifier).check();
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.updateRequired,
+    );
+    expect(container.read(swapRecoveryUpdateRequiredProvider), isTrue);
+
+    container.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
   });
 }
