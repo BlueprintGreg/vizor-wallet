@@ -581,8 +581,15 @@ void main() {
     for (final paragraph in kNearSwapPrivacyInfoParagraphs) {
       expect(find.text(paragraph), findsOneWidget);
     }
-    // It names what one-time Zcash addresses leave linkable.
+    // It names what one-time Zcash addresses leave linkable, including the
+    // reuse the design allows.
     expect(find.textContaining('still shared with NEAR'), findsOneWidget);
+    expect(
+      find.textContaining('expired unpaid can be used again'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('two devices'), findsOneWidget);
+    expect(find.textContaining('new Zcash addresses'), findsNothing);
     expect(
       find.textContaining("Hardware wallet accounts don't use"),
       findsOneWidget,
