@@ -162,11 +162,13 @@ fn a_deleted_and_readded_account_recovers_like_a_restore() {
 
 /// The funding device retires a refund key once its swap ended with no refund or its
 /// refund arrived. A second device that learned the same keys from funding memos keeps
-/// monitoring them. This pins today's behavior until memo-learned keys retire after
-/// NEAR's refund window (SPEC Q-2).
+/// monitoring each one until filters have checked more than [`MEMO_REFUND_WINDOW`] past
+/// its funding, then retires it too (SPEC Q-2).
 #[test]
-fn local_refund_keys_retire_and_memo_learned_keys_stay_monitored() {
-    if isolated("directed::local_refund_keys_retire_and_memo_learned_keys_stay_monitored") {
+fn local_refund_keys_retire_when_conclusive_and_memo_learned_ones_after_the_window() {
+    if isolated(
+        "directed::local_refund_keys_retire_when_conclusive_and_memo_learned_ones_after_the_window",
+    ) {
         return;
     }
     let mut world = World::new();
@@ -216,6 +218,21 @@ fn local_refund_keys_retire_and_memo_learned_keys_stay_monitored() {
             1
         );
     }
+    let funded: Vec<u32> = world.fundings.iter().filter_map(|f| f.height).collect();
+    assert_eq!(funded.len(), 2);
+    // With filters through exactly one window past R1's funding, only R0 is older.
+    world.mine(funded[1] + MEMO_REFUND_WINDOW - world.chain.tip());
+    world.sync(1, false);
+    settle(&mut world, 1);
+    assert_eq!(monitored(&world, 1), BTreeSet::from([1]));
+    world.mine(1);
+    world.sync(1, false);
+    settle(&mut world, 1);
+    assert!(
+        monitored(&world, 1).is_empty(),
+        "{:?}",
+        monitored(&world, 1)
+    );
 }
 
 /// Private addresses need both Private queries and NEAR swap privacy.
@@ -323,11 +340,10 @@ fn an_orphaned_ordinary_payment_stays_pending() {
     assert_eq!(b.total, before + 700_000);
 }
 
-/// Finding F1. A device restored with a birthday after the note that funded a swap, but
-/// before the funding transaction itself, sees the funding memo but has no record of
-/// spending its own note, so it never learns the refund key and loses the refund.
+/// Fixed finding F1. A device restored with a birthday after the note that funded a
+/// swap, but before the funding transaction itself, has no record of spending its own
+/// note. It still learns the refund key from the funding memo and credits the refund.
 #[test]
-#[ignore = "product bug F1: memo recovery needs a pre-birthday spend record"]
 fn a_restore_between_funding_input_and_funding_recovers_the_refund() {
     if isolated("directed::a_restore_between_funding_input_and_funding_recovers_the_refund") {
         return;
@@ -366,9 +382,11 @@ fn a_restore_between_funding_input_and_funding_recovers_the_refund() {
 
 /// Finding F2. After a reorg the provider pays a refund again in a new transaction. The
 /// first refund note stays stored unmined, which keeps the key in repair, so the refund
-/// key never retires even though its swap ended and its refund arrived.
+/// key never retires even though its swap ended and its refund arrived. The library
+/// ends that repair once the receipt's transaction has expired, which it learns from the
+/// raw transaction.
 #[test]
-#[ignore = "product bug F2: an orphaned receipt keeps its key in repair forever"]
+#[ignore = "F2: needs the receipt's raw transaction bytes, which Vizor does not store"]
 fn a_refund_replaced_by_a_reorg_still_retires() {
     if isolated("directed::a_refund_replaced_by_a_reorg_still_retires") {
         return;
@@ -425,12 +443,11 @@ fn a_recent_restore_follows_a_shallow_reorg() {
     assert!(!world.devices[restored].broken, "{line}");
 }
 
-/// Finding U1, outside the one-time feature. The same as
+/// Fixed finding U1, outside the one-time feature. The same as
 /// [`a_recent_restore_follows_a_shallow_reorg`], with an unrelated Ironwood output in the
-/// block the reorg drops, so the commitment tree changes above the fork. The wallet
-/// refuses every rewind, even to the safe height it reports.
+/// block the reorg drops, so the commitment tree changes above the fork. The wallet used
+/// to refuse every rewind, even to the safe height it reported.
 #[test]
-#[ignore = "upstream U1: a recent restore cannot rewind over an Ironwood output"]
 fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
     if isolated("directed::a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output") {
         return;
@@ -448,12 +465,11 @@ fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
     assert!(!world.devices[restored].broken, "{line}");
 }
 
-/// Finding F1, second effect. The restored device of
-/// [`a_restore_between_funding_input_and_funding_recovers_the_refund`] does not know the
-/// phone already funded refund key R0, so its own next ZEC deposit quote reserves R0
-/// again, linking the two swaps and sharing one refund address between them.
+/// Fixed finding F1, second effect. The restored device of
+/// [`a_restore_between_funding_input_and_funding_recovers_the_refund`] must learn that the
+/// phone already funded refund key R0, so its own next ZEC deposit quote does not reserve
+/// R0 again and link the two swaps.
 #[test]
-#[ignore = "product bug F1: an unauthenticated memo lets another device reuse its refund key"]
 fn a_restored_device_never_reuses_a_funded_refund_key() {
     if isolated("directed::a_restored_device_never_reuses_a_funded_refund_key") {
         return;

@@ -9,7 +9,10 @@
 //! a shrunk failure prints. `VIZOR_SCENARIO_SHRINK` bounds shrinking replays.
 //! Known product findings are counted as notes rather than failed, so the default lane
 //! stays green while they are open. `VIZOR_SCENARIO_STRICT=1` fails on them too (see
-//! [`FINDINGS`]).
+//! [`FINDINGS`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
+//! refunds, restores, deep reorgs and toggling (see [`generate`]). `VIZOR_SCENARIO_AGE`
+//! is the share of seeds, per mille, whose quiescence ends past the memo refund window
+//! (see [`World::age`]).
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,16 +38,13 @@ const PAST_BACKOFF: i64 = 50_000;
 
 /// Notes that mark open product findings (see REPORT.md), which fail a run only with
 /// `VIZOR_SCENARIO_STRICT=1`. Behaviors the spec's October 23 decisions accept as
-/// intended (Q-1, Q-4, Q-5, Q-6, Q-8, Q-11) are neither notes nor violations.
-const FINDINGS: &[&str] = &[
-    "refund-lost-prebirthday-input",
-    "refund-key-reused-after-unauthenticated-memo",
-    "refund-key-reused-one-time-inputs",
-    "refund-key-kept-by-orphaned-receipt",
-    "ordinary-rewind-refused",
-    "memo-refund-key-monitored-after-conclusion",
-    "refund-key-monitored-after-unreported-success",
-];
+/// intended (Q-1, Q-4, Q-5, Q-6, Q-8, Q-11) are neither notes nor violations. The fixed
+/// findings F1, F3, U1, Q-2 and Q-3 are checked as violations in every mode.
+const FINDINGS: &[&str] = &["refund-key-kept-by-orphaned-receipt"];
+
+/// How long a refund key with no local operation stays monitored past its funding, as the
+/// library's `MEMO_REFUND_WINDOW`: seven days of 75-second blocks.
+const MEMO_REFUND_WINDOW: u32 = 7 * 24 * 60 * 60 / 75;
 
 /// A small deterministic generator (SplitMix64).
 #[derive(Clone)]
@@ -207,17 +207,40 @@ pub(super) enum Action {
     },
 }
 
-/// Draws `steps` actions from `seed`, independently of how they will play out.
+/// Whether `VIZOR_SCENARIO_MIX=stress` asks [`generate`] for its stress weights.
+fn stress_mix() -> bool {
+    std::env::var("VIZOR_SCENARIO_MIX").as_deref() == Ok("stress")
+}
+
+/// Draws `steps` actions from `seed`, independently of how they will play out. The stress
+/// mix adds outgoing swaps, restores at more birthdays, deep and back-to-back reorgs and
+/// toggles, and leaves the default mix's draws for a seed unchanged.
 pub(super) fn generate(seed: u64, steps: usize) -> Vec<Action> {
+    let stress = stress_mix();
     let mut rng = Rng::new(seed);
-    let mut actions = Vec::with_capacity(steps);
-    for _ in 0..steps {
+    let mut actions = Vec::with_capacity(steps + 1);
+    while actions.len() < steps {
         let dev = rng.below(8) as usize;
         let acct = rng.below(4) as usize;
         let quote = rng.below(16) as usize;
         let roll = rng.below(1000);
-        if rng.chance(120) {
-            actions.push(if rng.chance(650) {
+        if stress && rng.chance(160) {
+            match rng.below(4) {
+                0 => actions.push(Action::Reorg(8 + rng.below(13) as u32)),
+                1 => {
+                    actions.push(Action::Reorg(1 + rng.below(4) as u32));
+                    actions.push(Action::Reorg(1 + rng.below(4) as u32));
+                }
+                2 => actions.push(Action::Restore {
+                    back: [1, 3, 8, 15, 30][rng.below(5) as usize],
+                    feature: rng.chance(750),
+                }),
+                _ => actions.push(Action::Toggle(dev)),
+            }
+            continue;
+        }
+        if rng.chance(if stress { 220 } else { 120 }) {
+            actions.push(if rng.chance(if stress { 350 } else { 650 }) {
                 Action::Swap {
                     dev,
                     acct,
@@ -324,6 +347,7 @@ pub(super) fn generate(seed: u64, steps: usize) -> Vec<Action> {
         };
         actions.push(action);
     }
+    actions.truncate(steps);
     actions
 }
 
@@ -365,7 +389,7 @@ struct Funding {
     /// The device that funded it.
     dev: usize,
     /// The latest height of a note the funding spent. A device whose birthday is later
-    /// holds no record of spending it, which memo recovery needs as evidence.
+    /// holds no record of spending it, which memo recovery no longer needs (F1).
     input_height: u32,
 }
 
@@ -424,8 +448,8 @@ struct Device {
     ever_enabled: bool,
     accts: Vec<Acct>,
     no_orchard: bool,
-    /// Ordinary sync could not follow a reorg (see REPORT, finding U1), so the device is
-    /// left out of later steps and checks.
+    /// Ordinary sync could not follow a reorg, so the device is left out of later steps
+    /// and checks. Since U1 was fixed, this also fails the run (see [`World::rewind_refused`]).
     broken: bool,
 }
 
@@ -609,6 +633,38 @@ fn funded_refunds(wallet: &Wallet, account: &AccountUuid) -> BTreeSet<u64> {
         .unwrap()
 }
 
+/// Each refund index `account` holds funding evidence for, with its funding height.
+fn funding_heights(wallet: &Wallet, account: &AccountUuid) -> Vec<(u64, u32)> {
+    let conn = rusqlite::Connection::open(&wallet.path).unwrap();
+    let mut statement = conn
+        .prepare(
+            "SELECT k.key_index, k.funding_height FROM ironwood_one_time_keys k
+             JOIN accounts a ON a.id = k.account_id
+             WHERE a.uuid = ?1 AND k.purpose = 0 AND k.funding_height IS NOT NULL",
+        )
+        .unwrap();
+    statement
+        .query_map([account.expose_uuid().as_bytes()], |r| {
+            Ok((u64::from_be_bytes(r.get::<_, [u8; 8]>(0)?), r.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The height through which filters have checked `account`'s keys, or 0 before any.
+fn filter_frontier(wallet: &Wallet, account: &AccountUuid) -> u32 {
+    rusqlite::Connection::open(&wallet.path)
+        .unwrap()
+        .query_row(
+            "SELECT IFNULL(r.filter_height, 0) FROM ironwood_one_time_recovery r
+             JOIN accounts a ON a.id = r.account_id WHERE a.uuid = ?1",
+            [account.expose_uuid().as_bytes()],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+}
+
 /// The earlier of now and the latest block time, which quote deadlines are compared with.
 fn deadline_clock(wallet: &Wallet) -> i64 {
     let now = now();
@@ -695,6 +751,11 @@ pub(super) struct World {
     setup_end: u32,
     /// Ambiguities the run met, which are reported but never fail it.
     pub(super) notes: std::cell::RefCell<BTreeMap<&'static str, usize>>,
+    /// The first rewind ordinary sync refused, which the next check reports (finding U1).
+    rewind_refused: Option<String>,
+    /// Quiescence ends by aging every funding past [`MEMO_REFUND_WINDOW`] (see
+    /// [`World::age`]).
+    ages: bool,
 }
 
 impl World {
@@ -721,6 +782,8 @@ impl World {
             deposits: 0,
             setup_end,
             notes: Default::default(),
+            rewind_refused: None,
+            ages: false,
         };
         world.add_device(activation(), true);
         world
@@ -919,7 +982,8 @@ impl World {
             Ok(rewound) => rewound,
             Err(e) => {
                 self.devices[dev].broken = true;
-                self.note("ordinary-rewind-refused");
+                self.rewind_refused
+                    .get_or_insert_with(|| format!("device {dev}: {e}"));
                 return format!("rewind refused, device left out: {e}");
             }
         };
@@ -1424,28 +1488,21 @@ impl World {
                 && f.height.is_some_and(|h| h >= birthday)
                 && mined_here(f)
         }) {
-            // Another device funded this key in a block this device scanned.
-            // Memo recovery needs a record of this account spending one of the funding's
-            // inputs, which a later birthday (F1) or unrecovered one-time inputs (F3) lack.
-            if spent_inputs(&self.devices[dev].wallet, &f.nullifiers).is_empty() {
-                self.note(if f.input_height < birthday {
-                    "refund-key-reused-after-unauthenticated-memo"
-                } else {
-                    "refund-key-reused-one-time-inputs"
-                });
-            } else {
-                return Err(violation(
-                    "refund-reuse",
-                    format!(
-                        "refund key R{index} was funded at {:?} by device {}, which this device scanned; \
-                         inputs (one-time, height) at the funder {:?}, here {:?}",
-                        f.height,
-                        f.dev,
-                        spent_inputs(&self.devices[f.dev].wallet, &f.nullifiers),
-                        spent_inputs(&self.devices[dev].wallet, &f.nullifiers),
-                    ),
-                ));
-            }
+            // Another device funded this key in a block this device scanned. Its memo
+            // registers the key even without a record of spending the funding's inputs,
+            // which a later birthday (F1) or unrecovered one-time inputs (F3) lack.
+            return Err(violation(
+                "refund-reuse",
+                format!(
+                    "refund key R{index} was funded at {:?} by device {}, which this device scanned; \
+                     birthday {birthday}, latest input at {}; inputs (one-time, height) at the funder {:?}, here {:?}",
+                    f.height,
+                    f.dev,
+                    f.input_height,
+                    spent_inputs(&self.devices[f.dev].wallet, &f.nullifiers),
+                    spent_inputs(&self.devices[dev].wallet, &f.nullifiers),
+                ),
+            ));
         }
         if known.contains(&index)
             || self
@@ -2083,6 +2140,9 @@ impl World {
     /// once a wallet followed the reorg, and no recovery state on wallets that never
     /// enabled the feature.
     pub(super) fn check_step(&self) -> Result<(), Violation> {
+        if let Some(refused) = &self.rewind_refused {
+            return Err(violation("ordinary-rewind-refused", refused.clone()));
+        }
         for (dev, device) in self.devices.iter().enumerate() {
             if device.broken {
                 continue;
@@ -2163,19 +2223,12 @@ impl World {
         }
         reachable.extend(acct.reserved.iter().copied());
         let local: BTreeSet<u64> = funded_refunds(&self.devices[dev].wallet, &acct.account.id);
+        // Every funding at or after the birthday names its refund key in a memo on the
+        // account's own change, whatever its inputs (F1, F3).
         let memos: BTreeSet<u64> = self
             .fundings
             .iter()
             .filter(|f| f.seed == acct.seed && f.height.is_some_and(|h| h >= acct.birthday))
-            .filter(|f| {
-                // Memo recovery needs this account's own spend in the funding transaction.
-                // Without it the refund is lost (see REPORT, finding F1).
-                let authenticated = f.input_height >= acct.birthday;
-                if !authenticated && !local.contains(&f.refund) {
-                    self.note("refund-lost-prebirthday-input");
-                }
-                authenticated
-            })
             .map(|f| f.refund)
             .collect();
         canonical
@@ -2303,8 +2356,8 @@ impl World {
                         continue;
                     }
                     // A refund key this device funded retires once its own swap ends, so
-                    // a payment for another device's swap reusing it (see F1) is only
-                    // promised to the history check.
+                    // a payment for another device's swap reusing it is only promised to
+                    // the history check. Such reuse already fails as `refund-reuse`.
                     let own: Vec<&Quote> = self
                         .quotes
                         .iter()
@@ -2420,10 +2473,48 @@ impl World {
             }
         }
         self.check_balances()?;
-        self.check_issuance()
+        self.check_issuance()?;
+        if self.ages {
+            self.age()?;
+        }
+        Ok(())
     }
 
-    /// Refund keys this device funded retire once every local operation is conclusive.
+    /// Mines past every funding's [`MEMO_REFUND_WINDOW`] and settles every device again,
+    /// after which refund keys learned only from memos must have retired too.
+    fn age(&mut self) -> Result<(), Violation> {
+        let Some(last) = self.fundings.iter().filter_map(|f| f.height).max() else {
+            return Ok(());
+        };
+        let target = last + MEMO_REFUND_WINDOW + 1;
+        if self.chain.tip() < target {
+            self.mine(target - self.chain.tip());
+        }
+        for dev in 0..self.devices.len() {
+            if !self.devices[dev].discovery() || self.devices[dev].broken {
+                continue;
+            }
+            self.sync(dev, false);
+            for _ in 0..4 {
+                let publication = self.current();
+                self.round(dev, 0, false, publication, 0, None)?;
+            }
+        }
+        self.check_step()?;
+        for dev in 0..self.devices.len() {
+            if !self.devices[dev].discovery() || self.devices[dev].broken {
+                continue;
+            }
+            for acct in &self.devices[dev].accts {
+                self.check_retired(dev, acct)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refund keys this device funded retire once every local operation is conclusive, and
+    /// keys it learned only from a funding memo once filters have checked more than
+    /// [`MEMO_REFUND_WINDOW`] past the funding.
     fn check_retired(&self, dev: usize, acct: &Acct) -> Result<(), Violation> {
         let device = &self.devices[dev];
         let monitored: BTreeSet<u64> = device
@@ -2441,7 +2532,9 @@ impl World {
             .iter()
             .filter(|q| q.dev == dev && q.uuid == acct.account.uuid && !q.incoming && q.funded)
         {
-            let conclusive = quote.concluded() && !quote.omit_refund;
+            // A `SUCCESS` without a refunded amount expects no refund, so it is conclusive
+            // too (SPEC Q-3).
+            let conclusive = quote.concluded();
             let funding_canonical = self
                 .fundings
                 .iter()
@@ -2466,23 +2559,28 @@ impl World {
             }
         }
         // A key learned from another device's funding memo has no local operation, so it
-        // cannot learn the swap ended. It should retire after NEAR's refund window (SPEC
-        // Q-2), which is being fixed. This check will then need to wait out that window.
-        for quote in self.quotes.iter().filter(|q| {
-            q.dev != dev && q.seed == acct.seed && !q.incoming && q.funded && q.concluded()
-        }) {
-            if monitored.contains(&quote.index) {
-                self.note("memo-refund-key-monitored-after-conclusion");
+        // cannot learn the swap ended. It retires after NEAR's refund window (SPEC Q-2).
+        let frontier = filter_frontier(&device.wallet, &acct.account.id);
+        for (index, funded) in funding_heights(&device.wallet, &acct.account.id) {
+            let local = self.quotes.iter().any(|q| {
+                q.dev == dev && q.uuid == acct.account.uuid && !q.incoming && q.index == index
+            });
+            if local || !monitored.contains(&index) || frontier <= funded + MEMO_REFUND_WINDOW {
+                continue;
             }
-        }
-        if self.quotes.iter().any(|q| {
-            q.dev == dev
-                && q.uuid == acct.account.uuid
-                && !q.incoming
-                && q.omit_refund
-                && monitored.contains(&q.index)
-        }) {
-            self.note("refund-key-monitored-after-unreported-success");
+            if notes(&device.wallet, &acct.account.id)
+                .iter()
+                .any(|n| !n.receive && n.index == index && !n.mined)
+            {
+                self.note("refund-key-kept-by-orphaned-receipt");
+                continue;
+            }
+            return Err(violation(
+                "memo-refund-key-not-retired",
+                format!(
+                    "device {dev} still monitors memo-learned R{index} funded at {funded} with filters through {frontier}"
+                ),
+            ));
         }
         Ok(())
     }
@@ -2570,6 +2668,9 @@ pub(super) fn run(seed: u64, steps: usize, keep: Option<&BTreeSet<usize>>) -> Ou
             notes: BTreeMap::new(),
         };
     };
+    // Aging mines thousands of blocks, so `VIZOR_SCENARIO_AGE` picks the share of seeds
+    // (per mille) that pay for it, from a stream apart from the actions.
+    world.ages = Rng::new(seed ^ 0xa9e).chance(setting("VIZOR_SCENARIO_AGE", 0));
     // Every scenario starts from a synced first device whose seed walk has run.
     let prologue = std::panic::catch_unwind(AssertUnwindSafe(|| {
         world.sync(0, false);
