@@ -1058,6 +1058,46 @@ fn a_round_traverses_each_sealed_shard_filter_once() {
     assert_eq!(round.filter_traversals, 0);
 }
 
+/// A sealed shard's filter download that never answers costs each round one bounded
+/// wait, not the round. Lookups read the sealed shards over PIR, the round requests no
+/// filter again, and a restore longer than one round keeps progressing the same way.
+#[test]
+fn a_stalled_shard_filter_falls_back_to_pir_in_every_round() {
+    isolated!(a_stalled_shard_filter_falls_back_to_pir_in_every_round);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    let mut sealed = Vec::new();
+    for _ in 0..6 {
+        chain.mine(2);
+        sealed.push(chain.tip());
+    }
+    chain.mine(2);
+    wallet.scan(&chain);
+    let service =
+        Service::publish_shards(&chain, &sealed, chain.tip(), activation(), chain.tip(), &[]);
+    assert!(shard_filters_cheaper(service.inventory(), 1));
+    // No filter download ever answers. PIR stays healthy.
+    let _held: Vec<_> = (0..4).map(|n| service.hold("shard-filter", n)).collect();
+
+    // Reading seven shards blind for each of five addresses outlasts one round's steps.
+    let budget = Duration::from_secs(20);
+    let mut rounds = 0;
+    while !wallet.state(&account).restore_complete {
+        rounds += 1;
+        assert!(rounds <= 4, "the restore keeps progressing");
+        wallet.recover_with(&service, None, budget).unwrap();
+        assert!(
+            service.count("shard-filter") <= rounds,
+            "at most one stalled download per round"
+        );
+    }
+    assert!(service.count("shard-filter") >= 2, "later rounds try again");
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+}
+
 /// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
 /// can be, is not a software account. Recovery, the status read and issuance keep working
 /// for the wallet's other accounts, with the feature off and on.
