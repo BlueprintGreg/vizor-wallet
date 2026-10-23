@@ -58,6 +58,124 @@ void main() {
     },
   );
 
+  testWidgets(
+    'cached snapshot survives a live read and Send waits for sync completion',
+    (tester) async {
+      final cached =
+          SyncState(
+            accountUuid: _accountUuid,
+            isSyncing: true,
+            scannedHeight: 50,
+            chainTipHeight: 100,
+          ).withCachedBalance(
+            CachedWalletBalance(
+              _availableBalance(BigInt.from(75)),
+              DateTime.utc(2026),
+            ),
+          );
+      final cache = _TestBalanceCacheStore();
+      final notifier = _BalanceRefreshTestSyncNotifier(
+        () async => 'wallet.db',
+        initialState: cached,
+      )..balance = _availableBalance(BigInt.zero);
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+          accountProvider.overrideWith(_ExistingAccountNotifier.new),
+          syncProvider.overrideWith(() => notifier),
+          walletBalanceCacheProvider.overrideWithValue(cache),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(accountProvider.future);
+      await container.read(syncProvider.future);
+
+      notifier.refreshHomeInBackground();
+      await tester.pump();
+      final syncing = container.read(syncProvider).requireValue;
+      expect(syncing.spendableBalance, BigInt.zero);
+      expect(syncing.displaySpendableBalance, BigInt.from(75));
+      expect(syncing.isUsingCompletedSpendableSnapshot, isTrue);
+      // Saving accepted live reads remains independent of display protection.
+      expect(cache.saved.single.spendable, BigInt.zero);
+
+      var operations = 0;
+      final send = notifier.runWithAuthoritativeSpendable(
+        accountUuid: _accountUuid,
+        operation: () async {
+          operations++;
+          return container.read(syncProvider).requireValue.spendableBalance;
+        },
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(operations, 0);
+
+      notifier.replaceState(
+        syncing.copyWith(
+          isSyncing: false,
+          isSyncComplete: true,
+          scannedHeight: 100,
+        ),
+      );
+      notifier.balance = _availableBalance(BigInt.from(100));
+      final history = Completer<List<rust_sync.TransactionInfo>>();
+      notifier.historyGate = history;
+      notifier.refreshHomeInBackground();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(await send, BigInt.from(100));
+      expect(operations, 1);
+      final completed = container.read(syncProvider).requireValue;
+      expect(completed.displaySpendableBalance, BigInt.from(100));
+      expect(completed.hasSettledSpendableBalance, isTrue);
+      expect(history.isCompleted, isFalse);
+      history.complete([]);
+      await tester.pump();
+    },
+  );
+
+  for (final trigger in ['send', 'proposal release', 'account switch']) {
+    test('cached snapshot honors explicit $trigger refresh', () async {
+      final cached = SyncState(accountUuid: _accountUuid, isSyncing: true)
+          .withCachedBalance(
+            CachedWalletBalance(
+              _availableBalance(BigInt.from(75)),
+              DateTime.utc(2026),
+            ),
+          );
+      final notifier = _BalanceRefreshTestSyncNotifier(
+        () async => 'wallet.db',
+        initialState: cached,
+      )..balance = _availableBalance(BigInt.from(25));
+      final container = ProviderContainer(
+        overrides: [
+          appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+          accountProvider.overrideWith(_ExistingAccountNotifier.new),
+          syncProvider.overrideWith(() => notifier),
+          walletBalanceCacheProvider.overrideWithValue(
+            _TestBalanceCacheStore(),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(accountProvider.future);
+      await container.read(syncProvider.future);
+      await switch (trigger) {
+        'send' => notifier.refreshAfterSend(),
+        'proposal release' => notifier.refreshAfterProposalRelease(
+          _accountUuid,
+        ),
+        _ => notifier.refreshAfterAccountSwitch(),
+      };
+      final current = container.read(syncProvider).requireValue;
+      expect(current.isSyncing, isTrue);
+      expect(current.spendableBalance, BigInt.from(25));
+      expect(current.displaySpendableBalance, BigInt.from(25));
+      expect(current.isUsingCompletedSpendableSnapshot, isFalse);
+    });
+  }
+
   for (final unavailable in [false, true]) {
     test(
       'live refresh publishes balance before history (unavailable=$unavailable)',

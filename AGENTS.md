@@ -1062,8 +1062,12 @@ Seed-relevance rule:
 - `SyncState.recentTransactions`: latest 10 transactions, updated on `hasNewTx`, sync completion, and app resume
 - `hasCachedBalance` permits Home to display the persisted snapshot without setting
   `hasBalanceData`, current pool balances, sync completion, or spendability. An
-  accepted live balance replaces it independently of history. `hasRecentTransactionsData`
-  and `hasRecentTransactionsError` own the activity loading state.
+  accepted live read updates current balances independently of history. Persisted
+  display snapshots follow the same release conditions as in-memory completed-sync
+  snapshots: a valid balance at sync completion, or an explicit send, proposal-release,
+  or account-switch refresh. Intermediate reads preserve spendable, pending, and
+  holdings displays. `hasRecentTransactionsData` and `hasRecentTransactionsError`
+  own the activity loading state.
 - Accepted live balance reads enqueue display-only snapshots through
   `walletBalanceCacheProvider`; deletion/reset suspend and drain its writes.
   `ext_vizor_balance_cache` is in the wallet DB and removed with its account;

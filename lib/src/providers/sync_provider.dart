@@ -297,17 +297,8 @@ class SyncState {
     required bool syncComplete,
     bool releaseSnapshotOnAuthoritativeBalance = false,
   }) {
-    if (previous?.hasCachedBalance ?? false) {
-      return hasAuthoritativeBalance
-          ? (
-              balance: authoritativeSpendable,
-              freshness: SpendableBalanceFreshness.authoritative,
-            )
-          : (
-              balance: previous!.displaySpendableBalance,
-              freshness: SpendableBalanceFreshness.lastCompletedSync,
-            );
-    }
+    // Persisted and in-memory snapshots share the same release conditions.
+    // A live read during scanning updates actual balances, not this display.
     if (previous?.isUsingCompletedSpendableSnapshot ?? false) {
       final canReleaseSnapshot =
           hasAuthoritativeBalance &&
@@ -3607,8 +3598,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     );
   }
 
-  /// Waits until a UI-only completed-sync snapshot has been reconciled with
-  /// the latest Rust balance. Editing can continue while the snapshot is
+  /// Waits until a UI-only persisted or completed-sync snapshot has been
+  /// reconciled with the latest Rust balance. Editing can continue while it is
   /// visible, but proposal and Max operations call this before treating the
   /// displayed amount as spendable.
   Future<void> waitForAuthoritativeSpendable({
