@@ -1170,14 +1170,12 @@ fn wire__crate__api__one_time_ivk__check_swap_history_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_db_path = <String>::sse_decode(&mut deserializer);
             let api_network_name = <String>::sse_decode(&mut deserializer);
-            let api_receive_end = <Option<u64>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::one_time_ivk::ReceiveError>((move || {
                     let output_ok = crate::api::one_time_ivk::check_swap_history(
                         api_db_path,
                         api_network_name,
-                        api_receive_end,
                     )?;
                     Ok(output_ok)
                 })(

@@ -357,24 +357,21 @@ pub fn run_swap_recovery(db_path: String, network_name: String) -> Result<bool, 
     Ok(runtime.block_on(crate::wallet::sync_engine::recover(&db_path, network, None))?)
 }
 
-/// Starts or resumes an explicit older-address PIR search. `receive_end` is exclusive.
+/// Starts or resumes an explicit PIR search of every address the wallet has enrolled.
 /// Refunds require known funding memos, so a refund funded before the wallet birthday is
 /// found only after restoring with an earlier birthday.
-pub fn check_swap_history(
-    db_path: String,
-    network_name: String,
-    receive_end: Option<u64>,
-) -> Result<(), ReceiveError> {
+pub fn check_swap_history(db_path: String, network_name: String) -> Result<(), ReceiveError> {
     if !keys::wallet_exists(&db_path) {
         return Ok(());
     }
     let network = parse_network_and_migrate(&db_path, &network_name)?;
     one_time_ivk::require_new_address(network)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    // Every enrolled address, through the library's automatic end.
     runtime.block_on(crate::wallet::sync_engine::recover(
         &db_path,
         network,
-        Some(receive_end),
+        Some(None),
     ))?;
     Ok(())
 }
