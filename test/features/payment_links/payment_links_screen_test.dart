@@ -410,7 +410,7 @@ void main() {
           await tester.pumpAndSettle();
         }
         await tester.tap(
-          find.text(settings.$2 ? 'Confirm & review' : 'Skip message'),
+          find.text(settings.$2 ? 'Review & confirm' : 'Skip message'),
         );
         await tester.pumpAndSettle();
         await tester.tap(find.text('Create card'));
@@ -1253,7 +1253,7 @@ void main() {
     expect(find.text('121/128'), findsOneWidget);
 
     var continueButton = tester.widget<AppButton>(
-      find.widgetWithText(AppButton, 'Confirm & review'),
+      find.widgetWithText(AppButton, 'Review & confirm'),
     );
     expect(continueButton.onPressed, isNotNull);
 
@@ -1267,7 +1267,7 @@ void main() {
       findsOneWidget,
     );
     continueButton = tester.widget<AppButton>(
-      find.widgetWithText(AppButton, 'Confirm & review'),
+      find.widgetWithText(AppButton, 'Review & confirm'),
     );
     expect(continueButton.onPressed, isNull);
 
@@ -1279,7 +1279,7 @@ void main() {
     );
     expect(find.text('0/128'), findsOneWidget);
     continueButton = tester.widget<AppButton>(
-      find.widgetWithText(AppButton, 'Confirm & review'),
+      find.widgetWithText(AppButton, 'Review & confirm'),
     );
     expect(continueButton.onPressed, isNotNull);
 
@@ -1304,7 +1304,7 @@ void main() {
 
     await tester.enterText(messageEditor, 'For you');
     await tester.pump();
-    await tester.tap(find.text('Confirm & review'));
+    await tester.tap(find.text('Review & confirm'));
     await tester.pumpAndSettle();
     expect(find.text('Card amount'), findsOneWidget);
     expect(find.text('Card fee (deposit + redeem)'), findsOneWidget);
@@ -1832,7 +1832,7 @@ void main() {
         'For Keystone',
       );
       await tester.pump();
-      await tester.tap(find.text('Confirm & review'));
+      await tester.tap(find.text('Review & confirm'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Create card'));
 
@@ -1973,7 +1973,7 @@ void main() {
       'Congratulations!',
     );
     await tester.pump();
-    await tester.tap(find.text('Confirm & review'));
+    await tester.tap(find.text('Review & confirm'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Create card'));
     await tester.pumpAndSettle();
