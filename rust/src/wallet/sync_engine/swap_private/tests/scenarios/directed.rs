@@ -262,7 +262,8 @@ fn a_started_quote_without_any_status_releases_its_slot_a_day_later() {
 }
 
 /// With the feature off, a receipt a reorg displaced still gets repair lookups, so the
-/// round makes receiver requests. This is intended.
+/// round makes receiver requests. This is intended. Once the repair is done, rounds
+/// make no request.
 #[test]
 fn a_feature_off_round_repairs_a_displaced_receipt() {
     if isolated("directed::a_feature_off_round_repairs_a_displaced_receipt") {
@@ -279,19 +280,55 @@ fn a_feature_off_round_repairs_a_displaced_receipt() {
     world.mine(1);
     world.sync(0, false);
     settle(&mut world, 0);
+    let account = world.devices[0].accts[0].account.clone();
+    assert_eq!(credited(&world, 0).len(), 1, "the receipt is credited");
     world.devices[0].feature = false;
     world.toggled(0);
-    world.reorg(3);
+    let reorg = world.reorg(3);
+    assert!(reorg.contains("re-sent 1 payouts"), "{reorg}");
     world.mine(12);
     world.sync(0, true);
-    // Every later feature-off round repeats the repair: the orphaned note never leaves.
-    let mut lines = vec![];
-    for _ in 0..3 {
+    assert!(
+        repair_owed(&world.devices[0].wallet, &account.id),
+        "the reorg displaced the receipt"
+    );
+    assert!(
+        !world.devices[0].wallet.state(&account).lookups.is_empty(),
+        "repair is due while the feature is off"
+    );
+    // The first feature-off round reads the displaced receipt's history. Once that
+    // repair is done a round has no work and makes no request.
+    let mut repaired = false;
+    for round in 0..3 {
         let publication = world.current();
-        lines.push(world.round(0, 0, false, publication, 0, None).unwrap());
+        let service = world.service(publication);
+        let requests = service.count("inventory") + service.queries();
+        let result = run_worker(
+            &world.devices[0].wallet.path,
+            &*service,
+            None,
+            Duration::from_secs(45),
+        );
+        let active = match result {
+            Ok(r) => r.active,
+            Err(e) => panic!("round {round}: {e}"),
+        };
+        let made = service.count("inventory") + service.queries() - requests;
+        if round == 0 {
+            assert!(active, "the first round has repair work");
+            assert!(service.queries() > 0, "it queried the receipt's key");
+        }
+        if !active {
+            assert_eq!(made, 0, "round {round}: no work, no request");
+            repaired = true;
+        }
+        world.check_step().unwrap();
     }
-    println!("feature-off rounds after a reorg: {lines:?}");
-    world.check_step().unwrap();
+    assert!(repaired, "the repair finished");
+    assert!(
+        world.devices[0].wallet.state(&account).lookups.is_empty(),
+        "no repair is left"
+    );
 }
 
 /// Control for the reorg test: an ordinary payment whose block a reorg drops, and which
