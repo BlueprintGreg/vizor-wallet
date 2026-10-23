@@ -8854,10 +8854,9 @@ void main() {
       tester.element(find.byType(SwapScreen)),
     );
     final notifier = container.read(swapStateProvider.notifier);
-    expect(
-      container.read(swapStateProvider).intents.map((i) => i.status).toSet(),
-      {SwapIntentStatus.expired},
-    );
+    // Expired private quotes the wallet may still hold stay polled, so the
+    // first poll already frees the three whose status request succeeds.
+    expect(wallet.held, {'stale-1'});
     notifier.selectDirection(SwapDirection.externalToZec);
     notifier.updateAmount('25');
     notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
