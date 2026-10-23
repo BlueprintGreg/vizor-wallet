@@ -34,13 +34,16 @@ const MAX_DEVICES: usize = 5;
 const PAST_BACKOFF: i64 = 50_000;
 
 /// Notes that mark open product findings (see REPORT.md), which fail a run only with
-/// `VIZOR_SCENARIO_STRICT=1`. Other notes record open spec questions.
+/// `VIZOR_SCENARIO_STRICT=1`. Behaviors the spec's October 23 decisions accept as
+/// intended (Q-1, Q-4, Q-5, Q-6, Q-8, Q-11) are neither notes nor violations.
 const FINDINGS: &[&str] = &[
     "refund-lost-prebirthday-input",
     "refund-key-reused-after-unauthenticated-memo",
     "refund-key-reused-one-time-inputs",
     "refund-key-kept-by-orphaned-receipt",
     "ordinary-rewind-refused",
+    "memo-refund-key-monitored-after-conclusion",
+    "refund-key-monitored-after-unreported-success",
 ];
 
 /// A small deterministic generator (SplitMix64).
@@ -1018,6 +1021,7 @@ impl World {
             service.serve_supported();
         }
         let requests = faulty.requests.load(AtomicOrdering::SeqCst);
+        // Repairing a receipt a reorg displaced is an accepted exception (SPEC Q-5).
         if !device.discovery() && manual.is_none() && requests > 0 && !repair_due {
             return Err(violation(
                 "feature-off-requests",
@@ -1412,6 +1416,8 @@ impl World {
             )
             .unwrap()
         };
+        // A device that has not scanned the funding's block may still reissue its key,
+        // which is the accepted one-block race between devices (SPEC Q-11).
         if let Some(f) = self.fundings.iter().find(|f| {
             f.seed == seed
                 && f.refund == index
@@ -2460,7 +2466,8 @@ impl World {
             }
         }
         // A key learned from another device's funding memo has no local operation, so it
-        // cannot learn the swap ended. Whether it should retire is an open question.
+        // cannot learn the swap ended. It should retire after NEAR's refund window (SPEC
+        // Q-2), which is being fixed. This check will then need to wait out that window.
         for quote in self.quotes.iter().filter(|q| {
             q.dev != dev && q.seed == acct.seed && !q.incoming && q.funded && q.concluded()
         }) {

@@ -115,7 +115,8 @@ fn a_reorged_payout_is_credited_once_from_the_new_branch() {
 }
 
 /// Deleting an account and adding the same seed back recovers its one-time payments
-/// like a restore at its birthday.
+/// like a restore at its birthday. Its unfunded quotes are forgotten, as accepted in
+/// SPEC Q-8.
 #[test]
 fn a_deleted_and_readded_account_recovers_like_a_restore() {
     if isolated("directed::a_deleted_and_readded_account_recovers_like_a_restore") {
@@ -161,7 +162,8 @@ fn a_deleted_and_readded_account_recovers_like_a_restore() {
 
 /// The funding device retires a refund key once its swap ended with no refund or its
 /// refund arrived. A second device that learned the same keys from funding memos keeps
-/// monitoring them, which is today's behavior and an open question (SPEC Q-2).
+/// monitoring them. This pins today's behavior until memo-learned keys retire after
+/// NEAR's refund window (SPEC Q-2).
 #[test]
 fn local_refund_keys_retire_and_memo_learned_keys_stay_monitored() {
     if isolated("directed::local_refund_keys_retire_and_memo_learned_keys_stay_monitored") {
@@ -235,7 +237,8 @@ fn private_addresses_need_both_switches() {
 }
 
 /// A started quote that never gets another provider status keeps its slot, even a month
-/// after its deadline. This pins today's behavior for SPEC Q-7.
+/// after its deadline. This pins today's behavior until the library releases such a slot
+/// 24 hours after the deadline (SPEC Q-7).
 #[test]
 fn a_started_quote_without_any_status_keeps_its_slot() {
     if isolated("directed::a_started_quote_without_any_status_keeps_its_slot") {
@@ -259,7 +262,7 @@ fn a_started_quote_without_any_status_keeps_its_slot() {
 }
 
 /// With the feature off, a receipt a reorg displaced still gets repair lookups, so the
-/// round makes receiver requests. This pins today's behavior for SPEC Q-5.
+/// round makes receiver requests. This is accepted as intended (SPEC Q-5).
 #[test]
 fn a_feature_off_round_repairs_a_displaced_receipt() {
     if isolated("directed::a_feature_off_round_repairs_a_displaced_receipt") {
