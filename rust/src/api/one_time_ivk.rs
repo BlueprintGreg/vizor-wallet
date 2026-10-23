@@ -137,7 +137,7 @@ pub struct ReceiveDeposit {
 }
 
 /// Reserves the lowest eligible receive slot or a refund key after funding history sync.
-/// Receive issuance uses the confirmed four-index window and performs no network request.
+/// Receive issuance uses the mined four-index window and performs no network request.
 pub fn reserve_swap_address(
     db_path: String,
     network_name: String,
@@ -322,19 +322,9 @@ pub fn observe_swap_status(
 
 /// Applies the effective discovery setting immediately, fencing outstanding callbacks.
 pub fn reconcile_swap_recovery(db_path: String, network_name: String) -> Result<(), ReceiveError> {
-    if !keys::wallet_exists(&db_path) {
-        return Ok(());
-    }
-    let network = parse_network_and_migrate(&db_path, &network_name)?;
-    crate::wallet::db::with_wallet_db_write_lock("swap.setting", || {
-        let mut db = crate::wallet::db::open_existing_wallet_db_with_timeout(
-            &db_path,
-            network,
-            WALLET_DB_BUSY_TIMEOUT,
-        )?;
-        one_time_ivk::reconcile_enabled(&mut db, network)
-    })?;
-    Ok(())
+    with_existing_wallet(&db_path, &network_name, "swap.setting", |db, network| {
+        one_time_ivk::reconcile_enabled(db, network)
+    })
 }
 
 /// Stops the network worker. Durable manual and automatic progress remains resumable.
@@ -379,21 +369,37 @@ pub fn check_swap_history(
 
 /// Cancels explicit history searches, retaining their cursors and automatic obligations.
 pub fn cancel_swap_history(db_path: String, network_name: String) -> Result<(), ReceiveError> {
-    if !keys::wallet_exists(&db_path) {
-        return Ok(());
-    }
-    let network = parse_network_and_migrate(&db_path, &network_name)?;
-    crate::wallet::db::with_wallet_db_write_lock("swap.cancel", || {
-        let mut db = crate::wallet::db::open_existing_wallet_db_with_timeout(
-            &db_path,
-            network,
-            WALLET_DB_BUSY_TIMEOUT,
-        )?;
-        for account in one_time_ivk::software_accounts(&db)? {
+    with_existing_wallet(&db_path, &network_name, "swap.cancel", |db, _| {
+        for account in one_time_ivk::software_accounts(db)? {
             db.cancel_one_time_history(account)
                 .map_err(|e| e.to_string())?;
         }
-        Ok::<_, String>(())
+        Ok(())
+    })
+}
+
+/// Runs `action` under the wallet write lock on the existing wallet at `db_path`, and
+/// does nothing when there is no wallet. It never creates a database a reset deleted.
+fn with_existing_wallet(
+    db_path: &str,
+    network_name: &str,
+    operation: &'static str,
+    action: impl FnOnce(
+        &mut crate::wallet::db::WalletDatabase,
+        crate::wallet::network::WalletNetwork,
+    ) -> Result<(), String>,
+) -> Result<(), ReceiveError> {
+    if !keys::wallet_exists(db_path) {
+        return Ok(());
+    }
+    let network = parse_network_and_migrate(db_path, network_name)?;
+    crate::wallet::db::with_wallet_db_write_lock(operation, || {
+        let mut db = crate::wallet::db::open_existing_wallet_db_with_timeout(
+            db_path,
+            network,
+            WALLET_DB_BUSY_TIMEOUT,
+        )?;
+        action(&mut db, network)
     })?;
     Ok(())
 }

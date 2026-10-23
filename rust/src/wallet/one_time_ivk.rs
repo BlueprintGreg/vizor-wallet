@@ -28,9 +28,7 @@ pub(crate) fn supported(network: WalletNetwork) -> bool {
 /// Fails unless new private swap addresses are allowed: where [`supported`], with both
 /// Private queries and NEAR swap privacy on.
 pub(crate) fn require_new_address(network: WalletNetwork) -> Result<(), String> {
-    if !EnhancementPolicy::current(network).is_private()
-        || !crate::api::sync::near_swap_privacy_enabled()
-    {
+    if !discovery_enabled(network) {
         return Err(
             "Enable Private queries and NEAR swap privacy before reserving an address".into(),
         );
@@ -125,10 +123,10 @@ pub(crate) fn with_db<T, E: From<String>>(
 }
 
 /// Whether the install setting turns discovery on: where [`supported`], with both Private
-/// queries and NEAR swap privacy on.
+/// queries and NEAR swap privacy on. Private queries are effective only where
+/// [`supported`], so that check is implied.
 pub(crate) fn discovery_enabled(network: WalletNetwork) -> bool {
-    supported(network)
-        && EnhancementPolicy::current(network).is_private()
+    EnhancementPolicy::current(network).is_private()
         && crate::api::sync::near_swap_privacy_enabled()
 }
 
