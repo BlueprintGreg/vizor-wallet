@@ -36,7 +36,7 @@ Each address is meant to be paid once. Automatic catch-up skips a paid address o
 
 ## Manual history
 
-Check swap history queries older known addresses too. An optional receive bound extends the search past the four-empty rule. Refunds stay limited to known funded indexes. Pausing keeps the job's position so another check resumes it.
+Check swap history queries every address the wallet has enrolled, older known addresses included. It is an all-or-nothing escape hatch with no address count to choose, only needed if a swap payment or refund is missing. Refunds stay limited to known funded indexes. Pausing keeps the job's position so another check resumes it.
 
 ## Implementation
 

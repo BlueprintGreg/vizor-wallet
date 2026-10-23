@@ -63,7 +63,7 @@ void main() {
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
             cancel: () async {},
-            begin: (_) async {
+            begin: () async {
               calls.add('begin');
               if (failBegin) throw StateError('wallet busy');
             },
@@ -124,9 +124,9 @@ void main() {
   });
 
   test(
-    'passes the explicit receive bound without starting ordinary sync',
+    'checks every enrolled address without starting ordinary sync',
     () async {
-      BigInt? requested;
+      var begun = 0;
       final sync = _Sync();
       final container = ProviderContainer(
         overrides: [
@@ -134,7 +134,7 @@ void main() {
           syncProvider.overrideWith(() => sync),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (end) async => requested = end,
+              begin: () async => begun++,
               cancel: () async {},
               status: () async => _status(),
               pollInterval: Duration.zero,
@@ -143,10 +143,8 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
-      await container
-          .read(swapHistoryCheckProvider.notifier)
-          .check(receiveEnd: BigInt.from(50));
-      expect(requested, BigInt.from(50));
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      expect(begun, 1);
       expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
       expect(sync.starts, 1);
     },
@@ -162,7 +160,7 @@ void main() {
         syncProvider.overrideWith(() => sync),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
-            begin: (_) => start.future,
+            begin: () => start.future,
             cancel: () async {
               cancelled = true;
             },
@@ -192,7 +190,7 @@ void main() {
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
-            begin: (_) async {},
+            begin: () async {},
             cancel: () async {},
             status: () {
               pollStarted.complete();
@@ -223,7 +221,7 @@ void main() {
           syncProvider.overrideWith(() => sync),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (_) async {},
+              begin: () async {},
               cancel: () async {},
               status: () async => _status(checking: true, upgrade: true),
               pollInterval: Duration.zero,
@@ -247,7 +245,7 @@ void main() {
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
-            begin: (_) async => throw const ReceiveError(
+            begin: () async => throw const ReceiveError(
               message: 'Update Vizor',
               kind: ReceiveErrorKind.upgradeRequired,
             ),
@@ -276,7 +274,7 @@ void main() {
           syncProvider.overrideWith(_Sync.new),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (_) async {},
+              begin: () async {},
               cancel: () async {},
               status: () {
                 final poll = Completer<SwapRecoveryStatus>();
@@ -347,7 +345,7 @@ void main() {
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
-            begin: (_) async {},
+            begin: () async {},
             cancel: () async {},
             status: () async => _status(checking: true, upgrade: true),
             pollInterval: Duration.zero,
@@ -374,7 +372,7 @@ void main() {
         syncProvider.overrideWith(_Sync.new),
         swapHistoryApiProvider.overrideWithValue(
           SwapHistoryApi(
-            begin: (_) async => throw const ReceiveError(
+            begin: () async => throw const ReceiveError(
               message: 'Swap history check has not started.',
               kind: ReceiveErrorKind.waitingForSync,
             ),
@@ -408,7 +406,7 @@ void main() {
           syncProvider.overrideWith(_Sync.new),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (_) async {},
+              begin: () async {},
               cancel: () async => cancels.add('cancel'),
               status: () async => polls.removeAt(0),
               pollInterval: Duration.zero,

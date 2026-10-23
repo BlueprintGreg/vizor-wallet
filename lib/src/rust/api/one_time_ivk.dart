@@ -149,17 +149,15 @@ Future<bool> runSwapRecovery({
   networkName: networkName,
 );
 
-/// Starts or resumes an explicit older-address PIR search. `receive_end` is exclusive.
+/// Starts or resumes an explicit PIR search of every address the wallet has enrolled.
 /// Refunds require known funding memos, so a refund funded before the wallet birthday is
 /// found only after restoring with an earlier birthday.
 Future<void> checkSwapHistory({
   required String dbPath,
   required String networkName,
-  BigInt? receiveEnd,
 }) => RustLib.instance.api.crateApiOneTimeIvkCheckSwapHistory(
   dbPath: dbPath,
   networkName: networkName,
-  receiveEnd: receiveEnd,
 );
 
 /// Cancels explicit history searches, retaining their cursors and automatic obligations.

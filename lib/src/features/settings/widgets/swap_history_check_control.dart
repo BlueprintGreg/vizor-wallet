@@ -1,12 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
-import '../../../core/widgets/app_text_field.dart';
 import '../../../providers/swap_history_check_provider.dart';
 import '../../../providers/sync_provider.dart'
     show swapRecoveryUpdateRequiredProvider;
@@ -29,46 +27,18 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
 const kSwapRecoveryUpdateMessage =
     'Update Vizor to keep checking swap addresses. Your saved progress is kept.';
 
+/// Why the check exists, under the button.
+const kSwapHistoryCheckExplanation =
+    'Only needed if a swap payment or refund is missing.';
+
 /// The "Check swap history" button and its progress, under NEAR swap privacy
-/// in desktop and mobile Settings.
-class SwapHistoryCheckControl extends ConsumerStatefulWidget {
+/// in desktop and mobile Settings. The check always covers every address the
+/// wallet has enrolled.
+class SwapHistoryCheckControl extends ConsumerWidget {
   const SwapHistoryCheckControl({super.key});
 
-  /// Keeps the optional search bound while job status changes.
   @override
-  ConsumerState<SwapHistoryCheckControl> createState() =>
-      _SwapHistoryCheckControlState();
-}
-
-class _SwapHistoryCheckControlState
-    extends ConsumerState<SwapHistoryCheckControl> {
-  final _bound = TextEditingController();
-  String? _error;
-
-  /// Releases the optional historical address-count input.
-  @override
-  void dispose() {
-    _bound.dispose();
-    super.dispose();
-  }
-
-  /// Validates the explicit search extent before starting a durable job.
-  void _check() {
-    final value = _bound.text.trim();
-    final end = value.isEmpty ? null : BigInt.tryParse(value);
-    if (value.isNotEmpty &&
-        (end == null || end <= BigInt.zero || end >= (BigInt.one << 64))) {
-      setState(() => _error = 'Enter a positive address count.');
-      return;
-    }
-    setState(() => _error = null);
-    unawaited(
-      ref.read(swapHistoryCheckProvider.notifier).check(receiveEnd: end),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
     final watched = ref.watch(swapHistoryCheckProvider);
     // Automatic rounds can learn of an update first.
@@ -78,40 +48,18 @@ class _SwapHistoryCheckControlState
         ? SwapHistoryCheck.updateRequired
         : watched;
     final running = check == SwapHistoryCheck.checking;
+    final notifier = ref.read(swapHistoryCheckProvider.notifier);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // The helper sits in its own wrapped text under the field: the
-          // field's message slot holds one short line and overlaps what
-          // follows it.
-          AppTextField(
-            key: const ValueKey('settings_swap_history_bound'),
-            label: 'Receive addresses to check (optional)',
-            controller: _bound,
-            enabled: !running,
-            // The filled shell stays visible on a settings card in both
-            // themes.
-            surface: AppTextFieldSurface.secondary,
-            tone: _error == null
-                ? AppTextFieldTone.neutral
-                : AppTextFieldTone.destructive,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            hintText: 'Known addresses',
-          ),
-          const SizedBox(height: AppSpacing.xxs),
           Text(
-            _error ??
-                'Leave blank to check known addresses. A count extends the '
-                    'search when restoring missing history.',
-            key: const ValueKey('settings_swap_history_bound_help'),
+            kSwapHistoryCheckExplanation,
+            key: const ValueKey('settings_swap_history_explanation'),
             style: AppTypography.labelMedium.copyWith(
-              color: _error == null
-                  ? colors.text.secondary
-                  : colors.text.destructive,
+              color: colors.text.secondary,
             ),
           ),
           const SizedBox(height: AppSpacing.sm),
@@ -123,7 +71,7 @@ class _SwapHistoryCheckControlState
                 key: const ValueKey('settings_check_swap_history'),
                 onPressed: running || check == SwapHistoryCheck.updateRequired
                     ? null
-                    : _check,
+                    : () => unawaited(notifier.check()),
                 size: AppButtonSize.medium,
                 child: const Text('Check swap history'),
               ),
@@ -135,9 +83,7 @@ class _SwapHistoryCheckControlState
                   check == SwapHistoryCheck.waitingForSync)
                 AppButton(
                   key: const ValueKey('settings_cancel_swap_history'),
-                  onPressed: () => unawaited(
-                    ref.read(swapHistoryCheckProvider.notifier).cancel(),
-                  ),
+                  onPressed: () => unawaited(notifier.cancel()),
                   variant: AppButtonVariant.ghost,
                   size: AppButtonSize.medium,
                   child: const Text('Pause check'),
