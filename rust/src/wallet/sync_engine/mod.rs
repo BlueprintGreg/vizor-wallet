@@ -687,6 +687,44 @@ fn next_direct_failures(failures: u32, failed: bool) -> u32 {
     }
 }
 
+/// The connection a fresh scan batch download goes over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockRoute {
+    Direct,
+    Tor,
+}
+
+/// Downloads a scan batch fresh: over the direct connection when the batch may
+/// use it, and over Tor when it may not, when its queued direct download
+/// failed, or when the direct download fails with a network error. Also
+/// returns whether the batch counts as a direct failure.
+async fn download_with_direct_fallback<T, Download, DownloadFuture>(
+    batch_is_direct: bool,
+    queued_direct_failed: bool,
+    mut download: Download,
+) -> (Result<T, SyncError>, bool)
+where
+    Download: FnMut(BlockRoute) -> DownloadFuture,
+    DownloadFuture: Future<Output = Result<T, SyncError>>,
+{
+    if !batch_is_direct {
+        return (download(BlockRoute::Tor).await, false);
+    }
+    if queued_direct_failed {
+        return (download(BlockRoute::Tor).await, true);
+    }
+    match download(BlockRoute::Direct).await {
+        Err(SyncError::Network(error)) => {
+            log::warn!(
+                "[{}] sync: direct block download failed ({error}); downloading this batch over Tor",
+                elapsed(),
+            );
+            (download(BlockRoute::Tor).await, true)
+        }
+        result => (result, false),
+    }
+}
+
 /// Estimated download of the pending ranges whose batches may use the direct
 /// connection, so a queue that only Tor would serve never opens it.
 fn direct_download_bytes(
@@ -4578,26 +4616,21 @@ async fn run_sync_impl(
         let mut direct_failed = false;
         let batch = resolve_prefetched_or_download(queued, start, end, &should_exit, || {
             let (block_client, client, direct_failed) =
-                (&mut block_client, &mut client, &mut direct_failed);
+                (&block_client, &client, &mut direct_failed);
             async move {
-                if !batch_is_direct {
-                    return download_scan_batch(client, start, end - 1, network).await;
-                }
-                if queued_direct_failed {
-                    *direct_failed = true;
-                    return download_scan_batch(client, start, end - 1, network).await;
-                }
-                match download_scan_batch(block_client, start, end - 1, network).await {
-                    Err(SyncError::Network(error)) => {
-                        log::warn!(
-                            "[{}] sync: direct block download failed ({error}); downloading this batch over Tor",
-                            elapsed(),
-                        );
-                        *direct_failed = true;
-                        download_scan_batch(client, start, end - 1, network).await
-                    }
-                    result => result,
-                }
+                let (result, failed) =
+                    download_with_direct_fallback(batch_is_direct, queued_direct_failed, |route| {
+                        let mut route_client = match route {
+                            BlockRoute::Direct => block_client.clone(),
+                            BlockRoute::Tor => client.clone(),
+                        };
+                        async move {
+                            download_scan_batch(&mut route_client, start, end - 1, network).await
+                        }
+                    })
+                    .await;
+                *direct_failed = failed;
+                result
             }
         })
         .await?;
@@ -6015,6 +6048,68 @@ mod tests {
             [false, false, false, false, false]
         );
         assert_eq!(runs(&[true, true, true]), [false, false, true]);
+    }
+
+    async fn download_routes(
+        batch_is_direct: bool,
+        queued_direct_failed: bool,
+        direct: Result<&'static str, SyncError>,
+    ) -> (Result<&'static str, SyncError>, bool, Vec<BlockRoute>) {
+        let mut routes = Vec::new();
+        let mut direct = Some(direct);
+        let (result, failed) =
+            download_with_direct_fallback(batch_is_direct, queued_direct_failed, |route| {
+                routes.push(route);
+                let result = match route {
+                    BlockRoute::Direct => direct.take().expect("one direct download"),
+                    BlockRoute::Tor => Ok("tor"),
+                };
+                async move { result }
+            })
+            .await;
+        (result, failed, routes)
+    }
+
+    #[tokio::test]
+    async fn a_batch_off_the_direct_connection_downloads_over_tor() {
+        let (result, failed, routes) = download_routes(false, false, Ok("direct")).await;
+        assert_eq!(result.ok(), Some("tor"));
+        assert!(!failed);
+        assert_eq!(routes, [BlockRoute::Tor]);
+    }
+
+    #[tokio::test]
+    async fn a_direct_batch_that_downloads_is_not_a_failure() {
+        let (result, failed, routes) = download_routes(true, false, Ok("direct")).await;
+        assert_eq!(result.ok(), Some("direct"));
+        assert!(!failed);
+        assert_eq!(routes, [BlockRoute::Direct]);
+    }
+
+    #[tokio::test]
+    async fn a_direct_network_failure_downloads_the_batch_over_tor() {
+        let (result, failed, routes) =
+            download_routes(true, false, Err(SyncError::net("stream reset"))).await;
+        assert_eq!(result.ok(), Some("tor"));
+        assert!(failed);
+        assert_eq!(routes, [BlockRoute::Direct, BlockRoute::Tor]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_queued_direct_batch_downloads_over_tor_only() {
+        let (result, failed, routes) = download_routes(true, true, Ok("direct")).await;
+        assert_eq!(result.ok(), Some("tor"));
+        assert!(failed);
+        assert_eq!(routes, [BlockRoute::Tor]);
+    }
+
+    #[tokio::test]
+    async fn a_direct_error_other_than_the_network_ends_the_batch() {
+        let (result, failed, routes) =
+            download_routes(true, false, Err(SyncError::other("unexpected reply"))).await;
+        assert!(result.is_err_and(|error| !matches!(error, SyncError::Network(_))));
+        assert!(!failed);
+        assert_eq!(routes, [BlockRoute::Direct]);
     }
 
     #[test]
