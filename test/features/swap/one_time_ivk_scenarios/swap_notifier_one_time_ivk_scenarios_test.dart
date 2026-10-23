@@ -161,44 +161,68 @@ void main() {
 
   /// When the load-time poll fails, expired quotes still hold every address at
   /// the first quote. The limit itself must refresh their statuses, which
-  /// frees them, and the one retry then reserves an address.
-  test('a limit refreshes held expired quotes and retries once', () async {
-    final expired = [
-      for (var i = 1; i <= 4; i++)
-        _privateIncomingSwap(
-          'held-$i',
-          deadline: DateTime.now().toUtc().subtract(const Duration(hours: 1)),
-        ),
-    ];
-    late _Harness h;
-    h = await _Harness.create(
-      intents: expired,
-      failStatuses: true,
-      reserve: (account) async {
-        if (h.recorded.length < expired.length) {
-          throw const api.ReceiveError(
-            message:
-                'No swap address is free. Wait for a swap in progress to '
-                'finish.',
-            kind: api.ReceiveErrorKind.limit,
-          );
-        }
-        return SwapZecStagingAddress(
-          address: 'u1freed',
-          reservationIndex: BigInt.one,
+  /// frees them, and the one retry then reserves an address. Quotes that expired
+  /// days ago are refreshed too, because the wallet may still hold their
+  /// private addresses.
+  for (final (name, age) in [
+    ('an hour', const Duration(hours: 1)),
+    ('two days', const Duration(days: 2)),
+  ]) {
+    test(
+      'a limit refreshes quotes that expired $name ago and retries once',
+      () async {
+        final expired = [
+          for (var i = 1; i <= 4; i++)
+            _privateIncomingSwap(
+              'held-$i',
+              deadline: DateTime.now().toUtc().subtract(age),
+            ),
+        ];
+        late _Harness h;
+        h = await _Harness.create(
+          intents: expired,
+          failStatuses: true,
+          reserve: (account) async {
+            if (h.recorded.length < expired.length) {
+              throw const api.ReceiveError(
+                message:
+                    'No swap address is free. Wait for a swap in progress to '
+                    'finish.',
+                kind: api.ReceiveErrorKind.limit,
+              );
+            }
+            return SwapZecStagingAddress(
+              address: 'u1freed',
+              reservationIndex: BigInt.one,
+            );
+          },
         );
+        expect(h.recorded, isEmpty, reason: 'the load-time poll failed');
+        expect(
+          h.state.intents.map((intent) => intent.status),
+          everyElement(SwapIntentStatus.expired),
+          reason: 'the quotes still show as expired before the quote',
+        );
+        h.provider
+          ..failStatuses = false
+          ..status = SwapIntentStatus.awaitingExternalDeposit;
+        await h.review('25');
+        expect(
+          h.reservations,
+          2,
+          reason: 'the first reservation hit the limit',
+        );
+        expect(
+          h.recorded,
+          List.filled(expired.length, SwapIntentStatus.awaitingExternalDeposit),
+          reason:
+              'the limit refresh recorded the status that frees each address',
+        );
+        expect(h.state.quoteError, isNull);
+        expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
       },
     );
-    expect(h.recorded, isEmpty, reason: 'the load-time poll failed');
-    h.provider
-      ..failStatuses = false
-      ..status = SwapIntentStatus.awaitingExternalDeposit;
-    await h.review('25');
-    expect(h.reservations, 2, reason: 'the first reservation hit the limit');
-    expect(h.recorded, hasLength(expired.length));
-    expect(h.state.quoteError, isNull);
-    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
-  });
+  }
 
   /// Control for the next test: quotes that expired within the last day are
   /// refreshed when a limit blocks a new quote.
