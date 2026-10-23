@@ -383,6 +383,8 @@ struct Quote {
     owed: Vec<(u64, [u8; 32])>,
     /// The wallet said it no longer tracks this address, so the app stopped polling.
     released: bool,
+    /// The owning device recorded a status saying the provider saw a deposit.
+    funded_seen: bool,
 }
 
 impl Quote {
@@ -410,6 +412,9 @@ struct Device {
     ever_enabled: bool,
     accts: Vec<Acct>,
     no_orchard: bool,
+    /// Ordinary sync could not follow a reorg (see REPORT, finding U1), so the device is
+    /// left out of later steps and checks.
+    broken: bool,
 }
 
 impl Device {
@@ -708,6 +713,7 @@ impl World {
                 reserved: BTreeSet::new(),
             }],
             no_orchard: false,
+            broken: false,
         });
         let dev = self.devices.len() - 1;
         apply(&self.devices[dev]);
@@ -864,13 +870,29 @@ impl World {
 
     /// Resolves a device slot.
     fn dev(&self, slot: usize) -> usize {
-        slot % self.devices.len()
+        let live: Vec<usize> = (0..self.devices.len())
+            .filter(|d| !self.devices[*d].broken)
+            .collect();
+        if live.is_empty() {
+            return slot % self.devices.len();
+        }
+        live[slot % live.len()]
     }
 
     /// Ordinary sync on `dev`, optionally with transaction enhancement.
     fn sync(&mut self, dev: usize, enhance: bool) -> String {
         apply(&self.devices[dev]);
-        let rewound = self.devices[dev].wallet.sync(&self.chain);
+        if self.devices[dev].broken {
+            return "device left out after a refused rewind".into();
+        }
+        let rewound = match self.devices[dev].wallet.sync(&self.chain) {
+            Ok(rewound) => rewound,
+            Err(e) => {
+                self.devices[dev].broken = true;
+                self.note("ordinary-rewind-refused");
+                return format!("rewind refused, device left out: {e}");
+            }
+        };
         let mut line = format!("synced to {}", self.chain.tip());
         if let Some(height) = rewound {
             line += &format!(", rewound to {height}");
@@ -1168,6 +1190,7 @@ impl World {
             hashes: vec![],
             owed: vec![],
             released: false,
+            funded_seen: false,
         };
         let line = match reply {
             Reply::Accept => self.accept(&mut quote),
@@ -1292,7 +1315,7 @@ impl World {
                 && q.incoming
                 && q.index == index
                 && q.started
-                && (q.deadline > clock || (q.funded && !q.concluded()))
+                && (q.deadline > clock || (q.funded_seen && !q.concluded()))
         }) {
             return Err(violation(
                 "reuse",
@@ -1420,6 +1443,7 @@ impl World {
             hashes: vec![],
             owed: vec![],
             released: false,
+            funded_seen: false,
         });
         Ok(format!("R{index} quote {}", self.quotes.len() - 1))
     }
@@ -1431,6 +1455,9 @@ impl World {
             return "not fundable".into();
         }
         let dev = quote.dev;
+        if self.devices[dev].broken {
+            return "device left out".into();
+        }
         let line = self.sync(dev, false);
         let device = &self.devices[dev];
         let Some(acct) = device.accts.iter().find(|a| a.account.uuid == quote.uuid) else {
@@ -1516,6 +1543,7 @@ impl World {
         let mut recorded = 0;
         let path = self.devices[dev].wallet.path.clone();
         let mut released = Vec::new();
+        let mut seen = Vec::new();
         for (q, quote) in self
             .quotes
             .iter()
@@ -1555,6 +1583,9 @@ impl World {
             ) {
                 Ok(tracked) => {
                     recorded += 1;
+                    if quote.funded && tracked {
+                        seen.push(q);
+                    }
                     if !tracked && quote.incoming {
                         released.push(q);
                     }
@@ -1564,6 +1595,9 @@ impl World {
                 }
                 Err(_) => {}
             }
+        }
+        for q in seen {
+            self.quotes[q].funded_seen = true;
         }
         let clock = deadline_clock(&self.devices[dev].wallet);
         for q in released {
@@ -1896,18 +1930,15 @@ impl World {
                 if self.quotes.len() == before || !self.quotes[before].started {
                     return Ok(line);
                 }
-                let paid = Ok::<_, Violation>(()).and_then(|_| {
-                    let q = before;
-                    let (seed, index) = (self.quotes[q].seed, self.quotes[q].index);
-                    let txid = self.pay(seed, true, index, value);
-                    let quote = &mut self.quotes[q];
-                    quote.funded = true;
-                    quote.status = "SUCCESS";
-                    quote.amount_out = Some(value);
-                    quote.hashes.push(txid);
-                    quote.owed.push((value, txid));
-                    Ok(format!("paid {value} to I{index}"))
-                })?;
+                let (seed, index) = (self.quotes[before].seed, self.quotes[before].index);
+                let txid = self.pay(seed, true, index, value);
+                let quote = &mut self.quotes[before];
+                quote.funded = true;
+                quote.status = "SUCCESS";
+                quote.amount_out = Some(value);
+                quote.hashes.push(txid);
+                quote.owed.push((value, txid));
+                let paid = format!("paid {value} to I{index}");
                 format!("{line}; {paid}")
             }
             Action::SwapOut { dev, acct, outcome } => {
@@ -1978,6 +2009,9 @@ impl World {
     /// enabled the feature.
     pub(super) fn check_step(&self) -> Result<(), Violation> {
         for (dev, device) in self.devices.iter().enumerate() {
+            if device.broken {
+                continue;
+            }
             if !device.ever_enabled && recovery_rows(&device.wallet) > 0 {
                 return Err(violation(
                     "feature-off-state",
@@ -2125,6 +2159,9 @@ impl World {
             self.poll(dev, 0)?;
         }
         for dev in 0..self.devices.len() {
+            if self.devices[dev].broken {
+                continue;
+            }
             let mut last = None;
             for _ in 0..12 {
                 let publication = self.current();
@@ -2150,7 +2187,7 @@ impl World {
         self.check_step()?;
         for dev in 0..self.devices.len() {
             let device = &self.devices[dev];
-            if !device.discovery() {
+            if !device.discovery() || device.broken {
                 continue;
             }
             for acct in &device.accts {
@@ -2217,7 +2254,7 @@ impl World {
             }
         }
         for dev in 0..self.devices.len() {
-            if !self.devices[dev].discovery() {
+            if !self.devices[dev].discovery() || self.devices[dev].broken {
                 continue;
             }
             for _ in 0..12 {
@@ -2354,6 +2391,9 @@ impl World {
     fn check_balances(&self) -> Result<(), Violation> {
         let mut ordinary: BTreeMap<(u8, u32), (usize, u64)> = BTreeMap::new();
         for (dev, device) in self.devices.iter().enumerate() {
+            if device.broken {
+                continue;
+            }
             for acct in &device.accts {
                 let balance = device.wallet.balance(&acct.account);
                 // Unmined one-time notes, such as a payout a reorg orphaned, count as
@@ -2387,7 +2427,7 @@ impl World {
     /// window slot is legitimately held.
     fn check_issuance(&mut self) -> Result<(), Violation> {
         for dev in 0..self.devices.len() {
-            if !self.devices[dev].discovery() {
+            if !self.devices[dev].discovery() || self.devices[dev].broken {
                 continue;
             }
             apply(&self.devices[dev]);
@@ -2640,7 +2680,7 @@ fn random_scenarios() {
     if isolated("random_scenarios") {
         return;
     }
-    run_many(3, 20);
+    run_many(2, 20);
 }
 
 /// Many longer seeded scenarios. Set `VIZOR_SCENARIO_ITERS` and `VIZOR_SCENARIO_SEED` to

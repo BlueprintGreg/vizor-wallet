@@ -977,8 +977,9 @@ impl Wallet {
 
     /// Ordinary sync that follows reorgs: rewinds below the highest scanned block still on
     /// `chain` through the app's reorg path, scans to the tip, and stamps new blocks with
-    /// the current time so quote deadlines can pass. Returns the height it rewound to.
-    pub(super) fn sync(&mut self, chain: &Chain) -> Option<u32> {
+    /// the current time so quote deadlines can pass. Returns the height it rewound to, or
+    /// the app's error when the wallet refuses the rewind.
+    pub(super) fn sync(&mut self, chain: &Chain) -> Result<Option<u32>, String> {
         let tip = chain.tip();
         let mut db = self.db();
         // Adding an account rewinds the wallet to that account's birthday.
@@ -1004,7 +1005,7 @@ impl Wallet {
                 tip.into(),
                 "scenario.rewind",
             )
-            .unwrap();
+            .map_err(|e| format!("{e:?}"))?;
             self.scanned = u32::from(actual).min(fork).max(self.birthday - 1);
             rewound = Some(self.scanned);
         }
@@ -1017,7 +1018,7 @@ impl Wallet {
                 [one_time_ivk::now().unwrap()],
             )
             .unwrap();
-        rewound
+        Ok(rewound)
     }
 
     /// The last block ordinary sync scanned.

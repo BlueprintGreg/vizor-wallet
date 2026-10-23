@@ -403,3 +403,44 @@ fn a_refund_replaced_by_a_reorg_still_retires() {
         .collect();
     assert!(monitored.is_empty(), "R0 still monitored: {monitored:?}");
 }
+
+/// Control: a wallet restored a few blocks below the tip follows a shallow reorg that
+/// forks inside its scanned range, with no one-time state at all.
+#[test]
+fn a_recent_restore_follows_a_shallow_reorg() {
+    if isolated("directed::a_recent_restore_follows_a_shallow_reorg") {
+        return;
+    }
+    let mut world = World::new();
+    world.mine(4);
+    let birthday = world.chain.tip() - 3;
+    let restored = world.add_device(birthday, false);
+    world.mine(1);
+    world.sync(restored, false);
+    world.reorg(2);
+    let line = world.sync(restored, false);
+    assert!(!world.devices[restored].broken, "{line}");
+}
+
+/// Finding U1, outside the one-time feature. The same as
+/// [`a_recent_restore_follows_a_shallow_reorg`], with an unrelated Ironwood output in the
+/// block the reorg drops, so the commitment tree changes above the fork. The wallet
+/// refuses every rewind, even to the safe height it reports.
+#[test]
+#[ignore = "upstream U1: a recent restore cannot rewind over an Ironwood output"]
+fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
+    if isolated("directed::a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output") {
+        return;
+    }
+    let mut world = World::new();
+    world.mine(4);
+    let birthday = world.chain.tip() - 3;
+    let restored = world.add_device(birthday, false);
+    let stranger = world.key(SECOND, true, 7);
+    world.chain.pay(&stranger, 100_000, false);
+    world.changed();
+    world.sync(restored, false);
+    world.reorg(2);
+    let line = world.sync(restored, false);
+    assert!(!world.devices[restored].broken, "{line}");
+}
