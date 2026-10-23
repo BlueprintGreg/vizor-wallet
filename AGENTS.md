@@ -691,9 +691,11 @@ a sync's large block download (below).
   one, so the server can tie the two together by timing, and Private queries
   keep address and txid lookups off that Tor connection. Without them every
   block download stays on Tor. The session still opens its Tor route first
-  and fails closed with it. If the direct connection cannot open, or a
-  direct batch fails with a network error, the session downloads over Tor from
-  then on. Only main-scan batches of ChainTip, Historic and
+  and fails closed with it. If the direct connection cannot open, the
+  session downloads over Tor. A direct batch that fails, queued or not, is
+  downloaded again over Tor, and three failures in a row
+  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the rest of the session to Tor.
+  Only main-scan batches of ChainTip, Historic and
   LatestPoolActivation ranges, and Verify batches above the blocks scanned
   before the session (the frontier continuity check, often merged into a full
   queued batch), use it (`batch_uses_direct_connection`). Checking-stage

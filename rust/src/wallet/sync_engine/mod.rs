@@ -673,6 +673,20 @@ fn fetches_blocks_directly(
     tor_desired && private_queries && pending_download_bytes >= DIRECT_BLOCK_DOWNLOAD_MIN_BYTES
 }
 
+/// Direct batch failures in a row after which a session downloads the rest of
+/// its blocks over Tor. Each failed batch is downloaded again over Tor.
+const DIRECT_BLOCK_FAILURES_BEFORE_TOR: u32 = 3;
+
+/// The run of direct batch failures after one more direct batch: a success
+/// ends the run.
+fn next_direct_failures(failures: u32, failed: bool) -> u32 {
+    if failed {
+        failures + 1
+    } else {
+        0
+    }
+}
+
 /// Estimated download of the pending ranges whose batches may use the direct
 /// connection, so a queue that only Tor would serve never opens it.
 fn direct_download_bytes(
@@ -3889,6 +3903,7 @@ async fn run_sync_impl(
             enhancement.policy().is_private(),
             pending_download_bytes,
         );
+    let mut direct_failures = 0;
     let (mut block_client, mut direct_blocks) = if opens_direct {
         let opened = tokio::select! {
             biased;
@@ -4558,6 +4573,8 @@ async fn run_sync_impl(
                 start,
                 scanned_before_session,
             );
+        // A queued batch reaches the fresh download only when it failed.
+        let queued_direct_failed = batch_is_direct && queued.is_some();
         let mut direct_failed = false;
         let batch = resolve_prefetched_or_download(queued, start, end, &should_exit, || {
             let (block_client, client, direct_failed) =
@@ -4566,12 +4583,14 @@ async fn run_sync_impl(
                 if !batch_is_direct {
                     return download_scan_batch(client, start, end - 1, network).await;
                 }
-                // A network that lets the connection open but breaks its
-                // streams gets the rest of the session over Tor.
+                if queued_direct_failed {
+                    *direct_failed = true;
+                    return download_scan_batch(client, start, end - 1, network).await;
+                }
                 match download_scan_batch(block_client, start, end - 1, network).await {
                     Err(SyncError::Network(error)) => {
                         log::warn!(
-                            "[{}] sync: direct block download failed ({error}); downloading over Tor",
+                            "[{}] sync: direct block download failed ({error}); downloading this batch over Tor",
                             elapsed(),
                         );
                         *direct_failed = true;
@@ -4582,10 +4601,19 @@ async fn run_sync_impl(
             }
         })
         .await?;
-        if direct_failed {
-            direct_blocks = false;
-            block_client = client.clone();
-            prefetch.clear();
+        if batch_is_direct {
+            // A network that lets the connection open but breaks its streams
+            // fails every batch; a passing blip should not move a restore to Tor.
+            direct_failures = next_direct_failures(direct_failures, direct_failed);
+            if direct_failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR {
+                log::warn!(
+                    "[{}] sync: {direct_failures} direct block downloads failed in a row; downloading the rest over Tor",
+                    elapsed(),
+                );
+                direct_blocks = false;
+                block_client = client.clone();
+                prefetch.clear();
+            }
         }
         let Some((block_source, from_state)) = batch else {
             log::info!("[{}] sync: exiting after download", elapsed());
@@ -5968,6 +5996,25 @@ mod tests {
                 "{priority:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_failures_in_a_row_move_a_session_to_tor() {
+        let runs = |outcomes: &[bool]| {
+            outcomes
+                .iter()
+                .scan(0, |failures, &failed| {
+                    *failures = next_direct_failures(*failures, failed);
+                    Some(*failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR)
+                })
+                .collect::<Vec<_>>()
+        };
+        // A success between failures keeps the direct connection.
+        assert_eq!(
+            runs(&[true, true, false, true, true]),
+            [false, false, false, false, false]
+        );
+        assert_eq!(runs(&[true, true, true]), [false, false, true]);
     }
 
     #[test]
