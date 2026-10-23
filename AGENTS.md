@@ -678,7 +678,8 @@ policy-aware openers and fails closed while Tor is starting or broken, except
 a sync's large block download (below).
 
 - **Large block downloads leave Tor.** A sync session whose estimated
-  compact-block download reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` fetches its
+  compact-block download, counting only the ranges it may fetch directly
+  (`direct_download_bytes`), reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` fetches its
   main-scan batches (`GetBlockRange` and the batch-start `GetTreeState`) over
   `open_block_download_lwd_transport`, which skips the direct-route lease.
   Compact blocks are public, and one circuit would take hours for a restore.
@@ -690,8 +691,9 @@ a sync's large block download (below).
   one, so the server can tie the two together by timing, and Private queries
   keep address and txid lookups off that Tor connection. Without them every
   block download stays on Tor. The session still opens its Tor route first
-  and fails closed with it; if the direct connection fails, the session
-  downloads over Tor. Only main-scan batches of ChainTip, Historic and
+  and fails closed with it. If the direct connection cannot open, or a
+  direct batch fails with a network error, the session downloads over Tor from
+  then on. Only main-scan batches of ChainTip, Historic and
   LatestPoolActivation ranges, and Verify batches above the blocks scanned
   before the session (the frontier continuity check, often merged into a full
   queued batch), use it (`batch_uses_direct_connection`). Checking-stage
