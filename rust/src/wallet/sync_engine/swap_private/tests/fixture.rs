@@ -1021,6 +1021,14 @@ impl Wallet {
         Ok(rewound)
     }
 
+    /// The last block ordinary sync fully scanned, or `default` before any scan.
+    pub(super) fn scanned_or(&self, default: u32) -> u32 {
+        self.db()
+            .block_fully_scanned()
+            .unwrap()
+            .map_or(default, |b| u32::from(b.block_height()))
+    }
+
     /// The last block ordinary sync scanned.
     pub(super) fn scanned(&self) -> u32 {
         u32::from(

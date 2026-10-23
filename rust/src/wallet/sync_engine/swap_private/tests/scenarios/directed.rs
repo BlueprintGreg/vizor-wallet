@@ -444,3 +444,28 @@ fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
     let line = world.sync(restored, false);
     assert!(!world.devices[restored].broken, "{line}");
 }
+
+/// Finding F1, second effect. The restored device of
+/// [`a_restore_between_funding_input_and_funding_recovers_the_refund`] does not know the
+/// phone already funded refund key R0, so its own next ZEC deposit quote reserves R0
+/// again, linking the two swaps and sharing one refund address between them.
+#[test]
+#[ignore = "product bug F1: an unauthenticated memo lets another device reuse its refund key"]
+fn a_restored_device_never_reuses_a_funded_refund_key() {
+    if isolated("directed::a_restored_device_never_reuses_a_funded_refund_key") {
+        return;
+    }
+    let mut world = World::new();
+    world.act(&Action::AddAccount(0)).unwrap();
+    world.sync(0, false);
+    settle(&mut world, 0);
+    let birthday = world.chain.tip() - 2;
+    let restored = world.add_device(birthday, true);
+    let line = world.act(&Action::SwapOut { dev: 0, acct: 0, outcome: 0 }).unwrap();
+    assert!(line.contains("R0 quote") && line.contains("funded"), "{line}");
+    world.mine(1);
+    world.sync(restored, true);
+    settle(&mut world, restored);
+    let line = world.quote_out(restored, 0, 3_600).unwrap();
+    assert!(!line.starts_with("R0 "), "the restored device reused R0: {line}");
+}

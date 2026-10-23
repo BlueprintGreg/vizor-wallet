@@ -1374,6 +1374,26 @@ impl World {
             }
             Err(e) => return Ok(format!("refund reserve refused: {}", e.message)),
         };
+        let scanned = self.devices[dev].wallet.scanned_or(0);
+        let birthday = self.devices[dev].accts[slot % self.devices[dev].accts.len()].birthday;
+        if let Some(f) = self.fundings.iter().find(|f| {
+            f.seed == seed
+                && f.refund == index
+                && f.height.is_some_and(|h| h <= scanned && h >= birthday)
+        }) {
+            // Another device funded this key in a block this device scanned.
+            if f.input_height < birthday {
+                self.note("refund-key-reused-after-unauthenticated-memo");
+            } else {
+                return Err(violation(
+                    "refund-reuse",
+                    format!(
+                        "refund key R{index} was funded at {:?}, which this device scanned",
+                        f.height
+                    ),
+                ));
+            }
+        }
         if known.contains(&index)
             || self
                 .quotes
@@ -1604,7 +1624,8 @@ impl World {
             let quote = &mut self.quotes[q];
             // The app stops refreshing a swap once the wallet released its address.
             quote.released = true;
-            if quote.started && !quote.concluded() && (quote.deadline > clock || quote.funded) {
+            if quote.started && !quote.concluded() && (quote.deadline > clock || quote.funded_seen)
+            {
                 return Err(violation(
                     "live-quote-untracked",
                     format!("the wallet stopped tracking I{} while its quote {} is live (deadline {}, clock {clock}, funded {})", quote.index, quote.deposit, quote.deadline, quote.funded),
@@ -2225,6 +2246,31 @@ impl World {
                         .map(|p| p.height)
                         .min();
                     if first_ever.is_some_and(|h| h < acct.birthday) {
+                        continue;
+                    }
+                    // A refund key this device funded retires once its own swap ends, so
+                    // a payment for another device's swap reusing it (see F1) is only
+                    // promised to the history check.
+                    let own: Vec<&Quote> = self
+                        .quotes
+                        .iter()
+                        .filter(|q| {
+                            q.dev == dev
+                                && q.uuid == acct.account.uuid
+                                && !q.incoming
+                                && q.index == *index
+                        })
+                        .collect();
+                    let promised = *receive
+                        || own.is_empty()
+                        || self.pays.iter().any(|p| {
+                            !p.orphaned
+                                && !p.receive
+                                && p.seed == acct.seed
+                                && p.index == *index
+                                && own.iter().any(|q| q.hashes.contains(&p.txid))
+                        });
+                    if !promised {
                         continue;
                     }
                     if !credited.contains(&(*receive, *index)) {
