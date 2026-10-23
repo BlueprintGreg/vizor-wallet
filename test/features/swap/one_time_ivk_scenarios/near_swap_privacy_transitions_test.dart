@@ -643,52 +643,36 @@ void main() {
   /// round, and the check ends paused, not failed or done. The wallet keeps the
   /// saved job, so turning the setting back on watches it again until the
   /// wallet reports it done.
-  ///
-  /// Open finding: the toggle drains the check's round before the setting
-  /// flips, so the check first fails and then shows as paused by the user. It
-  /// stays paused after turning back on while the wallet resumes the job.
-  test(
-    'turning off while a history check starts ends it paused',
-    skip:
-        'the drained start fails before the setting flips, so it never resumes',
-    () async {
-      final (container, sync, _) = await app(true);
-      final history = container.read(swapHistoryCheckProvider.notifier);
-      api.checking = true;
-      final running = history.check();
-      await pumpEventQueue();
-      expect(api.manual, hasLength(1), reason: 'the check round is held');
-      expect(
-        container.read(swapHistoryCheckProvider),
-        SwapHistoryCheck.checking,
-      );
+  test('turning off while a history check starts ends it paused', () async {
+    final (container, sync, _) = await app(true);
+    final history = container.read(swapHistoryCheckProvider.notifier);
+    api.checking = true;
+    final running = history.check();
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1), reason: 'the check round is held');
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
 
-      await container.read(nearSwapPrivacyProvider.notifier).set(false);
-      await running;
-      expect(
-        api.manual.single.isCompleted,
-        isTrue,
-        reason: 'its round drained',
-      );
-      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    await container.read(nearSwapPrivacyProvider.notifier).set(false);
+    await running;
+    expect(api.manual.single.isCompleted, isTrue, reason: 'its round drained');
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
 
-      await container.read(nearSwapPrivacyProvider.notifier).set(true);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(
-        container.read(swapHistoryCheckProvider),
-        SwapHistoryCheck.checking,
-        reason: 'the saved job is watched again',
-      );
-      expect(api.manual, hasLength(1), reason: 'no new check was started');
-      api.checking = false;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
-      for (final round in api.rounds.where((r) => !r.isCompleted)) {
-        round.complete(false);
-      }
-      await settle(sync);
-    },
-  );
+    await container.read(nearSwapPrivacyProvider.notifier).set(true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.checking,
+      reason: 'the saved job is watched again',
+    );
+    expect(api.manual, hasLength(1), reason: 'no new check was started');
+    api.checking = false;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    for (final round in api.rounds.where((r) => !r.isCompleted)) {
+      round.complete(false);
+    }
+    await settle(sync);
+  });
 
   /// Turning the setting off while a running check polls for completion ends
   /// it paused, although the wallet then reports no unfinished check, and the
