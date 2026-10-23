@@ -98,7 +98,11 @@ Future<void> recordSwapRefundQuote({
 /// provider saw a deposit, which the status alone implies only from `KNOWN_DEPOSIT_TX`
 /// on (see `near_observation`). Swaps without a private address are ignored. Do not call
 /// it for a failed status request.
-Future<void> observeSwapStatus({
+///
+/// Returns whether the wallet still tracked an operation for this address when the
+/// status arrived. `false` means its incoming reservation, if it had one, was already
+/// released, so later statuses can no longer free a receive slot.
+Future<bool> observeSwapStatus({
   required String dbPath,
   required String networkName,
   required String accountUuid,
