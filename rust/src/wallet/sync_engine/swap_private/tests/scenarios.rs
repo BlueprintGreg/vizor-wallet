@@ -207,9 +207,9 @@ pub(super) enum Action {
         acct: usize,
         outcome: u8,
     },
-    /// A round whose `nth` request of `class` (0 filters, 1 query, 2 witness) is held while
-    /// the feature turns off, with the app's worker cancellation when `cancel`, and back on
-    /// at once when `back`.
+    /// A round whose `nth` request of `class` (0 filters, 1 query, 2 witness, 3 a sealed
+    /// shard's filter) is held while the feature turns off, with the app's worker
+    /// cancellation when `cancel`, and back on at once when `back`.
     HeldToggle {
         dev: usize,
         class: u8,
@@ -278,7 +278,7 @@ pub(super) fn generate(seed: u64, steps: usize) -> Vec<Action> {
                 2 => Action::PrivateQueries(dev),
                 3 | 4 => Action::HeldToggle {
                     dev,
-                    class: rng.below(3) as u8,
+                    class: rng.below(4) as u8,
                     nth: rng.below(2) as usize,
                     cancel: rng.chance(500),
                     back: rng.chance(600),
@@ -1526,7 +1526,7 @@ impl World {
     }
 
     /// Holds the `nth` request of `class` in a round on `dev`, after a new block and, for
-    /// a query or witness, a payment to I0 give the round work, turns the feature off
+    /// any class but block filters, a payment to I0 give the round work, turns the feature off
     /// while it waits, optionally cancelling the worker as the app's toggle does, and
     /// checks that the released answer writes nothing. With `back` the feature comes
     /// straight back on.
@@ -1539,9 +1539,9 @@ impl World {
         back: bool,
     ) -> Result<String, Violation> {
         self.ensure_on(dev);
-        let class = ["filters", "query", "witness"][usize::from(class % 3)];
-        // Give the round something to hold: a new block for its filters, and for a query
-        // or witness a payment to I0, the address every account issues first.
+        let class = ["filters", "query", "witness", "shard-filter"][usize::from(class % 4)];
+        // Give the round something to hold: a new block for its filters, and for the
+        // other classes a payment to I0, the address every account issues first.
         if class != "filters" {
             let seed = self.devices[dev].accts[0].seed;
             self.pay(seed, true, 0, 150_000);
@@ -1551,7 +1551,8 @@ impl World {
         if self.devices[dev].broken {
             return Ok(synced);
         }
-        let publication = self.current();
+        // A sealed shard, so the round screens its lookups with the shard's filter.
+        let publication = self.publication(0, false, class == "shard-filter", false, 0);
         let service = self.service(publication);
         let held = service.hold(class, service.count(class) + nth);
         let worker = self.devices[dev]

@@ -314,7 +314,8 @@ fn off_to_on_resumes_pending_work_once() {
 }
 
 /// On to off in the middle of a round: whichever request is held, a block filter batch,
-/// an encrypted payment query or a witness read, turning the feature off rejects its
+/// a sealed shard's filter, an encrypted payment query or a witness read, turning the
+/// feature off rejects its
 /// answer, both through the wallet's fence alone and with the app's worker cancellation.
 /// Nothing new is written, the pending payment stays queued, and from then on the wallet
 /// is inert through sync, rounds and every app entry point: no receiver request and no
@@ -324,7 +325,7 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
     if isolated("toggles::on_to_off_mid_round_rejects_held_answers_and_stays_inert") {
         return;
     }
-    for class in ["filters", "query", "witness"] {
+    for class in ["filters", "shard-filter", "query", "witness"] {
         for cancel in [false, true] {
             let mut world = world();
             world
@@ -336,7 +337,8 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
                 .unwrap();
             world.mine(1);
             world.sync(0, false);
-            let publication = world.current();
+            // A sealed shard, so the round screens its lookups with the shard's filter.
+            let publication = world.publication(0, false, class == "shard-filter", false, 0);
             let service = world.service(publication);
             let held = service.hold(class, service.count(class));
             let worker = world.devices[0]
@@ -349,6 +351,8 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
             }
             let account = world.devices[0].accts[0].account.clone();
             let before = one_time_snapshot(&world.devices[0].wallet);
+            // A shard filter may be fetched for a later lookup after the payment's own.
+            let credited_before = credited(&world, 0, 0);
             held.release();
             let result = worker.join().unwrap();
             if cancel {
@@ -367,9 +371,10 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
                 "{class} cancel {cancel}: {}",
                 snapshot_diff(&before, &after)
             );
-            assert!(
-                credited(&world, 0, 0).is_empty(),
-                "{class}: nothing credited"
+            assert_eq!(
+                credited(&world, 0, 0),
+                credited_before,
+                "{class}: nothing more credited"
             );
             if class == "query" {
                 assert!(
