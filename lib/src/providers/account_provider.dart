@@ -2932,6 +2932,12 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
   /// Directories go first: when one cannot be deleted the database is still
   /// intact, so the caller keeps its stored name and a retry finds it.
   Future<void> _deleteExistingDb(String dbPath) async {
+    // Activity caches keep a read connection between pages. Close it before
+    // deleting the database, including on platforms that disallow unlinking
+    // an open SQLite file.
+    if (File(dbPath).existsSync()) {
+      await rust_wallet.evictWalletSummaryCache(dbPath: dbPath);
+    }
     for (final path in walletDbCleanupDirectories(dbPath)) {
       final directory = Directory(path);
       if (directory.existsSync()) {

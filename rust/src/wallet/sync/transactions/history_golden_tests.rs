@@ -603,6 +603,33 @@ impl W {
         let history = get_transaction_history(&self.path, NETWORK, limit, &account).unwrap();
         if limit.is_none() {
             assert_rows_read_alone_match(&self.path, &account, &history);
+            let index =
+                history_pages::index(&self.path, NETWORK, parse_account_uuid(&account).unwrap())
+                    .unwrap();
+            for batch in index.summaries.chunks(20) {
+                let ids: Vec<_> = batch.iter().map(|s| s.txid_hex.clone()).collect();
+                let page = history_pages::rows(
+                    &self.path,
+                    NETWORK,
+                    parse_account_uuid(&account).unwrap(),
+                    &index.snapshot_id,
+                    &ids,
+                )
+                .unwrap();
+                if page.stale {
+                    break;
+                }
+                let expected: Vec<_> = history
+                    .iter()
+                    .filter(|r| ids.contains(&r.txid_hex))
+                    .map(full_row)
+                    .collect();
+                assert_eq!(
+                    page.transactions.iter().map(full_row).collect::<Vec<_>>(),
+                    expected,
+                    "paged rows agree with unlimited history"
+                );
+            }
             // The unchanged unlimited path is the oracle for every golden's
             // bounded read, including all fields and intra-transaction rows.
             for limit in [0, 1, 2, 10, u32::MAX] {
@@ -2811,4 +2838,185 @@ fn golden_shared_or_mixed_funding_keeps_receipts_incomplete() {
             received to=- from=- src=- acct=- memo=None complete=0 prov=1 settled=1 delta=-10000 fee=Some(10000) net=Some(10000) outs=[] t=rows[0:own:100000:1,1:F33:50000:0]/2 omit["shielded_and_transparent_funding"]
         "#,
     );
+}
+
+#[test]
+fn golden_activity_pages_reuse_and_invalidate_local_snapshots() {
+    let w = wallet();
+    recent_receipts(&w);
+    let expected =
+        get_transaction_history(&w.path, NETWORK, None, &w.a.expose_uuid().to_string()).unwrap();
+    // Cache eviction by concurrent tests is a legitimate stale response. Retry
+    // from a fresh index, exactly as a client does after invalidation.
+    let mut verified = false;
+    for _ in 0..100 {
+        let index = history_pages::index(&w.path, NETWORK, w.a).unwrap();
+        let mut actual = Vec::new();
+        let mut stale = false;
+        for batch in index.summaries.chunks(20) {
+            let ids: Vec<_> = batch.iter().map(|s| s.txid_hex.clone()).collect();
+            let page =
+                history_pages::rows(&w.path, NETWORK, w.a, &index.snapshot_id, &ids).unwrap();
+            if page.stale {
+                stale = true;
+                break;
+            }
+            actual.extend(page.transactions);
+        }
+        if stale {
+            continue;
+        }
+        assert_eq!(actual, expected);
+        // A writer using another connection invalidates this index. No old
+        // details may be returned under its token after the commit.
+        w.conn
+            .execute(
+                "UPDATE transactions SET fee = 12345 WHERE txid = ?1",
+                [txid(0x60).as_slice()],
+            )
+            .unwrap();
+        let page = history_pages::rows(
+            &w.path,
+            NETWORK,
+            w.a,
+            &index.snapshot_id,
+            &[hex::encode(txid(0x60))],
+        )
+        .unwrap();
+        assert!(page.stale);
+        verified = true;
+        break;
+    }
+    assert!(
+        verified,
+        "snapshot repeatedly evicted by concurrent fixtures"
+    );
+    let index = history_pages::index(&w.path, NETWORK, w.a).unwrap();
+    assert!(history_pages::rows(
+        &w.path,
+        NETWORK,
+        w.a,
+        &index.snapshot_id,
+        &vec![hex::encode(txid(0x60)); 21]
+    )
+    .is_err());
+    history_pages::evict_db(&w.path);
+    // A reset can remove the physical database immediately after eviction,
+    // including on platforms that reject deletion of open SQLite files.
+    drop(w.conn);
+    std::fs::remove_file(&w.path).unwrap();
+}
+
+#[test]
+fn golden_activity_page_continues_across_unrelated_sync_writes() {
+    let w = wallet();
+    recent_receipts(&w);
+    let mut verified = false;
+    for attempt in 0..100 {
+        let index = history_pages::index(&w.path, NETWORK, w.a).unwrap();
+        let mut evicted = false;
+        for n in 0..5 {
+            w.conn
+                .execute(
+                    "UPDATE accounts SET name = ?1 WHERE uuid = ?2",
+                    params![
+                        format!("renamed-{attempt}-{n}"),
+                        w.a.expose_uuid().as_bytes()
+                    ],
+                )
+                .unwrap();
+            let page = history_pages::rows(
+                &w.path,
+                NETWORK,
+                w.a,
+                &index.snapshot_id,
+                &[hex::encode(txid(0x60))],
+            )
+            .unwrap();
+            if page.stale {
+                evicted = true;
+                break;
+            }
+            assert_eq!(page.transactions.len(), 1);
+        }
+        // Another fixture can evict the bounded LRU. An implementation that
+        // rejects every commit never completes even one of these attempts.
+        if evicted {
+            continue;
+        }
+        assert!(
+            history_pages::rows(&w.path, NETWORK, w.a, &index.snapshot_id, &[])
+                .unwrap()
+                .stale,
+            "a continued page cannot certify an older Dart detail buffer"
+        );
+        let refreshed = history_pages::index(&w.path, NETWORK, w.a).unwrap();
+        assert_ne!(
+            refreshed.snapshot_id, index.snapshot_id,
+            "explicit refresh must replace cached Dart detail facts too"
+        );
+        w.conn
+            .execute(
+                "UPDATE accounts SET name = 'again' WHERE uuid = ?1",
+                [w.a.expose_uuid().as_bytes()],
+            )
+            .unwrap();
+        assert!(
+            history_pages::rows(&w.path, NETWORK, w.a, &refreshed.snapshot_id, &[])
+                .unwrap()
+                .stale
+        );
+        verified = true;
+        break;
+    }
+    assert!(
+        verified,
+        "unrelated commits repeatedly invalidated the page"
+    );
+}
+
+#[test]
+fn golden_activity_page_rereads_detail_only_enrichment() {
+    let w = wallet();
+    let tx = w.tx(0xe2, Some(190), None, None);
+    w.recv(tx, Pool::Orchard, 0, w.a, 0, Recv::Ext, None);
+    let mut verified = false;
+    for _ in 0..100 {
+        w.conn
+            .execute(
+                "UPDATE orchard_received_notes SET memo = NULL WHERE transaction_id = ?1",
+                [tx],
+            )
+            .unwrap();
+        let index = history_pages::index(&w.path, NETWORK, w.a).unwrap();
+        let ids = [hex::encode(txid(0xe2))];
+        let before = history_pages::rows(&w.path, NETWORK, w.a, &index.snapshot_id, &ids).unwrap();
+        if before.stale {
+            continue;
+        }
+        assert!(!before.transactions[0].details_complete);
+        w.conn
+            .execute(
+                "UPDATE orchard_received_notes SET memo = ?1 WHERE transaction_id = ?2",
+                params![padded_memo(b"enriched memo"), tx],
+            )
+            .unwrap();
+        let after = history_pages::rows(&w.path, NETWORK, w.a, &index.snapshot_id, &ids).unwrap();
+        if after.stale {
+            continue;
+        }
+        assert!(
+            after.transactions[0].details_complete,
+            "same summary must not retain the pre-enrichment detail cache"
+        );
+        assert_ne!(
+            history_pages::index(&w.path, NETWORK, w.a)
+                .unwrap()
+                .snapshot_id,
+            index.snapshot_id
+        );
+        verified = true;
+        break;
+    }
+    assert!(verified, "detail enrichment never produced a coherent page");
 }

@@ -1074,6 +1074,8 @@ struct HistorySortKey {
     txid: Vec<u8>,
 }
 
+#[path = "transactions/history_pages.rs"]
+pub(crate) mod history_pages;
 #[path = "transactions/recent_history.rs"]
 mod recent_history;
 
@@ -1084,6 +1086,9 @@ pub(crate) fn get_transaction_history(
     account_uuid: &str,
 ) -> Result<Vec<TransactionInfo>, String> {
     let account = parse_account_uuid(account_uuid)?;
+    if let Some(limit) = limit {
+        return history_pages::recent(db_path, network, account, limit);
+    }
     let conn = open_readonly_conn(db_path)?;
     read_transaction_history(&conn, db_path, network, limit, account)
 }
@@ -1162,27 +1167,7 @@ fn read_history(
     let read_tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("SQL error: {e}"))?;
-    let mut bases = read_history_bases(&read_tx, db_path, network, account)?;
-    if let Some(state) = crate::wallet::sync_engine::gift_card_claim::snapshot_from_conn(&read_tx)?
-    {
-        for base in &mut bases {
-            if base.created.is_some() {
-                base.mined_height = read_tx
-                    .query_row(
-                        "SELECT height FROM vizor_giftcard_mined WHERE txid=?1",
-                        [&base.txid],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(|e| e.to_string())?;
-                base.expired_unmined = state.complete
-                    && base.mined_height.is_none()
-                    && base
-                        .expiry_height
-                        .is_some_and(|h| h > 0 && h as u64 + 5 <= state.checked_height as u64);
-            }
-        }
-    }
+    let mut bases = read_history_bases_with_claim_state(&read_tx, db_path, network, account)?;
     if let HistoryScope::Transactions(txids) = scope {
         retain_transaction_scope(&mut bases, txids);
     }
@@ -1200,24 +1185,47 @@ fn read_history(
         });
     }
     attach_history_details(&read_tx, db_path, network, account, &mut bases)?;
-
-    // Bind the txids already in `bases` instead of re-querying
-    // `v_transactions` for DISTINCT txid. That view selects
-    // `transactions.raw`, so a second pass would re-materialize every
-    // raw blob even though this path never reads them.
     let outputs_by_txid = read_history_outputs(
         &read_tx,
         uuid_bytes,
         bases.iter().map(|base| base.txid.as_slice()),
     )?;
     drop(read_tx);
-
     let mut rows = assemble_history(&bases, &outputs_by_txid, uuid_bytes, limit);
     if let HistoryScope::Transactions(txids) = scope {
         let hexes: HashSet<_> = txids.iter().map(hex::encode).collect();
         rows.retain(|row| hexes.contains(&row.txid_hex));
     }
     Ok(rows)
+}
+
+fn read_history_bases_with_claim_state(
+    conn: &rusqlite::Connection,
+    db_path: &str,
+    network: WalletNetwork,
+    account: AccountUuid,
+) -> Result<Vec<TxBase>, String> {
+    let mut bases = read_history_bases(conn, db_path, network, account)?;
+    if let Some(state) = crate::wallet::sync_engine::gift_card_claim::snapshot_from_conn(conn)? {
+        for base in &mut bases {
+            if base.created.is_some() {
+                base.mined_height = conn
+                    .query_row(
+                        "SELECT height FROM vizor_giftcard_mined WHERE txid=?1",
+                        [&base.txid],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                base.expired_unmined = state.complete
+                    && base.mined_height.is_none()
+                    && base
+                        .expiry_height
+                        .is_some_and(|h| h > 0 && h as u64 + 5 <= state.checked_height as u64);
+            }
+        }
+    }
+    Ok(bases)
 }
 
 /// Keeps the bases one transaction's rows depend on: its own, and when the

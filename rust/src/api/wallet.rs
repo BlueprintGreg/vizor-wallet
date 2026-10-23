@@ -1313,6 +1313,7 @@ pub fn delete_account(
 /// Drop process-local wallet summary data after the wallet DB is deleted.
 pub fn evict_wallet_summary_cache(db_path: String) {
     crate::wallet::wallet_summary_cache::evict_db(&db_path);
+    crate::wallet::sync::history_pages::evict_db(&db_path);
 }
 
 /// Current and legacy receive representations owned by a local account.

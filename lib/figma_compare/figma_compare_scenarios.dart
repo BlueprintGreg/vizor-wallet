@@ -1,3 +1,4 @@
+import 'activity_pagination_capture.dart';
 import 'mobile_shield_capture.dart';
 import 'mobile_passcode_capture.dart';
 import 'mobile_receive_capture.dart';
@@ -1864,6 +1865,48 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'pay-completed',
     description: 'Pay activity completed state',
     builder: buildPayCompletedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-skeleton',
+    description: 'Activity list skeleton, desktop',
+    builder: activitySkeletonCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-loaded',
+    description: 'Activity list loaded, desktop',
+    builder: activityLoadedCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-append',
+    description: 'Activity list append, desktop',
+    builder: activityAppendCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-skeleton',
+    description: 'Activity list skeleton, mobile',
+    builder: activitySkeletonCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-loaded',
+    description: 'Activity list loaded, mobile',
+    builder: activityLoadedCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-append',
+    description: 'Activity list append, mobile',
+    builder: activityAppendCapture,
+    desktop: false,
+    mobile: true,
   ),
   FigmaCompareScenario(
     id: 'activity-gift-cards',

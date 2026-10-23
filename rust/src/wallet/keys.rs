@@ -1089,6 +1089,7 @@ pub fn delete_account(
         drop(db);
         delete_account_rows(db_path, network, account_id)?;
         crate::wallet::wallet_summary_cache::evict_db(db_path);
+        crate::wallet::sync::history_pages::evict_db(db_path);
         if let Err(error) = crate::wallet::sync::discard_keystone_migration_requests_for_account(
             account_uuid,
             network,

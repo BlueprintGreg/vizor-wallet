@@ -133,9 +133,10 @@ pub(crate) use transactions::{
     get_transaction_data_requests, get_transaction_detail, get_transaction_history,
     get_transaction_rows, get_transaction_rows_for_txids,
     get_unmined_txids_with_mined_output_evidence, get_wallet_balance, get_wallet_balances,
-    ExportBirthdayAnchor, TransactionDetail, TransactionDetailOutput, TransactionFeeState,
-    TransactionInfo, TransparentBalanceAuthority, TransparentDetailsView, TransparentRecipientRow,
-    TransparentStopReason, TxDataRequest, WalletBalance, WalletBalanceAvailability,
+    history_pages, ExportBirthdayAnchor, TransactionDetail, TransactionDetailOutput,
+    TransactionFeeState, TransactionInfo, TransparentBalanceAuthority, TransparentDetailsView,
+    TransparentRecipientRow, TransparentStopReason, TxDataRequest, WalletBalance,
+    WalletBalanceAvailability,
 };
 
 pub(super) fn open_wallet_db(

@@ -24,6 +24,9 @@ static PAYMENT_LINK_CLAIM_SYNCS: std::sync::LazyLock<Mutex<HashMap<String, Arc<A
 #[frb(sync)]
 pub fn set_sync_mode(mode: u8) {
     DESIRED_SYNC_MODE.store(mode, Ordering::SeqCst);
+    if mode == 0 {
+        wallet_sync::history_pages::clear();
+    }
 }
 
 /// Get the current desired sync mode.
@@ -3058,6 +3061,84 @@ pub struct TransactionDetailOutput {
     /// Exact output pool for activity and Gift Card destination metadata.
     pub activity_pool: Option<String>,
     pub uses_orchard_receiver: bool,
+}
+
+/// Lightweight account-wide ordering metadata. Reused while this DB snapshot
+/// remains current; it does not establish payment amounts or completeness.
+pub struct ActivityHistoryIndex {
+    pub snapshot_id: String,
+    pub summaries: Vec<ActivityHistorySummary>,
+}
+
+pub struct ActivityHistorySummary {
+    pub txid_hex: String,
+    pub mined_height: u64,
+    pub expired_unmined: bool,
+    pub block_time: u64,
+    pub created_time: u64,
+    pub source_order: u32,
+}
+
+pub struct ActivityHistoryRows {
+    pub stale: bool,
+    pub transactions: Vec<TransactionInfo>,
+}
+
+pub fn get_activity_history_index(
+    db_path: String,
+    network: String,
+    account_uuid: String,
+) -> Result<ActivityHistoryIndex, String> {
+    catch(|| {
+        let network = parse_network_and_migrate(&db_path, &network)?;
+        let account = crate::wallet::keys::parse_account_uuid(&account_uuid)?;
+        let index = wallet_sync::history_pages::index(&db_path, network, account)?;
+        Ok(ActivityHistoryIndex {
+            snapshot_id: index.snapshot_id,
+            summaries: index
+                .summaries
+                .into_iter()
+                .map(|s| ActivityHistorySummary {
+                    txid_hex: s.txid_hex,
+                    mined_height: s.mined_height,
+                    expired_unmined: s.expired_unmined,
+                    block_time: s.block_time,
+                    created_time: s.created_time,
+                    source_order: s.source_order,
+                })
+                .collect(),
+        })
+    })
+}
+
+/// At most 20 requested transactions, plus their classification dependencies.
+/// Each native detail/output read also contains at most 20 transactions.
+pub fn get_activity_history_rows(
+    db_path: String,
+    network: String,
+    account_uuid: String,
+    snapshot_id: String,
+    txid_hexes: Vec<String>,
+) -> Result<ActivityHistoryRows, String> {
+    catch(|| {
+        let network = parse_network_and_migrate(&db_path, &network)?;
+        let account = crate::wallet::keys::parse_account_uuid(&account_uuid)?;
+        let result = wallet_sync::history_pages::rows(
+            &db_path,
+            network,
+            account,
+            &snapshot_id,
+            &txid_hexes,
+        )?;
+        Ok(ActivityHistoryRows {
+            stale: result.stale,
+            transactions: result
+                .transactions
+                .into_iter()
+                .map(api_transaction_info)
+                .collect(),
+        })
+    })
 }
 
 pub fn get_transaction_history(
