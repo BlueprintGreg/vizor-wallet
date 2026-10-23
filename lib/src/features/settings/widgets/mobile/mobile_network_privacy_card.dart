@@ -7,7 +7,6 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_icon_hover_button.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
-import '../../../../providers/account_provider.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
 import '../settings_sub_option.dart';
@@ -30,17 +29,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
-    // New swap addresses follow the private queries setting itself, which
-    // the NEAR swap privacy switch also checks.
-    final privateQueriesOn = ref.watch(enhancePirProvider);
-    final nearSwapPrivacy = ref.watch(nearSwapPrivacyProvider);
-    final nearSwapPrivacyAvailable = ref.watch(
-      nearSwapPrivacySettingAvailableProvider,
-    );
-    final hardwareAccount =
-        ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
-    final changingRecovery =
-        ref.watch(enhancePirTransitionProvider) == kEnhancePirChangingMessage;
+    final nearSwapPrivacy = ref.watch(nearSwapPrivacySettingProvider);
     return MobileSurfaceCard(
       cornerRadius: AppRadii.large,
       padding: const EdgeInsets.fromLTRB(
@@ -64,7 +53,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
           const SizedBox(height: AppSpacing.s),
           const MobileTorControl(),
           const MobilePrivateQueriesControl(),
-          if (nearSwapPrivacyAvailable) ...[
+          if (nearSwapPrivacy != null) ...[
             const SizedBox(height: AppSpacing.md),
             // An option of Private queries: its icon sits under the label
             // above, and the hook starts under that row's icon.
@@ -81,12 +70,12 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                   _MobileToggleRow(
                     label: 'NEAR swap privacy',
                     keyPrefix: 'mobile_settings_near_swap_privacy',
-                    enabled: nearSwapPrivacy,
-                    onToggle: changingRecovery || !privateQueriesOn
-                        ? null
-                        : () => unawaited(
+                    enabled: nearSwapPrivacy.enabled,
+                    onToggle: nearSwapPrivacy.canToggle
+                        ? () => unawaited(
                             ref.read(nearSwapPrivacyProvider.notifier).toggle(),
-                          ),
+                          )
+                        : null,
                     onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                   ),
                   const SizedBox(height: AppSpacing.sm),
@@ -95,10 +84,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                       horizontal: AppSpacing.xxs,
                     ),
                     child: Text(
-                      nearSwapPrivacyDescription(
-                        hardwareAccount: hardwareAccount,
-                        privateQueriesOn: privateQueriesOn,
-                      ),
+                      nearSwapPrivacy.description,
                       key: const ValueKey(
                         'mobile_settings_near_swap_privacy_description',
                       ),
@@ -107,9 +93,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  // The check is discovery's, so it needs NEAR swap
-                  // privacy too.
-                  if (!hardwareAccount && nearSwapPrivacy) ...[
+                  if (nearSwapPrivacy.showHistoryCheck) ...[
                     const SizedBox(height: AppSpacing.sm),
                     const SwapHistoryCheckControl(),
                   ],

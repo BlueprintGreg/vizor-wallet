@@ -71,15 +71,7 @@ fn held_filter_and_pir_responses_leave_ordinary_sync_running() {
     let account = wallet.account().clone();
     chain.mine(2);
     wallet.scan(&chain);
-    wallet
-        .recover(&Service::publish(
-            &chain,
-            chain.tip(),
-            activation(),
-            chain.tip(),
-            &[],
-        ))
-        .unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert!(wallet.state(&account).restore_complete);
 
     chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
@@ -129,15 +121,7 @@ fn held_filter_and_pir_responses_leave_ordinary_sync_running() {
     assert_eq!(service.queries(), 1);
     assert_eq!(service.count("witness"), 1);
     service.report("held near-head hint, one paid lookup");
-    wallet
-        .recover(&Service::publish(
-            &chain,
-            chain.tip(),
-            activation(),
-            chain.tip(),
-            &[],
-        ))
-        .unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert!(wallet.queued(&account).is_empty());
 }
 
@@ -161,7 +145,7 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     chain.pay(&receive(0), 1_000_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let restore = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let restore = Service::at_tip(&chain);
     wallet.recover(&restore).unwrap();
     let state = wallet.state(&account);
     assert!(state.restore_complete);
@@ -175,7 +159,7 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     chain.pay(&receive(2), 2_000_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let short = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let short = Service::at_tip(&chain);
     short.trace(&wallet, &account);
     wallet.recover(&short).unwrap();
     // Paying I2 moves the window to I6, so I5 and I6 get their first history checks.
@@ -209,7 +193,7 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     chain.mine(6_000);
     wallet.scan(&chain);
     let direct_count = wallet.db().one_time_direct_query_count(account.id).unwrap();
-    let long = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let long = Service::at_tip(&chain);
     long.trace(&wallet, &account);
     wallet.recover(&long).unwrap();
     // The queued I0 positive rereads its saved page 0 cursor, then reads the repeat on
@@ -259,7 +243,7 @@ fn route_choice_follows_measured_costs_and_skips_completed_addresses() {
     assert!(line.contains("filters: 1 requests"));
 
     // The settings action reads completed addresses too and finds the skipped repeat.
-    let manual = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let manual = Service::at_tip(&chain);
     wallet
         .recover_with(&manual, Some(None), Duration::from_secs(45))
         .unwrap();
@@ -319,15 +303,7 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
     chain.pay(&account.parent(), 21_000_000, false);
     chain.mine(12);
     phone.scan(&chain);
-    phone
-        .recover(&Service::publish(
-            &chain,
-            chain.tip(),
-            activation(),
-            chain.tip(),
-            &[],
-        ))
-        .unwrap();
+    phone.recover(&Service::at_tip(&chain)).unwrap();
     assert!(phone.state(&account).restore_complete);
 
     // The phone reserves a refund key, records the quote and funds the swap with the
@@ -381,7 +357,7 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
         "ordinary sync never credits them"
     );
     let before = phone.balance(&account);
-    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let service = Service::at_tip(&chain);
     phone.recover(&service).unwrap();
     let state = phone.state(&account);
     assert!(state.lookups.is_empty() && state.witnesses.is_empty());
@@ -460,7 +436,7 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
 
     // A second device restored from the seed scans the whole chain, including the
     // phone's spend, before it knows any one-time key.
-    let final_service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let final_service = Service::at_tip(&chain);
     let mut unenhanced = Wallet::new(4, activation());
     unenhanced.scan(&chain);
     unenhanced.recover(&final_service).unwrap();
@@ -478,7 +454,7 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
     desktop.scan(&chain);
     assert_eq!(desktop.one_time_received(&other), 0);
     let enhanced = enhance_publicly(&desktop, funding_tx.txid(), &funding_raw, funded_at, &chain);
-    let final_service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let final_service = Service::at_tip(&chain);
     desktop.recover(&final_service).unwrap();
     let state = desktop.state(&other);
     assert!(state.restore_complete && state.lookups.is_empty() && state.witnesses.is_empty());
@@ -555,19 +531,17 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
     let mut wallet = Wallet::new(4, activation());
     let account = wallet.account().clone();
     let receive = |index| account.key(Purpose::Receive, index);
-    let publish =
-        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
     chain.pay(&receive(0), 1_000_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
 
     // Toggle off while I1's answer is held.
     chain.pay(&receive(1), 500_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let service = publish(&chain);
+    let service = Service::at_tip(&chain);
     let held = service.hold("query", 0);
     let worker = wallet.spawn(&service, None, Duration::from_secs(45));
     held.wait();
@@ -583,7 +557,7 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
         "known funds remain"
     );
     assert!(wallet.balance(&account) >= 1_000_000);
-    let paused = publish(&chain);
+    let paused = Service::at_tip(&chain);
     wallet.recover(&paused).unwrap();
     assert_eq!(
         paused.count("inventory"),
@@ -594,7 +568,7 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
     // Re-enabling resumes the saved obligation.
     enable_feature();
     crate::api::one_time_ivk::reconcile_swap_recovery(wallet.path.clone(), "main".into()).unwrap();
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
 
     // Cancellation while I2's answer is held, as lock, background, transport changes
@@ -602,7 +576,7 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
     chain.pay(&receive(2), 700_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let service = publish(&chain);
+    let service = Service::at_tip(&chain);
     let held = service.hold("query", 0);
     let worker = wallet.spawn(&service, None, Duration::from_secs(45));
     held.wait();
@@ -615,7 +589,7 @@ fn toggle_and_cancellation_reject_held_answers_and_resume() {
         wallet.queued(&account).contains(&(RECEIVE, 2)),
         "the stale answer was not settled as empty"
     );
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert_eq!(wallet.one_time_unspent(&account), 2_200_000);
 }
 
@@ -646,7 +620,7 @@ fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
     assert_eq!(order, [first.id, second.id]);
     chain.mine(2);
     wallet.scan(&chain);
-    let restore = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let restore = Service::at_tip(&chain);
     wallet.recover(&restore).unwrap();
     assert_eq!(
         restore.queries(),
@@ -665,7 +639,7 @@ fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
     chain.pay(&second.key(Purpose::Receive, 0), 2_000_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let service = Service::at_tip(&chain);
     // The first account's lookup outlasts its slice of a nine second round.
     let held = service.hold("query", 0);
     let worker = wallet.spawn(&service, None, Duration::from_secs(9));
@@ -692,7 +666,7 @@ fn accounts_share_filter_downloads_but_not_cursors_budgets_or_credit() {
     assert_eq!(wallet.one_time_unspent(&second), 2_000_000);
     held.release();
 
-    let next = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let next = Service::at_tip(&chain);
     next.trace(&wallet, &first);
     wallet.recover(&next).unwrap();
     assert_eq!(
@@ -726,7 +700,7 @@ fn seed_restore_walks_holes_and_issuance_recycles_within_the_window() {
     let mut wallet = Wallet::new(4, activation());
     let account = wallet.account().clone();
     wallet.scan(&chain);
-    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let service = Service::at_tip(&chain);
     service.trace(&wallet, &account);
     wallet.recover(&service).unwrap();
     let state = wallet.state(&account);
@@ -841,14 +815,12 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     chain.pay(&account.key(Purpose::Receive, 9), 900_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    let publish =
-        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert_eq!(wallet.state(&account).restore_next, 4);
     assert_eq!(wallet.one_time_unspent(&account), 0);
     assert!(!checking());
 
-    let known = publish(&chain);
+    let known = Service::at_tip(&chain);
     wallet
         .recover_with(&known, Some(None), Duration::from_secs(45))
         .unwrap();
@@ -865,7 +837,7 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     assert!(!wallet.state(&account).manual.unwrap().active);
 
     // An explicit bound of ten addresses, paused on its third new lookup (I6).
-    let bounded = publish(&chain);
+    let bounded = Service::at_tip(&chain);
     let held = bounded.hold("query", 2);
     let worker = wallet.spawn(&bounded, Some(Some(10)), Duration::from_secs(45));
     held.wait();
@@ -883,7 +855,7 @@ fn manual_history_check_honours_bounds_and_resumes_after_pause() {
     );
     assert!(!checking());
 
-    let resumed = publish(&chain);
+    let resumed = Service::at_tip(&chain);
     resumed.trace(&wallet, &account);
     wallet
         .recover_with(&resumed, Some(Some(10)), Duration::from_secs(45))
@@ -932,7 +904,7 @@ fn prebirthday_payment_advances_restore_without_credit_until_an_earlier_restore(
     let mut late = Wallet::new(4, birthday);
     let account = late.account().clone();
     late.scan(&chain);
-    let service = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let service = Service::at_tip(&chain);
     late.recover(&service).unwrap();
     let state = late.state(&account);
     assert!(state.restore_complete);
@@ -972,7 +944,7 @@ fn unsupported_service_requires_an_upgrade_and_keeps_pending_work() {
             .unwrap()
     };
 
-    let newer = Service::publish(&chain, chain.tip(), activation(), chain.tip(), &[]);
+    let newer = Service::at_tip(&chain);
     newer.serve_protocol("ironwood-receiver-inventory-v2");
     let error = wallet.recover(&newer).unwrap_err();
     assert!(matches!(error, RecoveryError::UpgradeRequired), "{error}");
@@ -992,15 +964,7 @@ fn unsupported_service_requires_an_upgrade_and_keeps_pending_work() {
         "the pending seed walk is kept"
     );
 
-    wallet
-        .recover(&Service::publish(
-            &chain,
-            chain.tip(),
-            activation(),
-            chain.tip(),
-            &[],
-        ))
-        .unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert!(!status().upgrade_required);
     assert!(wallet.state(&account).restore_complete);
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
@@ -1194,18 +1158,16 @@ fn an_account_without_an_orchard_key_leaves_other_accounts_working() {
     let path = wallet.path.clone();
     let status =
         || crate::api::one_time_ivk::get_swap_recovery_status(path.clone(), "main".into()).unwrap();
-    let publish =
-        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
 
     wallet.scan(&chain);
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert!(!status().checking_history);
 
     enable_feature();
     chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
     chain.mine(1);
     wallet.scan(&chain);
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
     assert!(!status().checking_history);
     let reserved = crate::api::one_time_ivk::reserve_swap_address(
@@ -1238,11 +1200,9 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
     let account = wallet.account().clone();
     wallet.add_account(5, activation());
     wallet.scan(&chain);
-    let publish =
-        |chain: &Chain| Service::publish(chain, chain.tip(), activation(), chain.tip(), &[]);
 
     // Another writer holds the wallet lock for the whole round.
-    let off = publish(&chain);
+    let off = Service::at_tip(&chain);
     let round = crate::wallet::db::with_wallet_db_write_lock("test.writer", || {
         let worker = wallet.spawn(&off, None, Duration::from_secs(45));
         let (done, result) = std::sync::mpsc::channel();
@@ -1259,10 +1219,10 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
 
     // An account left enabled is disabled by the next round, which then reports no work.
     enable_feature();
-    wallet.recover(&publish(&chain)).unwrap();
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
     assert!(wallet.state(&account).enabled);
     crate::api::sync::set_near_swap_privacy_enabled(false);
-    let disabling = publish(&chain);
+    let disabling = Service::at_tip(&chain);
     assert!(!wallet.recover(&disabling).unwrap().active);
     assert!(!wallet.state(&account).enabled);
     assert_eq!(disabling.bytes(), 0);
@@ -1299,18 +1259,7 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
     };
     let before = version();
 
-    assert!(
-        !wallet
-            .recover(&Service::publish(
-                &chain,
-                chain.tip(),
-                activation(),
-                chain.tip(),
-                &[]
-            ))
-            .unwrap()
-            .active
-    );
+    assert!(!wallet.recover(&Service::at_tip(&chain)).unwrap().active);
     assert!(!api::run_swap_recovery(path.clone(), main()).unwrap());
     api::get_swap_recovery_status(path.clone(), main()).unwrap();
     api::reconcile_swap_recovery(path.clone(), main()).unwrap();

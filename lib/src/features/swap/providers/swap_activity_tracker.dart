@@ -209,16 +209,14 @@ class SwapActivityTracker {
   }
 
   Future<List<SwapIntent>> loadIntents({required String? accountUuid}) =>
-      _run(() => _loadIntents(accountUuid: accountUuid));
-
-  Future<List<SwapIntent>> _loadIntents({required String? accountUuid}) async {
-    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
-    if (scopedAccountUuid == null) return const [];
-    final records = await _activityStore.loadRecords(
-      accountUuid: scopedAccountUuid,
-    );
-    return _intentsFromRecords(records);
-  }
+      _run(() async {
+        final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+        if (scopedAccountUuid == null) return const [];
+        final records = await _activityStore.loadRecords(
+          accountUuid: scopedAccountUuid,
+        );
+        return _intentsFromRecords(records);
+      });
 
   /// Hands a provider status, fetched at `checkedAt`, to the wallet when the
   /// swap uses a private address. Ordinary swaps never touch the wallet. A
@@ -244,12 +242,7 @@ class SwapActivityTracker {
   Future<void> saveIntents({
     required String? accountUuid,
     required List<SwapIntent> intents,
-  }) => _run(() => _saveIntents(accountUuid: accountUuid, intents: intents));
-
-  Future<void> _saveIntents({
-    required String? accountUuid,
-    required List<SwapIntent> intents,
-  }) async {
+  }) => _run(() async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid == null) return;
     await _activityStore.saveRecords(
@@ -264,7 +257,7 @@ class SwapActivityTracker {
       ],
     );
     _onRecordsChanged?.call();
-  }
+  });
 
   Future<SwapActivityRefreshResult> refreshOpenIntents({
     required String accountUuid,
@@ -306,21 +299,7 @@ class SwapActivityTracker {
     required List<SwapIntent> currentIntents,
     required Iterable<String> intentIds,
     required bool includeTerminal,
-  }) => _run(
-    () => _refreshIntents(
-      accountUuid: accountUuid,
-      currentIntents: currentIntents,
-      intentIds: intentIds,
-      includeTerminal: includeTerminal,
-    ),
-  );
-
-  Future<SwapActivityRefreshResult> _refreshIntents({
-    required String accountUuid,
-    required List<SwapIntent> currentIntents,
-    required Iterable<String> intentIds,
-    required bool includeTerminal,
-  }) async {
+  }) => _run(() async {
     final ids = intentIds.toSet();
     if (ids.isEmpty) {
       return SwapActivityRefreshResult(
@@ -385,7 +364,7 @@ class SwapActivityTracker {
       refreshError: refreshError,
       didRefresh: didRefresh,
     );
-  }
+  });
 
   Future<void> _saveRefreshedIntents({
     required String accountUuid,

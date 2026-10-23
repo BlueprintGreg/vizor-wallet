@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/layout/app_form_factor.dart';
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
@@ -6,6 +7,8 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_shape.dart';
+import '../../../providers/account_provider.dart';
+import '../../../providers/enhance_pir_provider.dart';
 
 /// NEAR swap privacy subtitle while Private queries is on.
 const kNearSwapPrivacyOnCopy = 'Each swap uses new one-time Zcash addresses.';
@@ -28,6 +31,38 @@ String nearSwapPrivacyDescription({
     : privateQueriesOn
     ? kNearSwapPrivacyOnCopy
     : kNearSwapPrivacyOffCopy;
+
+/// What Settings shows for NEAR swap privacy on desktop and mobile.
+typedef NearSwapPrivacySetting = ({
+  bool enabled,
+  String description,
+  bool canToggle,
+  bool showHistoryCheck,
+});
+
+/// The NEAR swap privacy option's state, or null when Settings doesn't offer
+/// it (see [nearSwapPrivacySettingAvailableProvider]).
+final nearSwapPrivacySettingProvider = Provider<NearSwapPrivacySetting?>((ref) {
+  if (!ref.watch(nearSwapPrivacySettingAvailableProvider)) return null;
+  // New swap addresses follow the private queries setting itself, which
+  // the NEAR swap privacy switch also checks.
+  final privateQueriesOn = ref.watch(enhancePirProvider);
+  final enabled = ref.watch(nearSwapPrivacyProvider);
+  final hardwareAccount =
+      ref.watch(accountProvider).value?.activeAccount?.isHardware ?? false;
+  final changingRecovery =
+      ref.watch(enhancePirTransitionProvider) == kEnhancePirChangingMessage;
+  return (
+    enabled: enabled,
+    description: nearSwapPrivacyDescription(
+      hardwareAccount: hardwareAccount,
+      privateQueriesOn: privateQueriesOn,
+    ),
+    canToggle: !changingRecovery && privateQueriesOn,
+    // The check is discovery's, so it needs NEAR swap privacy too.
+    showHistoryCheck: !hardwareAccount && enabled,
+  );
+});
 
 /// Title of the NEAR swap privacy explanation.
 const kNearSwapPrivacyInfoTitle = "What's this?";

@@ -312,8 +312,8 @@ class _TerminalDepositSwapProvider extends _FakeSwapProvider {
 }
 
 /// Fails the status request for each deposit address in [failing].
-class _FailingStatusSwapProvider extends _SendHookSwapProvider {
-  _FailingStatusSwapProvider(this.failing);
+class _FailingStatusSwapProvider extends _FakeSwapProvider {
+  _FailingStatusSwapProvider(this.failing) : super(zecDepositMemo: null);
 
   final Set<String> failing;
 
@@ -766,6 +766,29 @@ class _HistoryPendingStartStore extends Fake
       );
 }
 
+/// Reserves `<prefix><n>` on the n-th call, as the wallet does: a refund key
+/// for a direction that sends ZEC, otherwise an incoming reservation.
+class _CountingReservations {
+  _CountingReservations(this.prefix);
+
+  final String prefix;
+  var count = 0;
+
+  /// The reservation hook for the swap harness.
+  Future<SwapZecStagingAddress?> reserve({
+    required String accountUuid,
+    required SwapDirection direction,
+  }) async {
+    count++;
+    final index = BigInt.from(count);
+    return SwapZecStagingAddress(
+      address: '$prefix$count',
+      refundIndex: direction.sendsZec ? index : null,
+      reservationIndex: direction.sendsZec ? null : index,
+    );
+  }
+}
+
 /// Reserves nothing the first time, refusing with `kind` as the wallet does while
 /// it waits on work it can finish itself, then reserves incoming addresses.
 class _WaitingFirstReservation {
@@ -788,12 +811,6 @@ class _WaitingFirstReservation {
       reservationIndex: BigInt.from(calls),
     );
   }
-}
-
-/// Quotes address-only ZEC deposits, running each request's send hook first
-/// (see [_FakeSwapProvider.send]).
-class _SendHookSwapProvider extends _FakeSwapProvider {
-  _SendHookSwapProvider() : super(zecDepositMemo: null);
 }
 
 /// Quotes with a new address-only ZEC deposit address each time, as NEAR does.

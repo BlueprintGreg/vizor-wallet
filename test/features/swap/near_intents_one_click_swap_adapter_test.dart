@@ -2026,11 +2026,21 @@ void main() {
     );
   });
 
-  test(
-    'status of an ambiguous 1Click ticker reports only the status',
-    () async {
+  for (final (name, tokens, depositAddress) in [
+    (
+      'status of an ambiguous 1Click ticker reports only the status',
+      _tokensWithNearUsdcFirst,
+      'ambiguous-deposit',
+    ),
+    (
+      'status of duplicate 1Click ticker market variants reports only the status',
+      _tokensWithDuplicateEthUsdc,
+      'duplicate-market-deposit',
+    ),
+  ]) {
+    test(name, () async {
       final transport = _FakeOneClickTransport([
-        _FakeResponse.get('/v0/tokens', _tokensWithNearUsdcFirst),
+        _FakeResponse.get('/v0/tokens', tokens),
         _FakeResponse.get(
           '/v0/status',
           _quoteResponse(
@@ -2040,7 +2050,7 @@ void main() {
             amountInFormatted: '12',
             amountOutFormatted: '1',
             minAmountOut: '99500000',
-            depositAddress: 'ambiguous-deposit',
+            depositAddress: depositAddress,
             quoteRequestRefundTo: '0xrefund',
             quoteRequestRecipient: 'u1recipient',
             status: 'PROCESSING',
@@ -2049,42 +2059,12 @@ void main() {
       ]);
       final provider = NearIntentsOneClickSwapAdapter(transport: transport);
 
-      final status = await provider.getStatus('ambiguous-deposit');
+      final status = await provider.getStatus(depositAddress);
 
       expect(status.statusOnly, isTrue);
       expect(status.status, SwapIntentStatus.processing);
-    },
-  );
-
-  test(
-    'status of duplicate 1Click ticker market variants reports only the status',
-    () async {
-      final transport = _FakeOneClickTransport([
-        _FakeResponse.get('/v0/tokens', _tokensWithDuplicateEthUsdc),
-        _FakeResponse.get(
-          '/v0/status',
-          _quoteResponse(
-            originAsset: '1cs_v1:usdc:native:coin',
-            destinationAsset: 'nep141:zec.omft.near',
-            swapType: 'FLEX_INPUT',
-            amountInFormatted: '12',
-            amountOutFormatted: '1',
-            minAmountOut: '99500000',
-            depositAddress: 'duplicate-market-deposit',
-            quoteRequestRefundTo: '0xrefund',
-            quoteRequestRecipient: 'u1recipient',
-            status: 'PROCESSING',
-          ),
-        ),
-      ]);
-      final provider = NearIntentsOneClickSwapAdapter(transport: transport);
-
-      final status = await provider.getStatus('duplicate-market-deposit');
-
-      expect(status.statusOnly, isTrue);
-      expect(status.status, SwapIntentStatus.processing);
-    },
-  );
+    });
+  }
 
   test(
     'status derives minimum receive from swap details slippage when min amount is missing',
