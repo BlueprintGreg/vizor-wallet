@@ -132,6 +132,9 @@ class _Api extends RustLibApi {
     return read.future;
   }
 
+  /// When set, the durable pause stays pending until the test completes it.
+  Completer<void>? heldCancel;
+
   /// Records that the durable manual job was paused.
   @override
   Future<void> crateApiOneTimeIvkCancelSwapHistory({
@@ -139,6 +142,7 @@ class _Api extends RustLibApi {
     required String networkName,
   }) async {
     events.add('cancel manual');
+    await heldCancel?.future;
   }
 
   /// Records which account's balance was read and returns a fixed balance.
@@ -312,6 +316,7 @@ void main() {
     api.recoveries.clear();
     api.manual.clear();
     api.statusReads.clear();
+    api.heldCancel = null;
     api.events.clear();
     api.balanceReads.clear();
     api.cancels = 0;
@@ -586,6 +591,52 @@ void main() {
 
     await expectLater(sync.swapRecoveryStatus(), throwsStateError);
     expect(api.statusReads, hasLength(1), reason: 'no read during a mutation');
+    sync.resumeAfterWalletMutation(pause);
+    await settle(sync);
+  });
+
+  test('a wallet mutation waits for a held history pause write, and none '
+      'starts while it runs', () async {
+    final sync = await recovering();
+    await releaseRound(work: false);
+    // The round's answer starts the saved-state read.
+    for (final read in api.statusReads) {
+      read.complete(
+        const rust_swap.SwapRecoveryStatus(
+          checkingHistory: false,
+          upgradeRequired: false,
+        ),
+      );
+    }
+    await pumpEventQueue();
+    api.heldCancel = Completer<void>();
+    final cancel = sync.cancelSwapHistory();
+    await pumpEventQueue();
+    expect(api.events.last, 'cancel manual');
+
+    var paused = false;
+    late WalletMutationSyncPause pause;
+    unawaited(
+      sync.pauseForWalletMutation().then((value) {
+        pause = value;
+        paused = true;
+      }),
+    );
+    await pumpEventQueue();
+    expect(paused, isFalse, reason: 'the pause write is still open');
+    api.heldCancel!.complete();
+    await cancel;
+    await pumpEventQueue();
+    expect(paused, isTrue);
+
+    api.heldCancel = null;
+    final writes = api.events.where((e) => e == 'cancel manual').length;
+    await expectLater(sync.cancelSwapHistory(), throwsStateError);
+    expect(
+      api.events.where((e) => e == 'cancel manual').length,
+      writes,
+      reason: 'no pause write during a mutation',
+    );
     sync.resumeAfterWalletMutation(pause);
     await settle(sync);
   });

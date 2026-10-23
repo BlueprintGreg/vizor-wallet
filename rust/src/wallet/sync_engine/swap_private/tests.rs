@@ -1139,6 +1139,73 @@ fn slow_shard_filters_share_one_budget_and_leave_time_for_pir() {
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
 }
 
+/// Rolling block filters ahead of a lagging PIR publication that never answer draw on
+/// the same round budget as sealed-shard filters. One stalled request ends filter work
+/// for the round, so the other accounts skip theirs, and drain still runs in time to
+/// credit a payment over direct PIR.
+#[test]
+fn stalled_rolling_filters_leave_every_account_time_to_drain() {
+    isolated!(stalled_rolling_filters_leave_every_account_time_to_drain);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let first = wallet.account().clone();
+    for seed in 5..11 {
+        wallet.add_account(seed, activation());
+    }
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert!(wallet.state(&first).restore_complete);
+
+    chain.pay(&first.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.mine(1);
+    let published = chain.tip();
+    chain.mine(2);
+    wallet.scan(&chain);
+    // PIR lags two blocks behind the rolling filters, whose requests never answer.
+    let service = Service::publish(&chain, published, activation(), chain.tip(), &[]);
+    let _held: Vec<_> = (0..16).map(|n| service.hold("filters", n)).collect();
+
+    // Seven accounts waiting two seconds each would outlast this ten second round.
+    wallet
+        .recover_with(&service, None, Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(
+        service.count("filters"),
+        1,
+        "one stalled request ends filter work"
+    );
+    assert_eq!(wallet.one_time_unspent(&first), 1_000_000);
+}
+
+/// A history check against a publication the wallet has not scanned yet reports that
+/// it is waiting for sync, a kind of its own the app can show honestly, rather than a
+/// failure.
+#[test]
+fn a_history_check_ahead_of_sync_waits_for_sync() {
+    isolated!(a_history_check_ahead_of_sync_waits_for_sync);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    chain.mine(2);
+    wallet.scan(&chain);
+    chain.mine(2);
+    let error = wallet
+        .recover_with(
+            &Service::at_tip(&chain),
+            Some(None),
+            Duration::from_secs(45),
+        )
+        .unwrap_err();
+    assert!(matches!(error, RecoveryError::NotCaughtUp), "{error}");
+    let error = crate::api::one_time_ivk::ReceiveError::from(error);
+    assert_eq!(
+        error.kind,
+        crate::api::one_time_ivk::ReceiveErrorKind::WaitingForSync
+    );
+}
+
 /// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
 /// can be, is not a software account. Recovery, the status read and issuance keep working
 /// for the wallet's other accounts, with the feature off and on.

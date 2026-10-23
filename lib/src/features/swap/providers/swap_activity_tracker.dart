@@ -190,8 +190,7 @@ class SwapActivityTracker {
   _onProviderSnapshot;
 
   /// The wallet deletion drain, which a private swap's status refresh joins
-  /// from its request through its wallet write. Ordinary swaps never write the
-  /// wallet, so they stay outside it.
+  /// from its request through its saved activity (see [refreshIntents]).
   final LedgerOperationLifecycle? _lifecycle;
 
   final SwapActivityStore _activityStore;
@@ -306,7 +305,59 @@ class SwapActivityTracker {
         requestedIds: ids,
       );
     }
+    bool isPrivate(String id) =>
+        currentIntents.swapIntentById(id)?.privateAddress ?? false;
+    // Ordinary swaps never write the wallet, so they refresh and save outside
+    // the wallet deletion drain, as they always have.
+    var batch = await _refreshBatch(
+      accountUuid: accountUuid,
+      currentIntents: currentIntents,
+      ids: {
+        for (final id in ids)
+          if (!isPrivate(id)) id,
+      },
+      includeTerminal: includeTerminal,
+    );
+    final privateIds = {
+      for (final id in ids)
+        if (isPrivate(id)) id,
+    };
+    final lifecycle = _lifecycle;
+    if (privateIds.isNotEmpty && !(lifecycle?.isPaused ?? false)) {
+      // Wallet deletion waits for private swaps from their status requests
+      // through their wallet writes and saved activity, and none starts while
+      // deletion runs, so a late save cannot restore a deleted account's swaps.
+      final ordinary = batch;
+      Future<_RefreshBatch> refreshPrivate() => _refreshBatch(
+        accountUuid: accountUuid,
+        currentIntents: ordinary.intents,
+        ids: privateIds,
+        includeTerminal: includeTerminal,
+      );
+      final private =
+          await (lifecycle?.run(refreshPrivate) ?? refreshPrivate());
+      batch = (
+        intents: private.intents,
+        refreshError: ordinary.refreshError ?? private.refreshError,
+        didRefresh: ordinary.didRefresh || private.didRefresh,
+      );
+    }
+    return SwapActivityRefreshResult(
+      intents: batch.intents,
+      requestedIds: ids,
+      refreshError: batch.refreshError,
+      didRefresh: batch.didRefresh,
+    );
+  }
 
+  /// Refreshes the provider statuses of the intents in `ids`, then saves the
+  /// refreshed ones. A failed request is recorded on its intent.
+  Future<_RefreshBatch> _refreshBatch({
+    required String accountUuid,
+    required List<SwapIntent> currentIntents,
+    required Set<String> ids,
+    required bool includeTerminal,
+  }) async {
     var updatedIntents = currentIntents;
     var didRefresh = false;
     final refreshedIds = <String>{};
@@ -321,16 +372,12 @@ class SwapActivityTracker {
       )) {
         continue;
       }
-      // Wallet deletion waits for a private swap's status refresh, and none
-      // starts while deletion runs.
-      final lifecycle = intent.privateAddress ? _lifecycle : null;
-      if (lifecycle?.isPaused ?? false) continue;
       final checkedAt = DateTime.now().toUtc();
       try {
-        /// Fetches and records this intent's provider status.
-        Future<SwapIntent> refresh() =>
-            _refreshProviderBackedIntent(intent, checkedAt: checkedAt);
-        final updated = await (lifecycle?.run(refresh) ?? refresh());
+        final updated = await _refreshProviderBackedIntent(
+          intent,
+          checkedAt: checkedAt,
+        );
         updatedIntents = updatedIntents.replaceSwapIntent(intent.id, updated);
       } catch (e) {
         // The raw error is the only way to tell a 1Click outage from a local
@@ -361,9 +408,8 @@ class SwapActivityTracker {
         refreshedIds: refreshedIds,
       );
     }
-    return SwapActivityRefreshResult(
+    return (
       intents: updatedIntents,
-      requestedIds: ids,
       refreshError: refreshError,
       didRefresh: didRefresh,
     );
@@ -474,3 +520,10 @@ class SwapActivityTracker {
 List<SwapIntent> _intentsFromRecords(List<SwapIntentRecord> records) {
   return swapIntentsFromRecords(records);
 }
+
+/// What one refresh pass changed (see `SwapActivityTracker._refreshBatch`).
+typedef _RefreshBatch = ({
+  List<SwapIntent> intents,
+  String? refreshError,
+  bool didRefresh,
+});

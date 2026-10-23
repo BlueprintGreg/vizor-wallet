@@ -20,6 +20,8 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.paused => 'Paused. Check again to resume.',
   SwapHistoryCheck.failed =>
     'The check was interrupted. Saved work may continue. Pause or try again.',
+  SwapHistoryCheck.waitingForSync =>
+    'Waiting for wallet sync. Try again in a minute.',
   SwapHistoryCheck.updateRequired => kSwapRecoveryUpdateMessage,
 };
 
@@ -75,45 +77,69 @@ class _SwapHistoryCheckControlState
             watched != SwapHistoryCheck.checking
         ? SwapHistoryCheck.updateRequired
         : watched;
+    final running = check == SwapHistoryCheck.checking;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          AppButton(
-            key: const ValueKey('settings_check_swap_history'),
-            onPressed:
-                check == SwapHistoryCheck.checking ||
-                    check == SwapHistoryCheck.updateRequired
-                ? null
-                : _check,
-            variant: AppButtonVariant.secondary,
-            size: AppButtonSize.small,
-            child: const Text('Check swap history'),
-          ),
-          if (check == SwapHistoryCheck.checking ||
-              check == SwapHistoryCheck.continuing ||
-              check == SwapHistoryCheck.failed)
-            AppButton(
-              key: const ValueKey('settings_cancel_swap_history'),
-              onPressed: () => unawaited(
-                ref.read(swapHistoryCheckProvider.notifier).cancel(),
-              ),
-              variant: AppButtonVariant.secondary,
-              size: AppButtonSize.small,
-              child: const Text('Pause check'),
-            ),
-          const SizedBox(height: AppSpacing.xs),
+          // The helper sits in its own wrapped text under the field: the
+          // field's message slot holds one short line and overlaps what
+          // follows it.
           AppTextField(
             key: const ValueKey('settings_swap_history_bound'),
             label: 'Receive addresses to check (optional)',
             controller: _bound,
-            enabled: check != SwapHistoryCheck.checking,
+            enabled: !running,
+            // The filled shell stays visible on a settings card in both
+            // themes.
+            surface: AppTextFieldSurface.secondary,
+            tone: _error == null
+                ? AppTextFieldTone.neutral
+                : AppTextFieldTone.destructive,
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             hintText: 'Known addresses',
-            messageText: _error ?? 'Leave blank to check known addresses. A count extends the search when restoring missing history.',
+          ),
+          const SizedBox(height: AppSpacing.xxs),
+          Text(
+            _error ??
+                'Leave blank to check known addresses. A count extends the '
+                    'search when restoring missing history.',
+            key: const ValueKey('settings_swap_history_bound_help'),
+            style: AppTypography.labelMedium.copyWith(
+              color: _error == null
+                  ? colors.text.secondary
+                  : colors.text.destructive,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.xs,
+            runSpacing: AppSpacing.xs,
+            children: [
+              AppButton(
+                key: const ValueKey('settings_check_swap_history'),
+                onPressed: running || check == SwapHistoryCheck.updateRequired
+                    ? null
+                    : _check,
+                size: AppButtonSize.medium,
+                child: const Text('Check swap history'),
+              ),
+              if (running ||
+                  check == SwapHistoryCheck.continuing ||
+                  check == SwapHistoryCheck.failed)
+                AppButton(
+                  key: const ValueKey('settings_cancel_swap_history'),
+                  onPressed: () => unawaited(
+                    ref.read(swapHistoryCheckProvider.notifier).cancel(),
+                  ),
+                  variant: AppButtonVariant.ghost,
+                  size: AppButtonSize.medium,
+                  child: const Text('Pause check'),
+                ),
+            ],
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(
