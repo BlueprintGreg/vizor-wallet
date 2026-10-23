@@ -706,6 +706,7 @@ void main() {
               // The wallet reports a check only while the feature is on.
               status: () async => SwapRecoveryStatus(
                 checkingHistory: privacy.on && !finished,
+                manualCheckActive: privacy.on && !finished,
                 upgradeRequired: false,
               ),
               pollInterval: const Duration(seconds: 1),

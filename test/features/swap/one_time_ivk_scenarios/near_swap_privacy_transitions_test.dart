@@ -370,6 +370,7 @@ void main() {
             cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
             status: () async => rust_swap.SwapRecoveryStatus(
               checkingHistory: api.checking && api.swapPrivacy,
+              manualCheckActive: api.checking && api.swapPrivacy,
               upgradeRequired: false,
             ),
             pollInterval: const Duration(milliseconds: 1),
