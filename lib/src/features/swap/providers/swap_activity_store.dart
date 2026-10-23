@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -139,8 +140,8 @@ class AppSecureStoreSwapActivityStore implements SwapActivityStore {
 }
 
 /// The one gate every swap activity read and write passes, so no caller can
-/// race account deletion. Reads, saves and deletions run one at a time in the
-/// order they arrive, so a read never overtakes a save accepted before it, and
+/// race account deletion. Each account's reads, saves and deletions run one at
+/// a time in the order they arrive, so a read never overtakes a save accepted before it, and
 /// deleting an account waits only for a storage operation already under way,
 /// never for a provider request or recovery work. Once an account's activity is deleted,
 /// later saves for it are dropped, which stops a save prepared before the
@@ -151,19 +152,34 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
 
   final SwapActivityStore _inner;
   final Set<String> _deleted = {};
-  Future<void> _tail = Future.value();
 
-  /// Runs `action` after every read, save and deletion queued before it.
-  Future<T> _serialized<T>(Future<T> Function() action) {
-    final result = _tail.then((_) => action());
-    _tail = result.then<void>((_) {}, onError: (_) {});
+  /// The last queued operation of each account. Accounts queue separately, so
+  /// one account's slow storage call never holds up another's.
+  final Map<String, Future<void>> _tails = {};
+
+  /// Runs `action` after every read, save and deletion queued before it for
+  /// `accountUuid`.
+  Future<T> _serialized<T>(String accountUuid, Future<T> Function() action) {
+    final result = (_tails[accountUuid] ?? Future<void>.value()).then(
+      (_) => action(),
+    );
+    final tail = result.then<void>((_) {}, onError: (_) {});
+    _tails[accountUuid] = tail;
+    unawaited(
+      tail.then((_) {
+        if (identical(_tails[accountUuid], tail)) _tails.remove(accountUuid);
+      }),
+    );
     return result;
   }
 
   /// Reads `accountUuid`'s activity once every earlier save has landed.
   @override
   Future<List<SwapIntentRecord>> loadRecords({required String accountUuid}) =>
-      _serialized(() => _inner.loadRecords(accountUuid: accountUuid));
+      _serialized(
+        accountUuid,
+        () => _inner.loadRecords(accountUuid: accountUuid),
+      );
 
   /// Saves `records` unless `accountUuid`'s activity was deleted, in which case
   /// it writes nothing.
@@ -171,7 +187,7 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
   Future<void> saveRecords({
     required String accountUuid,
     required List<SwapIntentRecord> records,
-  }) => _serialized(() async {
+  }) => _serialized(accountUuid, () async {
     if (_deleted.contains(accountUuid)) return;
     await _inner.saveRecords(accountUuid: accountUuid, records: records);
   });
@@ -185,7 +201,7 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
     required String accountUuid,
     required List<SwapIntentRecord> Function(List<SwapIntentRecord> saved)
     transform,
-  }) => _serialized(() async {
+  }) => _serialized(accountUuid, () async {
     if (_deleted.contains(accountUuid)) return;
     final saved = await _inner.loadRecords(accountUuid: accountUuid);
     await _inner.saveRecords(
@@ -198,7 +214,7 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
   /// every later save for it.
   @override
   Future<void> deleteForAccount({required String accountUuid}) =>
-      _serialized(() {
+      _serialized(accountUuid, () {
         _deleted.add(accountUuid);
         return _inner.deleteForAccount(accountUuid: accountUuid);
       });
