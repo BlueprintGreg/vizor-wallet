@@ -134,6 +134,8 @@ void main() {
     late _Harness h;
     h = await _Harness.create(
       intents: expired,
+      // An unpaid quote past its deadline: the status that releases its slot.
+      providerStatus: SwapIntentStatus.awaitingExternalDeposit,
       reserve: (account) async {
         if (h.recorded.length < expired.length) {
           throw const api.ReceiveError(
@@ -149,12 +151,15 @@ void main() {
         );
       },
     );
-    h.provider.status = SwapIntentStatus.awaitingExternalDeposit;
     await h.review('25');
     expect(h.provider.statusRequests.toSet(), {
       for (final intent in expired) intent.depositAddress,
     }, reason: 'every held swap gets a fresh status');
-    expect(h.recorded, hasLength(expired.length));
+    expect(
+      h.recorded,
+      List.filled(expired.length, SwapIntentStatus.awaitingExternalDeposit),
+      reason: 'the wallet records the unpaid status that frees each address',
+    );
     expect(h.state.quoteError, isNull);
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
   }
