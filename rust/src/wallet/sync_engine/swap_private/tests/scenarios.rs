@@ -2817,14 +2817,19 @@ impl World {
                         ),
                     ));
                 }
-                let credited: BTreeSet<(bool, u64)> = notes(&device.wallet, &acct.account.id)
-                    .iter()
-                    .filter(|n| n.mined)
-                    .map(|n| (n.receive, n.index))
-                    .collect();
+                let credited: BTreeSet<(bool, u64, [u8; 32], u64)> =
+                    notes(&device.wallet, &acct.account.id)
+                        .iter()
+                        .filter(|n| n.mined)
+                        .map(|n| (n.receive, n.index, n.txid, n.value))
+                        .collect();
                 let expected = self.expected(dev, acct);
-                for (receive, index, _, _) in &expected {
-                    let first_ever = self
+                let keys: BTreeSet<(bool, u64)> = expected.iter().map(|e| (e.0, e.1)).collect();
+                for (receive, index) in &keys {
+                    // The key's first canonical payment, which automatic recovery must find
+                    // itself. Later payments to it are repeats, promised only to the
+                    // history check below, so finding one of them is no excuse.
+                    let Some(first) = self
                         .pays
                         .iter()
                         .filter(|p| {
@@ -2833,9 +2838,11 @@ impl World {
                                 && p.receive == *receive
                                 && p.index == *index
                         })
-                        .map(|p| p.height)
-                        .min();
-                    if first_ever.is_some_and(|h| h < acct.birthday) {
+                        .min_by_key(|p| p.height)
+                    else {
+                        continue;
+                    };
+                    if first.height < acct.birthday {
                         continue;
                     }
                     // A refund key this device funded retires once its own swap ends, so
@@ -2863,7 +2870,24 @@ impl World {
                     if !promised {
                         continue;
                     }
-                    if !credited.contains(&(*receive, *index)) {
+                    // For a refund key with swaps of its own, the first refund one of them
+                    // reported. Another device's swap on the same key is the accepted race.
+                    let first = if *receive || own.is_empty() {
+                        first
+                    } else {
+                        self.pays
+                            .iter()
+                            .filter(|p| {
+                                !p.orphaned
+                                    && !p.receive
+                                    && p.seed == acct.seed
+                                    && p.index == *index
+                                    && own.iter().any(|q| q.hashes.contains(&p.txid))
+                            })
+                            .min_by_key(|p| p.height)
+                            .unwrap_or(first)
+                    };
+                    if !credited.contains(&(*receive, *index, first.txid, first.value)) {
                         let monitored: Vec<String> = device
                             .wallet
                             .db()
@@ -2876,10 +2900,12 @@ impl World {
                         return Err(violation(
                             "first-payment-missed",
                             format!(
-                                "device {dev} seed {} birthday {} has no automatic credit for {}{index}; funded refunds {:?}, monitored {monitored:?}, all notes {:?}",
+                                "device {dev} seed {} birthday {} has no automatic credit for the first payment of {}{index}, {} at {}; funded refunds {:?}, monitored {monitored:?}, all notes {:?}",
                                 acct.seed,
                                 acct.birthday,
                                 if *receive { "I" } else { "R" },
+                                first.value,
+                                first.height,
                                 funded_refunds(&device.wallet, &acct.account.id),
                                 notes(&device.wallet, &acct.account.id),
                             ),
