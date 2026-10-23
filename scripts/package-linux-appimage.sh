@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST_LIBRARY_POLICY="$SCRIPT_DIR/linux-smoke/host-libraries.txt"
+HOST_LIBRARY_POLICY="$SCRIPT_DIR/linux-appimage/host-libraries.txt"
 HOST_LIBRARY_PATTERNS=()
 
 BUNDLE_DIR=""
@@ -419,7 +419,7 @@ log_step "Copying GStreamer runtime"
 copy_gstreamer_runtime
 
 log_step "Checking AppDir dependencies"
-python3 "$SCRIPT_DIR/linux-smoke/check_bundle.py" --appdir "$APPDIR"
+python3 "$SCRIPT_DIR/linux-appimage/check_bundle.py" --appdir "$APPDIR"
 
 rm -f "$OUTPUT" "$OUTPUT.zsync" "$OUTPUT.sha256" "$OUTPUT.asc"
 

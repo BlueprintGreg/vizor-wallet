@@ -24,13 +24,8 @@ The deployment repository's `Release` workflow creates the GitHub Release,
 uploads assets, generates the update feed for multiple architectures, and
 publishes the draft release.
 
-For bundle and rendering checks across distributions, see
-[`scripts/linux-smoke/README.md`](../../scripts/linux-smoke/README.md).
-After packaging, run `scripts/linux-smoke/run.sh --appimage <artifact>` locally
-and retain the results, screenshots, and logs with the release candidate's hash.
-
 The AppImage uses the host's GTK/GLib and desktop/graphics dependencies.
-`scripts/linux-smoke/host-libraries.txt` is shared by linuxdeploy, the GStreamer
+`scripts/linux-appimage/host-libraries.txt` is shared by linuxdeploy, the GStreamer
 dependency copier, and the final AppDir check. Forbidden bundled libraries,
 missing dependencies, or incompatible dependency versions cause packaging to
 fail before signing or creating the AppImage. The build environment requires
