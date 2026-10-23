@@ -13,6 +13,14 @@ import '../network_privacy_control.dart';
 
 const _rowHeight = 44.0;
 
+/// A phone syncs only on screen, so its threshold for fetching the public
+/// compact blocks directly is about five days of blocks, not desktop's months.
+/// Like desktop, it applies only under Private queries.
+const kMobileTorDirectBlockDownloadNote =
+    'With Private queries on, block downloads after several days away, '
+    'including restoring an older wallet, connect directly, so the server '
+    'sees your IP address.';
+
 /// Tor's existing mobile presentation, shared by Settings and Welcome.
 class MobileTorControl extends ConsumerWidget {
   const MobileTorControl({
@@ -41,8 +49,9 @@ class MobileTorControl extends ConsumerWidget {
     final description =
         useGeneralDescription &&
             state.status != NetworkPrivacyConnectionStatus.failed
-        ? 'Use Tor to hide your IP address from servers. Other apps use their '
-              'own network settings.'
+        ? 'Use Tor to hide your IP address from servers. '
+              '$kMobileTorDirectBlockDownloadNote Other apps use their own '
+              'network settings.'
               '${defaultTargetPlatform == TargetPlatform.iOS ? ' Ironwood private migration connects directly while Vizor is closed.' : ''}'
         : presentation.description;
     final toggleAction = networkPrivacyToggleAction(state);
@@ -216,10 +225,12 @@ _MobileTorPresentation _presentationFor(
       // name the exception instead of weakening the foreground guarantee with
       // "most". Android has no corresponding background migration lane.
       description: platform == TargetPlatform.iOS
-          ? 'Vizor’s network requests go through Tor. Ironwood private '
+          ? 'Vizor’s network requests go through Tor. '
+                '$kMobileTorDirectBlockDownloadNote Ironwood private '
                 'migration uses a direct connection while Vizor is closed. '
                 'Links opened in other apps use those apps’ network settings.'
-          : 'Vizor’s network requests go through Tor. Links opened in other '
+          : 'Vizor’s network requests go through Tor. '
+                '$kMobileTorDirectBlockDownloadNote Links opened in other '
                 'apps use those apps’ network settings.',
       statusColor: (colors) => colors.text.brandCrimson,
       iconColor: (colors) => colors.icon.brandCrimson,

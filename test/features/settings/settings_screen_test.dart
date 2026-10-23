@@ -628,8 +628,10 @@ void main() {
     expect(find.text('Connected'), findsOneWidget);
     expect(
       find.text(
-        'Vizor’s network requests go through Tor. Links opened in other apps '
-        'use those apps’ network settings.',
+        'Vizor’s network requests go through Tor. With Private queries on, '
+        'large block downloads, such as restoring an older wallet, connect '
+        'directly, so the server sees your IP address. Links opened in other '
+        'apps use those apps’ network settings.',
       ),
       findsOneWidget,
     );
@@ -695,8 +697,10 @@ void main() {
 
       expect(
         find.text(
-          'Vizor’s network requests go through Tor. Links opened in other apps '
-          'use those apps’ network settings.',
+          'Vizor’s network requests go through Tor. With Private queries on, '
+          'large block downloads, such as restoring an older wallet, connect '
+          'directly, so the server sees your IP address. Links opened in other '
+          'apps use those apps’ network settings.',
         ),
         findsOneWidget,
       );
@@ -996,7 +1000,9 @@ void main() {
     expect(
       find.text(
         'Vizor’s network requests go through Tor, but software updates are '
-        'unavailable.',
+        'unavailable. With Private queries on, large block downloads, such as '
+        'restoring an older wallet, connect directly, so the server sees your '
+        'IP address.',
       ),
       findsOneWidget,
     );

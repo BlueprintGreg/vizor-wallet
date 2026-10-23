@@ -16,6 +16,14 @@ const _toggleShortcuts = <ShortcutActivator, Intent>{
   SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
 };
 
+/// The foreground exception to the Tor route: under Private queries, a sync
+/// with a large download fetches the public compact blocks directly. On
+/// desktop only an older restore is that large; mobile has its own threshold
+/// and note.
+const kTorDirectBlockDownloadNote =
+    'With Private queries on, large block downloads, such as restoring an '
+    'older wallet, connect directly, so the server sees your IP address.';
+
 /// What activating a Tor control does from the state it is showing.
 ///
 /// Shared by both form factors because the state machine behind them is one
@@ -424,7 +432,8 @@ _NetworkPrivacyPresentation _presentationFor(
     return _NetworkPrivacyPresentation(
       statusLabel: 'Connected',
       description:
-          'Vizor’s network requests go through Tor, but software updates are unavailable.',
+          'Vizor’s network requests go through Tor, but software updates are unavailable. '
+          '$kTorDirectBlockDownloadNote',
       statusColor: (colors) => colors.text.destructive,
       iconColor: (colors) => colors.icon.brandCrimson,
       descriptionColor: (colors) => colors.text.destructive,
@@ -488,7 +497,8 @@ _NetworkPrivacyPresentation _presentationFor(
     (NetworkPrivacyConnectionStatus.connected, _) => _NetworkPrivacyPresentation(
       statusLabel: 'Connected',
       description:
-          'Vizor’s network requests go through Tor. Links opened in other apps use those apps’ network settings.',
+          'Vizor’s network requests go through Tor. $kTorDirectBlockDownloadNote '
+          'Links opened in other apps use those apps’ network settings.',
       statusColor: (colors) => colors.text.brandCrimson,
       iconColor: (colors) => colors.icon.brandCrimson,
       descriptionColor: (colors) => colors.text.accent,

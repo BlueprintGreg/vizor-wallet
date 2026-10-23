@@ -84,7 +84,10 @@ pub(crate) use lwd::{
     send_transaction, send_transaction_signalling, send_transaction_with_status,
     transparent_lookup::TransparentLookupGate,
 };
-use lwd::{download_blocks, download_subtree_roots, get_tree_state, get_tree_state_for_block};
+use lwd::{
+    download_blocks, download_subtree_roots, get_tree_state, get_tree_state_for_block,
+    open_block_download_lwd_transport, open_isolated_lwd_transport_until,
+};
 use progress_work::{JobProgress, WorkModel};
 pub(crate) use tip_cache::{
     get_latest_block_recorded, latest_block_for_transaction,
@@ -235,6 +238,23 @@ const PREFETCH_RETRY_PAUSES: [std::time::Duration; 2] = [
     std::time::Duration::from_secs(1),
     std::time::Duration::from_secs(4),
 ];
+/// Estimated compact-block download at or above which a sync session fetches
+/// its scan batches directly while Tor is on. A direct session shows the
+/// server the device's IP address with the height its scan resumes from, so a
+/// lower value hands over that link after shorter absences.
+///
+/// Desktop keeps syncing in the background: 256 MiB is about 13 minutes on
+/// one Tor circuit at the 0.35 MB/s measured on mainnet, and in the October
+/// 2026 chain about seven months of recent blocks, so only older restores
+/// (17 GB from Sapling activation) go direct.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const DIRECT_BLOCK_DOWNLOAD_MIN_BYTES: f64 = 256.0 * 1024.0 * 1024.0;
+/// A phone syncs only while Vizor is on screen, so time on Tor is time the
+/// user waits with the app open. 8 MiB is about 25 seconds at the same rate
+/// (not measured on a phone) and about five days of recent blocks: a daily
+/// catch-up stays on Tor, a longer absence or a restore goes direct.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const DIRECT_BLOCK_DOWNLOAD_MIN_BYTES: f64 = 8.0 * 1024.0 * 1024.0;
 const TRANSPARENT_UTXO_RECENT_EXTERNAL_LIMIT: usize = 20;
 const TRANSPARENT_UTXO_SWEEP_EXTERNAL_LIMIT: usize = 20;
 const TIP_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
@@ -637,6 +657,43 @@ pub(crate) async fn resubmit_released_transactions(
     )
     .await;
     Ok(ReleasedResubmission::Resubmitted)
+}
+
+/// Whether a sync session downloads its scan batches over a direct
+/// connection: only while Tor is desired, only when one circuit would hold the
+/// session for long, and only under Private queries. The direct connection
+/// opens alongside the session's Tor one, so the server can tie the two
+/// together by timing; Private queries keep address and txid lookups off that
+/// Tor connection. Decided once per session.
+fn fetches_blocks_directly(
+    tor_desired: bool,
+    private_queries: bool,
+    pending_download_bytes: f64,
+) -> bool {
+    tor_desired && private_queries && pending_download_bytes >= DIRECT_BLOCK_DOWNLOAD_MIN_BYTES
+}
+
+/// Whether a scan batch may use the session's direct block connection: only a
+/// main-scan batch of a range every wallet with the same birthday and tip
+/// scans alike. A Verify batch above the blocks scanned before this session is
+/// the continuity check at the scan frontier, often merged into a full queued
+/// batch; one at or below them re-scans blocks, as the witness repairs a
+/// stopped session leaves do, so it stays on Tor with FoundNote and
+/// OpenAdjacent ranges, which follow the wallet's notes.
+fn batch_uses_direct_connection(
+    checking_cycle: u32,
+    priority: ScanPriority,
+    start: BlockHeight,
+    scanned_before_session: Option<BlockHeight>,
+) -> bool {
+    checking_cycle == 0
+        && match priority {
+            ScanPriority::ChainTip
+            | ScanPriority::Historic
+            | ScanPriority::LatestPoolActivation => true,
+            ScanPriority::Verify => scanned_before_session.is_none_or(|height| start > height),
+            _ => false,
+        }
 }
 
 fn pending_scan_blocks(ranges: &[ScanRange]) -> u64 {
@@ -3062,6 +3119,7 @@ pub async fn run_sync_inner(
             &report_progress,
             checking_cycle,
             main_scan_complete,
+            attempt > 0,
         )
         .await
         {
@@ -3406,6 +3464,7 @@ async fn run_sync_impl(
     progress_fn: &(impl Fn(SyncProgressEvent) + Send + Sync),
     mut checking_cycle: u32,
     main_scan_complete: bool,
+    fresh_circuit: bool,
 ) -> Result<(), SyncError> {
     if crate::wallet::sync::proposal_locks::is_shutting_down() {
         return Ok(());
@@ -3453,7 +3512,16 @@ async fn run_sync_impl(
     // 1. Connect gRPC (plain TLS via tonic + webpki roots). The lanes' public
     // transparent lookups go over the same transport with a dispatch signal,
     // so a policy transition waits only for them to be sent.
-    let transport = open_lwd_transport_with_cancel(lightwalletd_url, should_exit).await?;
+    // A session that opens `client` while Tor is off holds a direct route that
+    // a later Tor enable cancels; it must not add a direct block connection.
+    let tor_route = crate::network_privacy::is_tor_desired();
+    // A retry takes a fresh Tor circuit, so a bad exit does not fail every
+    // attempt on the client's shared one.
+    let transport = if fresh_circuit {
+        open_isolated_lwd_transport_until(lightwalletd_url, should_exit).await?
+    } else {
+        open_lwd_transport_with_cancel(lightwalletd_url, should_exit).await?
+    };
     let mut client = CompactTxStreamerClient::new(transport.clone());
     let _lookup_transport =
         lwd::transparent_lookup::register_sync_transport(db_data_path, transport);
@@ -3776,6 +3844,53 @@ async fn run_sync_impl(
     // the attempt like any other DB read.
     let work_model = WorkModel::load(db_data_path, network, BATCH_SIZE_FOREGROUND)
         .map_err(|e| SyncError::db(format!("subtree heights: {e}")))?;
+    // Main-scan batches only (`batch_uses_direct_connection`). Checking-stage
+    // batches, ranges that follow the wallet's notes, and every request that
+    // carries an address, txid or transaction stay on `client`.
+    let pending_download_bytes =
+        work_model.pending_download_bytes(&initial_ranges, current_tip_height);
+    let scanned_before_session = db
+        .block_max_scanned()
+        .map_err(|e| SyncError::db(format!("block_max_scanned: {e}")))?
+        .map(|block| block.block_height());
+    let opens_direct = checking_cycle == 0
+        && !main_scan_complete
+        && fetches_blocks_directly(
+            tor_route && crate::network_privacy::is_tor_desired(),
+            enhancement.policy().is_private(),
+            pending_download_bytes,
+        );
+    let mut block_client = if opens_direct {
+        let opened = tokio::select! {
+            biased;
+            _ = watch_for_exit(&should_exit) => {
+                log::info!("[{}] sync: exiting while opening the direct block connection", elapsed());
+                return Ok(());
+            }
+            opened = open_block_download_lwd_transport(lightwalletd_url) => opened,
+        };
+        match opened {
+            Ok(transport) => {
+                log::info!(
+                    "[{}] sync: downloading about {} MB of compact blocks directly; other requests stay on Tor",
+                    elapsed(),
+                    (pending_download_bytes / 1_000_000.0).round(),
+                );
+                CompactTxStreamerClient::new(transport)
+            }
+            // A network that blocks the server but not Tor keeps the
+            // download on Tor rather than failing every attempt.
+            Err(error) => {
+                log::warn!(
+                    "[{}] sync: direct block download unavailable ({error}); downloading over Tor",
+                    elapsed(),
+                );
+                client.clone()
+            }
+        }
+    } else {
+        client.clone()
+    };
     let (mut job, job_start) = JobProgress::start(
         stored_progress_job,
         work_model.pending_work(&initial_ranges, current_tip_height),
@@ -4408,7 +4523,17 @@ async fn run_sync_impl(
         // matching tuple that an earlier iteration prefetched.
         let queued = take_queued_batch(&mut prefetch, start, end);
         let batch = resolve_prefetched_or_download(queued, start, end, &should_exit, || {
-            download_scan_batch(&mut client, start, end - 1, network)
+            let batch_client = if batch_uses_direct_connection(
+                checking_cycle,
+                range.priority(),
+                start,
+                scanned_before_session,
+            ) {
+                &mut block_client
+            } else {
+                &mut client
+            };
+            download_scan_batch(batch_client, start, end - 1, network)
         })
         .await?;
         let Some((block_source, from_state)) = batch else {
@@ -4442,7 +4567,16 @@ async fn run_sync_impl(
                 PREFETCH_DEPTH.saturating_sub(prefetch.len()),
             );
             for &(prefetch_start, prefetch_end) in &planned {
-                let prefetch_client = client.clone();
+                let prefetch_client = if batch_uses_direct_connection(
+                    checking_cycle,
+                    range.priority(),
+                    prefetch_start,
+                    scanned_before_session,
+                ) {
+                    block_client.clone()
+                } else {
+                    client.clone()
+                };
                 prefetch.push_back(Prefetch::spawn(
                     prefetch_start,
                     prefetch_end,
@@ -5715,6 +5849,94 @@ mod tests {
     /// `SANDBLASTING_RANGE`), where the mobile byte budget comes from.
     const SANDBLASTING_START: u32 = 1_710_000;
     const SANDBLASTING_END: u32 = 2_050_000;
+
+    #[test]
+    fn only_a_large_download_over_tor_fetches_blocks_directly() {
+        assert!(!fetches_blocks_directly(false, true, f64::MAX));
+        assert!(!fetches_blocks_directly(
+            true,
+            true,
+            DIRECT_BLOCK_DOWNLOAD_MIN_BYTES - 1.0
+        ));
+        assert!(fetches_blocks_directly(
+            true,
+            true,
+            DIRECT_BLOCK_DOWNLOAD_MIN_BYTES
+        ));
+    }
+
+    #[test]
+    fn only_main_scan_ranges_every_wallet_scans_alike_use_the_direct_connection() {
+        let h = BlockHeight::from_u32;
+        let scanned = Some(h(3_438_142));
+        for priority in [
+            ScanPriority::ChainTip,
+            ScanPriority::Historic,
+            ScanPriority::LatestPoolActivation,
+        ] {
+            assert!(
+                batch_uses_direct_connection(0, priority, h(3_000_000), scanned),
+                "{priority:?}"
+            );
+            assert!(
+                !batch_uses_direct_connection(1, priority, h(3_000_000), scanned),
+                "{priority:?}"
+            );
+        }
+        // The continuity check at the scan frontier, and any Verify range of a
+        // wallet that has scanned nothing yet.
+        assert!(batch_uses_direct_connection(
+            0,
+            ScanPriority::Verify,
+            h(3_438_143),
+            scanned
+        ));
+        assert!(batch_uses_direct_connection(
+            0,
+            ScanPriority::Verify,
+            h(3_000_000),
+            None
+        ));
+        // Witness repairs a stopped session left behind come back as Verify
+        // ranges over blocks already scanned, before the Checking stage starts.
+        assert!(!batch_uses_direct_connection(
+            0,
+            ScanPriority::Verify,
+            h(3_438_142),
+            scanned
+        ));
+        assert!(!batch_uses_direct_connection(
+            0,
+            ScanPriority::Verify,
+            h(3_100_000),
+            scanned
+        ));
+        for priority in [ScanPriority::FoundNote, ScanPriority::OpenAdjacent] {
+            assert!(
+                !batch_uses_direct_connection(0, priority, h(3_438_143), None),
+                "{priority:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_queries_keep_every_block_download_on_tor() {
+        // Without Private queries the session's Tor connection carries address
+        // and txid lookups, which a concurrent direct session would tie to the
+        // device's IP address.
+        assert!(!fetches_blocks_directly(true, false, f64::MAX));
+    }
+
+    #[test]
+    fn a_full_restore_over_tor_fetches_blocks_directly() {
+        let model = WorkModel::compiled(WalletNetwork::Main);
+        let restore = [ScanRange::from_parts(
+            BlockHeight::from_u32(SANDBLASTING_START)..BlockHeight::from_u32(SANDBLASTING_END),
+            ScanPriority::Historic,
+        )];
+        let bytes = model.pending_download_bytes(&restore, u64::from(SANDBLASTING_END));
+        assert!(fetches_blocks_directly(true, true, bytes));
+    }
 
     #[test]
     fn a_stored_root_mismatch_is_logged_once_per_process() {
