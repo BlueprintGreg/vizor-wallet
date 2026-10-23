@@ -1401,12 +1401,22 @@ impl World {
             }
             Err(e) => return Ok(format!("refund reserve refused: {}", e.message)),
         };
-        let scanned = self.devices[dev].wallet.scanned_or(0);
         let birthday = self.devices[dev].accts[slot % self.devices[dev].accts.len()].birthday;
+        let conn = rusqlite::Connection::open(&self.devices[dev].wallet.path).unwrap();
+        // Whether this device stored the funding as mined, on whichever branch it follows.
+        let mined_here = |f: &Funding| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM transactions WHERE txid = ?1 AND mined_height IS NOT NULL)",
+                [f.tx.txid().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
         if let Some(f) = self.fundings.iter().find(|f| {
             f.seed == seed
                 && f.refund == index
-                && f.height.is_some_and(|h| h <= scanned && h >= birthday)
+                && f.height.is_some_and(|h| h >= birthday)
+                && mined_here(f)
         }) {
             // Another device funded this key in a block this device scanned.
             // Memo recovery needs a record of this account spending one of the funding's
