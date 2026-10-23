@@ -45,6 +45,10 @@ const FINDINGS: &[&str] = &[
     "reorg-below-birthday",
 ];
 
+/// How long past its deadline a started quote keeps its slot without a fresh conclusive
+/// status, as the library's `STARTED_STATUS_GRACE_SECONDS`.
+const STARTED_STATUS_GRACE: i64 = 24 * 60 * 60;
+
 /// How long a refund key with no local operation stays monitored past its funding, as the
 /// library's `MEMO_REFUND_WINDOW`: seven days of 75-second blocks.
 const MEMO_REFUND_WINDOW: u32 = 7 * 24 * 60 * 60 / 75;
@@ -656,6 +660,24 @@ fn funding_heights(wallet: &Wallet, account: &AccountUuid) -> Vec<(u64, u32)> {
         })
         .unwrap()
         .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Whether receive key `index` of `account` has invalidated history or a payment candidate
+/// unresolved, which keeps its reservation (the library's `RECEIVE_PENDING`).
+fn receive_pending(wallet: &Wallet, account: &AccountUuid, index: u64) -> bool {
+    rusqlite::Connection::open(&wallet.path)
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM ironwood_one_time_keys k JOIN accounts a ON a.id = k.account_id
+             WHERE a.uuid = ?1 AND k.purpose = 1 AND k.key_index = ?2 AND (
+                 EXISTS(SELECT 1 FROM ironwood_one_time_lookups l
+                     WHERE l.one_time_key_id = k.id AND l.reasons & 4 != 0)
+                 OR EXISTS(SELECT 1 FROM ironwood_one_time_payment_recovery p
+                     WHERE p.one_time_key_id = k.id)))",
+            rusqlite::params![account.expose_uuid().as_bytes(), index.to_be_bytes()],
+            |r| r.get(0),
+        )
         .unwrap()
 }
 
@@ -1436,7 +1458,9 @@ impl World {
     }
 
     /// A window slot of `dev`'s account `acct` that the reuse rules say is free: unpaid,
-    /// with every quote on it expired, unfunded and not shown live.
+    /// with every quote on it expired, unfunded and not shown live, or started but without
+    /// any funded status [`STARTED_STATUS_GRACE`] past its deadline while no payment to
+    /// it is pending (SPEC Q-7).
     fn reusable_slot(&self, dev: usize, acct: usize) -> Option<u64> {
         let device = &self.devices[dev];
         let a = &device.accts[acct];
@@ -1455,6 +1479,11 @@ impl World {
                 && self.quotes.iter().all(|q| {
                     !(q.dev == dev && q.uuid == a.account.uuid && q.incoming && q.index == *index)
                         || (!q.funded && q.deadline <= clock && q.status == "PENDING_DEPOSIT")
+                        // The wallet's deadline is a minute after the provider's.
+                        || (q.started
+                            && !q.funded_seen
+                            && q.deadline + 60 + STARTED_STATUS_GRACE <= clock
+                            && !receive_pending(&device.wallet, &a.account.id, *index))
                 })
         })
     }

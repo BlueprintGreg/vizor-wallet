@@ -33,7 +33,7 @@ fn expired_unpaid_quotes_release_their_slots_days_later() {
     world.act(&Action::Warp(2 * 86_400)).unwrap();
     world.mine(1);
     world.sync(0, false);
-    // Without fresh statuses the wallet cannot tell an expired quote from a late deposit.
+    // A day past their deadlines the slots free even without a status (SPEC Q-7).
     let stale = world.reserve_in(0, 0, false);
     println!("before a status refresh: {stale:?}");
     world.poll(0, 0).unwrap();
@@ -253,28 +253,49 @@ fn private_addresses_need_both_switches() {
     assert_eq!(world.reserve_in(0, 0, false).unwrap(), Ok(0));
 }
 
-/// A started quote that never gets another provider status keeps its slot, even a month
-/// after its deadline. This pins today's behavior until the library releases such a slot
-/// 24 hours after the deadline (SPEC Q-7).
+/// A started quote that never gets another provider status keeps its slot for 24 hours
+/// past its deadline, then releases it while its address is unpaid (SPEC Q-7).
 #[test]
-fn a_started_quote_without_any_status_keeps_its_slot() {
-    if isolated("directed::a_started_quote_without_any_status_keeps_its_slot") {
+fn a_started_quote_without_any_status_releases_its_slot_a_day_later() {
+    if isolated("directed::a_started_quote_without_any_status_releases_its_slot_a_day_later") {
         return;
     }
     let mut world = World::new();
     world.sync(0, false);
     settle(&mut world, 0);
     for _ in 0..4 {
-        world.quote_in(0, 0, Reply::Accept, 3_600).unwrap();
+        let line = world.quote_in(0, 0, Reply::Accept, 3_600).unwrap();
+        assert!(line.contains("accepted and shown"), "{line}");
     }
-    world.act(&Action::Warp(30 * 86_400)).unwrap();
+    // The app's reservation call, without the harness's status refresh on `Limit`.
+    let reserve = |world: &World| {
+        let device = &world.devices[0];
+        crate::api::one_time_ivk::reserve_swap_address(
+            device.wallet.path.clone(),
+            "main".into(),
+            device.accts[0].account.uuid.clone(),
+            true,
+            world.chain.tip().into(),
+        )
+        .map(|address| address.reservation_index)
+        .map_err(|e| e.kind)
+    };
+    world.act(&Action::Warp(3_600 + 23 * 3_600)).unwrap();
     world.mine(1);
     world.sync(0, false);
     settle(&mut world, 0);
-    let held = world.reserve_in(0, 0, false);
-    assert!(
-        matches!(&held, Err(v) if v.kind == "stalled-window"),
-        "without a fresh status the slot stays held: {held:?}"
+    assert_eq!(
+        reserve(&world),
+        Err(crate::api::one_time_ivk::ReceiveErrorKind::Limit),
+        "23 hours past the deadline the slots are still held"
+    );
+    world.act(&Action::Warp(2 * 3_600)).unwrap();
+    world.mine(1);
+    world.sync(0, false);
+    assert_eq!(
+        reserve(&world),
+        Ok(Some(0)),
+        "25 hours past the deadline the lowest slot is free"
     );
 }
 
