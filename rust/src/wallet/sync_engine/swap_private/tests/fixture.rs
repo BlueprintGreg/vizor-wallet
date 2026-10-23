@@ -286,6 +286,8 @@ pub(super) struct Service {
     filters: Vec<BlockFilter>,
     requests: Mutex<Vec<(&'static str, String, usize, usize)>>,
     holds: Mutex<Vec<Hold>>,
+    /// How long each request of a class takes to answer.
+    delays: Mutex<BTreeMap<&'static str, Duration>>,
     trace: Mutex<Trace>,
     /// A protocol the head names instead of the supported one, as a newer service would.
     protocol: Mutex<Option<String>>,
@@ -476,6 +478,7 @@ impl Service {
             filters,
             requests: Mutex::new(Vec::new()),
             holds: Mutex::new(Vec::new()),
+            delays: Mutex::new(BTreeMap::new()),
             trace: Mutex::new(Trace::default()),
             protocol: Mutex::new(None),
         })
@@ -505,6 +508,11 @@ impl Service {
             arrived: waiting,
             release,
         }
+    }
+
+    /// Answers every later request of `class` only after `delay`, as a slow route would.
+    pub(super) fn delay(&self, class: &'static str, delay: Duration) {
+        self.delays.lock().unwrap().insert(class, delay);
     }
 
     /// Records the address and page of every later payment query for `account` of
@@ -670,6 +678,10 @@ impl Service {
         };
         if let Some(gate) = gate {
             gate.acquire().await.unwrap().forget();
+        }
+        let delay = self.delays.lock().unwrap().get(class).copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
         }
         let response = self.answer(class, &route, body)?;
         if response.len() > limit {
