@@ -461,11 +461,23 @@ fn a_restored_device_never_reuses_a_funded_refund_key() {
     settle(&mut world, 0);
     let birthday = world.chain.tip() - 2;
     let restored = world.add_device(birthday, true);
-    let line = world.act(&Action::SwapOut { dev: 0, acct: 0, outcome: 0 }).unwrap();
-    assert!(line.contains("R0 quote") && line.contains("funded"), "{line}");
+    let line = world
+        .act(&Action::SwapOut {
+            dev: 0,
+            acct: 0,
+            outcome: 0,
+        })
+        .unwrap();
+    assert!(
+        line.contains("R0 quote") && line.contains("funded"),
+        "{line}"
+    );
     world.mine(1);
     world.sync(restored, true);
     settle(&mut world, restored);
     let line = world.quote_out(restored, 0, 3_600).unwrap();
-    assert!(!line.starts_with("R0 "), "the restored device reused R0: {line}");
+    assert!(
+        !line.starts_with("R0 "),
+        "the restored device reused R0: {line}"
+    );
 }

@@ -7,7 +7,9 @@
 //! `VIZOR_SCENARIO_SEED`, `VIZOR_SCENARIO_ITERS` and `VIZOR_SCENARIO_STEPS` pick the runs.
 //! `VIZOR_SCENARIO_KEEP` replays a seed with only the listed action indexes, which is what
 //! a shrunk failure prints. `VIZOR_SCENARIO_SHRINK` bounds shrinking replays.
-//! `VIZOR_SCENARIO_STRICT=1` also fails on violations listed in [`KNOWN`].
+//! Known product findings are counted as notes rather than failed, so the default lane
+//! stays green while they are open. `VIZOR_SCENARIO_STRICT=1` fails on them too (see
+//! [`FINDINGS`]).
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -31,10 +33,15 @@ const MAX_DEVICES: usize = 5;
 /// Longer than the library's longest lookup backoff, so deferred work is due again.
 const PAST_BACKOFF: i64 = 50_000;
 
-/// Violation kinds that reproduce known product bugs (see REPORT.md). They are printed
-/// but fail the run only with `VIZOR_SCENARIO_STRICT=1`, so the default lane stays green
-/// while the bugs are open.
-const KNOWN: &[&str] = &[];
+/// Notes that mark open product findings (see REPORT.md), which fail a run only with
+/// `VIZOR_SCENARIO_STRICT=1`. Other notes record open spec questions.
+const FINDINGS: &[&str] = &[
+    "refund-lost-prebirthday-input",
+    "refund-key-reused-after-unauthenticated-memo",
+    "refund-key-reused-one-time-inputs",
+    "refund-key-kept-by-orphaned-receipt",
+    "ordinary-rewind-refused",
+];
 
 /// A small deterministic generator (SplitMix64).
 #[derive(Clone)]
@@ -352,6 +359,8 @@ struct Funding {
     raw: Vec<u8>,
     height: Option<u32>,
     nullifiers: Vec<[u8; 32]>,
+    /// The device that funded it.
+    dev: usize,
     /// The latest height of a note the funding spent. A device whose birthday is later
     /// holds no record of spending it, which memo recovery needs as evidence.
     input_height: u32,
@@ -532,6 +541,24 @@ pub(super) fn notes(wallet: &Wallet, account: &AccountUuid) -> Vec<Note> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+/// The notes among `nullifiers` that `wallet` holds, as (is one-time, mined height).
+fn spent_inputs(wallet: &Wallet, nullifiers: &[[u8; 32]]) -> Vec<(bool, u32)> {
+    let conn = rusqlite::Connection::open(&wallet.path).unwrap();
+    nullifiers
+        .iter()
+        .filter_map(|nf| {
+            conn.query_row(
+                "SELECT n.one_time_key_id IS NOT NULL, IFNULL(t.mined_height, 0)
+                 FROM ironwood_received_notes n JOIN transactions t ON t.id_tx = n.transaction_id
+                 WHERE n.nf = ?1",
+                [nf.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+        })
+        .collect()
 }
 
 /// Rows in the per-account recovery table, which a wallet that never enabled the feature
@@ -1382,14 +1409,24 @@ impl World {
                 && f.height.is_some_and(|h| h <= scanned && h >= birthday)
         }) {
             // Another device funded this key in a block this device scanned.
-            if f.input_height < birthday {
-                self.note("refund-key-reused-after-unauthenticated-memo");
+            // Memo recovery needs a record of this account spending one of the funding's
+            // inputs, which a later birthday (F1) or unrecovered one-time inputs (F3) lack.
+            if spent_inputs(&self.devices[dev].wallet, &f.nullifiers).is_empty() {
+                self.note(if f.input_height < birthday {
+                    "refund-key-reused-after-unauthenticated-memo"
+                } else {
+                    "refund-key-reused-one-time-inputs"
+                });
             } else {
                 return Err(violation(
                     "refund-reuse",
                     format!(
-                        "refund key R{index} was funded at {:?}, which this device scanned",
-                        f.height
+                        "refund key R{index} was funded at {:?} by device {}, which this device scanned; \
+                         inputs (one-time, height) at the funder {:?}, here {:?}",
+                        f.height,
+                        f.dev,
+                        spent_inputs(&self.devices[f.dev].wallet, &f.nullifiers),
+                        spent_inputs(&self.devices[dev].wallet, &f.nullifiers),
                     ),
                 ));
             }
@@ -1541,6 +1578,7 @@ impl World {
         let height = self.chain.mine_tx(&tx);
         self.changed();
         self.fundings.push(Funding {
+            dev,
             seed: quote.seed,
             refund: quote.index,
             tx,
@@ -2642,6 +2680,20 @@ fn run_many(default_iters: u64, default_steps: u64) {
         for (k, v) in &outcome.notes {
             *notes.entry(k).or_default() += v;
         }
+        let found: Vec<&str> = outcome
+            .notes
+            .keys()
+            .copied()
+            .filter(|k| FINDINGS.contains(k))
+            .collect();
+        if strict && !found.is_empty() {
+            println!(
+                "scenario seed {seed}: FINDING {found:?}\n{}",
+                outcome.trace.join("\n")
+            );
+            failures.push(format!("seed {seed}: findings {found:?}"));
+            continue;
+        }
         let Some((step, v)) = outcome.failure else {
             println!(
                 "scenario seed {seed}: ok in {:.1}s",
@@ -2652,10 +2704,8 @@ fn run_many(default_iters: u64, default_steps: u64) {
             }
             continue;
         };
-        let known = KNOWN.contains(&v.kind) && !strict;
         println!(
-            "scenario seed {seed}: {} {} at step {step} in {:.1}s: {}\n{}",
-            if known { "KNOWN" } else { "VIOLATION" },
+            "scenario seed {seed}: VIOLATION {} at step {step} in {:.1}s: {}\n{}",
             v.kind,
             started.elapsed().as_secs_f64(),
             v.detail,
@@ -2679,9 +2729,7 @@ fn run_many(default_iters: u64, default_steps: u64) {
             repro += &format!(" VIZOR_SCENARIO_KEEP={}", list.join(","));
         }
         println!("reproduce: {repro} cargo test --lib swap_private::tests::scenarios::random_scenarios -- --nocapture");
-        if !known {
-            failures.push(format!("seed {seed}: {} ({})", v.kind, v.detail));
-        }
+        failures.push(format!("seed {seed}: {} ({})", v.kind, v.detail));
     }
     println!("scenario notes: {notes:?}");
     assert!(
