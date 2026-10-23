@@ -1119,3 +1119,79 @@ fn turning_off_mid_history_check_stops_it_cleanly() {
         world.check_step().unwrap();
     }
 }
+
+/// Turning the feature off while an owned receipt needs repair, and then meeting a
+/// receiver service that needs a newer app, does not strand the repair. Feature-off
+/// rounds keep trying while the repair is owed, and the first compatible publication
+/// clears the update request and finishes the repair with the feature still off. A
+/// paused wallet with an update request but nothing to repair makes no request at all.
+///
+/// Open finding: while an update is required the wallet hides the owed repair, so a
+/// feature-off round finds no work and never reaches the publication that would clear
+/// the request.
+#[test]
+#[ignore = "an update request while off hides the owed repair, so no round resumes it"]
+fn an_update_request_while_off_does_not_strand_repair() {
+    if isolated("toggles::an_update_request_while_off_does_not_strand_repair") {
+        return;
+    }
+    let mut world = world();
+    world
+        .act(&Action::Swap {
+            dev: 0,
+            acct: 0,
+            value: 500_000,
+        })
+        .unwrap();
+    world.mine(1);
+    world.sync(0, false);
+    settle(&mut world, 0);
+    let account = world.devices[0].accts[0].account.clone();
+    set_feature(&mut world, 0, false);
+    let reorg = world.reorg(3);
+    assert!(reorg.contains("re-sent 1 payouts"), "{reorg}");
+    world.mine(12);
+    world.sync(0, true);
+    assert!(repair_owed(&world.devices[0].wallet, &account.id));
+
+    let publication = world.current();
+    let line = world.round(0, 0, true, publication, 0, None).unwrap();
+    assert!(line.contains("newer app"), "{line}");
+    assert!(world.devices[0].wallet.state(&account).upgrade_required);
+
+    // The service is compatible again: the next feature-off round captures it.
+    let (result, requests) = counted_round(&mut world, 0);
+    assert!(
+        result.unwrap().active,
+        "the owed repair keeps the round running"
+    );
+    assert!(requests > 0, "it asks the service again");
+    settle(&mut world, 0);
+    let state = world.devices[0].wallet.state(&account);
+    assert!(
+        !state.upgrade_required,
+        "a compatible publication clears the request"
+    );
+    assert!(
+        state.lookups.is_empty() && state.witnesses.is_empty(),
+        "the repair finished"
+    );
+    world.check_step().unwrap();
+
+    // With nothing to repair, an update request while off costs no request.
+    set_feature(&mut world, 0, true);
+    settle(&mut world, 0);
+    let publication = world.current();
+    world.round(0, 0, true, publication, 0, None).unwrap();
+    assert!(world.devices[0].wallet.state(&account).upgrade_required);
+    set_feature(&mut world, 0, false);
+    for _ in 0..2 {
+        let (result, requests) = counted_round(&mut world, 0);
+        assert!(!result.unwrap().active);
+        assert_eq!(requests, 0, "a paused wallet with nothing owed stays inert");
+    }
+    set_feature(&mut world, 0, true);
+    settle(&mut world, 0);
+    assert!(!world.devices[0].wallet.state(&account).upgrade_required);
+    world.quiesce().unwrap();
+}
