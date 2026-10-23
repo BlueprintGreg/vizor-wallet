@@ -1168,6 +1168,9 @@ class _FakeSwapDepositSender implements SwapDepositSender {
   final String broadcastStatus;
   final String? broadcastMessage;
   final preflightRequests = <_DepositSendRequest>[];
+
+  /// When set, the fee check waits for it.
+  Completer<void>? holdPreflight;
   final requests = <_DepositSendRequest>[];
 
   @override
@@ -1183,6 +1186,7 @@ class _FakeSwapDepositSender implements SwapDepositSender {
         sellAmountBaseUnits: quote.sellAmountBaseUnits,
       ),
     );
+    await holdPreflight?.future;
     final error = preflightError;
     if (error != null) throw error;
     return BigInt.from(10000);

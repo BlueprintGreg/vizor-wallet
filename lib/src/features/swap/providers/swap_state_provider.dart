@@ -1033,6 +1033,10 @@ class SwapNotifier extends Notifier<SwapState> {
       'quote=${_shortSwapValue(quote.providerQuoteId)} '
       'deposit=${_shortSwapValue(quote.depositInstruction.address)}',
     );
+    // Only private swaps hold wallet state for their account, so only they
+    // stay with it across an account switch during the start.
+    final privateQuote =
+        quote.receiveRequestId != null || quote.swapRefundIndex != null;
     final startingPayMode = state.payMode;
     final startingUserExternalContactId = state.userExternalContactId;
     state = state.copyWith(startSubmitting: true, clearStatusError: true);
@@ -1060,7 +1064,7 @@ class SwapNotifier extends Notifier<SwapState> {
             .estimateZecDepositFee(accountUuid: accountUuid, quote: quote);
       } catch (e) {
         // The screen now belongs to another account.
-        if (!_isAccountActive(accountUuid)) return null;
+        if (privateQuote && !_isAccountActive(accountUuid)) return null;
         log(
           'Swap: live ZEC deposit preflight failed '
           'quote=${_shortSwapValue(quote.providerQuoteId)} error=$e',
@@ -1075,9 +1079,9 @@ class SwapNotifier extends Notifier<SwapState> {
         return null;
       }
       // A switch to another account while the deposit was checked leaves
-      // nothing started, so the swap is not started for an account the user
-      // left.
-      if (!_isAccountActive(accountUuid)) {
+      // nothing started, so a private swap is not started for an account the
+      // user left.
+      if (privateQuote && !_isAccountActive(accountUuid)) {
         log('Swap: start dropped after an account switch');
         return null;
       }
@@ -1093,7 +1097,7 @@ class SwapNotifier extends Notifier<SwapState> {
       }
       snapshot = await ref.read(swapIntentProvider).startSwap(quote);
     } catch (e) {
-      if (!_isAccountActive(accountUuid)) return null;
+      if (privateQuote && !_isAccountActive(accountUuid)) return null;
       log(
         'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
         'error=$e',
@@ -1136,10 +1140,10 @@ class SwapNotifier extends Notifier<SwapState> {
     }
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
-    if (!_isAccountActive(accountUuid)) {
-      // The user switched accounts while the swap started. It exists, so it is
-      // saved and tracked for the account that started it, and the screen now
-      // showing another account is left alone.
+    if (privateQuote && !_isAccountActive(accountUuid)) {
+      // The user switched accounts while the private swap started. It exists,
+      // so it is saved and tracked for the account that started it, and the
+      // screen now showing another account is left alone.
       await _saveStartedIntentForAccount(accountUuid, intent);
       log(
         'Swap: start saved for an inactive account '

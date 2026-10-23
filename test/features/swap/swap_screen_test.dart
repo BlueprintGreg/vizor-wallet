@@ -8842,6 +8842,42 @@ void main() {
     expect(saved.single.privateAddress, isTrue);
   });
 
+  testWidgets('an ordinary start still starts after an account switch during '
+      'the fee check, as before private swaps', (tester) async {
+    final swapProvider = _FakeSwapProvider(zecDepositMemo: null);
+    final depositSender = _FakeSwapDepositSender()
+      ..holdPreflight = Completer<void>();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: swapProvider,
+      depositSender: depositSender,
+      bootstrap: _twoAccountBootstrap,
+      accountNotifier: () =>
+          _FakeSwapAccountNotifier(_twoAccountBootstrap.initialAccountState),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.updateAmount('1');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    final quote = container.read(swapStateProvider).reviewQuote;
+    expect(quote?.swapRefundIndex, isNull);
+    expect(quote?.receiveRequestId, isNull);
+
+    final start = notifier.startIntent();
+    await tester.pump();
+    await container.read(accountProvider.notifier).switchAccount('account-2');
+    await tester.pumpAndSettle();
+    depositSender.holdPreflight!.complete();
+    await start;
+    await tester.pumpAndSettle();
+    expect(
+      swapProvider.startedQuotes,
+      hasLength(1),
+      reason: 'the ordinary start is not dropped',
+    );
+  });
+
   testWidgets('a start refused while its address is rechecked asks to wait', (
     tester,
   ) async {
@@ -11107,6 +11143,7 @@ Future<ProviderContainer> _pumpSwapScreen(
   onProviderSnapshot,
   AppBootstrapState? bootstrap,
   AccountNotifier Function()? accountNotifier,
+  SwapDepositSender? depositSender,
 }) async {
   await _setDesktopViewport(tester);
   await tester.pumpWidget(
@@ -11117,6 +11154,7 @@ Future<ProviderContainer> _pumpSwapScreen(
       ),
       bootstrap: bootstrap,
       accountNotifier: accountNotifier,
+      depositSender: depositSender,
       seedSwapActivityFixtures: false,
       swapProvider: swapProvider,
       sessionStore: sessionStore,
