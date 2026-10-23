@@ -218,7 +218,7 @@ fn local_refund_keys_retire_when_conclusive_and_memo_learned_ones_after_the_wind
             1
         );
     }
-    let funded: Vec<u32> = world.fundings.iter().filter_map(|f| f.height).collect();
+    let funded: Vec<u32> = world.fundings.iter().map(|f| f.height).collect();
     assert_eq!(funded.len(), 2);
     // With filters through exactly one window past R1's funding, only R0 is older.
     world.mine(funded[1] + MEMO_REFUND_WINDOW - world.chain.tip());

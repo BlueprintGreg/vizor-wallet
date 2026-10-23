@@ -9,7 +9,7 @@
 //! a shrunk failure prints. `VIZOR_SCENARIO_SHRINK` bounds shrinking replays.
 //! Known product findings are counted as notes rather than failed, so the default lane
 //! stays green while they are open. `VIZOR_SCENARIO_STRICT=1` fails on them too (see
-//! [`FINDINGS`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
+//! [`World::note`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
 //! refunds, restores, deep reorgs and toggling (see [`generate`]). `VIZOR_SCENARIO_AGE`
 //! is the share of seeds, per mille, whose quiescence ends past the memo refund window
 //! (see [`World::age`]).
@@ -35,15 +35,6 @@ const NO_ORCHARD: u8 = 9;
 const MAX_DEVICES: usize = 5;
 /// Longer than the library's longest lookup backoff, so deferred work is due again.
 const PAST_BACKOFF: i64 = 50_000;
-
-/// Notes that mark open product findings (see REPORT.md), which fail a run only with
-/// `VIZOR_SCENARIO_STRICT=1`. Behaviors the spec's October 23 decisions accept as
-/// intended (Q-1, Q-4, Q-5, Q-6, Q-8, Q-11) are neither notes nor violations. The fixed
-/// findings F1, F3, U1, Q-2 and Q-3 are checked as violations in every mode.
-const FINDINGS: &[&str] = &[
-    "refund-key-kept-by-orphaned-receipt",
-    "reorg-below-birthday",
-];
 
 /// How long past its deadline a started quote keeps its slot without a fresh conclusive
 /// status, as the library's `STARTED_STATUS_GRACE_SECONDS`.
@@ -391,13 +382,9 @@ struct Funding {
     refund: u64,
     tx: Transaction,
     raw: Vec<u8>,
-    height: Option<u32>,
+    /// Where it is mined on the current chain. A reorg that drops it mines it again.
+    height: u32,
     nullifiers: Vec<[u8; 32]>,
-    /// The device that funded it.
-    dev: usize,
-    /// The latest height of a note the funding spent. A device whose birthday is later
-    /// holds no record of spending it, which memo recovery no longer needs (F1).
-    input_height: u32,
 }
 
 /// The provider's view of one quote and the device that asked for it.
@@ -552,24 +539,6 @@ pub(super) fn notes(wallet: &Wallet, account: &AccountUuid) -> Vec<Note> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
-}
-
-/// The notes among `nullifiers` that `wallet` holds, as (is one-time, mined height).
-fn spent_inputs(wallet: &Wallet, nullifiers: &[[u8; 32]]) -> Vec<(bool, u32)> {
-    let conn = rusqlite::Connection::open(&wallet.path).unwrap();
-    nullifiers
-        .iter()
-        .filter_map(|nf| {
-            conn.query_row(
-                "SELECT n.one_time_key_id IS NOT NULL, IFNULL(t.mined_height, 0)
-                 FROM ironwood_received_notes n JOIN transactions t ON t.id_tx = n.transaction_id
-                 WHERE n.nf = ?1",
-                [nf.as_slice()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok()
-        })
-        .collect()
 }
 
 /// Rows in the per-account recovery table, which a wallet that never enabled the feature
@@ -751,7 +720,7 @@ pub(super) struct World {
     quotes: Vec<Quote>,
     deposits: u64,
     setup_end: u32,
-    /// Ambiguities the run met, which are reported but never fail it.
+    /// Open findings the run met (see [`World::note`]).
     pub(super) notes: std::cell::RefCell<BTreeMap<&'static str, usize>>,
     /// The first rewind ordinary sync refused, which the next check reports (finding U1).
     rewind_refused: Option<String>,
@@ -817,7 +786,8 @@ impl World {
         dev
     }
 
-    /// Records a note about an ambiguity the run met.
+    /// Records an open product finding the run met. It is reported, and fails the run
+    /// only with `VIZOR_SCENARIO_STRICT=1`.
     fn note(&self, what: &'static str) {
         *self.notes.borrow_mut().entry(what).or_default() += 1;
     }
@@ -907,12 +877,8 @@ impl World {
             pay.orphaned = true;
         }
         let mut remined = 0;
-        for funding in self
-            .fundings
-            .iter_mut()
-            .filter(|f| f.height.is_some_and(|h| h > fork))
-        {
-            funding.height = Some(self.chain.mine_tx(&funding.tx));
+        for funding in self.fundings.iter_mut().filter(|f| f.height > fork) {
+            funding.height = self.chain.mine_tx(&funding.tx);
             remined += 1;
         }
         let mut repaid = 0;
@@ -1013,14 +979,13 @@ impl World {
         let served: Vec<([u8; 32], Vec<u8>, u64)> = self
             .fundings
             .iter()
-            .filter_map(|f| f.height.map(|h| (f, h)))
-            .flat_map(|(f, h)| {
+            .flat_map(|f| {
                 let txid = *f.tx.txid().as_ref();
                 let mut reversed = txid;
                 reversed.reverse();
                 [
-                    (txid, f.raw.clone(), u64::from(h)),
-                    (reversed, f.raw.clone(), u64::from(h)),
+                    (txid, f.raw.clone(), u64::from(f.height)),
+                    (reversed, f.raw.clone(), u64::from(f.height)),
                 ]
             })
             .collect();
@@ -1247,9 +1212,6 @@ impl World {
         ttl: i64,
     ) -> Result<String, Violation> {
         apply(&self.devices[dev]);
-        if self.devices[dev].accts.is_empty() {
-            return Ok("no account".into());
-        }
         let acct = slot % self.devices[dev].accts.len();
         let reserved = self.reserve_in(dev, acct, true)?;
         let index = match reserved {
@@ -1463,9 +1425,6 @@ impl World {
     fn quote_out(&mut self, dev: usize, slot: usize, ttl: i64) -> Result<String, Violation> {
         apply(&self.devices[dev]);
         let device = &self.devices[dev];
-        if device.accts.is_empty() {
-            return Ok("no account".into());
-        }
         let a = &device.accts[slot % device.accts.len()];
         let (path, uuid, seed) = (device.wallet.path.clone(), a.account.uuid.clone(), a.seed);
         let known = funded_refunds(&device.wallet, &a.account.id);
@@ -1496,25 +1455,19 @@ impl World {
         };
         // A device that has not scanned the funding's block may still reissue its key,
         // which is the accepted one-block race between devices (SPEC Q-11).
-        if let Some(f) = self.fundings.iter().find(|f| {
-            f.seed == seed
-                && f.refund == index
-                && f.height.is_some_and(|h| h >= birthday)
-                && mined_here(f)
-        }) {
+        if let Some(f) = self
+            .fundings
+            .iter()
+            .find(|f| f.seed == seed && f.refund == index && f.height >= birthday && mined_here(f))
+        {
             // Another device funded this key in a block this device scanned. Its memo
             // registers the key even without a record of spending the funding's inputs,
             // which a later birthday (F1) or unrecovered one-time inputs (F3) lack.
             return Err(violation(
                 "refund-reuse",
                 format!(
-                    "refund key R{index} was funded at {:?} by device {}, which this device scanned; \
-                     birthday {birthday}, latest input at {}; inputs (one-time, height) at the funder {:?}, here {:?}",
+                    "refund key R{index} was funded at {} in a block this device scanned; birthday {birthday}",
                     f.height,
-                    f.dev,
-                    f.input_height,
-                    spent_inputs(&self.devices[f.dev].wallet, &f.nullifiers),
-                    spent_inputs(&self.devices[dev].wallet, &f.nullifiers),
                 ),
             ));
         }
@@ -1650,29 +1603,15 @@ impl World {
                     .collect()
             })
             .unwrap_or_default();
-        let input_height: u32 = rusqlite::Connection::open(&device.wallet.path)
-            .unwrap()
-            .query_row(
-                "SELECT IFNULL(MAX(rt.mined_height), 0) FROM ironwood_received_note_spends s
-                 JOIN transactions st ON st.id_tx = s.transaction_id
-                 JOIN ironwood_received_notes n ON n.id = s.ironwood_received_note_id
-                 JOIN transactions rt ON rt.id_tx = n.transaction_id
-                 WHERE st.txid = ?1",
-                [tx.txid().as_ref()],
-                |r| r.get(0),
-            )
-            .unwrap();
         let height = self.chain.mine_tx(&tx);
         self.changed();
         self.fundings.push(Funding {
-            dev,
             seed: quote.seed,
             refund: quote.index,
             tx,
             raw,
-            height: Some(height),
+            height,
             nullifiers,
-            input_height,
         });
         let quote = &mut self.quotes[q];
         quote.funded = true;
@@ -2247,7 +2186,7 @@ impl World {
         let memos: BTreeSet<u64> = self
             .fundings
             .iter()
-            .filter(|f| f.seed == acct.seed && f.height.is_some_and(|h| h >= acct.birthday))
+            .filter(|f| f.seed == acct.seed && f.height >= acct.birthday)
             .map(|f| f.refund)
             .collect();
         canonical
@@ -2469,7 +2408,6 @@ impl World {
                 let revealed: BTreeSet<[u8; 32]> = self
                     .fundings
                     .iter()
-                    .filter(|f| f.height.is_some())
                     .flat_map(|f| f.nullifiers.iter().copied())
                     .collect();
                 for note in notes(&device.wallet, &acct.account.id)
@@ -2502,7 +2440,7 @@ impl World {
     /// Mines past every funding's [`MEMO_REFUND_WINDOW`] and settles every device again,
     /// after which refund keys learned only from memos must have retired too.
     fn age(&mut self) -> Result<(), Violation> {
-        let Some(last) = self.fundings.iter().filter_map(|f| f.height).max() else {
+        let Some(last) = self.fundings.iter().map(|f| f.height).max() else {
             return Ok(());
         };
         let target = last + MEMO_REFUND_WINDOW + 1;
@@ -2553,12 +2491,7 @@ impl World {
         {
             // A `SUCCESS` without a refunded amount expects no refund, so it is conclusive
             // too (SPEC Q-3).
-            let conclusive = quote.concluded();
-            let funding_canonical = self
-                .fundings
-                .iter()
-                .any(|f| f.refund == quote.index && f.seed == quote.seed && f.height.is_some());
-            if conclusive && funding_canonical && monitored.contains(&quote.index) {
+            if quote.concluded() && monitored.contains(&quote.index) {
                 let orphaned = notes(&device.wallet, &acct.account.id)
                     .iter()
                     .any(|n| !n.receive && n.index == quote.index && !n.mined);
@@ -2675,8 +2608,6 @@ pub(super) struct Outcome {
 
 /// Runs the actions of `seed` whose indexes `keep` lists (all when `None`), then quiesces.
 pub(super) fn run(seed: u64, steps: usize, keep: Option<&BTreeSet<usize>>) -> Outcome {
-    crate::api::sync::set_enhance_pir_enabled(true);
-    crate::api::sync::set_near_swap_privacy_enabled(true);
     let actions = generate(seed, steps);
     let mut trace = Vec::new();
     let world = std::panic::catch_unwind(World::new);
@@ -2817,12 +2748,7 @@ fn run_many(default_iters: u64, default_steps: u64) {
         for (k, v) in &outcome.notes {
             *notes.entry(k).or_default() += v;
         }
-        let found: Vec<&str> = outcome
-            .notes
-            .keys()
-            .copied()
-            .filter(|k| FINDINGS.contains(k))
-            .collect();
+        let found: Vec<&str> = outcome.notes.keys().copied().collect();
         // A violation in the same run is reported below, with its reproducer.
         if strict && !found.is_empty() && outcome.failure.is_none() {
             println!(
