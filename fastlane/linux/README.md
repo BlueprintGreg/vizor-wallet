@@ -1,8 +1,9 @@
 # Linux AppImage fastlane
 
-GitHub Actions 기준 Linux AppImage 외부 배포용 fastlane 설정입니다.
+Fastlane configuration for building and packaging Linux AppImages for external
+distribution through GitHub Actions.
 
-실행:
+Run:
 
 ```bash
 bundle exec fastlane linux build
@@ -10,37 +11,42 @@ bundle exec fastlane linux package
 bundle exec fastlane linux release
 ```
 
-`release` lane 순서:
+The `release` lane:
 
-1. mainnet/testnet flavor별 Linux Flutter bundle 생성
-2. flavor별 AppDir 생성
-3. flavor별 AppImage 생성
-4. flavor별 embedded GPG signature, detached `.asc`, `.sha256` 생성
-5. 산출물을 `dist/linux` 아래에 준비
+1. Builds a Linux Flutter bundle for each mainnet/testnet flavor.
+2. Creates an AppDir for each flavor.
+3. Creates an AppImage for each flavor.
+4. Generates an embedded GPG signature, detached `.asc` signature, and `.sha256`
+   checksum for each flavor.
+5. Prepares the artifacts under `dist/linux`.
 
-GitHub Release 생성, asset 업로드, multi-arch update feed 생성, draft
-publish는 deployment repo의 `Release` workflow가 담당합니다.
+The deployment repository's `Release` workflow creates the GitHub Release,
+uploads assets, generates the update feed for multiple architectures, and
+publishes the draft release.
 
-최종 AppImage의 배포판별 번들·렌더링 검사는
-[`scripts/linux-smoke/README.md`](../../scripts/linux-smoke/README.md)를 참고하세요.
-패키징 후 `scripts/linux-smoke/run.sh --appimage <산출물>`로 로컬에서 실행하고,
-실행 결과와 스크린샷·로그를 배포 후보의 해시와 함께 보관하세요.
+For bundle and rendering checks across distributions, see
+[`scripts/linux-smoke/README.md`](../../scripts/linux-smoke/README.md).
+After packaging, run `scripts/linux-smoke/run.sh --appimage <artifact>` locally
+and retain the results, screenshots, and logs with the release candidate's hash.
 
-AppImage는 GTK/GLib와 데스크톱·그래픽 의존성을 호스트에서 사용합니다.
-`scripts/linux-smoke/host-libraries.txt`를 linuxdeploy, GStreamer 의존성 복사,
-최종 AppDir 검사에서 공통으로 사용합니다. 번들 금지 라이브러리나 누락·버전
-불일치 의존성이 있으면 서명/패키징 전에 실패합니다. 빌드 환경에는 Python 3,
-`readelf`(binutils), `ldd`가 필요합니다.
+The AppImage uses the host's GTK/GLib and desktop/graphics dependencies.
+`scripts/linux-smoke/host-libraries.txt` is shared by linuxdeploy, the GStreamer
+dependency copier, and the final AppDir check. Forbidden bundled libraries,
+missing dependencies, or incompatible dependency versions cause packaging to
+fail before signing or creating the AppImage. The build environment requires
+Python 3, `readelf` (binutils), and `ldd`.
 
-실행 환경에는 GTK 3, Secret Service 제공자, udev와 EGL/GLES/Mesa 또는
-해당 GPU 드라이버가 필요합니다. 최소 설치·서버 환경은 추가 패키지가 필요할 수
-있습니다. Ubuntu의 관련 패키지는 `libgtk-3-0`, `libsecret-1-0`, `libudev1`,
-`libegl1`, `libgles2`, `libgl1-mesa-dri`이며 최신 배포판은 t64 패키지명을 사용합니다.
-Fedora에서는 `gtk3`, `libsecret`, `systemd-libs`, `libglvnd-egl`, `libglvnd-gles`,
-`libglvnd-glx`, `mesa-dri-drivers`를 확인하세요. GStreamer/카메라의 별도 ABI 의존성인
-`libjpeg.so.8`과 `libbz2.so.1.0`은 번들에 유지합니다.
+The runtime environment needs GTK 3, a Secret Service provider, udev, and
+EGL/GLES/Mesa or the appropriate GPU drivers. Minimal and server installations
+may need additional packages. Relevant Ubuntu packages include `libgtk-3-0`,
+`libsecret-1-0`, `libudev1`, `libegl1`, `libgles2`, and `libgl1-mesa-dri`; newer
+releases use t64 package names where applicable. On Fedora, check `gtk3`,
+`libsecret`, `systemd-libs`, `libglvnd-egl`, `libglvnd-gles`, `libglvnd-glx`, and
+`mesa-dri-drivers`. The private legacy ABI dependencies `libjpeg.so.8` and
+`libbz2.so.1.0` remain bundled for GStreamer/camera support.
 
-기본 release flavor는 `mainnet,testnet`입니다. 단일 flavor만 빌드하려면:
+The default release flavors are `mainnet,testnet`. To package a single flavor
+or explicitly select both for a release:
 
 ```bash
 VIZOR_LINUX_FLAVOR=mainnet bundle exec fastlane linux package
@@ -64,7 +70,7 @@ Bundles include the Ledger udev rule and host setup instructions under
 - `LINUX_APPIMAGE_GPG_PRIVATE_KEY`
 - `LINUX_APPIMAGE_GPG_KEY_ID`
 
-태그 기반 워크플로우가 아니면 아래도 필요합니다.
+Workflows that are not triggered by a tag also require:
 
 - `RELEASE_TAG`
 
