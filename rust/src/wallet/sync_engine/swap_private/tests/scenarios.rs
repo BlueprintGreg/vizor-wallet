@@ -11,7 +11,9 @@
 //! Known product findings are counted as notes rather than failed, so the default lane
 //! stays green while they are open. `VIZOR_SCENARIO_STRICT=1` fails on them too (see
 //! [`World::note`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
-//! refunds, restores, deep reorgs and toggling (see [`generate`]). `VIZOR_SCENARIO_AGE`
+//! refunds, restores, deep reorgs and toggling, and `VIZOR_SCENARIO_MIX=toggle` toward
+//! turning the feature on and off mid-round, across restarts and in quick succession
+//! (see [`generate`]). `VIZOR_SCENARIO_AGE`
 //! is the share of seeds, per mille, whose quiescence ends past the memo refund window
 //! (see [`World::age`]). `VIZOR_SCENARIO_VERBOSE` prints the trace of passing seeds too.
 use super::*;
@@ -27,6 +29,7 @@ use zakura_one_time_ivk::Purpose;
 use zcash_primitives::transaction::Transaction;
 
 mod directed;
+mod toggles;
 
 /// The seed every device restores, and a second seed some devices add as an account.
 const MAIN: u8 = 4;
@@ -204,18 +207,64 @@ pub(super) enum Action {
         acct: usize,
         outcome: u8,
     },
+    /// A round whose `nth` request of `class` (0 filters, 1 query, 2 witness) is held while
+    /// the feature turns off, with the app's worker cancellation when `cancel`, and back on
+    /// at once when `back`.
+    HeldToggle {
+        dev: usize,
+        class: u8,
+        nth: usize,
+        cancel: bool,
+        back: bool,
+    },
+    /// `flips` reconciled toggles in quick succession, while a round starts when `round`.
+    RapidToggle {
+        dev: usize,
+        flips: u8,
+        round: bool,
+    },
+    /// Saves the feature as `feature`, reconciled or not as when the app dies first, then
+    /// restarts the app and runs its first round.
+    RestartToggle {
+        dev: usize,
+        feature: bool,
+        reconcile: bool,
+    },
+    /// A settings history check whose `nth` query is held while the feature turns off, and
+    /// back on at once when `back`.
+    ManualToggle {
+        dev: usize,
+        nth: usize,
+        back: bool,
+    },
 }
 
-/// Whether `VIZOR_SCENARIO_MIX=stress` asks [`generate`] for its stress weights.
-fn stress_mix() -> bool {
-    std::env::var("VIZOR_SCENARIO_MIX").as_deref() == Ok("stress")
+/// Which action weights [`generate`] uses, from `VIZOR_SCENARIO_MIX`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mix {
+    Default,
+    Stress,
+    Toggle,
+}
+
+/// The mix `VIZOR_SCENARIO_MIX` names: `stress`, `toggle`, or the default.
+fn mix() -> Mix {
+    match std::env::var("VIZOR_SCENARIO_MIX").as_deref() {
+        Ok("stress") => Mix::Stress,
+        Ok("toggle") => Mix::Toggle,
+        _ => Mix::Default,
+    }
 }
 
 /// Draws `steps` actions from `seed`, independently of how they will play out. The stress
 /// mix adds outgoing swaps, restores at more birthdays, deep and back-to-back reorgs and
-/// toggles, and leaves the default mix's draws for a seed unchanged.
+/// toggles. The toggle mix replaces about a third of the draws with feature and Private
+/// queries toggles, toggles while a filter, query or witness answer or a history check is
+/// held, rapid toggles while a round starts, toggles across a restart and feature-off
+/// restores. Both leave the default mix's draws for a seed unchanged.
 pub(super) fn generate(seed: u64, steps: usize) -> Vec<Action> {
-    let stress = stress_mix();
+    let stress = mix() == Mix::Stress;
+    let toggle = mix() == Mix::Toggle;
     let mut rng = Rng::new(seed);
     let mut actions = Vec::with_capacity(steps + 1);
     while actions.len() < steps {
@@ -223,6 +272,57 @@ pub(super) fn generate(seed: u64, steps: usize) -> Vec<Action> {
         let acct = rng.below(4) as usize;
         let quote = rng.below(16) as usize;
         let roll = rng.below(1000);
+        if toggle && rng.chance(330) {
+            actions.push(match rng.below(12) {
+                0 | 1 => Action::Toggle(dev),
+                2 => Action::PrivateQueries(dev),
+                3 | 4 => Action::HeldToggle {
+                    dev,
+                    class: rng.below(3) as u8,
+                    nth: rng.below(2) as usize,
+                    cancel: rng.chance(500),
+                    back: rng.chance(600),
+                },
+                5 => Action::RapidToggle {
+                    dev,
+                    flips: 2 + rng.below(4) as u8,
+                    round: rng.chance(700),
+                },
+                6 => Action::RestartToggle {
+                    dev,
+                    feature: rng.chance(500),
+                    reconcile: rng.chance(500),
+                },
+                7 => Action::ManualToggle {
+                    dev,
+                    nth: rng.below(2) as usize,
+                    back: rng.chance(600),
+                },
+                8 => Action::Restore {
+                    back: [0, 3, 20][rng.below(3) as usize],
+                    feature: rng.chance(400),
+                },
+                9 => Action::HeldRound {
+                    dev,
+                    query: rng.chance(600),
+                    nth: rng.below(3) as usize,
+                    during: During::Toggle,
+                },
+                // Work in flight for the next toggle to cross.
+                10 => Action::Swap {
+                    dev,
+                    acct,
+                    value: 200_000 + 10_000 * rng.below(50),
+                },
+                _ => Action::QuoteIn {
+                    dev,
+                    acct,
+                    reply: [Reply::Accept, Reply::Timeout][rng.below(2) as usize],
+                    ttl: 600 + rng.below(7_200) as i64,
+                },
+            });
+            continue;
+        }
         if stress && rng.chance(160) {
             match rng.below(4) {
                 0 => actions.push(Action::Reorg(8 + rng.below(13) as u32)),
@@ -587,6 +687,79 @@ fn recovery_rows(wallet: &Wallet) -> i64 {
         .unwrap_or(0)
 }
 
+/// Every row the one-time feature keeps in `wallet`: its own tables, the receiver
+/// descriptor cache and the notes its keys received, each as text and sorted, so a step
+/// that must write nothing can be compared before and after.
+pub(super) fn one_time_snapshot(wallet: &Wallet) -> Vec<String> {
+    let conn = rusqlite::Connection::open(&wallet.path).unwrap();
+    let mut queries: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table'
+             AND (name LIKE 'ironwood_one_time%' OR name = 'ext_vizor_receiver_inventory')",
+        )
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|name| {
+            let name = name.unwrap();
+            (name.clone(), format!("SELECT * FROM {name}"))
+        })
+        .collect();
+    queries.push((
+        "one-time notes".into(),
+        "SELECT * FROM ironwood_received_notes WHERE one_time_key_id IS NOT NULL".into(),
+    ));
+    let mut rows = Vec::new();
+    for (name, query) in queries {
+        let mut statement = conn.prepare(&query).unwrap();
+        let columns = statement.column_count();
+        let mut table: Vec<String> = statement
+            .query_map([], |r| {
+                (0..columns)
+                    .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .map(|row| format!("{name} {:?}", row.unwrap()))
+            .collect();
+        table.sort();
+        rows.extend(table);
+    }
+    rows
+}
+
+/// The rows only one of two [`one_time_snapshot`]s holds, for a violation's detail.
+fn snapshot_diff(before: &[String], after: &[String]) -> String {
+    let gone: Vec<&String> = before.iter().filter(|r| !after.contains(r)).collect();
+    let new: Vec<&String> = after.iter().filter(|r| !before.contains(r)).collect();
+    format!("removed {gone:?}, added {new:?}")
+}
+
+/// Whether `account` holds a one-time receipt a reorg displaced or whose label is
+/// disputed, which a round repairs even with the feature off. This covers more than the
+/// library's own test, which also lets an expired displaced receipt go.
+fn repair_owed(wallet: &Wallet, account: &AccountUuid) -> bool {
+    rusqlite::Connection::open(&wallet.path)
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM ironwood_received_notes n
+                 JOIN transactions t ON t.id_tx = n.transaction_id
+                 JOIN accounts a ON a.id = n.account_id
+                 WHERE a.uuid = ?1 AND n.one_time_key_id IS NOT NULL
+                   AND (t.mined_height IS NULL OR n.commitment_tree_position IS NULL
+                        OR EXISTS(SELECT 1 FROM ironwood_one_time_disputed_receipts d
+                            WHERE d.note_id = n.id)))",
+            [account.expose_uuid().as_bytes()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Whether an error message reports wallet lock contention.
+fn locked(message: &str) -> bool {
+    message.contains("locked") || message.contains("busy")
+}
+
 /// The receive index the wallet's own payment evidence justifies, as issuance reads it.
 fn evidence_high(wallet: &Wallet, account: &AccountUuid) -> Option<u64> {
     let conn = rusqlite::Connection::open(&wallet.path).unwrap();
@@ -752,6 +925,9 @@ pub(super) struct World {
     /// Quiescence ends by aging every funding past [`MEMO_REFUND_WINDOW`] (see
     /// [`World::age`]).
     ages: bool,
+    /// How many times a device's database was reopened under a new path (see
+    /// [`World::restart`]).
+    reopens: usize,
 }
 
 impl World {
@@ -780,6 +956,7 @@ impl World {
             notes: Default::default(),
             rewind_refused: None,
             ages: false,
+            reopens: 0,
         };
         world.add_device(activation(), true);
         world
@@ -1042,7 +1219,36 @@ impl World {
         }
     }
 
-    /// Runs one worker round on `dev` and checks the feature-off and upgrade promises.
+    /// Whether a feature-off round on `dev` may make receiver requests, because a receipt
+    /// a reorg displaced needs repair. An account whose wallet still says enabled, as after
+    /// the app died before reconciling a turn-off, lists every lookup until the round
+    /// reconciles, so only its receipts count.
+    fn repair_due(&self, dev: usize) -> bool {
+        let device = &self.devices[dev];
+        device.accts.iter().any(|a| {
+            let state = device.wallet.state(&a.account);
+            if state.enabled && !device.discovery() {
+                repair_owed(&device.wallet, &a.account.id)
+            } else {
+                !state.lookups.is_empty() || !state.witnesses.is_empty()
+            }
+        })
+    }
+
+    /// Whether `dev` is off in its settings and in its wallet with no repair due, so a
+    /// round must neither request nor write anything.
+    fn inert(&self, dev: usize) -> bool {
+        let device = &self.devices[dev];
+        !device.discovery()
+            && !self.repair_due(dev)
+            && device
+                .accts
+                .iter()
+                .all(|a| !device.wallet.state(&a.account).enabled)
+    }
+
+    /// Runs one worker round on `dev` and checks the feature-off and upgrade promises. A
+    /// feature-off round with nothing to repair must leave every one-time row as it was.
     #[allow(clippy::too_many_arguments)]
     fn round(
         &mut self,
@@ -1055,11 +1261,10 @@ impl World {
     ) -> Result<String, Violation> {
         apply(&self.devices[dev]);
         let service = self.service(publication);
+        let repair_due = self.repair_due(dev);
+        let inert = manual.is_none() && self.inert(dev);
         let device = &self.devices[dev];
-        let repair_due = device.accts.iter().any(|a| {
-            let state = device.wallet.state(&a.account);
-            !state.lookups.is_empty() || !state.witnesses.is_empty()
-        });
+        let untouched = inert.then(|| one_time_snapshot(&device.wallet));
         let before: Vec<BTreeSet<(bool, u64)>> = device
             .accts
             .iter()
@@ -1092,6 +1297,18 @@ impl World {
                     "a feature-off round with no repair work made {requests} receiver requests"
                 ),
             ));
+        }
+        if let Some(before) = untouched {
+            let after = one_time_snapshot(&device.wallet);
+            if after != before {
+                return Err(violation(
+                    "feature-off-write",
+                    format!(
+                        "a feature-off round with no repair work wrote: {}",
+                        snapshot_diff(&before, &after)
+                    ),
+                ));
+            }
         }
         match &result {
             Err(RecoveryError::UpgradeRequired) => {
@@ -1226,6 +1443,311 @@ impl World {
             device.queries,
             result.map_err(|e| e.message)
         )
+    }
+
+    /// Turns the feature on for `dev` if either switch is off, as the user does before a
+    /// step that needs it.
+    fn ensure_on(&mut self, dev: usize) {
+        if !self.devices[dev].discovery() {
+            self.devices[dev].feature = true;
+            self.devices[dev].queries = true;
+            self.toggled(dev);
+        }
+        apply(&self.devices[dev]);
+    }
+
+    /// With the feature off, the settings history check is refused and the status reports
+    /// no check running.
+    fn manual_refused(&self, dev: usize) -> Result<(), Violation> {
+        let path = self.devices[dev].wallet.path.clone();
+        if crate::api::one_time_ivk::check_swap_history(path.clone(), "main".into(), None).is_ok() {
+            return Err(violation(
+                "manual-while-off",
+                "the history check started with the feature off",
+            ));
+        }
+        let status =
+            crate::api::one_time_ivk::get_swap_recovery_status(path, "main".into()).unwrap();
+        if status.checking_history {
+            return Err(violation(
+                "manual-while-off",
+                "the status reports a history check with the feature off",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The wallet of every account on `dev` says enabled exactly when its settings do.
+    fn check_setting_applied(&self, dev: usize) -> Result<(), Violation> {
+        let device = &self.devices[dev];
+        for acct in &device.accts {
+            let enabled = device.wallet.state(&acct.account).enabled;
+            if enabled != device.discovery() {
+                return Err(violation(
+                    "toggle-state",
+                    format!(
+                        "device {dev} seed {} reads enabled {enabled} with the setting {}",
+                        acct.seed,
+                        device.discovery()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Restarts the app on `dev`: the worker stops, the process forgets its switches, the
+    /// wallet database is reopened under a new path as a fresh process opens it, and
+    /// startup applies the saved switches and reads the recovery status. Nothing
+    /// reconciles before the next round, as at app start.
+    pub(super) fn restart(&mut self, dev: usize) -> String {
+        cancel_recovery();
+        crate::api::sync::set_near_swap_privacy_enabled(false);
+        crate::api::sync::set_enhance_pir_enabled(false);
+        self.reopens += 1;
+        let old = self.devices[dev].wallet.path.clone();
+        let new = std::path::Path::new(&old)
+            .with_file_name(format!("reopened-{}.db", self.reopens))
+            .to_str()
+            .unwrap()
+            .to_owned();
+        for suffix in ["", "-wal", "-shm"] {
+            let from = format!("{old}{suffix}");
+            if std::path::Path::new(&from).exists() {
+                std::fs::rename(&from, format!("{new}{suffix}")).unwrap();
+            }
+        }
+        self.devices[dev].wallet.path = new.clone();
+        apply(&self.devices[dev]);
+        let status = crate::api::one_time_ivk::get_swap_recovery_status(new, "main".into())
+            .map(|s| (s.checking_history, s.upgrade_required))
+            .map_err(|e| e.message);
+        format!("restarted, status {status:?}")
+    }
+
+    /// Holds the `nth` request of `class` in a round on `dev`, after a new block and, for
+    /// a query or witness, a payment to I0 give the round work, turns the feature off
+    /// while it waits, optionally cancelling the worker as the app's toggle does, and
+    /// checks that the released answer writes nothing. With `back` the feature comes
+    /// straight back on.
+    fn held_toggle(
+        &mut self,
+        dev: usize,
+        class: u8,
+        nth: usize,
+        cancel: bool,
+        back: bool,
+    ) -> Result<String, Violation> {
+        self.ensure_on(dev);
+        let class = ["filters", "query", "witness"][usize::from(class % 3)];
+        // Give the round something to hold: a new block for its filters, and for a query
+        // or witness a payment to I0, the address every account issues first.
+        if class != "filters" {
+            let seed = self.devices[dev].accts[0].seed;
+            self.pay(seed, true, 0, 150_000);
+        }
+        self.mine(1);
+        let synced = self.sync(dev, false);
+        if self.devices[dev].broken {
+            return Ok(synced);
+        }
+        let publication = self.current();
+        let service = self.service(publication);
+        let held = service.hold(class, service.count(class) + nth);
+        let worker = self.devices[dev]
+            .wallet
+            .spawn(&service, None, Duration::from_secs(45));
+        if !held.try_wait(Duration::from_secs(20)) {
+            held.release();
+            let result = worker
+                .join()
+                .map_err(|_| violation("panic", "worker thread panicked"))?;
+            return Ok(format!(
+                "no held {class} request; round {:?}",
+                result.map(|r| r.active).map_err(|e| e.to_string())
+            ));
+        }
+        self.devices[dev].feature = false;
+        let mut line = self.toggled(dev);
+        if cancel {
+            cancel_recovery();
+        }
+        let repair = self.repair_due(dev);
+        let before = one_time_snapshot(&self.devices[dev].wallet);
+        held.release();
+        let result = worker
+            .join()
+            .map_err(|_| violation("panic", "worker thread panicked"))?;
+        if let Err(RecoveryError::Other(message)) = &result {
+            if mentions_orchard(message) {
+                return Err(violation("no-orchard-blocks", message.clone()));
+            }
+        }
+        let after = one_time_snapshot(&self.devices[dev].wallet);
+        if !repair && after != before {
+            return Err(violation(
+                "held-answer-written",
+                format!(
+                    "a held {class} answer released after turning off wrote: {}",
+                    snapshot_diff(&before, &after)
+                ),
+            ));
+        }
+        line = format!(
+            "held {class}, {line}, round {:?}",
+            result.map(|r| r.active).map_err(|e| e.to_string())
+        );
+        if back {
+            self.devices[dev].feature = true;
+            line += &format!("; {}", self.toggled(dev));
+        }
+        Ok(line)
+    }
+
+    /// Flips NEAR swap privacy `flips` times in quick succession on `dev`, each flip
+    /// reconciled and every second one draining the worker as the app's toggle does,
+    /// optionally while a round starts. Nothing may fail on wallet lock contention, and
+    /// the wallet ends matching the last setting.
+    fn rapid_toggle(&mut self, dev: usize, flips: u8, round: bool) -> Result<String, Violation> {
+        apply(&self.devices[dev]);
+        let publication = self.current();
+        let service = self.service(publication);
+        let worker = round.then(|| {
+            self.devices[dev]
+                .wallet
+                .spawn(&service, None, Duration::from_secs(45))
+        });
+        for flip in 0..flips {
+            let device = &mut self.devices[dev];
+            device.feature = !device.feature;
+            apply(device);
+            device.ever_enabled |= device.discovery();
+            let reconciled = crate::api::one_time_ivk::reconcile_swap_recovery(
+                device.wallet.path.clone(),
+                "main".into(),
+            );
+            if let Err(e) = reconciled {
+                return Err(violation(
+                    if locked(&e.message) {
+                        "lock-contention"
+                    } else {
+                        "toggle-failed"
+                    },
+                    e.message,
+                ));
+            }
+            if flip % 2 == 1 {
+                cancel_recovery();
+            }
+        }
+        let mut line = format!("{flips} flips, feature {}", self.devices[dev].feature);
+        if let Some(worker) = worker {
+            let result = worker
+                .join()
+                .map_err(|_| violation("panic", "worker thread panicked"))?;
+            if let Err(RecoveryError::Other(message)) = &result {
+                if locked(message) {
+                    return Err(violation("lock-contention", message.clone()));
+                }
+                if mentions_orchard(message) {
+                    return Err(violation("no-orchard-blocks", message.clone()));
+                }
+            }
+            line += &format!(
+                ", round {:?}",
+                result.map(|r| r.active).map_err(|e| e.to_string())
+            );
+        }
+        self.check_setting_applied(dev)?;
+        Ok(line)
+    }
+
+    /// Saves NEAR swap privacy as `feature` on `dev`, reconciled or, as when the app dies
+    /// first, not, then restarts the app and runs its first round. That round applies the
+    /// saved setting, and with the feature off it makes no receiver request and writes
+    /// nothing beyond the setting unless repair is due (see [`World::round`]).
+    fn restart_toggle(
+        &mut self,
+        dev: usize,
+        feature: bool,
+        reconcile: bool,
+    ) -> Result<String, Violation> {
+        self.devices[dev].feature = feature;
+        let mut line = if reconcile {
+            self.toggled(dev)
+        } else {
+            let device = &mut self.devices[dev];
+            apply(device);
+            device.ever_enabled |= device.discovery();
+            format!("feature {feature} saved, not reconciled")
+        };
+        line += &format!("; {}", self.restart(dev));
+        let publication = self.current();
+        line += &format!("; {}", self.round(dev, 0, false, publication, 0, None)?);
+        self.check_setting_applied(dev)?;
+        Ok(line)
+    }
+
+    /// Mines a block, syncs `dev`, starts a settings history check and turns the feature
+    /// off while its `nth` query is held, draining the worker as the app's toggle does.
+    /// The held answer writes nothing, and a new check is refused. With `back` the
+    /// feature comes straight back on, which resumes the saved job.
+    fn manual_toggle(&mut self, dev: usize, nth: usize, back: bool) -> Result<String, Violation> {
+        self.ensure_on(dev);
+        // A check starts only once ordinary sync has reached the publication, and a new
+        // block leaves every completed history short of it, so the check has queries.
+        self.mine(1);
+        let synced = self.sync(dev, false);
+        if self.devices[dev].broken {
+            return Ok(synced);
+        }
+        let publication = self.current();
+        let service = self.service(publication);
+        let held = service.hold("query", service.count("query") + nth);
+        let worker = self.devices[dev]
+            .wallet
+            .spawn(&service, Some(None), Duration::from_secs(45));
+        let arrived = held.try_wait(Duration::from_secs(20));
+        let mut line = String::new();
+        if arrived {
+            self.devices[dev].feature = false;
+            line = self.toggled(dev);
+            cancel_recovery();
+        }
+        let repair = self.repair_due(dev);
+        let before = one_time_snapshot(&self.devices[dev].wallet);
+        held.release();
+        let result = worker
+            .join()
+            .map_err(|_| violation("panic", "worker thread panicked"))?;
+        if let Err(RecoveryError::Other(message)) = &result {
+            if mentions_orchard(message) {
+                return Err(violation("no-orchard-blocks", message.clone()));
+            }
+        }
+        let line = format!(
+            "manual held {arrived}, {line}, round {:?}",
+            result.map(|r| r.active).map_err(|e| e.to_string())
+        );
+        if !arrived {
+            return Ok(line);
+        }
+        let after = one_time_snapshot(&self.devices[dev].wallet);
+        if !repair && after != before {
+            return Err(violation(
+                "held-answer-written",
+                format!(
+                    "a held history check answer released after turning off wrote: {}",
+                    snapshot_diff(&before, &after)
+                ),
+            ));
+        }
+        self.manual_refused(dev)?;
+        if back {
+            self.devices[dev].feature = true;
+            return Ok(format!("{line}; {}", self.toggled(dev)));
+        }
+        Ok(line)
     }
 
     /// Reserves an incoming address and runs the app's quote lifecycle against the provider.
@@ -1692,7 +2214,9 @@ impl World {
     ) -> Result<String, Violation> {
         apply(&self.devices[dev]);
         if !self.devices[dev].discovery() {
-            return Ok("feature off, no check".into());
+            return self
+                .manual_refused(dev)
+                .map(|()| "feature off, check refused".into());
         }
         let Some(nth) = cancel else {
             let publication = self.current();
@@ -1980,6 +2504,32 @@ impl World {
                 device.wallet.delete_account(&removed.account);
                 format!("deleted seed {}", removed.seed)
             }
+            Action::HeldToggle {
+                dev,
+                class,
+                nth,
+                cancel,
+                back,
+            } => {
+                let dev = self.dev(dev);
+                self.held_toggle(dev, class, nth, cancel, back)?
+            }
+            Action::RapidToggle { dev, flips, round } => {
+                let dev = self.dev(dev);
+                self.rapid_toggle(dev, flips, round)?
+            }
+            Action::RestartToggle {
+                dev,
+                feature,
+                reconcile,
+            } => {
+                let dev = self.dev(dev);
+                self.restart_toggle(dev, feature, reconcile)?
+            }
+            Action::ManualToggle { dev, nth, back } => {
+                let dev = self.dev(dev);
+                self.manual_toggle(dev, nth, back)?
+            }
             Action::Restart(dev) => {
                 let dev = self.dev(dev);
                 cancel_recovery();
@@ -2169,6 +2719,19 @@ impl World {
     /// backoff, every wallet syncs and runs rounds until nothing changes, then the
     /// automatic promises, a settings history check and the exact credit are checked.
     pub(super) fn quiesce(&mut self) -> Result<(), Violation> {
+        // A paused device stays inert until it is turned back on (see `World::round`).
+        if mix() == Mix::Toggle {
+            for dev in 0..self.devices.len() {
+                if self.devices[dev].discovery() || self.devices[dev].broken {
+                    continue;
+                }
+                for _ in 0..2 {
+                    let publication = self.current();
+                    self.round(dev, 0, false, publication, 0, None)?;
+                }
+                self.manual_refused(dev)?;
+            }
+        }
         // Re-enabling must resume whatever a paused device missed.
         for dev in 0..self.devices.len() {
             if !self.devices[dev].discovery() {
