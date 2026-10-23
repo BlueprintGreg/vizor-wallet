@@ -1460,7 +1460,7 @@ impl World {
     /// no check running.
     fn manual_refused(&self, dev: usize) -> Result<(), Violation> {
         let path = self.devices[dev].wallet.path.clone();
-        if crate::api::one_time_ivk::check_swap_history(path.clone(), "main".into(), None).is_ok() {
+        if crate::api::one_time_ivk::check_swap_history(path.clone(), "main".into()).is_ok() {
             return Err(violation(
                 "manual-while-off",
                 "the history check started with the feature off",

@@ -420,7 +420,7 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
                     assert!(refused.is_err(), "issuance is paused");
                 }
                 untouched(&world, "a reservation");
-                assert!(api::check_swap_history(path.clone(), "main".into(), None).is_err());
+                assert!(api::check_swap_history(path.clone(), "main".into()).is_err());
                 api::reconcile_swap_recovery(path.clone(), "main".into()).unwrap();
                 untouched(&world, "reconciling");
             }
