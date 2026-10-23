@@ -888,7 +888,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final privacy = _SwapPrivacyToggle(true);
     var finished = false;
-    final begins = <BigInt?>[];
+    var begins = 0;
     await tester.pumpWidget(
       _settingsHarness(
         nearSwapPrivacyEnabled: true,
@@ -896,7 +896,7 @@ void main() {
           nearSwapPrivacyProvider.overrideWith(() => privacy),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: (end) async => begins.add(end),
+              begin: () async => begins++,
               cancel: () async {},
               // The wallet reports a check only while the feature is on.
               status: () async => SwapRecoveryStatus(
@@ -946,7 +946,7 @@ void main() {
 
     finished = true;
     await tester.pump(const Duration(seconds: 2));
-    expect(begins, hasLength(1), reason: 'no new check was needed');
+    expect(begins, 1, reason: 'no new check was needed');
     expect(
       tester.widget<Text>(status).data,
       swapHistoryCheckStatus(SwapHistoryCheck.done),

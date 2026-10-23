@@ -117,7 +117,6 @@ class _Api extends RustLibApi {
   Future<void> crateApiOneTimeIvkCheckSwapHistory({
     required String dbPath,
     required String networkName,
-    BigInt? receiveEnd,
   }) {
     events.add('check');
     final check = Completer<void>();
@@ -364,9 +363,7 @@ void main() {
         // The production calls behind Check swap history, polled quickly.
         swapHistoryApiProvider.overrideWith(
           (ref) => SwapHistoryApi(
-            begin: (end) => ref
-                .read(syncProvider.notifier)
-                .checkSwapHistory(receiveEnd: end),
+            begin: () => ref.read(syncProvider.notifier).checkSwapHistory(),
             cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
             status: () async => rust_swap.SwapRecoveryStatus(
               checkingHistory: api.checking && api.swapPrivacy,
