@@ -12,7 +12,7 @@
 //! [`World::note`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
 //! refunds, restores, deep reorgs and toggling (see [`generate`]). `VIZOR_SCENARIO_AGE`
 //! is the share of seeds, per mille, whose quiescence ends past the memo refund window
-//! (see [`World::age`]).
+//! (see [`World::age`]). `VIZOR_SCENARIO_VERBOSE` prints the trace of passing seeds too.
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -477,8 +477,8 @@ struct Device {
     accts: Vec<Acct>,
     no_orchard: bool,
     /// Ordinary sync could not follow a reorg, so the device is left out of later steps
-    /// and checks. Since U1 was fixed, this also fails the run (see [`World::rewind_refused`]),
-    /// unless the reorg replaced the block below the birthday (finding U2).
+    /// and checks. This also fails the run (see [`World::rewind_refused`]), unless the
+    /// reorg replaced the block below the birthday, an open finding.
     broken: bool,
     /// The hash of the block below the birthday when the device was restored, whose tree
     /// state the wallet starts from.
@@ -746,7 +746,7 @@ pub(super) struct World {
     setup_end: u32,
     /// Open findings the run met (see [`World::note`]).
     pub(super) notes: std::cell::RefCell<BTreeMap<&'static str, usize>>,
-    /// The first rewind ordinary sync refused, which the next check reports (finding U1).
+    /// The first rewind ordinary sync refused, which the next check reports.
     rewind_refused: Option<String>,
     /// Quiescence ends by aging every funding past [`MEMO_REFUND_WINDOW`] (see
     /// [`World::age`]).
@@ -977,7 +977,7 @@ impl World {
                 self.devices[dev].broken = true;
                 let birthday = self.devices[dev].birthday;
                 if self.chain.hash_at(birthday - 1) != Some(self.devices[dev].anchor) {
-                    // The wallet's starting tree state is on the old branch (finding U2).
+                    // The wallet's starting tree state is on the old branch, an open finding.
                     self.note("reorg-below-birthday");
                     return format!("reorg below the birthday, device left out: {e}");
                 }
@@ -1083,7 +1083,7 @@ impl World {
             service.serve_supported();
         }
         let requests = faulty.requests.load(AtomicOrdering::SeqCst);
-        // Repairing a receipt a reorg displaced is an accepted exception (SPEC Q-5).
+        // Repairing a receipt a reorg displaced is an intended exception.
         if !device.discovery() && manual.is_none() && requests > 0 && !repair_due {
             return Err(violation(
                 "feature-off-requests",
@@ -1399,7 +1399,7 @@ impl World {
     /// A window slot of `dev`'s account `acct` that the reuse rules say is free: unpaid,
     /// with every quote on it expired, unfunded and not shown live, or started but without
     /// any funded status [`STARTED_STATUS_GRACE`] past its deadline while no payment to
-    /// it is pending (SPEC Q-7).
+    /// it is pending.
     fn reusable_slot(&self, dev: usize, acct: usize) -> Option<u64> {
         let device = &self.devices[dev];
         let a = &device.accts[acct];
@@ -1460,7 +1460,7 @@ impl World {
             .unwrap()
         };
         // A device that has not scanned the funding's block may still reissue its key,
-        // which is the accepted one-block race between devices (SPEC Q-11).
+        // which is an accepted one-block race between devices.
         if let Some(f) = self
             .fundings
             .iter()
@@ -1468,7 +1468,7 @@ impl World {
         {
             // Another device funded this key in a block this device scanned. Its memo
             // registers the key even without a record of spending the funding's inputs,
-            // which a later birthday (F1) or unrecovered one-time inputs (F3) lack.
+            // which a later birthday or unrecovered one-time inputs lack.
             return Err(violation(
                 "refund-reuse",
                 format!(
@@ -2143,7 +2143,7 @@ impl World {
         reachable.extend(acct.reserved.iter().copied());
         let local: BTreeSet<u64> = funded_refunds(&self.devices[dev].wallet, &acct.account.id);
         // Every funding at or after the birthday names its refund key in a memo on the
-        // account's own change, whatever its inputs (F1, F3).
+        // account's own change, whatever its inputs.
         let memos: BTreeSet<u64> = self
             .fundings
             .iter()
@@ -2447,11 +2447,11 @@ impl World {
             .filter(|q| q.dev == dev && q.uuid == acct.account.uuid && !q.incoming && q.funded)
         {
             // A `SUCCESS` without a refunded amount expects no refund, so it is conclusive
-            // too (SPEC Q-3).
+            // too.
             if quote.concluded() && monitored.contains(&quote.index) {
                 if orphaned(quote.index) {
                     // A refund the reorg replaced leaves its old note unmined, which keeps
-                    // the key in repair (see REPORT, finding F2).
+                    // the key in repair, an open finding.
                     self.note("refund-key-kept-by-orphaned-receipt");
                     continue;
                 }
@@ -2465,7 +2465,7 @@ impl World {
             }
         }
         // A key learned from another device's funding memo has no local operation, so it
-        // cannot learn the swap ended. It retires after NEAR's refund window (SPEC Q-2).
+        // cannot learn the swap ended. It retires after NEAR's refund window.
         let frontier = device
             .wallet
             .state(&acct.account)
