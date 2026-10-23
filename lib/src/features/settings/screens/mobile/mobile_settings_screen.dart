@@ -25,6 +25,7 @@ import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../providers/account_provider.dart';
 import '../../../../providers/app_security_provider.dart';
 import '../../../../providers/biometric_unlock_provider.dart';
+import '../../../../providers/rpc_endpoint_failover_provider.dart';
 import '../../../../providers/rpc_endpoint_provider.dart';
 import '../../../../providers/zcash_explorer_provider.dart';
 import '../../../../providers/sync_keep_awake_provider.dart';
@@ -47,7 +48,10 @@ class MobileSettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final account = ref.watch(accountProvider).value?.activeAccount;
     final endpointConfig = ref.watch(rpcEndpointProvider);
-    final endpoint = endpointConfig.hostPort;
+    final endpoint = rpcEndpointInUseLabel(
+      endpointConfig,
+      ref.watch(rpcEndpointFailoverProvider),
+    );
     final explorer = explorerSettingsLabel(
       ref.watch(zcashExplorerProvider),
       networkName: endpointConfig.networkName,

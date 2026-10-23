@@ -392,6 +392,172 @@ void main() {
     );
   });
 
+  test('labels the endpoint row with the fallback in use', () {
+    final primary = defaultRpcEndpointConfig('main');
+    final fallback = fallbackRpcEndpointCandidatesFor(primary).first;
+    final healthy = RpcEndpointFailoverState(
+      primary: primary,
+      current: primary,
+      fallbackCandidates: [fallback],
+    );
+
+    expect(rpcEndpointInUseLabel(primary, healthy), primary.hostPort);
+    expect(
+      rpcEndpointInUseLabel(primary, healthy.copyWith(current: fallback)),
+      '${fallback.hostPort} (fallback)',
+    );
+  });
+
+  group('stalled tip', () {
+    const zecRocks = 'https://zec.rocks:443';
+    const euStardust = 'https://eu.zec.stardust.rest:443';
+
+    test('leaves a far-behind endpoint on the first check', () async {
+      final primary = defaultRpcEndpointConfig('main');
+      final harness = _StaleTipHarness(
+        primary: primary,
+        heightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(100),
+          // Same operator as the primary, stuck at the same height.
+          euStardust: BigInt.from(100),
+          zecRocks: BigInt.from(150),
+        },
+        estimatedHeightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(200),
+        },
+      );
+      addTearDown(harness.container.dispose);
+
+      expect(await harness.notifier.getLatestBlockHeight(), BigInt.from(150));
+      expect(harness.state.current.presetId, 'zec-rocks');
+      // Another operator is asked before the stalled host's sibling.
+      expect(harness.heightRequests, isNot(contains(euStardust)));
+    });
+
+    test('asks no fallback while the tip keeps up with the estimate', () async {
+      final primary = defaultRpcEndpointConfig('main');
+      final harness = _StaleTipHarness(
+        primary: primary,
+        heightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(100),
+          zecRocks: BigInt.from(150),
+        },
+        estimatedHeightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(105),
+        },
+      );
+      addTearDown(harness.container.dispose);
+
+      expect(await harness.notifier.getLatestBlockHeight(), BigInt.from(100));
+      expect(harness.state.isUsingFallback, isFalse);
+      expect(harness.heightRequests, [primary.normalizedLightwalletdUrl]);
+      expect(harness.chainNameRequests, isEmpty);
+    });
+
+    test('without an estimate, catches a stop before NU7', () async {
+      final primary = defaultRpcEndpointConfig('main');
+      final harness = _StaleTipHarness(
+        primary: primary,
+        heightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(3_543_404),
+          zecRocks: BigInt.from(3_543_500),
+        },
+        estimatedHeightByUrl: {primary.normalizedLightwalletdUrl: BigInt.zero},
+        nu7ActivationHeight: BigInt.from(3_543_405),
+      );
+      addTearDown(harness.container.dispose);
+
+      expect(
+        await harness.notifier.getLatestBlockHeight(),
+        BigInt.from(3_543_500),
+      );
+      expect(harness.state.current.presetId, 'zec-rocks');
+    });
+
+    // zcashd reports its own height as the estimate out of initial download.
+    test(
+      'an estimate equal to the tip still catches a stop before NU7',
+      () async {
+        final primary = defaultRpcEndpointConfig('main');
+        final harness = _StaleTipHarness(
+          primary: primary,
+          heightByUrl: {
+            primary.normalizedLightwalletdUrl: BigInt.from(3_543_404),
+            zecRocks: BigInt.from(3_543_500),
+          },
+          estimatedHeightByUrl: {
+            primary.normalizedLightwalletdUrl: BigInt.from(3_543_404),
+          },
+          nu7ActivationHeight: BigInt.from(3_543_405),
+        );
+        addTearDown(harness.container.dispose);
+
+        expect(
+          await harness.notifier.getLatestBlockHeight(),
+          BigInt.from(3_543_500),
+        );
+        expect(harness.state.current.presetId, 'zec-rocks');
+      },
+    );
+
+    test(
+      'an estimate equal to the tip away from an upgrade is no stall',
+      () async {
+        final primary = defaultRpcEndpointConfig('main');
+        final harness = _StaleTipHarness(
+          primary: primary,
+          heightByUrl: {
+            primary.normalizedLightwalletdUrl: BigInt.from(3_543_000),
+            zecRocks: BigInt.from(3_543_500),
+          },
+          estimatedHeightByUrl: {
+            primary.normalizedLightwalletdUrl: BigInt.from(3_543_000),
+          },
+          nu7ActivationHeight: BigInt.from(3_543_405),
+        );
+        addTearDown(harness.container.dispose);
+
+        expect(
+          await harness.notifier.getLatestBlockHeight(),
+          BigInt.from(3_543_000),
+        );
+        expect(harness.state.isUsingFallback, isFalse);
+        expect(harness.heightRequests, [primary.normalizedLightwalletdUrl]);
+      },
+    );
+
+    test('backs off after a fallback overrules the verdict', () async {
+      var now = DateTime(2026);
+      final primary = defaultRpcEndpointConfig('main');
+      final harness = _StaleTipHarness(
+        primary: primary,
+        clock: () => now,
+        heightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(100),
+          zecRocks: BigInt.from(100),
+        },
+        estimatedHeightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(200),
+        },
+      );
+      addTearDown(harness.container.dispose);
+
+      await harness.notifier.getLatestBlockHeight();
+      expect(harness.state.isUsingFallback, isFalse);
+      expect(
+        harness.heightRequests.where((url) => url == zecRocks),
+        hasLength(1),
+      );
+
+      now = now.add(const Duration(minutes: 2));
+      await harness.notifier.getLatestBlockHeight();
+      expect(
+        harness.heightRequests.where((url) => url == zecRocks),
+        hasLength(1),
+      );
+    });
+  });
+
   test('switches when current endpoint height progresses too slowly', () async {
     var now = DateTime(2026);
     final primary = defaultRpcEndpointConfig('main');
@@ -842,4 +1008,52 @@ AppBootstrapState _bootstrap(RpcEndpointConfig endpoint) {
     isUnlocked: false,
     passwordRotationRecoveryFailed: false,
   );
+}
+
+class _StaleTipHarness {
+  _StaleTipHarness({
+    required RpcEndpointConfig primary,
+    required Map<String, BigInt> heightByUrl,
+    required Map<String, BigInt> estimatedHeightByUrl,
+    BigInt? nu7ActivationHeight,
+    DateTime Function()? clock,
+  }) {
+    container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(_bootstrap(primary)),
+        if (clock != null)
+          rpcEndpointFailoverClockProvider.overrideWithValue(clock),
+        rpcEndpointFailoverChainNameGetterProvider.overrideWithValue((
+          url,
+        ) async {
+          chainNameRequests.add(url);
+          return 'main';
+        }),
+        rpcEndpointFailoverLatestBlockHeightGetterProvider.overrideWithValue((
+          url,
+          _,
+        ) async {
+          heightRequests.add(url);
+          return heightByUrl[url] ?? (throw Exception('no height $url'));
+        }),
+        rpcEndpointFailoverEstimatedHeightGetterProvider.overrideWithValue(
+          (url, _) async =>
+              estimatedHeightByUrl[url] ?? (throw Exception('no info $url')),
+        ),
+        rpcEndpointFailoverNu7ActivationHeightGetterProvider.overrideWithValue(
+          (_) => nu7ActivationHeight,
+        ),
+      ],
+    );
+  }
+
+  late final ProviderContainer container;
+  final heightRequests = <String>[];
+  final chainNameRequests = <String>[];
+
+  RpcEndpointFailoverNotifier get notifier =>
+      container.read(rpcEndpointFailoverProvider.notifier);
+
+  RpcEndpointFailoverState get state =>
+      container.read(rpcEndpointFailoverProvider);
 }

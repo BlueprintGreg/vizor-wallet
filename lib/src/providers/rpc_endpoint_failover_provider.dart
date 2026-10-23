@@ -9,6 +9,9 @@ typedef RpcEndpointChainNameGetter =
     Future<String> Function(String lightwalletdUrl);
 typedef RpcEndpointLatestBlockHeightGetter =
     Future<BigInt> Function(String lightwalletdUrl, String network);
+typedef RpcEndpointEstimatedHeightGetter =
+    Future<BigInt> Function(String lightwalletdUrl, String network);
+typedef RpcEndpointNu7ActivationHeightGetter = BigInt? Function(String network);
 
 enum RpcEndpointFailoverEventKind { switchedToFallback, switchedToPrimary }
 
@@ -34,6 +37,9 @@ class RpcEndpointFailoverSettings {
     this.minHeightIncreaseInSlowWindow = 2,
     this.slowFallbackLeadBlocks = 2,
     this.primaryReturnLagToleranceBlocks = 1,
+    this.staleTipCheckInterval = const Duration(seconds: 60),
+    this.staleTipLagBlocks = 12,
+    this.staleTipFalseAlarmBackoff = const Duration(minutes: 30),
   });
 
   final Duration primaryProbeInterval;
@@ -42,6 +48,18 @@ class RpcEndpointFailoverSettings {
   final int minHeightIncreaseInSlowWindow;
   final int slowFallbackLeadBlocks;
   final int primaryReturnLagToleranceBlocks;
+
+  /// How often the current endpoint's tip is compared with its node's own
+  /// wall-clock height estimate.
+  final Duration staleTipCheckInterval;
+
+  /// Lag behind that estimate at which the tip counts as stalled: 15 minutes
+  /// of 75-second blocks.
+  final int staleTipLagBlocks;
+
+  /// Pause after a fallback disagreed with a stall verdict, so an endpoint
+  /// with a poor estimate does not query other operators every minute.
+  final Duration staleTipFalseAlarmBackoff;
 }
 
 class RpcEndpointHealth {
@@ -65,6 +83,7 @@ class RpcEndpointFailoverState {
     this.heightWindowStartHeight,
     this.lastObservedHeight,
     this.lastObservedAt,
+    this.nextStaleTipCheckAt,
   });
 
   final RpcEndpointConfig primary;
@@ -79,6 +98,7 @@ class RpcEndpointFailoverState {
   final BigInt? heightWindowStartHeight;
   final BigInt? lastObservedHeight;
   final DateTime? lastObservedAt;
+  final DateTime? nextStaleTipCheckAt;
 
   RpcEndpointConfig? get fallback =>
       fallbackCandidates.isEmpty ? null : fallbackCandidates.first;
@@ -105,6 +125,7 @@ class RpcEndpointFailoverState {
     bool clearLastObservedHeight = false,
     DateTime? lastObservedAt,
     bool clearLastObservedAt = false,
+    DateTime? nextStaleTipCheckAt,
   }) {
     return RpcEndpointFailoverState(
       primary: primary ?? this.primary,
@@ -127,6 +148,7 @@ class RpcEndpointFailoverState {
       lastObservedAt: clearLastObservedAt
           ? null
           : lastObservedAt ?? this.lastObservedAt,
+      nextStaleTipCheckAt: nextStaleTipCheckAt ?? this.nextStaleTipCheckAt,
     );
   }
 }
@@ -228,6 +250,26 @@ final rpcEndpointFailoverLatestBlockHeightGetterProvider =
           ),
     );
 
+/// The endpoint node's own estimate of the chain height from the wall clock,
+/// or zero when its lightwalletd does not report one.
+final rpcEndpointFailoverEstimatedHeightGetterProvider =
+    Provider<RpcEndpointEstimatedHeightGetter>(
+      (_) =>
+          (lightwalletdUrl, network) async =>
+              (await rust_wallet.getChainUpgradeStatus(
+                lightwalletdUrl: lightwalletdUrl,
+                network: network,
+              )).lightwalletdEstimatedHeight,
+    );
+
+final rpcEndpointFailoverNu7ActivationHeightGetterProvider =
+    Provider<RpcEndpointNu7ActivationHeightGetter>(
+      (_) =>
+          (network) => rust_wallet
+              .getBlockSpacingSchedule(network: network)
+              .nu7ActivationHeight,
+    );
+
 class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
   int _eventSequence = 0;
   int _configGeneration = 0;
@@ -259,6 +301,12 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
         endpoint.networkName,
       );
       _recordEndpointSuccess(endpoint);
+      final staleFallback = await _maybeSwitchFromStaleTip(
+        endpoint,
+        height,
+        operation: operation,
+      );
+      if (staleFallback != null) return staleFallback.height;
       final slowFallback = await _maybeSwitchFromSlowHeight(
         endpoint,
         height,
@@ -588,6 +636,138 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
       return null;
     }
 
+    log(
+      'RpcEndpointFailover: switched ${endpoint.hostPort} -> '
+      '${fallback.endpoint.hostPort} because height only increased '
+      'by $heightIncrease blocks in ${settings.slowHeightWindow.inSeconds}s '
+      'during $operation and fallback is at height ${fallback.health.height}',
+    );
+    _switchToFallbackAhead(
+      endpoint,
+      fallback,
+      context: context,
+      now: now,
+      failure:
+          'Endpoint height increased by $heightIncrease blocks in '
+          '${settings.slowHeightWindow.inSeconds}s.',
+    );
+    return fallback.health;
+  }
+
+  /// Leaves an endpoint whose node has stopped receiving blocks without
+  /// waiting out the slow-height window, which restarts on every launch.
+  /// The check asks only the current endpoint; fallbacks are contacted once
+  /// its tip looks stalled.
+  Future<RpcEndpointHealth?> _maybeSwitchFromStaleTip(
+    RpcEndpointConfig endpoint,
+    BigInt height, {
+    required String operation,
+  }) async {
+    if (!_isCurrentEndpoint(endpoint)) return null;
+    final context = _captureContext();
+    if (context.fallbackCandidates.isEmpty) return null;
+
+    final settings = ref.read(rpcEndpointFailoverSettingsProvider);
+    final now = ref.read(rpcEndpointFailoverClockProvider)();
+    final nextCheck = state.nextStaleTipCheckAt;
+    if (nextCheck != null && now.isBefore(nextCheck)) return null;
+    state = state.copyWith(
+      nextStaleTipCheckAt: now.add(settings.staleTipCheckInterval),
+    );
+
+    final stalled = await _tipLooksStalled(endpoint, height, settings);
+    if (stalled == null || !_isCurrentContext(context)) return null;
+
+    // A healthy fallback at the same height overrules the verdict. Ask
+    // another operator first: one operator's hosts tend to stall together.
+    final operator = _operatorDomain(endpoint);
+    final fallback = await _findFallbackAheadOf(
+      endpoint,
+      candidates: [
+        ...context.fallbackCandidates.where(
+          (candidate) => _operatorDomain(candidate) != operator,
+        ),
+        ...context.fallbackCandidates.where(
+          (candidate) => _operatorDomain(candidate) == operator,
+        ),
+      ],
+      currentHeight: height,
+      operation: operation,
+      stopAtFirstHealthy: true,
+    );
+    if (!_isCurrentContext(context)) return null;
+    if (fallback == null) {
+      log(
+        'RpcEndpointFailover: ${endpoint.hostPort} looks stalled ($stalled), '
+        'but no fallback endpoint is ahead enough; keeping current endpoint',
+      );
+      state = state.copyWith(
+        nextStaleTipCheckAt: now.add(settings.staleTipFalseAlarmBackoff),
+      );
+      return null;
+    }
+
+    log(
+      'RpcEndpointFailover: switched ${endpoint.hostPort} -> '
+      '${fallback.endpoint.hostPort} during $operation because $stalled; '
+      'fallback is at height ${fallback.health.height}',
+    );
+    _switchToFallbackAhead(
+      endpoint,
+      fallback,
+      context: context,
+      now: now,
+      failure: 'Endpoint tip looks stalled: $stalled.',
+    );
+    return fallback.health;
+  }
+
+  /// Why the tip at [height] looks stalled, or null when it does not.
+  Future<String?> _tipLooksStalled(
+    RpcEndpointConfig endpoint,
+    BigInt height,
+    RpcEndpointFailoverSettings settings,
+  ) async {
+    try {
+      final estimated = await ref.read(
+        rpcEndpointFailoverEstimatedHeightGetterProvider,
+      )(endpoint.normalizedLightwalletdUrl, endpoint.networkName);
+      // zcashd reports its own height once out of initial download, so an
+      // estimate that is not ahead says nothing about a stall.
+      if (estimated > height) {
+        final lag = estimated - height;
+        return lag > BigInt.from(settings.staleTipLagBlocks)
+            ? 'its node estimates height $estimated, $lag blocks ahead'
+            : null;
+      }
+    } catch (e) {
+      log(
+        'RpcEndpointFailover: ${endpoint.hostPort} height estimate '
+        'unavailable: $e',
+      );
+    }
+    // Without an estimate ahead of the tip, catch the commonest stall: a node
+    // that missed a network upgrade stops one block before activation.
+    try {
+      final activation = ref.read(
+        rpcEndpointFailoverNu7ActivationHeightGetterProvider,
+      )(endpoint.networkName);
+      return activation != null && height + BigInt.one == activation
+          ? 'it stopped one block before NU7 activation'
+          : null;
+    } catch (e) {
+      log('RpcEndpointFailover: NU7 activation height unavailable: $e');
+      return null;
+    }
+  }
+
+  void _switchToFallbackAhead(
+    RpcEndpointConfig endpoint,
+    _FallbackHealth fallback, {
+    required _FailoverContext context,
+    required DateTime now,
+    required String failure,
+  }) {
     final failedPrimary = _sameEndpointIdentity(endpoint, context.primary);
     final event = RpcEndpointFailoverEvent(
       sequence: ++_eventSequence,
@@ -595,17 +775,9 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
       message: 'Selected endpoint is unstable. Switched to fallback endpoint.',
       endpoint: fallback.endpoint,
     );
-    log(
-      'RpcEndpointFailover: switched ${endpoint.hostPort} -> '
-      '${fallback.endpoint.hostPort} because height only increased '
-      'by $heightIncrease blocks in ${settings.slowHeightWindow.inSeconds}s '
-      'during $operation and fallback is at height ${fallback.health.height}',
-    );
     state = state.copyWith(
       current: fallback.endpoint,
-      lastFailure:
-          'Endpoint height increased by $heightIncrease blocks in '
-          '${settings.slowHeightWindow.inSeconds}s.',
+      lastFailure: failure,
       switchedAt: now,
       lastPrimaryProbeAt: failedPrimary ? now : state.lastPrimaryProbeAt,
       lastEvent: event,
@@ -614,7 +786,6 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
       lastObservedHeight: fallback.health.height,
       lastObservedAt: now,
     );
-    return fallback.health;
   }
 
   Future<_FallbackHealth?> _findFallbackAheadOf(
@@ -622,6 +793,7 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
     required List<RpcEndpointConfig> candidates,
     required BigInt currentHeight,
     required String operation,
+    bool stopAtFirstHealthy = false,
   }) async {
     final settings = ref.read(rpcEndpointFailoverSettingsProvider);
     final requiredHeight =
@@ -639,6 +811,7 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
           'enough for slow $operation; height=${health.height}, '
           'required>=$requiredHeight',
         );
+        if (stopAtFirstHealthy) return null;
       } catch (fallbackError) {
         log(
           'RpcEndpointFailover: fallback ${candidate.hostPort} failed health '
@@ -689,6 +862,15 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
         a.normalizedLightwalletdUrl == b.normalizedLightwalletdUrl;
   }
 
+  /// The last two labels of the endpoint host, standing in for its operator.
+  String _operatorDomain(RpcEndpointConfig endpoint) {
+    final host = endpoint.hostPort.split(':').first.toLowerCase();
+    final labels = host.split('.');
+    return labels.length <= 2
+        ? host
+        : labels.sublist(labels.length - 2).join('.');
+  }
+
   BigInt _maxHeight(BigInt? a, BigInt b) {
     if (a == null || b > a) return b;
     return a;
@@ -711,6 +893,20 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
       state = state.copyWith(primaryFailureCount: 0, clearLastFailure: true);
     }
   }
+}
+
+/// The endpoint row label: the server actually in use, which is a fallback
+/// after the selected one stalled or failed.
+String rpcEndpointInUseLabel(
+  RpcEndpointConfig selected,
+  RpcEndpointFailoverState failover,
+) {
+  if (!failover.isUsingFallback ||
+      failover.primary.normalizedLightwalletdUrl !=
+          selected.normalizedLightwalletdUrl) {
+    return selected.hostPort;
+  }
+  return '${failover.current.hostPort} (fallback)';
 }
 
 final rpcEndpointFailoverProvider =

@@ -22,6 +22,7 @@ import '../../../core/widgets/app_profile_picture.dart';
 import '../../../core/widgets/app_toast.dart';
 import '../../../providers/account_provider.dart';
 import '../../../providers/enhance_pir_provider.dart';
+import '../../../providers/rpc_endpoint_failover_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/theme_mode_provider.dart';
 import '../../../providers/zcash_explorer_provider.dart';
@@ -203,7 +204,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         accountState?.activeAccount?.isHardware ?? false;
     final themeMode = ref.watch(themeModeProvider);
     final endpoint = ref.watch(rpcEndpointProvider);
-    final endpointLabel = endpoint.hostPort;
+    final endpointLabel = rpcEndpointInUseLabel(
+      endpoint,
+      ref.watch(rpcEndpointFailoverProvider),
+    );
     final explorerLabel = explorerSettingsLabel(
       ref.watch(zcashExplorerProvider),
       networkName: endpoint.networkName,
