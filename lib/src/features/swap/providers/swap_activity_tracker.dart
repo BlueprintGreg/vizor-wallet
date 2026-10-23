@@ -187,12 +187,10 @@ class SwapActivityTracker {
   final Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   _onProviderSnapshot;
 
+  /// The wallet deletion drain, which a private swap's status refresh joins
+  /// from its request through its wallet write. Ordinary swaps never write the
+  /// wallet, so they stay outside it.
   final LedgerOperationLifecycle? _lifecycle;
-
-  // Share the wallet deletion drain with durable send operations. Acquire before
-  // the first await, including status requests whose results later write state.
-  Future<T> _run<T>(Future<T> Function() action) =>
-      _lifecycle?.run(action) ?? action();
 
   final SwapActivityStore _activityStore;
   final SwapProvider _swapProvider;
@@ -208,15 +206,14 @@ class SwapActivityTracker {
     return scopedAccountUuid;
   }
 
-  Future<List<SwapIntent>> loadIntents({required String? accountUuid}) =>
-      _run(() async {
-        final scopedAccountUuid = normalizeAccountUuid(accountUuid);
-        if (scopedAccountUuid == null) return const [];
-        final records = await _activityStore.loadRecords(
-          accountUuid: scopedAccountUuid,
-        );
-        return _intentsFromRecords(records);
-      });
+  Future<List<SwapIntent>> loadIntents({required String? accountUuid}) async {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    if (scopedAccountUuid == null) return const [];
+    final records = await _activityStore.loadRecords(
+      accountUuid: scopedAccountUuid,
+    );
+    return _intentsFromRecords(records);
+  }
 
   /// Hands a provider status, fetched at `checkedAt`, to the wallet when the
   /// swap uses a private address. Ordinary swaps never touch the wallet. A
@@ -242,7 +239,7 @@ class SwapActivityTracker {
   Future<void> saveIntents({
     required String? accountUuid,
     required List<SwapIntent> intents,
-  }) => _run(() async {
+  }) async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid == null) return;
     await _activityStore.saveRecords(
@@ -257,7 +254,7 @@ class SwapActivityTracker {
       ],
     );
     _onRecordsChanged?.call();
-  });
+  }
 
   Future<SwapActivityRefreshResult> refreshOpenIntents({
     required String accountUuid,
@@ -299,7 +296,7 @@ class SwapActivityTracker {
     required List<SwapIntent> currentIntents,
     required Iterable<String> intentIds,
     required bool includeTerminal,
-  }) => _run(() async {
+  }) async {
     final ids = intentIds.toSet();
     if (ids.isEmpty) {
       return SwapActivityRefreshResult(
@@ -322,12 +319,15 @@ class SwapActivityTracker {
       )) {
         continue;
       }
+      // Wallet deletion waits for a private swap's status refresh, and none
+      // starts while deletion runs.
+      final lifecycle = intent.privateAddress ? _lifecycle : null;
+      if (lifecycle?.isPaused ?? false) continue;
       final checkedAt = DateTime.now().toUtc();
       try {
-        final updated = await _refreshProviderBackedIntent(
-          intent,
-          checkedAt: checkedAt,
-        );
+        final refresh = () =>
+            _refreshProviderBackedIntent(intent, checkedAt: checkedAt);
+        final updated = await (lifecycle?.run(refresh) ?? refresh());
         updatedIntents = updatedIntents.replaceSwapIntent(intent.id, updated);
       } catch (e) {
         // The raw error is the only way to tell a 1Click outage from a local
@@ -364,7 +364,7 @@ class SwapActivityTracker {
       refreshError: refreshError,
       didRefresh: didRefresh,
     );
-  });
+  }
 
   Future<void> _saveRefreshedIntents({
     required String accountUuid,
