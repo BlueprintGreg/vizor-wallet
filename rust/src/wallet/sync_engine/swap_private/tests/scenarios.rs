@@ -40,7 +40,10 @@ const PAST_BACKOFF: i64 = 50_000;
 /// `VIZOR_SCENARIO_STRICT=1`. Behaviors the spec's October 23 decisions accept as
 /// intended (Q-1, Q-4, Q-5, Q-6, Q-8, Q-11) are neither notes nor violations. The fixed
 /// findings F1, F3, U1, Q-2 and Q-3 are checked as violations in every mode.
-const FINDINGS: &[&str] = &["refund-key-kept-by-orphaned-receipt"];
+const FINDINGS: &[&str] = &[
+    "refund-key-kept-by-orphaned-receipt",
+    "reorg-below-birthday",
+];
 
 /// How long a refund key with no local operation stays monitored past its funding, as the
 /// library's `MEMO_REFUND_WINDOW`: seven days of 75-second blocks.
@@ -449,8 +452,12 @@ struct Device {
     accts: Vec<Acct>,
     no_orchard: bool,
     /// Ordinary sync could not follow a reorg, so the device is left out of later steps
-    /// and checks. Since U1 was fixed, this also fails the run (see [`World::rewind_refused`]).
+    /// and checks. Since U1 was fixed, this also fails the run (see [`World::rewind_refused`]),
+    /// unless the reorg replaced the block below the birthday (finding U2).
     broken: bool,
+    /// The hash of the block below the birthday when the device was restored, whose tree
+    /// state the wallet starts from.
+    anchor: [u8; 32],
 }
 
 impl Device {
@@ -807,6 +814,7 @@ impl World {
             }],
             no_orchard: false,
             broken: false,
+            anchor: self.chain.hash(birthday - 1),
         });
         let dev = self.devices.len() - 1;
         apply(&self.devices[dev]);
@@ -982,6 +990,12 @@ impl World {
             Ok(rewound) => rewound,
             Err(e) => {
                 self.devices[dev].broken = true;
+                let birthday = self.devices[dev].birthday;
+                if self.chain.hash_at(birthday - 1) != Some(self.devices[dev].anchor) {
+                    // The wallet's starting tree state is on the old branch (finding U2).
+                    self.note("reorg-below-birthday");
+                    return format!("reorg below the birthday, device left out: {e}");
+                }
                 self.rewind_refused
                     .get_or_insert_with(|| format!("device {dev}: {e}"));
                 return format!("rewind refused, device left out: {e}");

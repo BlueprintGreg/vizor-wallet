@@ -465,6 +465,31 @@ fn a_recent_restore_follows_a_shallow_reorg_over_an_ironwood_output() {
     assert!(!world.devices[restored].broken, "{line}");
 }
 
+/// Finding U2, outside the one-time feature. A wallet restored a block below the tip
+/// starts from the tree state below its birthday. A reorg that replaces that block leaves
+/// the stored starting state on the old branch, so the wallet refuses the new branch's
+/// blocks even after rewinding as far as it can.
+#[test]
+#[ignore = "U2: a reorg below a recent birthday leaves the wallet unable to scan"]
+fn a_recent_restore_follows_a_reorg_below_its_birthday() {
+    if isolated("directed::a_recent_restore_follows_a_reorg_below_its_birthday") {
+        return;
+    }
+    let mut world = World::new();
+    world.mine(4);
+    let birthday = world.chain.tip();
+    let restored = world.add_device(birthday, false);
+    world.sync(restored, false);
+    // A two-block reorg whose new branch has an unrelated Ironwood output below the
+    // birthday, so the tree state there changes.
+    let stranger = world.key(SECOND, true, 7);
+    world.chain.rewind(birthday - 2);
+    world.chain.pay(&stranger, 100_000, false);
+    world.mine(3);
+    let line = world.sync(restored, false);
+    assert!(!world.devices[restored].broken, "{line}");
+}
+
 /// Fixed finding F1, second effect. The restored device of
 /// [`a_restore_between_funding_input_and_funding_recovers_the_refund`] must learn that the
 /// phone already funded refund key R0, so its own next ZEC deposit quote does not reserve

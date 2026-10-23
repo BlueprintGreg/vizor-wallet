@@ -957,9 +957,14 @@ impl Wallet {
 
     /// Ordinary sync: scans every new block, without the recovery worker, filters or PIR.
     pub(super) fn scan(&mut self, chain: &Chain) {
+        self.try_scan(chain).unwrap();
+    }
+
+    /// [`Self::scan`], returning the wallet's error when it refuses the blocks.
+    fn try_scan(&mut self, chain: &Chain) -> Result<(), String> {
         let tip = chain.tip();
         if tip <= self.scanned {
-            return;
+            return Ok(());
         }
         let mut db = self.db();
         db.update_chain_tip(tip.into()).unwrap();
@@ -971,14 +976,15 @@ impl Wallet {
             chain.state(self.scanned),
             (tip - self.scanned) as usize,
         )
-        .unwrap();
+        .map_err(|e| format!("scan from {}: {e:?}", self.scanned + 1))?;
         self.scanned = tip;
+        Ok(())
     }
 
     /// Ordinary sync that follows reorgs: rewinds below the highest scanned block still on
     /// `chain` through the app's reorg path, scans to the tip, and stamps new blocks with
     /// the current time so quote deadlines can pass. Returns the height it rewound to, or
-    /// the app's error when the wallet refuses the rewind.
+    /// the app's error when the wallet refuses the rewind or the new blocks.
     pub(super) fn sync(&mut self, chain: &Chain) -> Result<Option<u32>, String> {
         let tip = chain.tip();
         let mut db = self.db();
@@ -1010,7 +1016,7 @@ impl Wallet {
             rewound = Some(self.scanned);
         }
         drop(db);
-        self.scan(chain);
+        self.try_scan(chain)?;
         rusqlite::Connection::open(&self.path)
             .unwrap()
             .execute(
