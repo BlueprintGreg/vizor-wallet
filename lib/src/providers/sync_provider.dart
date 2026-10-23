@@ -1188,6 +1188,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       log('Swap recovery remains pending: $error');
     } finally {
       _swapRecovery = null;
+      // Any round can resume or finish a saved history check.
+      if (ref.mounted) ref.read(swapRecoveryRoundsProvider.notifier).ended();
     }
   }
 
@@ -4232,6 +4234,21 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 final syncProvider = AsyncNotifierProvider<SyncNotifier, SyncState>(
   () => SyncNotifier(),
 );
+
+/// Counts finished swap recovery rounds, so state the wallet keeps, such as a
+/// saved history check, can be read again after each one.
+final swapRecoveryRoundsProvider = NotifierProvider<SwapRecoveryRounds, int>(
+  SwapRecoveryRounds.new,
+);
+
+/// See [swapRecoveryRoundsProvider].
+class SwapRecoveryRounds extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// Records that a round finished.
+  void ended() => state++;
+}
 
 /// Whether the last swap recovery round found that the receiver service needs a
 /// newer app. The next round that succeeds clears it.
