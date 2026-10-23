@@ -3936,6 +3936,7 @@ async fn run_sync_impl(
     );
     let opens_direct = checking_cycle == 0
         && !main_scan_complete
+        && lwd::block_download_can_go_direct(lightwalletd_url)
         && fetches_blocks_directly(
             tor_route && crate::network_privacy::is_tor_desired(),
             enhancement.policy().is_private(),

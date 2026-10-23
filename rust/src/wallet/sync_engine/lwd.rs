@@ -276,11 +276,25 @@ pub(crate) async fn open_background_direct_lwd_transport(
 /// other request of the session stays on the Tor route, which
 /// the session opens first, so a Tor route that is still starting or broken
 /// still stops the sync. Like the background opener it skips the direct-route
-/// lease, which exists to abort clearnet traffic once Tor is desired.
+/// lease, which exists to abort clearnet traffic once Tor is desired. It never
+/// dials an onion service ([`block_download_can_go_direct`]).
 pub(crate) async fn open_block_download_lwd_transport(
     lightwalletd_url: &str,
 ) -> Result<Channel, SyncError> {
+    if !block_download_can_go_direct(lightwalletd_url) {
+        return Err(SyncError::net(
+            "an onion lightwalletd is reachable only over Tor",
+        ));
+    }
     open_unleased_direct_transport(lightwalletd_url).await
+}
+
+/// Whether a sync session may download its blocks from `lightwalletd_url`
+/// directly. An onion service is reachable only over Tor, and dialing one
+/// directly would send its name to the system resolver.
+pub(crate) fn block_download_can_go_direct(lightwalletd_url: &str) -> bool {
+    Endpoint::from_shared(lightwalletd_url.to_string())
+        .is_ok_and(|endpoint| !endpoint_allows_onion_services(&endpoint))
 }
 
 async fn open_unleased_direct_transport(lightwalletd_url: &str) -> Result<Channel, SyncError> {
@@ -1181,6 +1195,29 @@ mod tests {
             let endpoint = Endpoint::from_shared(url.to_string()).expect("valid endpoint");
             assert_eq!(endpoint_allows_onion_services(&endpoint), expected, "{url}");
         }
+    }
+
+    #[test]
+    fn block_downloads_never_go_direct_to_an_onion_service() {
+        for (url, expected) in [
+            ("https://zec.rocks:443", true),
+            ("https://lightwalletd.example.onion:443", false),
+            ("https://LIGHTWALLETD.EXAMPLE.ONION:443", false),
+        ] {
+            assert_eq!(block_download_can_go_direct(url), expected, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_block_download_opener_refuses_an_onion_service_before_dialing() {
+        let error = open_block_download_lwd_transport("https://lightwalletd.example.onion:443")
+            .await
+            .expect_err("an onion service is reachable only over Tor");
+        let message = error.to_string();
+        assert!(
+            !message.contains("gRPC connect failed"),
+            "the opener dialed the onion service: {message}"
+        );
     }
 
     #[tokio::test]
