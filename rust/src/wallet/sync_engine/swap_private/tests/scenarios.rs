@@ -2818,7 +2818,8 @@ fn run_many(default_iters: u64, default_steps: u64) {
             .copied()
             .filter(|k| FINDINGS.contains(k))
             .collect();
-        if strict && !found.is_empty() {
+        // A violation in the same run is reported below, with its reproducer.
+        if strict && !found.is_empty() && outcome.failure.is_none() {
             println!(
                 "scenario seed {seed}: FINDING {found:?}\n{}",
                 outcome.trace.join("\n")
@@ -2837,10 +2838,15 @@ fn run_many(default_iters: u64, default_steps: u64) {
             continue;
         };
         println!(
-            "scenario seed {seed}: VIOLATION {} at step {step} in {:.1}s: {}\n{}",
+            "scenario seed {seed}: VIOLATION {} at step {step} in {:.1}s: {}{}\n{}",
             v.kind,
             started.elapsed().as_secs_f64(),
             v.detail,
+            if found.is_empty() {
+                String::new()
+            } else {
+                format!(" (also FINDING {found:?})")
+            },
             outcome.trace.join("\n")
         );
         let mut repro = format!(
