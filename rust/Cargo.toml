@@ -7,9 +7,9 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-zakura-pir-client = { version = "=0.0.1-rc2", default-features = false, features = ["enhance", "status", "transparent", "wallet", "sqlite", "lightwalletd", "receiver-wallet"] }
-zakura-one-time-ivk = "=0.0.1-rc3"
-zakura-near-intents = "=0.0.1-rc3"
+zakura-pir-client = { version = "=0.0.1-rc3", default-features = false, features = ["enhance", "status", "transparent", "wallet", "sqlite", "lightwalletd", "receiver-wallet"] }
+zakura-one-time-ivk = "=0.0.1-rc4"
+zakura-near-intents = "=0.0.1-rc4"
 zcash_note_encryption = { package = "zakura-note-encryption", version = "=4.0.0" }
 flutter_rust_bridge = "=2.11.1"
 
@@ -116,7 +116,7 @@ version = "=4.0.0"
 
 [dependencies.zcash_client_backend]
 package = "zakura-client-backend"
-version = "=0.1.0-rc9.3"
+version = "=0.1.0-rc9.4"
 features = [
     "orchard",
     "transparent-inputs",
@@ -129,7 +129,7 @@ features = [
 
 [dependencies.zcash_client_sqlite]
 package = "zakura-client-sqlite"
-version = "=0.1.0-rc9.3"
+version = "=0.1.0-rc9.4"
 features = ["orchard", "transparent-inputs", "unstable", "serde"]
 
 [dependencies.zcash_voting]
@@ -202,12 +202,12 @@ regex = "1"
 # Builds wallets through real private recovery for the history mapping tests.
 [dev-dependencies.zcash_client_sqlite]
 package = "zakura-client-sqlite"
-version = "=0.1.0-rc9.3"
+version = "=0.1.0-rc9.4"
 features = ["test-dependencies"]
 
 [dev-dependencies.zcash_client_backend]
 package = "zakura-client-backend"
-version = "=0.1.0-rc9.3"
+version = "=0.1.0-rc9.4"
 features = ["test-dependencies"]
 
 [dev-dependencies.zcash_voting]
@@ -218,18 +218,18 @@ features = ["test-fixtures"]
 # display publication the loop-4 tests serve, and a real shard service in
 # process. Keep the version aligned with the runtime dependency above.
 [dev-dependencies.zakura-pir-client]
-version = "=0.0.1-rc2"
+version = "=0.0.1-rc3"
 default-features = false
 features = ["testing"]
 
 # Real receiver inventories, witness tables and encrypted PIR evaluation for the swap
 # recovery worker tests.
 [dev-dependencies.zakura-pir-query-server]
-version = "=0.0.1-rc2"
+version = "=0.0.1-rc3"
 features = ["receiver"]
 
 [dev-dependencies.zakura-pir-publisher]
-version = "=0.0.1-rc2"
+version = "=0.0.1-rc3"
 features = ["receiver-crypto"]
 
 [dev-dependencies.ipir-sp]
@@ -269,23 +269,3 @@ opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 3
-
-# The wallet library's one-time IVK recovery is on its main branch but not published.
-# Every entry names the same wallet-libraries commit, so repinning is one
-# find-and-replace of the rev.
-# `zakura-wallet-lib` stays on its registry release because `zcash_voting` pins it
-# exactly. Its source matches this commit and builds against these patched crates.
-[patch.crates-io]
-zakura-client-backend = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-client-sqlite = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pczt = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-filters = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-near-intents = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-one-time-ivk = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pir-client = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pir-protocol = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pir-publisher = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pir-query-server = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-zakura-pir-server-core = { git = "https://github.com/zakura-core/wallet-libraries.git", rev = "62f477a6036ba05af281f300e52d1bca1ac50762" }
-# The library above takes `ipir-sp` from git. Keep the app's test evaluator on that source.
-ipir-sp = { git = "https://github.com/valargroup/ipir-sp", rev = "5ea080a3281a01c5459f585e0a1bbbde50ec2bd2" }
