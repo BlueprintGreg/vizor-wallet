@@ -1059,6 +1059,8 @@ class SwapNotifier extends Notifier<SwapState> {
             .read(swapDepositSenderProvider)
             .estimateZecDepositFee(accountUuid: accountUuid, quote: quote);
       } catch (e) {
+        // The screen now belongs to another account.
+        if (!_isAccountActive(accountUuid)) return null;
         log(
           'Swap: live ZEC deposit preflight failed '
           'quote=${_shortSwapValue(quote.providerQuoteId)} error=$e',
@@ -1072,15 +1074,26 @@ class SwapNotifier extends Notifier<SwapState> {
         );
         return null;
       }
+      // A switch to another account while the deposit was checked leaves
+      // nothing started, so the swap is not started for an account the user
+      // left.
+      if (!_isAccountActive(accountUuid)) {
+        log('Swap: start dropped after an account switch');
+        return null;
+      }
     }
 
     late final SwapIntentSnapshot snapshot;
     try {
-      await ref
-          .read(swapZecStagingAddressServiceProvider)
-          .startQuote(accountUuid, quote);
+      // Only an incoming private quote holds a wallet reservation to start.
+      if (quote.receiveRequestId != null) {
+        await ref
+            .read(swapZecStagingAddressServiceProvider)
+            .startQuote(accountUuid, quote);
+      }
       snapshot = await ref.read(swapIntentProvider).startSwap(quote);
     } catch (e) {
+      if (!_isAccountActive(accountUuid)) return null;
       log(
         'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
         'error=$e',
@@ -1121,9 +1134,20 @@ class SwapNotifier extends Notifier<SwapState> {
           'Sign and send the ZEC deposit with $hardwareSignerLabel.';
       intent = intent.copyWith(nextAction: nextAction);
     }
-    _quoteGeneration++;
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
+    if (!_isAccountActive(accountUuid)) {
+      // The user switched accounts while the swap started. It exists, so it is
+      // saved and tracked for the account that started it, and the screen now
+      // showing another account is left alone.
+      await _saveStartedIntentForAccount(accountUuid, intent);
+      log(
+        'Swap: start saved for an inactive account '
+        'intent=${_shortSwapValue(intent.id)}',
+      );
+      return null;
+    }
+    _quoteGeneration++;
     if (activeAccountIsHardware && quote.direction.sendsZec) {
       if (hardwareSignerKind == HardwareSignerKind.ledger) {
         // The provider intent already exists at this point. Persist it before
@@ -2189,6 +2213,24 @@ class SwapNotifier extends Notifier<SwapState> {
     await ref
         .read(swapActivityTrackerProvider)
         .saveIntents(accountUuid: accountUuid, intents: intentsToPersist);
+  }
+
+  /// Adds `intent` to `accountUuid`'s saved swaps, keeping the others, for a
+  /// swap that started after the user switched to another account.
+  Future<void> _saveStartedIntentForAccount(
+    String accountUuid,
+    SwapIntent intent,
+  ) async {
+    final tracker = ref.read(swapActivityTrackerProvider);
+    final saved = await tracker.loadIntents(accountUuid: accountUuid);
+    await tracker.saveIntents(
+      accountUuid: accountUuid,
+      intents: [
+        intent,
+        for (final stored in saved)
+          if (stored.id != intent.id) stored,
+      ],
+    );
   }
 
   bool _isAccountActive(String? accountUuid) {

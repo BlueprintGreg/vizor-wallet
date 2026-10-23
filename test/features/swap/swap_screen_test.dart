@@ -47,6 +47,8 @@ import 'package:zcash_wallet/src/features/swap/providers/swap_activity_tracker.d
 import 'package:zcash_wallet/src/features/swap/providers/pay_selected_asset_store.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_composer_preferences_store.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_receive_reservation_service.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
+    show PlatformInt64Util;
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart'
     show ReceiveDeposit, ReceiveError, ReceiveErrorKind;
 import 'package:zcash_wallet/src/features/swap/providers/swap_zec_staging_address_service.dart';
@@ -8788,6 +8790,58 @@ void main() {
     expect(reservation.calls, 1, reason: 'no retry after the failed refresh');
   });
 
+  testWidgets('a private start that finishes after an account switch is '
+      'saved for its account', (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final store = _HeldStartReservationStore();
+    final sessionStore = _FakeSwapPersistenceStore();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: reservations.reserve,
+      bootstrap: _twoAccountBootstrap,
+      accountNotifier: () =>
+          _FakeSwapAccountNotifier(_twoAccountBootstrap.initialAccountState),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(
+      container.read(swapStateProvider).reviewQuote?.receiveRequestId,
+      isNotNull,
+    );
+
+    // The wallet holds the start while the user switches to account-2.
+    final start = notifier.startIntent();
+    await tester.pump();
+    await container.read(accountProvider.notifier).switchAccount('account-2');
+    await tester.pumpAndSettle();
+    store.release();
+    expect(await start, isNull, reason: 'no navigation for account-2');
+    await tester.pumpAndSettle();
+
+    expect(
+      container
+          .read(swapStateProvider)
+          .intents
+          .where((intent) => intent.accountUuid == 'account-1'),
+      isEmpty,
+      reason: "account-2's screen is left alone",
+    );
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(
+      saved,
+      hasLength(1),
+      reason: 'the started swap is saved for account-1',
+    );
+    expect(saved.single.privateAddress, isTrue);
+  });
+
   testWidgets('a start refused while its address is rechecked asks to wait', (
     tester,
   ) async {
@@ -11051,6 +11105,8 @@ Future<ProviderContainer> _pumpSwapScreen(
   NearSwapPrivacyNotifier Function()? nearSwapPrivacy,
   Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   onProviderSnapshot,
+  AppBootstrapState? bootstrap,
+  AccountNotifier Function()? accountNotifier,
 }) async {
   await _setDesktopViewport(tester);
   await tester.pumpWidget(
@@ -11059,6 +11115,8 @@ Future<ProviderContainer> _pumpSwapScreen(
         initialLocation: '/swap',
         routes: [_swapRoute(), _swapActivityRoute()],
       ),
+      bootstrap: bootstrap,
+      accountNotifier: accountNotifier,
       seedSwapActivityFixtures: false,
       swapProvider: swapProvider,
       sessionStore: sessionStore,
