@@ -731,22 +731,30 @@ void main() {
     tester,
   ) async {
     var paused = false;
+    // The wallet saves the job, then the round fails.
+    var saved = false;
+    SwapRecoveryStatus wallet() => SwapRecoveryStatus(
+      checkingHistory: saved && !paused,
+      manualCheckActive: saved && !paused,
+      upgradeRequired: false,
+    );
     await tester.pumpWidget(
       _settingsHarness(
         nearSwapPrivacyEnabled: true,
         extraOverrides: [
+          swapRecoveryStatusReaderProvider.overrideWithValue(
+            () async => wallet(),
+          ),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: () async =>
-                  throw StateError('lookup failed after job was saved'),
+              begin: () async {
+                saved = true;
+                throw StateError('lookup failed after job was saved');
+              },
               cancel: () async {
                 paused = true;
               },
-              status: () async => const SwapRecoveryStatus(
-                checkingHistory: true,
-                manualCheckActive: false,
-                upgradeRequired: false,
-              ),
+              status: () async => wallet(),
             ),
           ),
         ],
@@ -766,6 +774,8 @@ void main() {
       find.text(swapHistoryCheckStatus(SwapHistoryCheck.paused)),
       findsOneWidget,
     );
+    // Let the stopped watch's last poll interval run out.
+    await tester.pump(const Duration(seconds: 10));
   });
 
   testWidgets('Check swap history checks everything, pauses and resumes', (
