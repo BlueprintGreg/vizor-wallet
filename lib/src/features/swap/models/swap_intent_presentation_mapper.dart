@@ -49,6 +49,7 @@ SwapIntent _swapIntentFromRecord(SwapIntentRecord record, {DateTime? now}) {
     accountUuid: record.accountUuid,
     payMode: record.payMode,
     privateAddress: record.privateAddress,
+    walletReleased: record.walletReleased,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     completedAt:

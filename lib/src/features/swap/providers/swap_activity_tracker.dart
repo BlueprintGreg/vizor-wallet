@@ -20,8 +20,8 @@ final swapActivityTrackerProvider = Provider<SwapActivityTracker>((ref) {
     onProviderSnapshot: (intent, snapshot, checkedAt) async {
       final account = intent.accountUuid;
       final direction = intent.direction;
-      if (account == null || direction == null) return;
-      await ref
+      if (account == null || direction == null) return null;
+      return ref
           .read(swapReceiveReservationServiceProvider)
           .observeStatus(
             account,
@@ -173,7 +173,7 @@ class SwapActivityTracker {
     bool Function()? isTorEnabled,
     void Function()? onRecordsChanged,
     LedgerOperationLifecycle? lifecycle,
-    Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
+    Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
     onProviderSnapshot,
   }) : _activityStore = activityStore,
        _swapProvider = swapProvider,
@@ -182,7 +182,9 @@ class SwapActivityTracker {
        _lifecycle = lifecycle,
        _onProviderSnapshot = onProviderSnapshot;
 
-  final Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
+  /// Records a status in the wallet and returns whether the wallet still tracked
+  /// the swap's private address, or null when that is unknown.
+  final Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   _onProviderSnapshot;
 
   final LedgerOperationLifecycle? _lifecycle;
@@ -222,18 +224,20 @@ class SwapActivityTracker {
   /// swap uses a private address. Ordinary swaps never touch the wallet. A
   /// failure is logged, and the next poll records the status again. A terminal
   /// status ends polling, so its failure fails the refresh instead, which keeps
-  /// the swap open until the wallet has it.
-  Future<void> recordProviderSnapshot(
+  /// the swap open until the wallet has it. Returns whether the wallet still
+  /// tracked the swap's private address, or null when that is unknown.
+  Future<bool?> recordProviderSnapshot(
     SwapIntent intent,
     SwapIntentSnapshot snapshot,
     DateTime checkedAt,
   ) async {
-    if (!intent.privateAddress) return;
+    if (!intent.privateAddress) return null;
     try {
-      await _onProviderSnapshot?.call(intent, snapshot, checkedAt);
+      return await _onProviderSnapshot?.call(intent, snapshot, checkedAt);
     } catch (error) {
       if (snapshot.status.isTerminal) rethrow;
       log('Swap status not recorded in the wallet: $error');
+      return null;
     }
   }
 
@@ -406,7 +410,7 @@ class SwapActivityTracker {
       _providerDepositAddress(intent),
       depositMemo: intent.depositMemo,
     );
-    await recordProviderSnapshot(
+    final tracked = await recordProviderSnapshot(
       intent,
       snapshot,
       checkedAt ?? DateTime.now().toUtc(),
@@ -416,7 +420,10 @@ class SwapActivityTracker {
       snapshot,
       updatedAt: checkedAt,
       lastStatusCheckedAt: checkedAt,
-    ).copyWith(clearStatusError: true);
+    ).copyWith(
+      clearStatusError: true,
+      walletReleased: intent.walletReleased || tracked == false,
+    );
   }
 
   static String _providerDepositAddress(SwapIntent intent) {

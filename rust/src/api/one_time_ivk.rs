@@ -270,6 +270,10 @@ pub fn record_swap_refund_quote(
 /// provider saw a deposit, which the status alone implies only from `KNOWN_DEPOSIT_TX`
 /// on (see `near_observation`). Swaps without a private address are ignored. Do not call
 /// it for a failed status request.
+///
+/// Returns whether the wallet still tracked an operation for this address when the
+/// status arrived. `false` means its incoming reservation, if it had one, was already
+/// released, so later statuses can no longer free a receive slot.
 pub fn observe_swap_status(
     db_path: String,
     network_name: String,
@@ -280,10 +284,10 @@ pub fn observe_swap_status(
     status: SwapProviderStatus,
     funded: bool,
     checked_at_seconds: i64,
-) -> Result<(), ReceiveError> {
+) -> Result<bool, ReceiveError> {
     let network = parse_network_and_migrate(&db_path, &network_name)?;
     if !one_time_ivk::supported(network) {
-        return Ok(());
+        return Ok(false);
     }
     let purpose = if incoming {
         Purpose::Receive
@@ -312,14 +316,13 @@ pub fn observe_swap_status(
         ..observation
     };
     with_db(&db_path, network, &account_uuid, |db, a| {
-        db.record_operation_status(
+        Ok(db.record_operation_status(
             a,
             &deposit_address,
             deposit_memo.as_deref(),
             observation,
             checked_at_seconds,
-        )?;
-        Ok(())
+        )?)
     })
 }
 

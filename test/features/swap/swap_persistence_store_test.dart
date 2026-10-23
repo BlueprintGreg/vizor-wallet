@@ -74,6 +74,7 @@ void main() {
       accountUuid: 'account-1',
       payMode: true,
       privateAddress: true,
+      walletReleased: true,
       broadcastStatus: SwapDepositBroadcastStatus.broadcastedStorageFailed,
     );
 
@@ -132,6 +133,7 @@ void main() {
     expect(restored.single.depositDeadline, DateTime.utc(2026, 5, 7, 12));
     expect(restored.single.payMode, isTrue);
     expect(restored.single.privateAddress, isTrue);
+    expect(restored.single.walletReleased, isTrue);
     expect(restored.single.status, SwapIntentStatus.processing);
     expect(
       restored.single.broadcastStatus,
@@ -321,6 +323,7 @@ void main() {
     expect(restored.single.direction, SwapDirection.zecToExternal);
     expect(restored.single.payMode, isFalse);
     expect(restored.single.privateAddress, isFalse);
+    expect(restored.single.walletReleased, isFalse);
     expect(restored.single.userExternalContactId, isNull);
     expect(
       await secureStore.readString(swapActivityStorageKeyForTest('account-1')),

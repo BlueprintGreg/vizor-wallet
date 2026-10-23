@@ -509,7 +509,10 @@ void main() {
     final tracker = SwapActivityTracker(
       activityStore: store,
       swapProvider: provider,
-      onProviderSnapshot: (intent, _, _) async => recorded.add(intent.id),
+      onProviderSnapshot: (intent, _, _) async {
+        recorded.add(intent.id);
+        return true;
+      },
     );
     final intents = [
       _intent(id: 'ordinary', depositAddress: 'ordinary'),
@@ -525,6 +528,29 @@ void main() {
     );
     expect(provider.statusRequests, unorderedEquals(['ordinary', 'private']));
     expect(recorded, ['private']);
+  });
+
+  test('a swap the wallet no longer tracks is marked released', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final tracked = {'held': true, 'released': false};
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      onProviderSnapshot: (intent, _, _) async => tracked[intent.id],
+    );
+    final intents = [
+      for (final id in tracked.keys)
+        _intent(id: id, depositAddress: id).copyWith(privateAddress: true),
+    ];
+    await tracker.saveIntents(accountUuid: 'account-1', intents: intents);
+    await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: intents,
+    );
+    final stored = await tracker.loadIntents(accountUuid: 'account-1');
+    expect(stored.swapIntentById('held')?.walletReleased, isFalse);
+    expect(stored.swapIntentById('released')?.walletReleased, isTrue);
   });
 
   test('a wallet failure does not fail the status refresh', () async {
@@ -572,6 +598,7 @@ void main() {
       onProviderSnapshot: (_, snapshot, _) async {
         if (failures-- > 0) throw StateError('database is locked');
         recorded.add(snapshot.status);
+        return true;
       },
     );
     final intent = _intent(

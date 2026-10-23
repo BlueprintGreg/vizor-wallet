@@ -1315,7 +1315,8 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
     api::get_swap_recovery_status(path.clone(), main()).unwrap();
     api::reconcile_swap_recovery(path.clone(), main()).unwrap();
     api::cancel_swap_history(path.clone(), main()).unwrap();
-    api::observe_swap_status(
+    // The wallet tracks no operation for an ordinary deposit address.
+    let tracked = api::observe_swap_status(
         path.clone(),
         main(),
         account.uuid.clone(),
@@ -1334,6 +1335,7 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
         now(),
     )
     .unwrap();
+    assert!(!tracked);
     assert_eq!(version(), before, "an entry point committed a write");
     let rows: i64 = watcher
         .query_row("SELECT COUNT(*) FROM ironwood_one_time_recovery", [], |r| {

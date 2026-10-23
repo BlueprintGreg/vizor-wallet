@@ -8820,6 +8820,64 @@ void main() {
     expect(reservations, 2);
   });
 
+  testWidgets('expired private quotes holding every receive slot are freed', (
+    tester,
+  ) async {
+    await _setDesktopViewport(tester);
+    final wallet = _ReceiveSlots({'stale-1', 'stale-2', 'stale-3', 'stale-4'});
+    final swapProvider = _FailingStatusSwapProvider({'stale-1'});
+    final deadline = DateTime.now().toUtc().subtract(const Duration(days: 2));
+    await tester.pumpWidget(
+      _routerHarness(
+        GoRouter(
+          initialLocation: '/swap',
+          routes: [_swapRoute(), _swapActivityRoute()],
+        ),
+        seedSwapActivityFixtures: false,
+        sessionStore: _FakeSwapPersistenceStore(
+          initialIntents: [
+            for (final id in wallet.held.toList())
+              _persistedExternalToZecIntent(
+                id: id,
+                stagingAddress: 'u1$id',
+              ).copyWith(depositDeadline: deadline, privateAddress: true),
+          ],
+        ),
+        swapProvider: swapProvider,
+        reservationStore: _FakeReceiveReservationStore(),
+        reserveSwapAddress: wallet.reserve,
+        onProviderSnapshot: wallet.observe,
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(SwapScreen)),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    expect(
+      container.read(swapStateProvider).intents.map((i) => i.status).toSet(),
+      {SwapIntentStatus.expired},
+    );
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    // The provider failed for one stale quote, and the other three were still
+    // refreshed and freed, so the new quote reserved an address.
+    final state = container.read(swapStateProvider);
+    expect(state.quoteError, isNull);
+    expect(state.reviewAddressPlan?.oneClickRecipient, 'u1incoming');
+    expect(swapProvider.statusRequests.map((r) => r.depositAddress).toSet(), {
+      'stale-1',
+      'stale-2',
+      'stale-3',
+      'stale-4',
+    });
+    expect(wallet.held, {'stale-1', 'incoming'});
+  });
+
   for (final kind in [
     ReceiveErrorKind.receiveHistory,
     ReceiveErrorKind.limit,
@@ -10034,6 +10092,7 @@ void main() {
           onProviderSnapshot: (_, snapshot, _) async {
             if (failures-- > 0) throw StateError('database is locked');
             recorded.add(snapshot.status);
+            return true;
           },
         ),
       );
@@ -11234,7 +11293,7 @@ Widget _routerHarness(
   Future<List<int>> Function(List<int> pcztBytes)? ledgerSigner,
   LedgerOperationCanceller? ledgerCanceller,
   LedgerSignedOperationService? ledgerOperationService,
-  Future<void> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
+  Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   onProviderSnapshot,
 }) {
   final fixtureIntents = seedSwapActivityFixtures

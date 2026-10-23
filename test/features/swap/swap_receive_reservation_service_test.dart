@@ -288,7 +288,7 @@ class _Store implements ReceiveReservationStore {
   }
 
   @override
-  Future<void> observe({
+  Future<bool> observe({
     required bool incoming,
     required String depositAddress,
     required String? memo,
@@ -298,5 +298,6 @@ class _Store implements ReceiveReservationStore {
     events.add(
       'observe:${incoming ? 'incoming' : 'refund'}:$depositAddress:$memo',
     );
+    return true;
   }
 }

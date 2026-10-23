@@ -1121,7 +1121,7 @@ abstract class RustLibApi extends BaseApi {
 
   List<String> crateApiWalletMnemonicWordList();
 
-  Future<void> crateApiOneTimeIvkObserveSwapStatus({
+  Future<bool> crateApiOneTimeIvkObserveSwapStatus({
     required String dbPath,
     required String networkName,
     required String accountUuid,
@@ -8610,7 +8610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "mnemonic_word_list", argNames: []);
 
   @override
-  Future<void> crateApiOneTimeIvkObserveSwapStatus({
+  Future<bool> crateApiOneTimeIvkObserveSwapStatus({
     required String dbPath,
     required String networkName,
     required String accountUuid,
@@ -8642,7 +8642,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_bool,
           decodeErrorData: sse_decode_receive_error,
         ),
         constMeta: kCrateApiOneTimeIvkObserveSwapStatusConstMeta,

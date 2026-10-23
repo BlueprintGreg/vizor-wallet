@@ -81,8 +81,9 @@ abstract interface class ReceiveReservationStore {
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote);
 
   /// Records a provider status, fetched at `checkedAt`, on the swap operations with
-  /// this deposit address and memo.
-  Future<void> observe({
+  /// this deposit address and memo. Returns whether the wallet still tracked one
+  /// (see `observeSwapStatus`).
+  Future<bool> observe({
     required bool incoming,
     required String depositAddress,
     required String? memo,
@@ -163,7 +164,7 @@ class RustReceiveReservationStore implements ReceiveReservationStore {
         deadlineSeconds: unixSeconds(requireDepositDeadline(quote)),
       );
   @override
-  Future<void> observe({
+  Future<bool> observe({
     required bool incoming,
     required String depositAddress,
     required String? memo,
@@ -283,7 +284,9 @@ class SwapReceiveReservationService {
   /// Shares a successful activity poll, fetched at `checkedAt`, with the wallet,
   /// which records it on the swap's private address, if it has one, and reclaims
   /// what that makes reclaimable. It makes no provider requests of its own.
-  Future<void> observeStatus(
+  /// Returns whether the wallet still tracked the address, or null for an account
+  /// without private addresses.
+  Future<bool?> observeStatus(
     String account, {
     required SwapDirection direction,
     required String depositAddress,
@@ -291,8 +294,8 @@ class SwapReceiveReservationService {
     required SwapIntentSnapshot snapshot,
     required DateTime checkedAt,
   }) async {
-    if (!supportsAccount(account)) return;
-    await _run(
+    if (!supportsAccount(account)) return null;
+    return _run(
       () async => (await store(account)).observe(
         incoming: !direction.sendsZec,
         depositAddress: depositAddress,

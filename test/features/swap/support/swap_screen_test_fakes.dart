@@ -311,6 +311,57 @@ class _TerminalDepositSwapProvider extends _FakeSwapProvider {
   )).withStatus(SwapIntentStatus.refunded);
 }
 
+/// Fails the status request for each deposit address in [failing].
+class _FailingStatusSwapProvider extends _SendHookSwapProvider {
+  _FailingStatusSwapProvider(this.failing);
+
+  final Set<String> failing;
+
+  @override
+  Future<SwapIntentSnapshot> getStatus(
+    String intentId, {
+    String? depositMemo,
+  }) async {
+    final status = await super.getStatus(intentId, depositMemo: depositMemo);
+    if (failing.contains(intentId)) throw Exception('status unavailable');
+    return status;
+  }
+}
+
+/// The wallet's four incoming slots, held by deposit address. A recorded status
+/// frees its slot, as a conclusive one does for an expired quote, and a status
+/// for a freed address reports that the wallet no longer tracks it.
+class _ReceiveSlots {
+  _ReceiveSlots(this.held);
+
+  final Set<String> held;
+
+  /// The reservation hook for the swap harness, refusing at the limit.
+  Future<SwapZecStagingAddress?> reserve({
+    required String accountUuid,
+    required SwapDirection direction,
+  }) async {
+    if (held.length >= 4) {
+      throw const ReceiveError(
+        message: 'Every swap address is in use.',
+        kind: ReceiveErrorKind.limit,
+      );
+    }
+    held.add('incoming');
+    return SwapZecStagingAddress(
+      address: 'u1incoming',
+      reservationIndex: BigInt.from(held.length),
+    );
+  }
+
+  /// The wallet status hook for the swap harness.
+  Future<bool?> observe(
+    SwapIntent intent,
+    SwapIntentSnapshot snapshot,
+    DateTime checkedAt,
+  ) async => held.remove(intent.depositAddress ?? intent.id);
+}
+
 class _DeferredSupportedAssetsSwapProvider extends _FakeSwapProvider {
   final _supportedAssetsCompleter = Completer<List<SwapAsset>>();
 
