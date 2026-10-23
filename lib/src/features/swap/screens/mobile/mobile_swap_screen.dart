@@ -332,9 +332,9 @@ class _MobileSwapScreenState extends ConsumerState<MobileSwapScreen> {
     final migrationSpendable = ref.watch(
       ironwoodMigrationAwareDisplaySpendableProvider(activeAccountUuid),
     );
-    final zecAvailableText = ZecAmount.fromZatoshi(
-      migrationSpendable,
-    ).pretty(denomStyle: ZecDenomStyle.upper).toString();
+    final zecAvailableText = ZecAmount.fromZatoshi(migrationSpendable)
+        .pretty(denomStyle: ZecDenomStyle.upper)
+        .toString();
 
     void openReview() {
       final generation = _sidebarExitGeneration;
