@@ -1092,10 +1092,9 @@ fn swap_funding_shortfall_asks_for_ironwood_funds() {
     let (account_uuid, _) =
         crate::wallet::keys::init_db_and_create_account(db_path, network, &seed, Some(100), "swap")
             .unwrap();
-    let account_id = parse_account_uuid(&account_uuid).unwrap();
 
-    // A wallet scanned to its tip, as refund key issuance requires, with trees
-    // checkpointed deep enough for the proposal's anchor. It has no notes.
+    // A wallet scanned to its tip, with trees checkpointed deep enough for the
+    // proposal's anchor. It has no notes.
     let tip = BlockHeight::from_u32(110);
     let anchor = BlockHeight::from_u32(105);
     let mut db = open_wallet_db(db_path, network).unwrap();
@@ -1127,18 +1126,9 @@ fn swap_funding_shortfall_asks_for_ironwood_funds() {
              INSERT INTO scan_queue(block_range_start,block_range_end,priority) VALUES(100,111,10);",
         )
         .unwrap();
-    db.set_one_time_recovery_enabled(account_id, true).unwrap();
-    let refund_index = db
-        .reserve_refund_key(account_id, tip)
-        .unwrap()
-        .unwrap()
-        .key_id()
-        .index();
     let deposit = Address::Transparent(taddr(7))
         .to_zcash_address(&network)
         .to_string();
-    db.record_refund_operation(account_id, refund_index, &deposit, 1_000_600, 1_000_000)
-        .unwrap();
     drop(db);
 
     let error = estimate_fee_with_swap_refund(db_path, network, &account_uuid, &deposit, 100_000)
