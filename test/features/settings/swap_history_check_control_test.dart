@@ -101,7 +101,7 @@ void main() {
     );
     await tester.pump();
     expect(
-      find.text('Waiting for wallet sync. Try again in a minute.'),
+      find.text('Waiting for wallet sync. Try again in a few minutes.'),
       findsOneWidget,
     );
     expect(find.textContaining('interrupted'), findsNothing);
