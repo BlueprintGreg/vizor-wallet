@@ -53,12 +53,6 @@ impl From<String> for ReceiveError {
         }
     }
 }
-impl From<&str> for ReceiveError {
-    /// A failure the app only shows.
-    fn from(message: &str) -> Self {
-        message.to_owned().into()
-    }
-}
 impl From<RecoveryError> for ReceiveError {
     /// Keeps an upgrade outcome distinct so the app can ask for an update.
     fn from(error: RecoveryError) -> Self {
