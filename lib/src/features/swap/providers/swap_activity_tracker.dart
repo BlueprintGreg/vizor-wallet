@@ -325,7 +325,8 @@ class SwapActivityTracker {
       if (lifecycle?.isPaused ?? false) continue;
       final checkedAt = DateTime.now().toUtc();
       try {
-        final refresh = () =>
+        /// Fetches and records this intent's provider status.
+        Future<SwapIntent> refresh() =>
             _refreshProviderBackedIntent(intent, checkedAt: checkedAt);
         final updated = await (lifecycle?.run(refresh) ?? refresh());
         updatedIntents = updatedIntents.replaceSwapIntent(intent.id, updated);
