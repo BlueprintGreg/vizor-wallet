@@ -85,6 +85,7 @@ AppBootstrapState _bootstrap({
   AccountState accountState = _accountState,
   String network = 'main',
   bool enhancePirEnabled = false,
+  bool nearSwapPrivacyEnabled = false,
 }) => AppBootstrapState(
   initialLocation: '/settings',
   initialAccountState: accountState,
@@ -97,6 +98,7 @@ AppBootstrapState _bootstrap({
   isUnlocked: true,
   passwordRotationRecoveryFailed: false,
   enhancePirEnabled: enhancePirEnabled,
+  nearSwapPrivacyEnabled: nearSwapPrivacyEnabled,
 );
 
 /// Skips the secure-storage write so theme selection works without a
@@ -164,6 +166,7 @@ Widget _app({
   GoRouter? router,
   String network = 'main',
   bool enhancePirEnabled = false,
+  bool nearSwapPrivacyEnabled = false,
   EnhancePirNotifier Function()? enhancePir,
   bool walletTransparentPrivate = false,
 }) {
@@ -204,6 +207,7 @@ Widget _app({
           accountState: accountState,
           network: network,
           enhancePirEnabled: enhancePirEnabled,
+          nearSwapPrivacyEnabled: nearSwapPrivacyEnabled,
         ),
       ),
       if (networkPrivacyState != null)
@@ -604,6 +608,34 @@ void main() {
     );
     await tester.scrollUntilVisible(description, 200);
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
+    // Checking swap history needs NEAR swap privacy itself.
+    expect(
+      find.byKey(const ValueKey('settings_check_swap_history')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('Check swap history shows under NEAR swap privacy', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        enhancePirEnabled: true,
+        nearSwapPrivacyEnabled: true,
+        // The shell's scaffold gives the bound field its Material ancestor.
+        withTabBar: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+    final description = find.byKey(
+      const ValueKey('mobile_settings_near_swap_privacy_description'),
+    );
+    // The bound field has a scrollable of its own.
+    await tester.scrollUntilVisible(
+      description,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(
       find.descendant(
         of: find.byKey(
@@ -623,7 +655,11 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        _app(enhancePirEnabled: true, accountState: accountState),
+        _app(
+          enhancePirEnabled: true,
+          nearSwapPrivacyEnabled: true,
+          accountState: accountState,
+        ),
       );
       await tester.pumpAndSettle();
       final description = find.byKey(
