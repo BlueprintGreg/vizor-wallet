@@ -674,8 +674,9 @@ fn update_mempool_chain_tip(
 /// dropped on the Rust side without crossing the FRB bridge.
 /// Unknown txs may still pay the cost of shielded trial decryption,
 /// but they never take the wallet DB write lock unless a shielded
-/// output decrypts for one of our accounts or open swap keys. Transparent
-/// inbound transactions are still discovered by the normal sync path.
+/// output decrypts for one of our accounts' viewing keys. One-time swap keys
+/// are never tried here. Transparent inbound transactions are still
+/// discovered by the normal sync path.
 ///
 /// All failures are logged and swallowed — one un-parseable tx
 /// must not break the observer loop.
@@ -932,6 +933,7 @@ fn trial_decrypt_account_uuids(
         tx,
         &ufvks,
     );
+
     let mut accounts = BTreeSet::new();
     for output in decrypted.sapling_outputs() {
         accounts.insert(output.account().expose_uuid().to_string());
