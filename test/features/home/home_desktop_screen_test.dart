@@ -1295,6 +1295,59 @@ void main() {
     },
   );
 
+  for (final height in [600.0, 720.0, 900.0]) {
+    for (final failed in [false, true]) {
+      testWidgets(
+        'activity message stays centered at height=$height failed=$failed',
+        (tester) async {
+          tester.view.physicalSize = Size(1080, height);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          await tester.pumpWidget(
+            _appHarness(
+              '/home',
+              syncState: SyncState(
+                accountUuid: 'account-1',
+                hasCachedBalance: true,
+                displayTotalBalance: BigInt.from(250000000),
+                displayShieldedBalance: BigInt.from(250000000),
+                hasRecentTransactionsError: failed,
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final area = find.byKey(
+            const ValueKey('home_desktop_empty_activity'),
+          );
+          final message = find.text(
+            failed ? 'Unable to load activity.' : 'Loading activity...',
+          );
+          expect(
+            tester.getCenter(message).dx,
+            closeTo(tester.getCenter(area).dx, 0.1),
+          );
+          expect(
+            tester.getCenter(message).dy,
+            closeTo(tester.getCenter(area).dy, 0.1),
+          );
+          final viewport = find.byKey(
+            const ValueKey('home_desktop_scroll_view'),
+          );
+          final scrollable = tester.state<ScrollableState>(
+            find.descendant(of: viewport, matching: find.byType(Scrollable)),
+          );
+          expect(scrollable.position.maxScrollExtent, 0);
+          expect(
+            find.text('How about running your first ZEC tx?'),
+            findsNothing,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   testWidgets('home desktop keeps sync failure notice visible', (tester) async {
     await tester.pumpWidget(
       _appHarness(

@@ -385,6 +385,18 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
+    id: 'desktop-home-activity-error',
+    description: 'Activity error message centered below the desktop balance',
+    builder: buildDesktopHomeActivityErrorUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-empty-activity',
+    description: 'Existing illustrated empty activity state on desktop Home',
+    builder: buildDesktopHomeEmptyActivityUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
     id: 'desktop-home-setup-importing',
     description: 'Desktop setup reminders during the initial scan',
     builder: buildDesktopHomeSetupImportingUseCase,

@@ -2431,6 +2431,7 @@ class _HomeDesktopEmptyActivitySliver extends StatelessWidget {
                   AppSpacing.sm,
                 ),
                 child: SizedBox(
+                  key: const ValueKey('home_desktop_empty_activity'),
                   height: height,
                   child: _HomeDesktopEmptyActivity(
                     isLoading: isLoading,
@@ -2460,7 +2461,7 @@ class _HomeDesktopEmptyActivity extends StatelessWidget {
     final colors = context.colors;
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (constraints.maxHeight < 160) {
+        if (isLoading || isUnavailable || constraints.maxHeight < 160) {
           return Center(
             child: Text(
               isUnavailable
@@ -2494,35 +2495,29 @@ class _HomeDesktopEmptyActivity extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  isUnavailable
-                      ? 'Unable to load activity.'
-                      : isLoading
-                      ? 'Loading activity...'
-                      : 'No activity, yet...',
+                  'No activity, yet...',
                   style: AppTypography.headlineSmall.copyWith(
                     color: colors.text.accent,
                   ),
                 ),
-                if (!isLoading && !isUnavailable) ...[
-                  const SizedBox(height: AppSpacing.xxs),
-                  SizedBox(
-                    width: 188,
-                    child: Text(
-                      'How about running your first ZEC tx?',
-                      textAlign: TextAlign.center,
-                      style: AppTypography.bodyMedium.copyWith(
-                        color: colors.text.secondary,
-                      ),
+                const SizedBox(height: AppSpacing.xxs),
+                SizedBox(
+                  width: 188,
+                  child: Text(
+                    'How about running your first ZEC tx?',
+                    textAlign: TextAlign.center,
+                    style: AppTypography.bodyMedium.copyWith(
+                      color: colors.text.secondary,
                     ),
                   ),
-                  const SizedBox(height: AppSpacing.xxs),
-                  Image.asset(
-                    'assets/illustrations/home_rest_character.webp',
-                    width: illustrationWidth,
-                    height: illustrationHeight,
-                    fit: BoxFit.contain,
-                  ),
-                ],
+                ),
+                const SizedBox(height: AppSpacing.xxs),
+                Image.asset(
+                  'assets/illustrations/home_rest_character.webp',
+                  width: illustrationWidth,
+                  height: illustrationHeight,
+                  fit: BoxFit.contain,
+                ),
               ],
             ),
           ),

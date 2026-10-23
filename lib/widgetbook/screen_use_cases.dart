@@ -1156,9 +1156,17 @@ Widget buildDesktopHomeUnknownBalanceUseCase(BuildContext context) =>
 Widget buildDesktopHomeInitialScanUseCase(BuildContext context) =>
     _buildDesktopHomeStartupUseCase(initialScan: true);
 
+Widget buildDesktopHomeActivityErrorUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true, historyError: true);
+
+Widget buildDesktopHomeEmptyActivityUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true, historyLoaded: true);
+
 Widget _buildDesktopHomeStartupUseCase({
   bool cached = false,
   bool initialScan = false,
+  bool historyError = false,
+  bool historyLoaded = false,
 }) {
   final balance = cached ? BigInt.from(250000000) : BigInt.zero;
   return _buildDesktopHomeUseCase(
@@ -1167,7 +1175,8 @@ Widget _buildDesktopHomeStartupUseCase({
       accountUuid: _accountsDesignState.activeAccountUuid,
       hasCachedBalance: cached,
       hasBalanceData: false,
-      hasRecentTransactionsData: false,
+      hasRecentTransactionsData: historyLoaded,
+      hasRecentTransactionsError: historyError,
       isSyncing: true,
       percentage: cached || initialScan ? .32 : 0,
       remainingScanBlocks: cached || initialScan ? 100 : null,
