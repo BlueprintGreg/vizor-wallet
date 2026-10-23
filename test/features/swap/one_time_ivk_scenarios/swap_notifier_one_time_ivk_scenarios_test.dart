@@ -187,12 +187,12 @@ void main() {
     () => expectExpiredSwapsFreed(const Duration(days: 2)),
   );
 
-  /// A private quote whose deadline passed between polls loads as expired, so
-  /// periodic polling never gives the wallet the post-deadline status it
-  /// needs (see the tracker scenario tests). Once that held address blocks a
-  /// new quote, the composer's refresh still records a fresh status for it.
-  test('a quote that expired between polls is refreshed once a quote needs '
-      'its address', () async {
+  /// A private quote whose deadline passed between polls loads as expired but
+  /// stays polled until the wallet releases its address, so periodic polling
+  /// gives the wallet the post-deadline status that frees it (see the tracker
+  /// scenario tests), and the next quote gets the freed address.
+  test('a quote that expired between polls is polled until its address is '
+      'free', () async {
     final swap = _privateIncomingSwap(
       'missed',
       deadline: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
@@ -200,6 +200,7 @@ void main() {
     late _Harness h;
     h = await _Harness.create(
       intents: [swap],
+      providerStatus: SwapIntentStatus.awaitingExternalDeposit,
       reserve: (account) async {
         if (h.recorded.isEmpty) {
           throw const api.ReceiveError(
@@ -215,13 +216,15 @@ void main() {
         );
       },
     );
-    h.provider.status = SwapIntentStatus.awaitingExternalDeposit;
     await h.notifier.refreshOpenIntentStatuses();
     await pumpEventQueue();
-    expect(h.recorded, isEmpty, reason: 'periodic polling skips it');
+    expect(
+      h.recorded,
+      contains(SwapIntentStatus.awaitingExternalDeposit),
+      reason: 'periodic polling still asks',
+    );
 
     await h.review('25');
-    expect(h.recorded, [SwapIntentStatus.awaitingExternalDeposit]);
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
   });
 }
@@ -293,9 +296,10 @@ class _Harness {
     List<SwapIntent> intents = const [],
     Future<SwapZecStagingAddress> Function(String account)? reserve,
     bool failTerminalRecordsOnce = false,
+    SwapIntentStatus providerStatus = SwapIntentStatus.processing,
   }) async {
     final sync = _Sync();
-    final provider = _Provider();
+    final provider = _Provider()..status = providerStatus;
     final reservationStore = _Reservations();
     final activity = _MemoryStore(intents);
     late _Harness h;

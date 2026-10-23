@@ -131,10 +131,11 @@ void main() {
 
   /// The poll that first sees PENDING_DEPOSIT after the deposit deadline is
   /// the wallet's evidence that the started quote ended, which releases its
-  /// receive index. The app resolves that poll to `expired`, which is
-  /// terminal, but the snapshot it records is still non-terminal, so a wallet
-  /// failure there is swallowed and no later periodic poll retries it. Here
-  /// the deadline arrives with the status, as 1Click reports it.
+  /// receive index. The app resolves that poll to `expired`, but the snapshot
+  /// it records is not terminal, so a wallet failure there is only logged.
+  /// The swap stays polled until the wallet reports the address released, so
+  /// the next poll records the status again. Here the deadline arrives with
+  /// the status, as 1Click reports it.
   test(
     'a failed record of the post-deadline status keeps the swap polled',
     () async {
@@ -158,7 +159,6 @@ void main() {
       expect(provider.requests, 1, reason: 'the deadline poll ran');
       expect(failures, lessThan(1), reason: 'and its record failed');
       final stored = await tracker.loadIntents(accountUuid: _account);
-      // The app shows the swap as expired, which ends automatic polling.
       expect(stored.single.status, SwapIntentStatus.expired);
       await tracker.refreshOpenIntents(
         accountUuid: _account,
@@ -168,15 +168,11 @@ void main() {
         SwapIntentStatus.awaitingExternalDeposit,
       ], reason: 'the next poll records the status the wallet missed');
     },
-    skip:
-        'product bug (mitigated by the Limit refresh): a post-deadline '
-        'PENDING_DEPOSIT resolves to expired, so periodic polling never '
-        'retries a swallowed wallet failure',
   );
 
-  /// The same release evidence is missed without any failure when the
-  /// deadline passes between polls, for example while the app is closed: the
-  /// stored swap loads as expired and periodic polling never asks 1Click.
+  /// The deadline can also pass between polls, for example while the app is
+  /// closed. The stored swap loads as expired and is still polled, so the
+  /// wallet gets the post-deadline status that frees its slot.
   test(
     'a private quote whose deadline passed between polls is polled once more',
     () async {
@@ -197,10 +193,6 @@ void main() {
       );
       expect(recorded, [SwapIntentStatus.awaitingExternalDeposit]);
     },
-    skip:
-        'product bug (mitigated by the Limit refresh): a stored private quote '
-        'past its deadline loads as expired, so periodic polling never gives '
-        'the wallet a post-deadline status',
   );
 }
 
