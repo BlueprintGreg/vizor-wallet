@@ -77,73 +77,109 @@ enum SwapHistoryCheck {
   updateRequired,
 }
 
-/// Tracks the explicit check for older repeat payments that automatic catch-up skips.
+/// Tracks the explicit check for older repeat payments that automatic catch-up
+/// skips. What it shows follows the wallet's saved state: a manual job the
+/// wallet still has shows as checking, with Pause, and is watched until it ends.
+/// Only the call in flight and its last answer are kept here.
 class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
-  /// Starts idle and follows two outside changes. Turning NEAR swap privacy
-  /// off pauses discovery, which the wallet then reports as no unfinished
-  /// check, so a running or interrupted check ends paused instead of done, and
-  /// turning it back on resumes watching that saved work. A round that finds
-  /// the service compatible again ends an update request.
+  /// Starts idle, then reads the wallet's saved job again whenever it can have
+  /// changed: now, once NEAR swap privacy is back on and its change has been
+  /// applied to the wallet, and after every recovery round. Turning the
+  /// setting off pauses discovery, so a watched or interrupted check shows as
+  /// paused. A round that finds the service compatible again ends an update
+  /// request.
   @override
   SwapHistoryCheck build() {
     ref.listen(nearSwapPrivacyProvider, (_, enabled) {
-      if (!enabled &&
-          (state == SwapHistoryCheck.checking ||
-              state == SwapHistoryCheck.continuing ||
-              state == SwapHistoryCheck.failed)) {
+      if (enabled) {
+        unawaited(_reconcile());
+      } else if (state == SwapHistoryCheck.checking ||
+          state == SwapHistoryCheck.continuing ||
+          state == SwapHistoryCheck.failed ||
+          state == SwapHistoryCheck.waitingForSync) {
         _generation++;
-        // A failed check may have no saved job left to resume.
-        _pausedBySetting = state != SwapHistoryCheck.failed;
+        _observing = false;
         state = SwapHistoryCheck.paused;
-      } else if (enabled &&
-          _pausedBySetting &&
-          state == SwapHistoryCheck.paused) {
-        unawaited(_resume());
       }
     });
+    ref.listen(enhancePirTransitionProvider, (previous, next) {
+      if (previous == kEnhancePirChangingMessage &&
+          next != kEnhancePirChangingMessage) {
+        unawaited(_reconcile());
+      }
+    });
+    ref.listen(swapRecoveryRoundsProvider, (_, _) => unawaited(_reconcile()));
     ref.listen(swapRecoveryUpdateRequiredProvider, (_, required) {
       if (!required && state == SwapHistoryCheck.updateRequired) {
         state = SwapHistoryCheck.idle;
       }
     });
-    unawaited(_restoreSaved());
+    // After build returns, once there is a state to compare.
+    unawaited(Future<void>.microtask(_reconcile));
     return SwapHistoryCheck.idle;
-  }
-
-  /// Picks up a history check the user started before a restart, which later
-  /// rounds resume, so it shows as checking, with Pause, and is watched as
-  /// usual. Automatic seed recovery alone leaves the check idle. A failed read
-  /// leaves it idle too.
-  Future<void> _restoreSaved() async {
-    final generation = _generation;
-    try {
-      final status = await ref.read(swapRecoveryStatusReaderProvider)();
-      if (!ref.mounted ||
-          generation != _generation ||
-          state != SwapHistoryCheck.idle ||
-          status == null ||
-          !status.manualCheckActive ||
-          !ref.read(nearSwapPrivacyProvider)) {
-        return;
-      }
-      await _resume();
-    } catch (error) {
-      log('Saved swap history check not read: $error');
-    }
   }
 
   int _generation = 0;
 
-  /// Whether the shown pause came from turning NEAR swap privacy off, which
-  /// keeps the saved job active, rather than from the user pausing it.
-  bool _pausedBySetting = false;
+  /// Whether a check is being watched, so the saved state is already followed.
+  bool _observing = false;
+
+  /// Saved-state reads refused in a row, which [_reconcile] retries.
+  int _refusedReads = 0;
+
+  /// Reads the wallet's saved job and, if the user's manual check is still
+  /// active while nothing here shows it, watches it as checking, with Pause.
+  /// Automatic seed recovery alone changes nothing. A refused read, such as one
+  /// made while a wallet change holds admission, is tried again shortly.
+  Future<void> _reconcile() async {
+    if (_observing ||
+        !ref.read(nearSwapPrivacyProvider) ||
+        !_shownWithoutJob.contains(state)) {
+      return;
+    }
+    final generation = _generation;
+    final rust_swap.SwapRecoveryStatus? status;
+    try {
+      status = await ref.read(swapRecoveryStatusReaderProvider)();
+    } catch (error) {
+      log('Saved swap history check not read: $error');
+      if (ref.mounted && _refusedReads++ < 6) {
+        final retry = ref.read(swapHistoryApiProvider).pollInterval;
+        unawaited(
+          Future<void>.delayed(retry).then((_) {
+            if (ref.mounted) return _reconcile();
+          }),
+        );
+      }
+      return;
+    }
+    _refusedReads = 0;
+    if (!ref.mounted ||
+        generation != _generation ||
+        _observing ||
+        !_shownWithoutJob.contains(state) ||
+        !(status?.manualCheckActive ?? false) ||
+        !ref.read(nearSwapPrivacyProvider)) {
+      return;
+    }
+    await _resume();
+  }
+
+  /// States that show no running job, so a saved one must replace them. The
+  /// others already show Pause or ask for an update.
+  static const _shownWithoutJob = {
+    SwapHistoryCheck.idle,
+    SwapHistoryCheck.done,
+    SwapHistoryCheck.paused,
+    SwapHistoryCheck.failed,
+  };
 
   /// Starts a check and polls until the wallet reports it done, or until
   /// [SwapHistoryApi.maxWait] passes. Does nothing while one is running.
   Future<void> check() async {
     if (state == SwapHistoryCheck.checking) return;
     final generation = ++_generation;
-    _pausedBySetting = false;
+    _observing = true;
     state = SwapHistoryCheck.checking;
     final api = ref.read(swapHistoryApiProvider);
     try {
@@ -152,19 +188,23 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       await _observe(generation, api);
     } catch (error) {
       _fail(generation, error);
+    } finally {
+      if (generation == _generation) _observing = false;
     }
   }
 
-  /// Watches the saved job again once NEAR swap privacy is back on, since the
-  /// wallet resumes it in later rounds. It shows as checking, with Pause.
+  /// Watches a saved job the wallet resumes in later rounds. It shows as
+  /// checking, with Pause.
   Future<void> _resume() async {
     final generation = ++_generation;
-    _pausedBySetting = false;
+    _observing = true;
     state = SwapHistoryCheck.checking;
     try {
       await _observe(generation, ref.read(swapHistoryApiProvider));
     } catch (error) {
       _fail(generation, error);
+    } finally {
+      if (generation == _generation) _observing = false;
     }
   }
 
@@ -229,7 +269,7 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// Pauses the current job and prevents a late poll from overwriting that state.
   Future<void> cancel() async {
     final generation = ++_generation;
-    _pausedBySetting = false;
+    _observing = false;
     try {
       await ref.read(swapHistoryApiProvider).cancel();
       if (ref.mounted && generation == _generation) {

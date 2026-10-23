@@ -29,10 +29,19 @@ class _Privacy extends NearSwapPrivacyNotifier {
   void turnOn() => state = true;
 }
 
+/// NEAR swap privacy, off until a test turns it on.
+class _PrivacyOff extends _Privacy {
+  @override
+  bool build() => false;
+}
+
 /// The setting and a wallet with no saved recovery state, for every container.
-List<Override> _wallet() => [
-  nearSwapPrivacyProvider.overrideWith(_Privacy.new),
-  swapRecoveryStatusReaderProvider.overrideWithValue(() async => null),
+List<Override> _wallet({
+  Future<SwapRecoveryStatus?> Function()? saved,
+  NearSwapPrivacyNotifier Function()? privacy,
+}) => [
+  nearSwapPrivacyProvider.overrideWith(privacy ?? _Privacy.new),
+  swapRecoveryStatusReaderProvider.overrideWithValue(saved ?? () async => null),
 ];
 
 /// The wallet's recovery state, as the status call reports it.
@@ -265,16 +274,19 @@ void main() {
   });
 
   test(
-    'turning NEAR swap privacy off between polls pauses the check',
+    'turning NEAR swap privacy off between polls pauses the check, and turning '
+    'it on shows the saved job again',
     () async {
       final polls = <Completer<SwapRecoveryStatus>>[];
+      // The wallet's saved state, which re-enabling the setting reads.
+      SwapRecoveryStatus? saved;
       final container = ProviderContainer(
         overrides: [
-          ..._wallet(),
+          ..._wallet(saved: () async => saved),
           syncProvider.overrideWith(_Sync.new),
           swapHistoryApiProvider.overrideWithValue(
             SwapHistoryApi(
-              begin: () async {},
+              begin: () async => saved = _status(manual: true),
               cancel: () async {},
               status: () {
                 final poll = Completer<SwapRecoveryStatus>();
@@ -289,7 +301,7 @@ void main() {
       addTearDown(container.dispose);
       final running = container.read(swapHistoryCheckProvider.notifier).check();
       await pumpEventQueue();
-      polls.single.complete(_status(checking: true));
+      polls.single.complete(_status(manual: true));
       await pumpEventQueue();
       expect(polls, hasLength(2));
 
@@ -301,26 +313,121 @@ void main() {
       await running;
       expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
 
-      // Turning it back on resumes the saved job, which shows as checking,
-      // with Pause, until the wallet finishes it.
+      // The wallet still has the job, so turning the setting back on shows it
+      // as checking, with Pause, until the wallet finishes it.
       privacy.turnOn();
-      expect(
-        container.read(swapHistoryCheckProvider),
-        SwapHistoryCheck.checking,
-      );
-      await pumpEventQueue();
-      expect(polls, hasLength(3));
-      polls.last.complete(_status(checking: true));
       await pumpEventQueue();
       expect(
         container.read(swapHistoryCheckProvider),
         SwapHistoryCheck.checking,
       );
+      polls.last.complete(_status(manual: true));
+      await pumpEventQueue();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.checking,
+      );
+      saved = _status();
       polls.last.complete(_status());
       await pumpEventQueue();
       expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     },
   );
+
+  test(
+    'a failed read then a privacy toggle still shows the saved job',
+    () async {
+      var failNext = true;
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(saved: () async => _status(manual: true)),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async {},
+              cancel: () async {},
+              status: () async {
+                if (failNext) {
+                  failNext = false;
+                  throw StateError('database is locked');
+                }
+                return _status(manual: true);
+              },
+              pollInterval: Duration.zero,
+              maxWait: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      // The startup read sees the saved job, then a status read fails.
+      container.read(swapHistoryCheckProvider);
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.failed);
+
+      final privacy =
+          container.read(nearSwapPrivacyProvider.notifier) as _Privacy;
+      privacy.turnOff();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+      privacy.turnOn();
+      await pumpEventQueue();
+      // The wallet resumes the job, so Pause is offered again.
+      expect(
+        container.read(swapHistoryCheckProvider),
+        isIn([SwapHistoryCheck.checking, SwapHistoryCheck.continuing]),
+      );
+    },
+  );
+
+  test('re-enabling after a restart reads the saved job once the change '
+      'reaches the wallet', () async {
+    var walletChanging = false;
+    final container = ProviderContainer(
+      overrides: [
+        ..._wallet(
+          privacy: _PrivacyOff.new,
+          saved: () async {
+            if (walletChanging) {
+              throw StateError(
+                'The wallet is changing. Try again in a moment.',
+              );
+            }
+            return _status(manual: true);
+          },
+        ),
+        syncProvider.overrideWith(_Sync.new),
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: () async {},
+            cancel: () async {},
+            status: () async => _status(manual: true),
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    container.read(swapHistoryCheckProvider);
+    await pumpEventQueue();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
+
+    // Settings turns the setting on while its change still holds the wallet.
+    final transition = container.read(enhancePirTransitionProvider.notifier);
+    transition.update(kEnhancePirChangingMessage);
+    walletChanging = true;
+    (container.read(nearSwapPrivacyProvider.notifier) as _Privacy).turnOn();
+    await pumpEventQueue();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
+
+    walletChanging = false;
+    transition.update(null);
+    await pumpEventQueue();
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.checking,
+      reason: 'the resumed job shows with Pause',
+    );
+  });
 
   test('re-enabling privacy does not resume a check the user paused', () async {
     final (container, _, calls) = setup(checking: [true]);

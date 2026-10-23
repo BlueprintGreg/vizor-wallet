@@ -71,4 +71,22 @@ void main() {
     await store.saveRecords(accountUuid: 'b', records: const []);
     expect(inner.records['b'], isEmpty);
   });
+
+  test('a read waits for saves accepted before it', () async {
+    final inner = _MemoryStore();
+    final store = DeletionSafeSwapActivityStore(inner);
+    await store.saveRecords(accountUuid: 'a', records: const []);
+    inner.hold = Completer<void>();
+    // A save is under way, and a new swap's save queues behind it.
+    final pending = store.saveRecords(accountUuid: 'a', records: const []);
+    final newSwap = store.saveRecords(accountUuid: 'a', records: [_record]);
+    // A status refresh reads the list meanwhile, to merge and save it back.
+    final refreshRead = store.loadRecords(accountUuid: 'a');
+    inner.hold!.complete();
+    await pending;
+    await newSwap;
+    expect(await refreshRead, [
+      _record,
+    ], reason: 'the refresh sees the new swap, so its save cannot drop it');
+  });
 }
