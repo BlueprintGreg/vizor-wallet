@@ -3269,6 +3269,36 @@ fn setting(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// The command that replays one seed's scenario in a fresh shell: every setting that
+/// changes its actions or checks, with only the actions `keep` lists when given.
+fn reproducer(seed: u64, steps: usize, keep: Option<&BTreeSet<usize>>) -> String {
+    let mut env = vec![
+        format!("VIZOR_SCENARIO_SEED={seed}"),
+        "VIZOR_SCENARIO_ITERS=1".into(),
+        format!("VIZOR_SCENARIO_STEPS={steps}"),
+    ];
+    match mix() {
+        Mix::Default => {}
+        Mix::Stress => env.push("VIZOR_SCENARIO_MIX=stress".into()),
+        Mix::Toggle => env.push("VIZOR_SCENARIO_MIX=toggle".into()),
+    }
+    let age = setting("VIZOR_SCENARIO_AGE", 0);
+    if age > 0 {
+        env.push(format!("VIZOR_SCENARIO_AGE={age}"));
+    }
+    if std::env::var("VIZOR_SCENARIO_STRICT").as_deref() == Ok("1") {
+        env.push("VIZOR_SCENARIO_STRICT=1".into());
+    }
+    if let Some(keep) = keep {
+        let list: Vec<String> = keep.iter().map(|i| i.to_string()).collect();
+        env.push(format!("VIZOR_SCENARIO_KEEP={}", list.join(",")));
+    }
+    format!(
+        "{} cargo test --lib swap_private::tests::scenarios::random_scenarios -- --nocapture",
+        env.join(" ")
+    )
+}
+
 /// Runs `iters` seeded scenarios and panics with a reproducer on the first new violation.
 fn run_many(default_iters: u64, default_steps: u64) {
     let base = setting("VIZOR_SCENARIO_SEED", 0x5eed);
@@ -3299,6 +3329,7 @@ fn run_many(default_iters: u64, default_steps: u64) {
                 "scenario seed {seed}: FINDING {found:?}\n{}",
                 outcome.trace.join("\n")
             );
+            println!("reproduce: {}", reproducer(seed, steps, keep.as_ref()));
             failures.push(format!("seed {seed}: findings {found:?}"));
             continue;
         }
@@ -3324,24 +3355,19 @@ fn run_many(default_iters: u64, default_steps: u64) {
             },
             outcome.trace.join("\n")
         );
-        let mut repro = format!(
-            "VIZOR_SCENARIO_SEED={seed} VIZOR_SCENARIO_ITERS=1 VIZOR_SCENARIO_STEPS={steps}"
-        );
-        if keep.is_none() && budget > 0 {
+        let repro = if keep.is_none() && budget > 0 {
             let kept = shrink(seed, steps, v.kind, budget);
-            let list: Vec<String> = kept.iter().map(|i| i.to_string()).collect();
             let shrunk = run(seed, steps, Some(&kept));
             println!(
                 "shrunk to {} actions:\n{}",
                 kept.len(),
                 shrunk.trace.join("\n")
             );
-            repro += &format!(" VIZOR_SCENARIO_KEEP={}", list.join(","));
-        } else if let Some(keep) = &keep {
-            let list: Vec<String> = keep.iter().map(|i| i.to_string()).collect();
-            repro += &format!(" VIZOR_SCENARIO_KEEP={}", list.join(","));
-        }
-        println!("reproduce: {repro} cargo test --lib swap_private::tests::scenarios::random_scenarios -- --nocapture");
+            reproducer(seed, steps, Some(&kept))
+        } else {
+            reproducer(seed, steps, keep.as_ref())
+        };
+        println!("reproduce: {repro}");
         failures.push(format!("seed {seed}: {} ({})", v.kind, v.detail));
     }
     println!("scenario notes: {notes:?}");
