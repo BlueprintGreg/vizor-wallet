@@ -8754,6 +8754,40 @@ void main() {
     });
   }
 
+  testWidgets('a failed status refresh during a Limit retry ends loading', (
+    tester,
+  ) async {
+    final reservation = _WaitingFirstReservation(ReceiveErrorKind.limit);
+    final store = _FailingSaveSwapPersistenceStore(
+      initialIntents: [
+        _persistedExternalToZecIntent(
+          id: 'held-incoming-quote',
+          stagingAddress: 'u1held',
+        ),
+      ],
+    );
+    final container = await _pumpSwapScreen(
+      tester,
+      sessionStore: store,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      reservationStore: _StaleFirstReservationStore(),
+      reserveSwapAddress: reservation.reserve,
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    store.failSaves = true;
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    final state = container.read(swapStateProvider);
+    expect(state.quoteLoading, isFalse);
+    expect(state.quoteError, isNotNull);
+    expect(state.reviewVisible, isFalse);
+    expect(reservation.calls, 1, reason: 'no retry after the failed refresh');
+  });
+
   testWidgets('a start refused while its address is rechecked asks to wait', (
     tester,
   ) async {

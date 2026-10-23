@@ -813,6 +813,24 @@ class _WaitingFirstReservation {
   }
 }
 
+/// Swap activity storage whose saves fail once [failSaves] is set, as when
+/// secure storage becomes unavailable.
+class _FailingSaveSwapPersistenceStore extends _FakeSwapPersistenceStore {
+  _FailingSaveSwapPersistenceStore({super.initialIntents});
+
+  var failSaves = false;
+
+  /// Throws while [failSaves] is set, else saves.
+  @override
+  Future<void> saveRecords({
+    required String accountUuid,
+    required List<SwapIntentRecord> records,
+  }) {
+    if (failSaves) throw StateError('Secure storage is unavailable.');
+    return super.saveRecords(accountUuid: accountUuid, records: records);
+  }
+}
+
 /// Quotes with a new address-only ZEC deposit address each time, as NEAR does.
 class _NewDepositPerQuoteSwapProvider extends _FakeSwapProvider {
   _NewDepositPerQuoteSwapProvider() : super(zecDepositMemo: null);

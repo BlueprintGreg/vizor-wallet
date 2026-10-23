@@ -930,10 +930,24 @@ class SwapNotifier extends Notifier<SwapState> {
           (kind == ReceiveErrorKind.stale ||
               kind == ReceiveErrorKind.receiveHistory ||
               kind == ReceiveErrorKind.limit)) {
-        if (kind == ReceiveErrorKind.limit) {
-          await _refreshReceiveQuoteStatuses();
-        } else if (kind == ReceiveErrorKind.receiveHistory) {
-          await ref.read(syncProvider.notifier).awaitSwapRecovery();
+        try {
+          if (kind == ReceiveErrorKind.limit) {
+            await _refreshReceiveQuoteStatuses();
+          } else if (kind == ReceiveErrorKind.receiveHistory) {
+            await ref.read(syncProvider.notifier).awaitSwapRecovery();
+          }
+        } catch (retryError) {
+          // The wallet work that could free an address failed, so the quote
+          // ends with the reason it was refused.
+          log('Swap: receive address retry failed: $retryError');
+          if (generation != _quoteGeneration) return;
+          state = state.copyWith(
+            reviewVisible: false,
+            quoteLoading: false,
+            quoteError: _friendlyQuoteError(e),
+            clearReview: true,
+          );
+          return;
         }
         if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
           return;

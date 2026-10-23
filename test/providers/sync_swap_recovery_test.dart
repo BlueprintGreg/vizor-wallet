@@ -11,6 +11,7 @@ import 'package:zcash_wallet/src/providers/chain_upgrade_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as rust_swap;
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
 
@@ -25,6 +26,7 @@ class _Api extends RustLibApi {
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
   final recoveries = <Completer<bool>>[];
   final manual = <(BigInt?, Completer<void>)>[];
+  final statusReads = <Completer<rust_swap.SwapRecoveryStatus>>[];
   final events = <String>[];
   final balanceReads = <String>[];
   int cancels = 0;
@@ -117,6 +119,17 @@ class _Api extends RustLibApi {
     final check = Completer<void>();
     manual.add((receiveEnd, check));
     return check.future;
+  }
+
+  /// Reads the saved swap recovery state, pending until the test completes it.
+  @override
+  Future<rust_swap.SwapRecoveryStatus> crateApiOneTimeIvkGetSwapRecoveryStatus({
+    required String dbPath,
+    required String networkName,
+  }) {
+    final read = Completer<rust_swap.SwapRecoveryStatus>();
+    statusReads.add(read);
+    return read.future;
   }
 
   /// Records that the durable manual job was paused.
@@ -252,6 +265,7 @@ class _Sync extends SyncNotifier {
   _Sync()
     : super(
         walletDbPathResolver: () async => 'wallet.db',
+        existingWalletDbPathResolver: () async => 'wallet.db',
         excludeCompanionsFromBackup: (_) async {},
       );
 
@@ -297,6 +311,7 @@ void main() {
     api.syncs.clear();
     api.recoveries.clear();
     api.manual.clear();
+    api.statusReads.clear();
     api.events.clear();
     api.balanceReads.clear();
     api.cancels = 0;
@@ -534,6 +549,45 @@ void main() {
     sync.continueSwapRecovery();
     await settle(sync);
     expect(api.recoveries, hasLength(2));
+  });
+
+  test('a wallet mutation waits for a swap status read, and none starts while '
+      'it runs', () async {
+    final sync = await recovering();
+    await releaseRound(work: false);
+    const idle = rust_swap.SwapRecoveryStatus(
+      checkingHistory: false,
+      upgradeRequired: false,
+    );
+    // The round's answer starts the saved-state read.
+    for (final read in api.statusReads) {
+      read.complete(idle);
+    }
+    await pumpEventQueue();
+    api.statusReads.clear();
+
+    final read = sync.swapRecoveryStatus();
+    await pumpEventQueue();
+    expect(api.statusReads, hasLength(1));
+    var paused = false;
+    late WalletMutationSyncPause pause;
+    unawaited(
+      sync.pauseForWalletMutation().then((value) {
+        pause = value;
+        paused = true;
+      }),
+    );
+    await pumpEventQueue();
+    expect(paused, isFalse, reason: 'the native read is still active');
+    api.statusReads.single.complete(idle);
+    expect(await read, idle);
+    await pumpEventQueue();
+    expect(paused, isTrue);
+
+    await expectLater(sync.swapRecoveryStatus(), throwsStateError);
+    expect(api.statusReads, hasLength(1), reason: 'no read during a mutation');
+    sync.resumeAfterWalletMutation(pause);
+    await settle(sync);
   });
 
   test('switching accounts keeps the account-agnostic round, and its result '

@@ -954,10 +954,13 @@ bool shouldRestartSyncForMigrationEntry({
 class SyncNotifier extends AsyncNotifier<SyncState> {
   SyncNotifier({
     Future<String> Function()? walletDbPathResolver,
+    Future<String?> Function()? existingWalletDbPathResolver,
     IronwoodMigrationBackgroundLifecycle? recoveryLifecycle,
     Duration recoveryTransitionTimeout = const Duration(seconds: 120),
     Future<void> Function(String dbPath)? excludeCompanionsFromBackup,
   }) : _walletDbPathResolver = walletDbPathResolver ?? getWalletDbPath,
+       _existingWalletDbPathResolver =
+           existingWalletDbPathResolver ?? getExistingWalletDbPath,
        _recoveryLifecycle =
            recoveryLifecycle ?? IronwoodMigrationBackgroundLifecycle.instance,
        _recoveryTransitionTimeout = recoveryTransitionTimeout,
@@ -1096,6 +1099,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   ];
 
   final Future<String> Function() _walletDbPathResolver;
+
+  /// Resolves the recorded wallet path without assigning one, or null after a
+  /// reset (see [getExistingWalletDbPath]).
+  final Future<String?> Function() _existingWalletDbPathResolver;
   Future<void>? _swapRecovery;
   int _swapRecoveryGeneration = 0;
   int _swapRecoveryTransitions = 0;
@@ -2385,11 +2392,38 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         network: _endpointConfig.networkName,
       );
     } finally {
-      _recoveryStatusReadCount--;
-      if (_recoveryStatusReadCount == 0) {
-        _recoveryStatusReadsDrained?.complete();
-        _recoveryStatusReadsDrained = null;
-      }
+      _endRecoveryStatusRead();
+    }
+  }
+
+  /// Reads the wallet's saved swap recovery state without network access, or
+  /// null without a wallet. Like [recoveryStatus], it registers before its
+  /// first await, so wallet mutations drain it before touching the wallet DB.
+  /// While one holds admission it throws rather than reporting idle state.
+  Future<rust_swap.SwapRecoveryStatus?> swapRecoveryStatus() async {
+    const busy = 'Swap recovery status is unavailable during a wallet change.';
+    if (_walletMutationPauseCount > 0) throw StateError(busy);
+    _recoveryStatusReadCount++;
+    try {
+      final path = await _existingWalletDbPathResolver();
+      if (_walletMutationPauseCount > 0) throw StateError(busy);
+      if (path == null) return null;
+      return await rust_swap.getSwapRecoveryStatus(
+        dbPath: path,
+        networkName: _endpointConfig.networkName,
+      );
+    } finally {
+      _endRecoveryStatusRead();
+    }
+  }
+
+  /// Ends one registered wallet status read and releases a drain waiting on
+  /// the last one.
+  void _endRecoveryStatusRead() {
+    _recoveryStatusReadCount--;
+    if (_recoveryStatusReadCount == 0) {
+      _recoveryStatusReadsDrained?.complete();
+      _recoveryStatusReadsDrained = null;
     }
   }
 
@@ -4192,20 +4226,11 @@ final swapRecoveryUpdateRequiredProvider =
     );
 
 /// Reads the wallet's saved swap recovery state without network access, or
-/// null without a wallet. Overridable in tests.
+/// null without a wallet (see [SyncNotifier.swapRecoveryStatus]). Overridable
+/// in tests.
 final swapRecoveryStatusReaderProvider =
     Provider<Future<rust_swap.SwapRecoveryStatus?> Function()>((ref) {
-      return () async {
-        final path = await getExistingWalletDbPath();
-        if (path == null) return null;
-        return rust_swap.getSwapRecoveryStatus(
-          dbPath: path,
-          networkName: ref
-              .read(rpcEndpointFailoverProvider)
-              .current
-              .networkName,
-        );
-      };
+      return () => ref.read(syncProvider.notifier).swapRecoveryStatus();
     });
 
 class SwapRecoveryUpdateRequired extends Notifier<bool> {

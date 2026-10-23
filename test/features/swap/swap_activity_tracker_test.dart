@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zcash_wallet/src/features/ledger/services/ledger_operation_lifecycle.dart';
 import 'package:zcash_wallet/src/features/swap/integrations/near_intents/near_intents_one_click_swap_adapter.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_deposit_broadcast_result.dart';
@@ -36,8 +39,9 @@ void main() {
       expect(provider.statusRequests, ['unbroadcast']);
 
       provider.statusRequests.clear();
-      await SwapActivityStatusRefresher(tracker: tracker)
-          .refreshOpenActivities(accountUuid: 'account-1', force: true);
+      await SwapActivityStatusRefresher(
+        tracker: tracker,
+      ).refreshOpenActivities(accountUuid: 'account-1', force: true);
       expect(provider.statusRequests, ['unbroadcast']);
     },
   );
@@ -66,8 +70,9 @@ void main() {
       await tracker.saveIntents(accountUuid: 'account-1', intents: [intent]);
 
       // Home/Activity must also keep an unclaimed external deposit fresh.
-      await SwapActivityStatusRefresher(tracker: tracker)
-          .refreshOpenActivities(accountUuid: 'account-1');
+      await SwapActivityStatusRefresher(
+        tracker: tracker,
+      ).refreshOpenActivities(accountUuid: 'account-1');
       expect(provider.statusRequests, ['external']);
       final waiting = await tracker.loadIntents(accountUuid: 'account-1');
       expect(waiting.single.status, SwapIntentStatus.awaitingExternalDeposit);
@@ -167,8 +172,9 @@ void main() {
       depositAddress: 'unknown',
       status: SwapIntentStatus.complete,
     );
-    await SwapActivityStatusRefresher(tracker: tracker)
-        .refreshOpenActivities(accountUuid: 'account-1', force: true);
+    await SwapActivityStatusRefresher(
+      tracker: tracker,
+    ).refreshOpenActivities(accountUuid: 'account-1', force: true);
 
     expect(provider.statusRequests, ['unknown', 'unknown']);
     final completed = await tracker.loadIntents(accountUuid: 'account-1');
@@ -575,6 +581,89 @@ void main() {
     expect(recorded, ['private']);
   });
 
+  test('ordinary swaps stay outside the wallet deletion drain', () async {
+    final lifecycle = LedgerOperationLifecycle();
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final held = Completer<void>();
+    provider.onGetStatus = (_) => held.future;
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+      lifecycle: lifecycle,
+      onProviderSnapshot: (_, _, _) async => true,
+    );
+    final ordinary = _intent(id: 'ordinary', depositAddress: 'ordinary');
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [ordinary]);
+    final refresh = tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: [ordinary],
+    );
+    await pumpEventQueue();
+    expect(provider.statusRequests, ['ordinary']);
+
+    var drained = false;
+    unawaited(lifecycle.quiesceAndDrain().then((_) => drained = true));
+    await pumpEventQueue();
+    expect(drained, isTrue, reason: 'deletion skips the held status request');
+    // Loads and saves keep working while deletion holds admission.
+    expect(await tracker.loadIntents(accountUuid: 'account-1'), hasLength(1));
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [ordinary]);
+    held.complete();
+    expect((await refresh).didRefresh, isTrue);
+    lifecycle.resume();
+  });
+
+  test(
+    'a private swap status refresh holds the wallet deletion drain',
+    () async {
+      final lifecycle = LedgerOperationLifecycle();
+      final store = _MemorySwapActivityStore();
+      final provider = _StatusSwapProvider({});
+      final held = Completer<void>();
+      provider.onGetStatus = (_) => held.future;
+      final recorded = <String>[];
+      final tracker = SwapActivityTracker(
+        activityStore: store,
+        swapProvider: provider,
+        lifecycle: lifecycle,
+        onProviderSnapshot: (intent, _, _) async {
+          recorded.add(intent.id);
+          return true;
+        },
+      );
+      final private = _intent(
+        id: 'private',
+        depositAddress: 'private',
+      ).copyWith(privateAddress: true);
+      await tracker.saveIntents(accountUuid: 'account-1', intents: [private]);
+      final refresh = tracker.refreshOpenIntents(
+        accountUuid: 'account-1',
+        currentIntents: [private],
+      );
+      await pumpEventQueue();
+
+      var drained = false;
+      unawaited(lifecycle.quiesceAndDrain().then((_) => drained = true));
+      await pumpEventQueue();
+      expect(drained, isFalse, reason: 'its result still writes the wallet');
+      held.complete();
+      await refresh;
+      await pumpEventQueue();
+      expect(drained, isTrue);
+      expect(recorded, ['private']);
+
+      // No private refresh starts while deletion runs.
+      final skipped = await tracker.refreshOpenIntents(
+        accountUuid: 'account-1',
+        currentIntents: [private],
+      );
+      expect(skipped.didRefresh, isFalse);
+      expect(provider.statusRequests, ['private']);
+      lifecycle.resume();
+    },
+  );
+
   test('a swap the wallet no longer tracks is marked released', () async {
     final store = _MemorySwapActivityStore();
     final provider = _StatusSwapProvider({});
@@ -675,7 +764,8 @@ void main() {
         'NEAR Intents status failed (403): Request blocked',
         operation: 'status',
         statusCode: 403,
-        responseBody: '<html><h1>Request blocked</h1><p>Generated by cloudfront</p></html>',
+        responseBody:
+            '<html><h1>Request blocked</h1><p>Generated by cloudfront</p></html>',
       );
     };
     final tracker = SwapActivityTracker(

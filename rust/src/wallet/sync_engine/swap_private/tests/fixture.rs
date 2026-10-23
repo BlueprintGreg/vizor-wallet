@@ -1192,7 +1192,8 @@ impl Wallet {
 }
 
 /// Runs `recover_with_transport` over `transport` with the generation the production entry
-/// point captures and the wallet's own descriptor store.
+/// point captures and the wallet's own descriptor store, ending it at `budget` as
+/// `recover` does.
 pub(super) fn run_worker<T: Transport>(
     path: &str,
     transport: &T,
@@ -1205,16 +1206,21 @@ pub(super) fn run_worker<T: Transport>(
         .unwrap()
         .block_on(async {
             let generation = CANCEL.load(Ordering::SeqCst);
-            recover_with_transport(
-                path,
-                NETWORK,
-                manual,
-                ORIGIN,
-                transport,
-                &DescriptorTable::new(path, generation),
-                generation,
-                tokio::time::Instant::now() + budget,
+            let deadline = tokio::time::Instant::now() + budget;
+            tokio::time::timeout_at(
+                deadline,
+                recover_with_transport(
+                    path,
+                    NETWORK,
+                    manual,
+                    ORIGIN,
+                    transport,
+                    &DescriptorTable::new(path, generation),
+                    generation,
+                    deadline,
+                ),
             )
             .await
+            .map_err(|_| RecoveryError::from("Swap recovery round timed out."))?
         })
 }
