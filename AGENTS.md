@@ -704,9 +704,10 @@ a sync's large block download (below).
   notes. The connection opens once per session, before the Checking stage,
   only if Tor was already on when the session opened its route, and its open
   stops with the session. A direct session shows the server the device's IP
-  address with the birthday bucket or resume height, so keep the settings copy
-  (`kTorDirectBlockDownloadNote`, `kMobileTorDirectBlockDownloadNote`) naming
-  the exception.
+  address with the birthday bucket or resume height, so the connected
+  settings copy says Vizor uses Tor to protect the IP address rather than
+  promising that every request goes through Tor; it does not list this
+  exception.
 - **Voting SDK network clients are constructed only in**
   `rust/src/wallet/voting/network_clients.rs`. Chain, helper, PIR, and
   vote-tree are separate transport roles; injecting a chain transport does
