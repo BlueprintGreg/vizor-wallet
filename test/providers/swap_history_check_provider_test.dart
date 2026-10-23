@@ -593,4 +593,56 @@ void main() {
       expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.idle);
     });
   });
+
+  test('a saved-state read that overlaps Pause cannot undo it', () async {
+    final reads = <Completer<SwapRecoveryStatus?>>[];
+    final cancel = Completer<void>();
+    final container = ProviderContainer(
+      overrides: [
+        ..._wallet(
+          saved: () {
+            final read = Completer<SwapRecoveryStatus?>();
+            reads.add(read);
+            return read.future;
+          },
+        ),
+        syncProvider.overrideWith(_Sync.new),
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: () async {},
+            cancel: () => cancel.future,
+            status: () async => _status(manual: true),
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    container.read(swapHistoryCheckProvider);
+    await pumpEventQueue();
+    // A saved-state read is outstanding when the user pauses.
+    expect(reads, isNotEmpty);
+    final before = reads.length;
+    final notifier = container.read(swapHistoryCheckProvider.notifier);
+    final pausing = notifier.cancel();
+    // A round ends while the pause waits for the wallet. No read starts.
+    container.read(swapRecoveryRoundsProvider.notifier).ended();
+    await pumpEventQueue();
+    expect(reads, hasLength(before));
+    cancel.complete();
+    await pausing;
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+
+    // The reads from before the pause answer with the job still active.
+    for (final read in reads) {
+      read.complete(_status(manual: true));
+    }
+    await pumpEventQueue();
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.paused,
+      reason: 'the stale read is dropped',
+    );
+    expect(container.read(swapHistoryJobSavedProvider), isFalse);
+  });
 }

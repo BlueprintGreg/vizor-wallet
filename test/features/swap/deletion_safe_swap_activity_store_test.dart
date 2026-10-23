@@ -89,4 +89,40 @@ void main() {
       _record,
     ], reason: 'the refresh sees the new swap, so its save cannot drop it');
   });
+
+  test('two merges queued together both keep their swaps', () async {
+    final inner = _MemoryStore();
+    final store = DeletionSafeSwapActivityStore(inner);
+    await store.saveRecords(accountUuid: 'a', records: [_record]);
+    inner.hold = Completer<void>();
+    // A private swap's start and an older swap's status refresh both merge
+    // into the same account's list, queued before either saves.
+    final started = _record.copyWith(id: 'started');
+    final refreshed = _record.copyWith(nextAction: 'Refreshed');
+    final start = store.update(
+      accountUuid: 'a',
+      transform: (saved) => [started, ...saved],
+    );
+    final refresh = store.update(
+      accountUuid: 'a',
+      transform: (saved) => [
+        for (final record in saved) record.id == 'swap' ? refreshed : record,
+      ],
+    );
+    inner.hold!.complete();
+    await start;
+    await refresh;
+    expect(inner.records['a']!.map((r) => (r.id, r.nextAction)), [
+      ('started', 'Send USDC'),
+      ('swap', 'Refreshed'),
+    ], reason: 'the refresh did not overwrite the started swap');
+  });
+
+  test('a merge for a deleted account writes nothing', () async {
+    final inner = _MemoryStore();
+    final store = DeletionSafeSwapActivityStore(inner);
+    await store.deleteForAccount(accountUuid: 'a');
+    await store.update(accountUuid: 'a', transform: (_) => [_record]);
+    expect(inner.records.containsKey('a'), isFalse);
+  });
 }
