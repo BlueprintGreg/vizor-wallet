@@ -271,8 +271,9 @@ pub(crate) async fn open_background_direct_lwd_transport(
 /// Compact blocks are public, and one Tor circuit would take hours to deliver
 /// a restore. Only main-scan batches use this transport: `GetBlockRange` and
 /// the `GetTreeState` before a batch that does not start at a compiled
-/// checkpoint, by height or by the first block's predecessor hash. Every other
-/// request of the session stays on the Tor route, which
+/// checkpoint, by height or by the first block's predecessor hash, with
+/// `GetBlock` for that hash when the first block does not carry it. Every
+/// other request of the session stays on the Tor route, which
 /// the session opens first, so a Tor route that is still starting or broken
 /// still stops the sync. Like the background opener it skips the direct-route
 /// lease, which exists to abort clearnet traffic once Tor is desired.

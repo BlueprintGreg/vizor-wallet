@@ -680,7 +680,8 @@ a sync's large block download (below).
 - **Large block downloads leave Tor.** A sync session whose estimated
   compact-block download, counting only the ranges it may fetch directly
   (`direct_download_bytes`), reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` fetches its
-  main-scan batches (`GetBlockRange` and the batch-start `GetTreeState`) over
+  main-scan batches (`GetBlockRange`, the batch-start `GetTreeState`, and
+  `GetBlock` for the predecessor's hash when the first block carries none) over
   `open_block_download_lwd_transport`, which skips the direct-route lease.
   Compact blocks are public, and one circuit would take hours for a restore.
   The threshold is per platform, like the batch sizes: 256 MiB on desktop,
