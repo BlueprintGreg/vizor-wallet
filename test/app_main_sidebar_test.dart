@@ -61,6 +61,7 @@ void main() {
   const failureLabels = {
     SyncFailureKind.privateStatusCoverage: 'Syncing failed. Private lookup...',
     SyncFailureKind.endpoint: 'Syncing failed. Endpoint error...',
+    SyncFailureKind.endpointOutdated: 'Syncing failed. Endpoint outdated...',
     SyncFailureKind.databaseBusy: 'Syncing failed. Wallet data busy...',
     SyncFailureKind.databaseFatal: 'Syncing failed. Wallet data error...',
     SyncFailureKind.chainRecovery: 'Syncing failed. Chain recovery...',

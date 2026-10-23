@@ -19,6 +19,19 @@ void main() {
     expect(failure.actionLabel, 'Settings');
   });
 
+  test('classifies a block rejected for its upgrade as an outdated endpoint', () {
+    final failure = classifySyncFailure(
+      "network: get_block_range: code: 'Client specified an invalid argument', "
+      'message: "GetBlock: getblock failed, error: error parsing block: error '
+      'parsing transaction 0: consensus branch ID 0x77190AD9 must be '
+      '0x37A5165B"',
+    );
+
+    expect(failure.kind, SyncFailureKind.endpointOutdated);
+    expect(failure.settingsRoute, '/settings/endpoint');
+    expect(failure.actionLabel, 'Settings');
+  });
+
   test(
     'classifies incomplete private status coverage as privacy settings action',
     () {

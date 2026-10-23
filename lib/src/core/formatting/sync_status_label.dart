@@ -134,6 +134,7 @@ String _syncFailureReason(SyncFailureKind kind) {
     SyncFailureKind.torUnavailable => kSyncStatusTorFailedSemanticsLabel,
     SyncFailureKind.privateStatusCoverage => 'Private lookup',
     SyncFailureKind.endpoint => 'Endpoint error',
+    SyncFailureKind.endpointOutdated => 'Endpoint outdated',
     SyncFailureKind.databaseBusy => 'Wallet data busy',
     SyncFailureKind.databaseFatal => 'Wallet data error',
     SyncFailureKind.chainRecovery => 'Chain recovery',

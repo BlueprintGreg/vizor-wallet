@@ -6,6 +6,10 @@ enum SyncFailureKind {
   torUnavailable,
   privateStatusCoverage,
   endpoint,
+
+  /// The endpoint rejects blocks from a network upgrade it does not support,
+  /// so sync stays stuck until the user picks another endpoint.
+  endpointOutdated,
   databaseBusy,
   databaseFatal,
   chainRecovery,
@@ -30,7 +34,8 @@ class SyncFailure {
 
   String? get settingsRoute => switch (kind) {
     SyncFailureKind.privateStatusCoverage => '/settings',
-    SyncFailureKind.endpoint => '/settings/endpoint',
+    SyncFailureKind.endpoint ||
+    SyncFailureKind.endpointOutdated => '/settings/endpoint',
     _ => null,
   };
 
@@ -63,6 +68,9 @@ SyncFailureKind _classifySyncFailureKind(String lower) {
   if (lower.contains('private status coverage incomplete')) {
     return SyncFailureKind.privateStatusCoverage;
   }
+  if (_looksLikeOutdatedEndpoint(lower)) {
+    return SyncFailureKind.endpointOutdated;
+  }
   if (_looksLikeEndpointFailure(lower)) {
     return SyncFailureKind.endpoint;
   }
@@ -85,6 +93,12 @@ SyncFailureKind _classifySyncFailureKind(String lower) {
     return SyncFailureKind.network;
   }
   return SyncFailureKind.unknown;
+}
+
+/// lightwalletd's block parser names the branch it expected, e.g.
+/// "consensus branch ID 0x77190AD9 must be 0x37A5165B".
+bool _looksLikeOutdatedEndpoint(String lower) {
+  return lower.contains('consensus branch id') && lower.contains('must be');
 }
 
 bool _looksLikeEndpointFailure(String lower) {
@@ -152,6 +166,8 @@ String _syncFailureUserMessage(SyncFailureKind kind) {
       "Private transaction lookup couldn't determine a transaction's status. Turn off experimental private queries in Settings to continue syncing.",
     SyncFailureKind.endpoint =>
       'Cannot reach the configured Zcash endpoint. Check your endpoint settings.',
+    SyncFailureKind.endpointOutdated =>
+      "This endpoint doesn't support the latest network upgrade. Choose another endpoint in Settings.",
     SyncFailureKind.databaseBusy =>
       "Wallet data is busy. We'll try syncing again automatically.",
     SyncFailureKind.databaseFatal =>
