@@ -291,10 +291,16 @@ pub(crate) async fn open_block_download_lwd_transport(
 
 /// Whether a sync session may download its blocks from `lightwalletd_url`
 /// directly. An onion service is reachable only over Tor, and dialing one
-/// directly would send its name to the system resolver.
+/// directly would send its name to the system resolver. The fully qualified
+/// spelling, with a trailing dot, names the same service.
 pub(crate) fn block_download_can_go_direct(lightwalletd_url: &str) -> bool {
-    Endpoint::from_shared(lightwalletd_url.to_string())
-        .is_ok_and(|endpoint| !endpoint_allows_onion_services(&endpoint))
+    Endpoint::from_shared(lightwalletd_url.to_string()).is_ok_and(|endpoint| {
+        !endpoint.uri().host().is_some_and(|host| {
+            host.trim_end_matches('.')
+                .to_ascii_lowercase()
+                .ends_with(".onion")
+        })
+    })
 }
 
 async fn open_unleased_direct_transport(lightwalletd_url: &str) -> Result<Channel, SyncError> {
@@ -1203,6 +1209,7 @@ mod tests {
             ("https://zec.rocks:443", true),
             ("https://lightwalletd.example.onion:443", false),
             ("https://LIGHTWALLETD.EXAMPLE.ONION:443", false),
+            ("https://lightwalletd.example.onion.:443", false),
         ] {
             assert_eq!(block_download_can_go_direct(url), expected, "{url}");
         }
