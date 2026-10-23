@@ -270,7 +270,7 @@ String _swapActivityAmountText(
       ? refundedAmount!
       : item.sellAmountText;
   if (amount.trim().isEmpty) return '--';
-  if (!includeSign) return amount;
+  if (!includeSign || amount == kSwapAmountNotReported) return amount;
   return '-$amount';
 }
 
@@ -287,7 +287,9 @@ String _swapActivityReceiveAmountText(
   }
   final amount = item.receiveEstimateText.trim();
   if (amount.isEmpty) return '--';
-  if (amount.startsWith('+')) return amount;
+  if (amount.startsWith('+') || amount == kSwapAmountNotReported) {
+    return amount;
+  }
   return '+$amount';
 }
 

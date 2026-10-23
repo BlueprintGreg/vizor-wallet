@@ -269,20 +269,27 @@ SwapIntent updateSwapIntentFromSnapshot(
   // Null fields leave the stored values in place.
   final presentation = snapshot.statusOnly ? null : snapshot;
   // A status-only snapshot cannot state a finished swap's amounts, and the
-  // saved quote is no result: it shows the payout, and a flexible input's
-  // deposit, as the snapshot's "not reported" text instead.
+  // saved quote is no result. A completion shows its payout, and a flexible
+  // input's deposit, as not reported. A refund without a verified refunded
+  // amount shows its sent side as not reported too, since Activity reads that
+  // side as the refund.
   final unsettled = snapshot.statusOnly && status == SwapIntentStatus.complete;
+  final refundUnknown =
+      snapshot.statusOnly &&
+      status == SwapIntentStatus.refunded &&
+      !_hasPositiveAmount(providerRefundInfo?.refundedAmountText);
   final record = SwapIntentRecord.fromIntent(intent).copyWith(
     providerLabel: presentation?.providerLabel,
     pairText: presentation?.pairText,
     sellAmountText:
         presentation?.sellAmountText ??
-        (unsettled && snapshot.providerSwapType == 'FLEX_INPUT'
-            ? snapshot.sellAmountText
+        ((unsettled && snapshot.providerSwapType == 'FLEX_INPUT') ||
+                refundUnknown
+            ? kSwapAmountNotReported
             : null),
     receiveEstimateText:
         presentation?.receiveEstimateText ??
-        (unsettled ? snapshot.receiveEstimateText : null),
+        (unsettled ? kSwapAmountNotReported : null),
     status: status,
     nextAction: nextAction,
     sellAmountBaseUnits: presentation?.sellAmountBaseUnits,
@@ -394,4 +401,13 @@ bool _snapshotHasDepositEvidence(SwapIntentSnapshot snapshot) {
         originChainTxHash: snapshot.originChainTxHash,
         broadcastStatus: null,
       );
+}
+
+/// Whether `text` starts with a positive amount, as a verified refund does
+/// (the same reading as Activity's refund rows).
+bool _hasPositiveAmount(String? text) {
+  final amount = double.tryParse(
+    (text ?? '').trim().split(RegExp(r'\s+')).first.replaceAll(',', ''),
+  );
+  return amount != null && amount.isFinite && amount > 0;
 }

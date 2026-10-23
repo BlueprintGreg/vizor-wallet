@@ -24,12 +24,18 @@ class _Check extends SwapHistoryCheckNotifier {
   SwapHistoryCheck build() => shown;
 }
 
-/// The control at phone width in `theme`, showing `check`.
-Widget _control(AppThemeData theme, SwapHistoryCheck check) => ProviderScope(
+/// The control at phone width in `theme`, showing `check`, with the wallet
+/// calls of `api` when given.
+Widget _control(
+  AppThemeData theme,
+  SwapHistoryCheck check, {
+  SwapHistoryApi? api,
+}) => ProviderScope(
   overrides: [
     nearSwapPrivacyProvider.overrideWith(_Privacy.new),
     swapRecoveryStatusReaderProvider.overrideWithValue(() async => null),
     swapHistoryCheckProvider.overrideWith(() => _Check(check)),
+    if (api != null) swapHistoryApiProvider.overrideWithValue(api),
   ],
   child: MaterialApp(
     builder: (context, child) => AppTheme(data: theme, child: child!),
@@ -99,5 +105,29 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('interrupted'), findsNothing);
+  });
+
+  testWidgets('a check waiting for sync can still pause a saved job', (
+    tester,
+  ) async {
+    var cancelled = 0;
+    await tester.pumpWidget(
+      _control(
+        AppThemeData.dark,
+        SwapHistoryCheck.waitingForSync,
+        api: SwapHistoryApi(
+          begin: (_) async {},
+          cancel: () async => cancelled++,
+          status: () async => throw StateError('not polled'),
+        ),
+      ),
+    );
+    await tester.pump();
+    final pause = find.byKey(const ValueKey('settings_cancel_swap_history'));
+    expect(pause, findsOneWidget);
+    await tester.tap(pause);
+    await tester.pumpAndSettle();
+    expect(cancelled, 1);
+    expect(find.text('Paused. Check again to resume.'), findsOneWidget);
   });
 }

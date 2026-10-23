@@ -10,7 +10,7 @@ part 'near_intents_one_click_json.dart';
 part 'near_intents_one_click_models.dart';
 part 'near_intents_one_click_transport.dart';
 
-const _notReportedText = 'Not reported';
+const _notReportedText = kSwapAmountNotReported;
 
 class NearIntentsOneClickSwapAdapter
     implements SwapProvider, SwapPricingProvider {

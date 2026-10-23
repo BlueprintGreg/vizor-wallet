@@ -4,6 +4,10 @@ import 'swap_fiat_value_basis.dart';
 import 'swap_intent_status.dart';
 import 'swap_quote.dart';
 
+/// Shown for an amount the provider's status cannot state, such as a swap
+/// whose token it no longer lists.
+const kSwapAmountNotReported = 'Not reported';
+
 class SwapIntentSnapshot {
   const SwapIntentSnapshot({
     required this.id,
