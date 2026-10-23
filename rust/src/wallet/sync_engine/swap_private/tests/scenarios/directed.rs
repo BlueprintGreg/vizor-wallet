@@ -506,9 +506,17 @@ fn a_restored_device_never_reuses_a_funded_refund_key() {
     world.mine(1);
     world.sync(restored, true);
     settle(&mut world, restored);
+    let before = world.quotes.len();
     let line = world.quote_out(restored, 0, 3_600).unwrap();
-    assert!(
-        !line.starts_with("R0 "),
-        "the restored device reused R0: {line}"
+    assert_eq!(
+        world.quotes.len(),
+        before + 1,
+        "the restored device recorded a refund quote: {line}"
+    );
+    let quote = &world.quotes[before];
+    assert!(quote.dev == restored && !quote.incoming);
+    assert_eq!(
+        quote.index, 1,
+        "the restored device reserved R1, not R0: {line}"
     );
 }
