@@ -1150,6 +1150,44 @@ Widget buildDesktopHomeSetupImportingUseCase(BuildContext context) =>
 Widget buildDesktopHomeCachedBalanceUseCase(BuildContext context) =>
     _buildDesktopHomeStartupUseCase(cached: true);
 
+Widget buildDesktopHomeActivitySkeletonUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: false, loading: true);
+
+Widget buildDesktopHomeFiveActivitiesUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: false, loading: false);
+
+Widget buildMobileHomeActivitySkeletonUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: true, loading: true);
+
+Widget buildMobileHomeFiveActivitiesUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: true, loading: false);
+
+/// Identical account, balance, banners and viewport; only Activity changes.
+Widget _buildHomeActivityComparison({
+  required bool mobile,
+  required bool loading,
+}) {
+  final sync = _homeSyncedState(
+    orchardBalance: BigInt.from(250000000),
+    recentTransactions: loading
+        ? const []
+        : [for (var i = 1; i <= 5; i++) _homeTx(i)],
+  ).copyWith(hasRecentTransactionsData: !loading);
+  return mobile
+      ? _buildMobileHomeUseCase(
+          accountState: _accountsDesignState,
+          syncState: sync,
+          votingVisible: false,
+          constrainToPreviewFrame: false,
+        )
+      : _buildDesktopHomeUseCase(
+          accountState: _accountsDesignState,
+          syncState: sync,
+          migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+          zecUsdPrice: 70,
+        );
+}
+
 Widget buildDesktopHomeUnknownBalanceUseCase(BuildContext context) =>
     _buildDesktopHomeStartupUseCase();
 

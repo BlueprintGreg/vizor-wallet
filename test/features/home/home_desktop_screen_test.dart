@@ -1,3 +1,5 @@
+import 'package:zcash_wallet/src/features/home/widgets/home_activity_skeleton.dart';
+import 'package:zcash_wallet/src/features/activity/swap_activity_row_items_provider.dart';
 import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
@@ -1261,6 +1263,130 @@ void main() {
     await tester.pump();
   });
 
+  for (final height in [600.0, 720.0, 900.0]) {
+    testWidgets('five skeleton rows match loaded desktop geometry at $height', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(1080, height);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final initial = SyncState(
+        accountUuid: 'account-1',
+        hasBalanceData: true,
+        orchardBalance: BigInt.from(250000000),
+        totalBalance: BigInt.from(250000000),
+      );
+      await tester.pumpWidget(_appHarness('/home', syncState: initial));
+      await tester.pumpAndSettle();
+      final card = find.byKey(const ValueKey('home_desktop_activity_card'));
+      final before = tester.getRect(card);
+      final rows = [
+        for (var i = 0; i < 5; i++)
+          tester.getRect(
+            find.byKey(ValueKey('home_desktop_activity_skeleton_$i')),
+          ),
+      ];
+      final header = tester.getRect(find.text('Recent activity'));
+      final seeAll = tester.getRect(find.text('See all'));
+      final balance = tester.getRect(
+        find.byKey(const ValueKey('home_desktop_balance_amount_text')),
+      );
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(HomeScreen)),
+      );
+      (container.read(syncProvider.notifier) as FakeSyncNotifier).emit(
+        initial.copyWith(
+          hasRecentTransactionsData: true,
+          recentTransactions: [
+            for (var i = 0; i < 5; i++)
+              _receivedZecTx(
+                txidHex: 'geometry-$i',
+                amountZatoshi: 100000000,
+                blockTime: 1800000000 + i,
+              ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(card), before);
+      expect(tester.getRect(find.text('Recent activity')), header);
+      expect(tester.getRect(find.text('See all')), seeAll);
+      expect(
+        tester.getRect(
+          find.byKey(const ValueKey('home_desktop_balance_amount_text')),
+        ),
+        balance,
+      );
+      for (var i = 0; i < 5; i++) {
+        expect(
+          tester.getRect(find.byKey(ValueKey('home_desktop_activity_row_$i'))),
+          rows[i],
+        );
+      }
+      expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets(
+    'local card records finish before showing the empty illustration',
+    (tester) async {
+      final cards = Completer<GiftCardActivityIndex>();
+      await tester.pumpWidget(
+        _appHarness(
+          '/home',
+          syncState: _syncedSyncState,
+          giftCardActivityFuture: cards.future,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
+      expect(find.text('No activity, yet...'), findsNothing);
+      cards.complete(GiftCardActivityIndex.empty);
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+      expect(find.text('No activity, yet...'), findsOneWidget);
+    },
+  );
+
+  testWidgets('local card read failure does not look empty or keep skeletons', (
+    tester,
+  ) async {
+    final cards = Completer<GiftCardActivityIndex>();
+    await tester.pumpWidget(
+      _appHarness(
+        '/home',
+        syncState: _syncedSyncState,
+        giftCardActivityFuture: cards.future,
+      ),
+    );
+    await tester.pumpAndSettle();
+    cards.completeError(StateError('local read failed'));
+    await tester.pumpAndSettle();
+    expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+    expect(find.text('Unable to load activity.'), findsOneWidget);
+    expect(find.text('No activity, yet...'), findsNothing);
+  });
+
+  testWidgets(
+    'network sync failure does not classify unread history as empty',
+    (tester) async {
+      await tester.pumpWidget(
+        _appHarness(
+          '/home',
+          syncState: SyncState(
+            accountUuid: 'account-1',
+            failure: classifySyncFailure('network: connection failed'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
+      expect(find.text('No activity, yet...'), findsNothing);
+    },
+  );
+
   testWidgets('home desktop keeps recovery notice visible', (tester) async {
     await tester.pumpWidget(
       _appHarness('/home', passwordRotationRecoveryFailed: true),
@@ -1291,14 +1417,14 @@ void main() {
         find.byKey(const ValueKey('home_desktop_balance_amount_text')),
       );
       expect(amount.data, '—');
-      expect(find.text('Loading activity...'), findsOneWidget);
+      expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
     },
   );
 
   for (final height in [600.0, 720.0, 900.0]) {
     for (final failed in [false, true]) {
       testWidgets(
-        'activity message stays centered at height=$height failed=$failed',
+        'activity loading and error layout at height=$height failed=$failed',
         (tester) async {
           tester.view.physicalSize = Size(1080, height);
           tester.view.devicePixelRatio = 1;
@@ -1317,27 +1443,22 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          final area = find.byKey(
-            const ValueKey('home_desktop_empty_activity'),
-          );
-          final message = find.text(
-            failed ? 'Unable to load activity.' : 'Loading activity...',
-          );
-          expect(
-            tester.getCenter(message).dx,
-            closeTo(tester.getCenter(area).dx, 0.1),
-          );
-          expect(
-            tester.getCenter(message).dy,
-            closeTo(tester.getCenter(area).dy, 0.1),
-          );
-          final viewport = find.byKey(
-            const ValueKey('home_desktop_scroll_view'),
-          );
-          final scrollable = tester.state<ScrollableState>(
-            find.descendant(of: viewport, matching: find.byType(Scrollable)),
-          );
-          expect(scrollable.position.maxScrollExtent, 0);
+          if (failed) {
+            final area = find.byKey(
+              const ValueKey('home_desktop_empty_activity'),
+            );
+            final message = find.text('Unable to load activity.');
+            expect(tester.getCenter(message), tester.getCenter(area));
+            expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+          } else {
+            expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
+            expect(find.text('Recent activity'), findsOneWidget);
+            expect(find.text('See all'), findsOneWidget);
+            expect(
+              find.byKey(const ValueKey('home_desktop_empty_activity')),
+              findsNothing,
+            );
+          }
           expect(
             find.text('How about running your first ZEC tx?'),
             findsNothing,
@@ -1704,6 +1825,7 @@ Widget _appHarness(
   SyncState? syncState,
   SwapActivityStore? swapActivityStore,
   GiftCardActivityIndex? giftCardActivityIndex,
+  Future<GiftCardActivityIndex>? giftCardActivityFuture,
   ThemeMode themeMode = ThemeMode.system,
   IronwoodHomeMigrationCtaState ironwoodHomeMigrationCtaState =
       const IronwoodHomeMigrationCtaState.hidden(),
@@ -1752,9 +1874,15 @@ Widget _appHarness(
       swapIntentProvider.overrideWithValue(const _FakeSwapProvider()),
       if (swapActivityStore != null)
         swapActivityStoreProvider.overrideWithValue(swapActivityStore),
-      if (giftCardActivityIndex != null)
-        giftCardActivityIndexProvider.overrideWith(
-          (ref, accountUuid) async => giftCardActivityIndex,
+      giftCardActivityIndexProvider.overrideWith(
+        (ref, accountUuid) async =>
+            giftCardActivityFuture ??
+            giftCardActivityIndex ??
+            GiftCardActivityIndex.empty,
+      ),
+      if (swapActivityStore == null)
+        swapActivityRowItemsProvider.overrideWith(
+          (ref, accountUuid) async => const [],
         ),
       ironwoodHomeMigrationCtaProvider.overrideWith((ref) async {
         return ironwoodHomeMigrationCtaState;

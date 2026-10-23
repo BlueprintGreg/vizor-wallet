@@ -2,6 +2,8 @@
 library;
 
 import 'dart:async';
+import 'package:zcash_wallet/src/features/home/widgets/home_activity_skeleton.dart';
+import 'package:zcash_wallet/src/features/activity/swap_activity_row_items_provider.dart';
 import 'dart:convert';
 
 import 'package:zcash_wallet/src/providers/voting/voting_home_cache_provider.dart';
@@ -240,6 +242,7 @@ Widget _app(
   Set<String> seenMigrationAttentionFingerprints = const {},
   SwapActivityStore? swapActivityStore,
   GiftCardActivityIndex? giftCardActivityIndex,
+  Future<GiftCardActivityIndex>? giftCardActivityFuture,
   AppThemeData theme = AppThemeData.dark,
   AccountState accountState = _accountState,
   Widget Function(GoRouterState)? receiptBuilder,
@@ -415,9 +418,15 @@ Widget _app(
       ),
       if (swapActivityStore != null)
         swapActivityStoreProvider.overrideWithValue(swapActivityStore),
-      if (giftCardActivityIndex != null)
-        giftCardActivityIndexProvider.overrideWith(
-          (ref, accountUuid) async => giftCardActivityIndex,
+      giftCardActivityIndexProvider.overrideWith(
+        (ref, accountUuid) async =>
+            giftCardActivityFuture ??
+            giftCardActivityIndex ??
+            GiftCardActivityIndex.empty,
+      ),
+      if (swapActivityStore == null)
+        swapActivityRowItemsProvider.overrideWith(
+          (ref, accountUuid) async => const [],
         ),
     ],
     child: MaterialApp.router(
@@ -1203,7 +1212,7 @@ void main() {
         find.byKey(const ValueKey('mobile_home_shielded_balance')),
       );
       expect(amount.textSpan!.toPlainText(), contains('—'));
-      expect(find.text('Loading activity...'), findsOneWidget);
+      expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
       expect(
         find.byKey(const ValueKey('mobile_home_importing_background')),
         findsNothing,
@@ -1230,8 +1239,120 @@ void main() {
       find.byKey(const ValueKey('mobile_home_shielded_balance')),
     );
     expect(amount.textSpan!.toPlainText(), contains('2.5'));
-    expect(find.text('Loading activity...'), findsOneWidget);
+    expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
     expect(find.text('No activity, yet...'), findsNothing);
+  });
+
+  for (final width in [320.0, 393.0, 440.0]) {
+    testWidgets('five skeleton rows match loaded mobile geometry at $width', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(Size(width, 852));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final initial = _syncedState(
+        orchardBalance: BigInt.from(250000000),
+      ).copyWith(hasRecentTransactionsData: false);
+      final sync = FakeSyncNotifier(initial);
+      await tester.pumpWidget(
+        _app(initial, syncNotifier: sync, showVoting: false),
+      );
+      await tester.pumpAndSettle();
+      final list = find.byKey(const ValueKey('mobile_home_activity_list'));
+      final before = tester.getRect(list);
+      final rows = [
+        for (var i = 0; i < 5; i++)
+          tester.getRect(
+            find.byKey(ValueKey('mobile_home_activity_skeleton_$i')),
+          ),
+      ];
+      final header = tester.getRect(find.text('Recent activity'));
+      final seeAll = tester.getRect(find.text('See all'));
+      final balance = tester.getRect(
+        find.byKey(const ValueKey('mobile_home_shielded_balance')),
+      );
+      sync.emit(
+        initial.copyWith(
+          hasRecentTransactionsData: true,
+          recentTransactions: [for (var i = 0; i < 5; i++) _tx(i + 1)],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(list), before);
+      expect(tester.getRect(find.text('Recent activity')), header);
+      expect(tester.getRect(find.text('See all')), seeAll);
+      expect(
+        tester.getRect(
+          find.byKey(const ValueKey('mobile_home_shielded_balance')),
+        ),
+        balance,
+      );
+      for (var i = 0; i < 5; i++) {
+        expect(
+          tester.getRect(find.byKey(ValueKey('mobile_home_activity_row_$i'))),
+          rows[i],
+        );
+      }
+      // Mobile still displays ten real rows. Loading reserves five, and
+      // later rows extend below the prefix without moving its existing rows.
+      sync.emit(
+        initial.copyWith(
+          hasRecentTransactionsData: true,
+          recentTransactions: [for (var i = 0; i < 10; i++) _tx(i + 1)],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.text('Recent activity')), header);
+      expect(tester.getRect(find.text('See all')), seeAll);
+      for (var i = 0; i < 5; i++) {
+        expect(
+          tester.getRect(find.byKey(ValueKey('mobile_home_activity_row_$i'))),
+          rows[i],
+        );
+      }
+      expect(tester.getRect(list).topLeft, before.topLeft);
+      expect(
+        tester.getRect(list).height,
+        before.height + 5 * (44 + AppSpacing.s),
+      );
+      expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('local card records finish before mobile empty illustration', (
+    tester,
+  ) async {
+    final cards = Completer<GiftCardActivityIndex>();
+    await tester.pumpWidget(
+      _app(_syncedState(), giftCardActivityFuture: cards.future),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(HomeActivitySkeletonRow), findsNWidgets(5));
+    expect(find.text('No activity, yet...'), findsNothing);
+    cards.complete(GiftCardActivityIndex.empty);
+    await tester.pumpAndSettle();
+    expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+    expect(find.text('No activity, yet...'), findsOneWidget);
+  });
+
+  testWidgets('mobile keeps real rows while card metadata loads', (
+    tester,
+  ) async {
+    final cards = Completer<GiftCardActivityIndex>();
+    await tester.pumpWidget(
+      _app(
+        _syncedState().copyWith(recentTransactions: [_tx(1)]),
+        giftCardActivityFuture: cards.future,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mobile_home_activity_row_0')),
+      findsOneWidget,
+    );
+    expect(find.byType(HomeActivitySkeletonRow), findsNothing);
+    cards.complete(GiftCardActivityIndex.empty);
+    await tester.pumpAndSettle();
   });
 
   testWidgets('shows the importing state before account data exists', (

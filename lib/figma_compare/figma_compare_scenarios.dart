@@ -373,6 +373,32 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
+    id: 'desktop-home-activity-skeleton',
+    description: 'Home Activity skeleton with five rows',
+    builder: buildDesktopHomeActivitySkeletonUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-five-activities',
+    description: 'Same Home layout with five loaded Activity rows',
+    builder: buildDesktopHomeFiveActivitiesUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-activity-skeleton',
+    description: 'Mobile Home Activity skeleton with five rows',
+    builder: buildMobileHomeActivitySkeletonUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-five-activities',
+    description: 'Same mobile Home layout with five loaded Activity rows',
+    builder: buildMobileHomeFiveActivitiesUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
     id: 'desktop-home-unknown-balance',
     description: 'Home and sidebar do not turn an unknown balance into zero',
     builder: buildDesktopHomeUnknownBalanceUseCase,
