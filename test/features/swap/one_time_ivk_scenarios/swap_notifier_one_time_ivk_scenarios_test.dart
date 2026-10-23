@@ -159,6 +159,47 @@ void main() {
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
   }
 
+  /// When the load-time poll fails, expired quotes still hold every address at
+  /// the first quote. The limit itself must refresh their statuses, which
+  /// frees them, and the one retry then reserves an address.
+  test('a limit refreshes held expired quotes and retries once', () async {
+    final expired = [
+      for (var i = 1; i <= 4; i++)
+        _privateIncomingSwap(
+          'held-$i',
+          deadline: DateTime.now().toUtc().subtract(const Duration(hours: 1)),
+        ),
+    ];
+    late _Harness h;
+    h = await _Harness.create(
+      intents: expired,
+      failStatuses: true,
+      reserve: (account) async {
+        if (h.recorded.length < expired.length) {
+          throw const api.ReceiveError(
+            message:
+                'No swap address is free. Wait for a swap in progress to '
+                'finish.',
+            kind: api.ReceiveErrorKind.limit,
+          );
+        }
+        return SwapZecStagingAddress(
+          address: 'u1freed',
+          reservationIndex: BigInt.one,
+        );
+      },
+    );
+    expect(h.recorded, isEmpty, reason: 'the load-time poll failed');
+    h.provider
+      ..failStatuses = false
+      ..status = SwapIntentStatus.awaitingExternalDeposit;
+    await h.review('25');
+    expect(h.reservations, 2, reason: 'the first reservation hit the limit');
+    expect(h.recorded, hasLength(expired.length));
+    expect(h.state.quoteError, isNull);
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
+  });
+
   /// Control for the next test: quotes that expired within the last day are
   /// refreshed when a limit blocks a new quote.
   test(
@@ -276,15 +317,19 @@ class _Harness {
   /// Builds the notifier, with `intents` saved for the first account, and
   /// waits for its asset catalog. `reserve` defaults to a new incoming
   /// reservation per call, numbered across accounts. The wallet's first
-  /// terminal record fails when `failTerminalRecordsOnce`.
+  /// terminal record fails when `failTerminalRecordsOnce`, and status
+  /// requests fail until cleared when `failStatuses`.
   static Future<_Harness> create({
     List<SwapIntent> intents = const [],
     Future<SwapZecStagingAddress> Function(String account)? reserve,
     bool failTerminalRecordsOnce = false,
+    bool failStatuses = false,
     SwapIntentStatus providerStatus = SwapIntentStatus.processing,
   }) async {
     final sync = _Sync();
-    final provider = _Provider()..status = providerStatus;
+    final provider = _Provider()
+      ..status = providerStatus
+      ..failStatuses = failStatuses;
     final reservationStore = _Reservations();
     final activity = _MemoryStore(intents);
     late _Harness h;
@@ -460,6 +505,9 @@ class _Reservations extends Fake implements ReceiveReservationStore {
 /// configurable status and deposit-submission answers.
 class _Provider implements SwapProvider {
   SwapIntentStatus status = SwapIntentStatus.processing;
+
+  /// Whether status requests fail.
+  var failStatuses = false;
   SwapIntentStatus submitStatus = SwapIntentStatus.depositObserved;
   final statusRequests = <String>[];
 
@@ -511,13 +559,14 @@ class _Provider implements SwapProvider {
   Future<SwapIntentSnapshot> startSwap(SwapQuote quote) async =>
       SwapIntentSnapshot.fromQuote(quote, id: quote.depositInstruction.address);
 
-  /// Answers [status] for `intentId`.
+  /// Answers [status] for `intentId`, or fails while [failStatuses].
   @override
   Future<SwapIntentSnapshot> getStatus(
     String intentId, {
     String? depositMemo,
   }) async {
     statusRequests.add(intentId);
+    if (failStatuses) throw StateError('provider unavailable');
     return _snapshot(intentId, status);
   }
 
