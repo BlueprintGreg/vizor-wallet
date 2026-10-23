@@ -127,9 +127,12 @@ class _SwapHistoryCheckControlState
                 size: AppButtonSize.medium,
                 child: const Text('Check swap history'),
               ),
+              // A check waiting for sync may follow a saved job that later
+              // rounds resume, so it can still be paused.
               if (running ||
                   check == SwapHistoryCheck.continuing ||
-                  check == SwapHistoryCheck.failed)
+                  check == SwapHistoryCheck.failed ||
+                  check == SwapHistoryCheck.waitingForSync)
                 AppButton(
                   key: const ValueKey('settings_cancel_swap_history'),
                   onPressed: () => unawaited(

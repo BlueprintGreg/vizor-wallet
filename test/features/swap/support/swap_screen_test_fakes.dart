@@ -766,6 +766,37 @@ class _HistoryPendingStartStore extends Fake
       );
 }
 
+/// Incoming reservation records whose start waits until [release], returning
+/// the deposit instructions the quote was saved with.
+class _HeldStartReservationStore extends Fake
+    implements ReceiveReservationStore {
+  final _held = Completer<void>();
+  final _accepted = <String, SwapQuote>{};
+
+  /// Lets the held start finish.
+  void release() => _held.complete();
+
+  @override
+  Future<String> begin(BigInt reservation, DateTime deadline) async =>
+      'request-$reservation';
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) async {
+    if (accepted != null) _accepted[request] = accepted;
+  }
+
+  @override
+  Future<ReceiveDeposit> start(String request) async {
+    await _held.future;
+    final deposit = _accepted[request]!.depositInstruction;
+    return ReceiveDeposit(
+      address: deposit.address,
+      memo: deposit.memo,
+      deadlineSeconds: PlatformInt64Util.from(0),
+    );
+  }
+}
+
 /// Reserves `<prefix><n>` on the n-th call, as the wallet does: a refund key
 /// for a direction that sends ZEC, otherwise an incoming reservation.
 class _CountingReservations {
