@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../main.dart' show log;
 import '../../../providers/network_privacy_provider.dart';
 import '../../ledger/services/ledger_operation_lifecycle.dart';
+import '../integrations/near_intents/near_intents_one_click_swap_adapter.dart'
+    show OneClickStatusOnlyException;
 import '../models/swap_intent_presentation_mapper.dart';
 import '../models/swap_models.dart';
 import 'swap_activity_store.dart';
@@ -386,10 +388,18 @@ class SwapActivityTracker {
     SwapIntent intent, {
     DateTime? checkedAt,
   }) async {
-    final snapshot = await _swapProvider.getStatus(
-      _providerDepositAddress(intent),
-      depositMemo: intent.depositMemo,
-    );
+    SwapIntentSnapshot snapshot;
+    try {
+      snapshot = await _swapProvider.getStatus(
+        _providerDepositAddress(intent),
+        depositMemo: intent.depositMemo,
+      );
+    } on OneClickStatusOnlyException catch (error) {
+      // The wallet needs a private swap's status even when its amounts cannot
+      // be read. An ordinary swap fails the refresh as it always has.
+      if (!intent.privateAddress) rethrow;
+      snapshot = error.snapshot;
+    }
     final tracked = await recordProviderSnapshot(
       intent,
       snapshot,

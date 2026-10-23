@@ -251,7 +251,21 @@ class NearIntentsOneClickSwapAdapter
         receiveAsset == null ||
         sellToken == null ||
         receiveToken == null) {
-      return _statusOnlySnapshot(response, sellAsset, receiveAsset);
+      // The same failure an unreadable pair always was, carrying what the
+      // status alone says for callers that need it (see
+      // [OneClickStatusOnlyException]).
+      final message = sellAsset == null || receiveAsset == null
+          ? 'Unsupported 1Click status pair: '
+                '${request.originAsset} -> ${request.destinationAsset}'
+          : 'NEAR Intents does not currently list '
+                '${(sellToken == null ? sellAsset : receiveAsset).symbol}';
+      final SwapIntentSnapshot statusOnly;
+      try {
+        statusOnly = _statusOnlySnapshot(response, sellAsset, receiveAsset);
+      } on OneClickApiException {
+        throw OneClickApiException(message, operation: 'status');
+      }
+      throw OneClickStatusOnlyException(message, snapshot: statusOnly);
     }
     final direction = sellAsset == SwapAsset.zec
         ? SwapDirection.zecToExternal
