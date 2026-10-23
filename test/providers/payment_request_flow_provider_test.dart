@@ -42,6 +42,10 @@ class _FakeSendApi {
   /// read the balance and before it decides anything.
   void Function()? whileValidating;
 
+  /// Runs right after the check's final balance read, so a test can move the
+  /// wallet between the verdict and the card showing it.
+  void Function()? afterSpendableRead;
+
   /// Set by [makeContainer], so the live balance re-read answers from the
   /// providers the production wiring reads.
   ProviderContainer? container;
@@ -69,12 +73,14 @@ class _FakeSendApi {
     spendableBalanceNow: () {
       final read = container;
       if (read == null) return BigInt.zero;
-      return paymentRequestSpendableOf(
+      final spendable = paymentRequestSpendableOf(
         (read.read(syncProvider).value ?? SyncState()).scopedToAccount(
           read.read(accountProvider).value?.activeAccountUuid,
         ),
         gatedByMigration: read.read(migrationSendGateProvider),
       );
+      afterSpendableRead?.call();
+      return spendable;
     },
     // The production wiring reads this off `rpcEndpointProvider`; these
     // cases never vary it, so the build default stands in.
@@ -1097,6 +1103,33 @@ void main() {
       final state = flowState(container)!;
       expect(state.view.status, PaymentRequestStatus.ready);
       expect(state.reviewArgs!.amountZatoshi, BigInt.from(110000));
+    },
+  );
+
+  test(
+    'funds that land while the shortfall is being shown re-check it',
+    () async {
+      final api = _FakeSendApi();
+      final container = makeContainer(
+        api,
+        sync: syncedState(spendable: BigInt.from(21000000)),
+      );
+      // The wallet settles on more right after the check reads the balance,
+      // before the verdict reaches the card.
+      api.afterSpendableRead = () {
+        api.afterSpendableRead = null;
+        syncNotifier(
+          container,
+        ).emit(syncedState(spendable: BigInt.from(100000000)));
+      };
+
+      container
+          .read(paymentRequestFlowProvider.notifier)
+          .present(request('u1a'), source: PaymentRequestSource.link);
+      await pumpEventQueue();
+
+      expect(flowState(container)!.view.status, PaymentRequestStatus.ready);
+      expect(api.proposed, [BigInt.one]);
     },
   );
 

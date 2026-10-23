@@ -323,8 +323,14 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
   /// Keyed on the balance rather than on each finished sync, because a
   /// re-check publishes `checking` first — re-asking every block would flash
   /// the card back to the same answer.
-  void _watchBalanceForRecheck() {
-    _shortfallSpendable = _spendableOf(ref.read(syncProvider).value);
+  ///
+  /// [decidedOn] is the balance the verdict was computed from. The check reads
+  /// it before an await, so the wallet may already have moved past it by the
+  /// time the verdict is shown; a watch keyed on the current balance would
+  /// then never fire, so that case re-checks at once.
+  void _watchBalanceForRecheck({BigInt? decidedOn}) {
+    final sync = ref.read(syncProvider).value;
+    _shortfallSpendable = decidedOn ?? _spendableOf(sync);
     _balanceWatch ??= ref.listen<AsyncValue<SyncState>>(syncProvider, (
       _,
       next,
@@ -336,6 +342,21 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
       if (current == null ||
           current.view.status != PaymentRequestStatus.insufficientFunds) {
         _stopWatchingBalance();
+        return;
+      }
+      _restartPrecheck(current);
+    });
+    if (decidedOn == null ||
+        !_spendableIsSettled(sync) ||
+        _spendableOf(sync) == decidedOn) {
+      return;
+    }
+    final generation = _generation;
+    scheduleMicrotask(() {
+      final current = state;
+      if (generation != _generation ||
+          current == null ||
+          current.view.status != PaymentRequestStatus.insufficientFunds) {
         return;
       }
       _restartPrecheck(current);
@@ -713,7 +734,10 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
             ),
           ),
         );
-      case PaymentRequestPrecheckInsufficientFunds(:final spendableText):
+      case PaymentRequestPrecheckInsufficientFunds(
+        :final spendableText,
+        :final spendable,
+      ):
         _publish(
           live.copyWith(
             view: live.view.copyWithStatus(
@@ -722,6 +746,7 @@ class PaymentRequestFlowNotifier extends Notifier<PaymentRequestFlowState?> {
             ),
           ),
         );
+        if (spendable != null) _watchBalanceForRecheck(decidedOn: spendable);
       case PaymentRequestPrecheckSyncing():
         _publish(
           live.copyWith(
