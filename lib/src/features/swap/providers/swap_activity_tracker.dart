@@ -440,14 +440,26 @@ class SwapActivityTracker {
     // failed, or after the provider has observed a deposit. An unknown
     // provider status does not establish that funds were never sent.
     return _isPersistableIntent(intent, accountUuid: accountUuid) &&
-        (!intent.status.isTerminal &&
-            (intent.direction == SwapDirection.externalToZec ||
-                intent.status == SwapIntentStatus.providerStatusUnknown ||
-                intent.depositClaimedAt != null ||
-                (intent.depositTxHash?.trim().isNotEmpty ?? false) ||
-                intent.hasConfirmedDepositEvidence ||
-                intent.hasProviderObservedDepositEvidence));
+        (_awaitsWalletRelease(intent) ||
+            (!intent.status.isTerminal &&
+                (intent.direction == SwapDirection.externalToZec ||
+                    intent.status == SwapIntentStatus.providerStatusUnknown ||
+                    intent.depositClaimedAt != null ||
+                    (intent.depositTxHash?.trim().isNotEmpty ?? false) ||
+                    intent.hasConfirmedDepositEvidence ||
+                    intent.hasProviderObservedDepositEvidence)));
   }
+
+  /// Whether an incoming private quote shows as expired while the wallet may
+  /// still hold its receive slot. The wallet frees that slot only on a status
+  /// fetched after the deadline, which a failed record or a closed app can
+  /// miss, so such a quote stays polled until the wallet reports the address
+  /// released.
+  static bool _awaitsWalletRelease(SwapIntent intent) =>
+      intent.status == SwapIntentStatus.expired &&
+      intent.direction == SwapDirection.externalToZec &&
+      intent.privateAddress &&
+      !intent.walletReleased;
 
   static bool _canRefreshIntent(
     SwapIntent intent, {
