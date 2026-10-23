@@ -3091,6 +3091,26 @@ pub fn get_transaction_rows(
     })
 }
 
+/// Activity rows for a set of txids in TransactionInfo storage byte order.
+/// Shares one DB snapshot and returns no rows for unrelated transactions.
+pub fn get_transaction_rows_for_txids(
+    db_path: String,
+    network: String,
+    account_uuid: String,
+    txid_hexes: Vec<String>,
+) -> Result<Vec<TransactionInfo>, String> {
+    catch(|| {
+        let network = parse_network_and_migrate(&db_path, &network)?;
+        let txs = wallet_sync::get_transaction_rows_for_txids(
+            &db_path,
+            network,
+            &account_uuid,
+            &txid_hexes,
+        )?;
+        Ok(txs.into_iter().map(api_transaction_info).collect())
+    })
+}
+
 fn api_transaction_info(t: wallet_sync::TransactionInfo) -> TransactionInfo {
     TransactionInfo {
         txid_hex: t.txid_hex,

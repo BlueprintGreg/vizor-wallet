@@ -1040,6 +1040,20 @@ Future<List<TransactionInfo>> getTransactionRows({
   txidHex: txidHex,
 );
 
+/// Activity rows for a set of txids in TransactionInfo storage byte order.
+/// Shares one DB snapshot and returns no rows for unrelated transactions.
+Future<List<TransactionInfo>> getTransactionRowsForTxids({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+  required List<String> txidHexes,
+}) => RustLib.instance.api.crateApiSyncGetTransactionRowsForTxids(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+  txidHexes: txidHexes,
+);
+
 Future<int> getPreviousTransactionCountForAddress({
   required String dbPath,
   required String network,

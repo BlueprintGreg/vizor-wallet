@@ -12,10 +12,11 @@ import 'payment_link_lifecycle_revision.dart';
 import 'payment_link_recovery_store.dart';
 import 'payment_link_service.dart';
 import 'payment_link_transaction_matching.dart';
+import 'payment_link_transaction_lookup.dart';
 
 typedef PaymentLinkFundingHistoryLoader =
     Future<Map<String, List<rust_sync.TransactionInfo>>> Function(
-      Set<String> accountUuids,
+      Map<String, Set<String>> txidsByAccount,
     );
 
 typedef PaymentLinkOwnFundingHistoryLoader =
@@ -51,21 +52,13 @@ final paymentLinkRecoveryReconcilerProvider =
           );
           return status.scannedHeight;
         },
-        loadTransactionsByAccount: (accountUuids) async {
+        loadTransactionsByAccount: (txidsByAccount) async {
           final endpoint = ref.read(rpcEndpointFailoverProvider).current;
-          final dbPath = await getWalletDbPath();
-          final entries = await Future.wait(
-            accountUuids.map((accountUuid) async {
-              final transactions = await rust_sync.getTransactionHistory(
-                dbPath: dbPath,
-                network: endpoint.networkName,
-                accountUuid: accountUuid,
-                limit: null,
-              );
-              return MapEntry(accountUuid, transactions);
-            }),
+          return loadPaymentLinkTransactionRows(
+            dbPath: await getWalletDbPath(),
+            network: endpoint.networkName,
+            txidsByAccount: txidsByAccount,
           );
-          return Map.fromEntries(entries);
         },
         loadLinkFundingHistory: claimWallet.loadFundingHistory,
         loadLedgerOperationRefs: () async => {
@@ -389,21 +382,27 @@ class PaymentLinkRecoveryReconciler {
     }
 
     try {
-      final accountUuids = {
-        for (final record in [...preparedDrafts, ...unsharedFundings])
+      final txidsByAccount = <String, Set<String>>{};
+      for (final record in [...preparedDrafts, ...unsharedFundings]) {
+        addPaymentLinkTransactionIds(
+          txidsByAccount,
           record.sourceAccountUuid,
-      };
+          record.fundingTxids,
+        );
+      }
       late final BigInt currentHeight;
       late final BigInt scannedHeight;
       late final Map<String, List<rust_sync.TransactionInfo>>
       transactionsByAccount;
       if (preparedDrafts.isEmpty) {
-        transactionsByAccount = await _loadTransactionsByAccount(accountUuids);
+        transactionsByAccount = await _loadTransactionsByAccount(
+          txidsByAccount,
+        );
       } else {
         final lookupResults = await Future.wait<Object>([
           _loadCurrentHeight(),
           _loadScannedHeight(),
-          _loadTransactionsByAccount(accountUuids),
+          _loadTransactionsByAccount(txidsByAccount),
         ]);
         currentHeight = lookupResults[0] as BigInt;
         scannedHeight = lookupResults[1] as BigInt;
@@ -412,6 +411,10 @@ class PaymentLinkRecoveryReconciler {
       }
 
       check();
+      final indexesByAccount = {
+        for (final entry in transactionsByAccount.entries)
+          entry.key: PaymentLinkTransactionIndex(entry.value),
+      };
       var changed = false;
       final handledPreparedBatches = <String>{};
       for (final record in preparedDrafts) {
@@ -436,7 +439,10 @@ class PaymentLinkRecoveryReconciler {
             currentHeight: currentHeight,
             scannedHeight: scannedHeight,
             transactions:
-                transactionsByAccount[record.sourceAccountUuid] ?? const [],
+                indexesByAccount[record.sourceAccountUuid]?.matching(
+                  record.fundingTxids,
+                ) ??
+                const [],
           );
           try {
             switch (disposition) {
@@ -467,7 +473,10 @@ class PaymentLinkRecoveryReconciler {
           currentHeight: currentHeight,
           scannedHeight: scannedHeight,
           transactions:
-              transactionsByAccount[record.sourceAccountUuid] ?? const [],
+              indexesByAccount[record.sourceAccountUuid]?.matching(
+                record.fundingTxids,
+              ) ??
+              const [],
         );
         try {
           switch (disposition) {
@@ -579,7 +588,10 @@ class PaymentLinkRecoveryReconciler {
         if (!paymentLinkFundingExpired(
           fundingTxids: fundingTxids,
           transactions:
-              transactionsByAccount[record.sourceAccountUuid] ?? const [],
+              indexesByAccount[record.sourceAccountUuid]?.matching(
+                record.fundingTxids,
+              ) ??
+              const [],
         )) {
           continue;
         }

@@ -414,3 +414,60 @@ fn history_summaries_details_and_outputs_share_snapshot_during_sync_commit() {
     assert!(!payment.details_complete);
     assert!(payment.provisional);
 }
+
+#[test]
+fn batch_transaction_rows_match_full_history_without_unrequested_rows() {
+    let wallet = wallet();
+    populate(&wallet);
+    for account in [wallet.sender, wallet.recipient] {
+        let uuid = account.expose_uuid().to_string();
+        let all = get_transaction_history(&wallet.path, NETWORK, None, &uuid).unwrap();
+        assert!(!all.is_empty());
+        for requested in [
+            vec![hex::encode(PAYMENT)],
+            vec![
+                hex::encode(FUNDING),
+                hex::encode(PAYMENT),
+                hex::encode(PAYMENT),
+            ],
+        ] {
+            let scoped =
+                get_transaction_rows_for_txids(&wallet.path, NETWORK, &uuid, &requested).unwrap();
+            let expected: Vec<_> = all
+                .iter()
+                .filter(|row| requested.contains(&row.txid_hex))
+                .collect();
+            let signature = |row: &TransactionInfo| {
+                (
+                    row.txid_hex.clone(),
+                    row.tx_kind.clone(),
+                    row.mined_height,
+                    row.expired_unmined,
+                    row.account_balance_delta,
+                    row.display_amount,
+                    row.fee,
+                    row.fee_state,
+                    row.details_complete,
+                    row.provisional,
+                )
+            };
+            assert_eq!(
+                scoped.iter().map(signature).collect::<Vec<_>>(),
+                expected.into_iter().map(signature).collect::<Vec<_>>()
+            );
+        }
+        assert!(get_transaction_rows_for_txids(
+            &wallet.path,
+            NETWORK,
+            &uuid,
+            &[hex::encode([0x99; 32])]
+        )
+        .unwrap()
+        .is_empty());
+        assert!(
+            get_transaction_rows_for_txids(&wallet.path, NETWORK, &uuid, &[])
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

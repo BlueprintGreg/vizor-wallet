@@ -1084,8 +1084,24 @@ pub(crate) fn get_transaction_rows(
     account_uuid: &str,
     txid_hex: &str,
 ) -> Result<Vec<TransactionInfo>, String> {
+    get_transaction_rows_for_txids(db_path, network, account_uuid, &[txid_hex.to_owned()])
+}
+
+/// A bounded set of requested transactions, sharing one history snapshot.
+pub(crate) fn get_transaction_rows_for_txids(
+    db_path: &str,
+    network: WalletNetwork,
+    account_uuid: &str,
+    txid_hexes: &[String],
+) -> Result<Vec<TransactionInfo>, String> {
     let account = parse_account_uuid(account_uuid)?;
-    let txid = hex::decode(txid_hex).map_err(|e| format!("Invalid txid: {e}"))?;
+    let txids = txid_hexes
+        .iter()
+        .map(|txid| hex::decode(txid).map_err(|e| format!("Invalid txid: {e}")))
+        .collect::<Result<HashSet<_>, _>>()?;
+    if txids.is_empty() {
+        return Ok(Vec::new());
+    }
     let conn = open_readonly_conn(db_path)?;
     read_history(
         &conn,
@@ -1093,7 +1109,7 @@ pub(crate) fn get_transaction_rows(
         network,
         None,
         account,
-        HistoryScope::Transaction(&txid),
+        HistoryScope::Transactions(&txids),
     )
 }
 
@@ -1114,7 +1130,7 @@ enum HistoryScope<'a> {
     All,
     /// The rows of the transaction with these txid bytes, in
     /// [`TransactionInfo::txid_hex`] order.
-    Transaction(&'a [u8]),
+    Transactions(&'a HashSet<Vec<u8>>),
 }
 
 fn read_history(
@@ -1153,8 +1169,8 @@ fn read_history(
             }
         }
     }
-    if let HistoryScope::Transaction(txid) = scope {
-        retain_transaction_scope(&mut bases, txid);
+    if let HistoryScope::Transactions(txids) = scope {
+        retain_transaction_scope(&mut bases, txids);
     }
     if bases.is_empty() {
         return Ok(Vec::new());
@@ -1173,9 +1189,9 @@ fn read_history(
     drop(read_tx);
 
     let mut rows = assemble_history(&bases, &outputs_by_txid, uuid_bytes, limit);
-    if let HistoryScope::Transaction(txid) = scope {
-        let txid_hex = hex::encode(txid);
-        rows.retain(|row| row.txid_hex == txid_hex);
+    if let HistoryScope::Transactions(txids) = scope {
+        let hexes: HashSet<_> = txids.iter().map(hex::encode).collect();
+        rows.retain(|row| hexes.contains(&row.txid_hex));
     }
     Ok(rows)
 }
@@ -1186,17 +1202,11 @@ fn read_history(
 /// transactions, so those are the only other bases that can suppress the
 /// transaction, add a funding step's fee to it, or name its funding parent.
 /// Every other row is a function of its own base, outputs and history view.
-fn retain_transaction_scope(bases: &mut Vec<TxBase>, txid: &[u8]) {
-    let created = bases
+fn retain_transaction_scope(bases: &mut Vec<TxBase>, txids: &HashSet<Vec<u8>>) {
+    let includes_created = bases
         .iter()
-        .find(|base| base.txid == txid)
-        .map(|base| base.created.is_some());
-    match created {
-        None => bases.clear(),
-        Some(created) => {
-            bases.retain(|base| base.txid == txid || (created && base.created.is_some()))
-        }
-    }
+        .any(|base| txids.contains(&base.txid) && base.created.is_some());
+    bases.retain(|base| txids.contains(&base.txid) || (includes_created && base.created.is_some()));
 }
 
 /// How many transactions one library history read covers.
@@ -3497,15 +3507,26 @@ mod tests {
         };
 
         let mut scoped = all.clone();
-        retain_transaction_scope(&mut scoped, &fake_txid(3));
+        retain_transaction_scope(&mut scoped, &HashSet::from([fake_txid(3).to_vec()]));
         assert_eq!(txids(&scoped), [1, 3]);
 
         let mut scoped = all.clone();
-        retain_transaction_scope(&mut scoped, &fake_txid(2));
+        retain_transaction_scope(&mut scoped, &HashSet::from([fake_txid(2).to_vec()]));
         assert_eq!(txids(&scoped), [2]);
 
+        let mut scoped = all.clone();
+        retain_transaction_scope(
+            &mut scoped,
+            &HashSet::from([
+                fake_txid(2).to_vec(),
+                fake_txid(3).to_vec(),
+                fake_txid(9).to_vec(),
+            ]),
+        );
+        assert_eq!(txids(&scoped), [1, 2, 3]);
+
         let mut scoped = all;
-        retain_transaction_scope(&mut scoped, &fake_txid(9));
+        retain_transaction_scope(&mut scoped, &HashSet::from([fake_txid(9).to_vec()]));
         assert!(scoped.is_empty());
     }
 

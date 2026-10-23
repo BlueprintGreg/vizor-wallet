@@ -3307,6 +3307,19 @@ class _ClaimDestinationRustApi implements RustLibApi {
   }
 
   @override
+  Future<List<rust_sync.TransactionInfo>>
+  crateApiSyncGetTransactionRowsForTxids({
+    required String dbPath,
+    required String network,
+    required String accountUuid,
+    required List<String> txidHexes,
+  }) async => (await crateApiSyncGetTransactionHistory(
+    dbPath: dbPath,
+    network: network,
+    accountUuid: accountUuid,
+  )).where((row) => txidHexes.contains(row.txidHex)).toList();
+
+  @override
   Future<List<rust_sync.TransactionInfo>> crateApiSyncGetTransactionHistory({
     required String dbPath,
     required String network,

@@ -31,6 +31,7 @@ import 'payment_link_recovery_reconciler.dart';
 import 'payment_link_recovery_store.dart';
 import 'payment_link_sharing.dart';
 import 'payment_link_transaction_matching.dart';
+import 'payment_link_transaction_lookup.dart';
 
 part 'payment_link_claim_receipt.dart';
 part 'payment_link_claim_math.dart';
@@ -1199,17 +1200,23 @@ class PaymentLinkService
     }
     final endpoint = _ref.read(rpcEndpointFailoverProvider).current;
     final dbPath = await getWalletDbPath();
-    final transactionsByAccount = <String, List<rust_sync.TransactionInfo>>{};
-    for (final accountUuid
-        in needsHistory.map((record) => record.sourceAccountUuid).toSet()) {
-      transactionsByAccount[accountUuid] = await rust_sync
-          .getTransactionHistory(
-            dbPath: dbPath,
-            network: endpoint.networkName,
-            accountUuid: accountUuid,
-            limit: null,
-          );
+    final requested = <String, Set<String>>{};
+    for (final record in needsHistory) {
+      addPaymentLinkTransactionIds(
+        requested,
+        record.sourceAccountUuid,
+        record.fundingTxids,
+      );
     }
+    final rowsByAccount = await loadPaymentLinkTransactionRows(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      txidsByAccount: requested,
+    );
+    final transactionsByAccount = {
+      for (final entry in rowsByAccount.entries)
+        entry.key: PaymentLinkTransactionIndex(entry.value),
+    };
     final cachedTip = _ref.read(syncProvider).value?.chainTipHeight ?? 0;
     final chainTipHeight = cachedTip > 0
         ? BigInt.from(cachedTip)
@@ -1223,7 +1230,10 @@ class PaymentLinkService
           !paymentLinkFundingExpired(
             fundingTxids: fundingTxids,
             transactions:
-                transactionsByAccount[record.sourceAccountUuid] ?? const [],
+                transactionsByAccount[record.sourceAccountUuid]?.matching(
+                  record.fundingTxids,
+                ) ??
+                const [],
           )) {
         continue;
       }
@@ -1243,7 +1253,9 @@ class PaymentLinkService
               : _fundingProgressForRecord(
                   record: record,
                   transactions:
-                      transactionsByAccount[record.sourceAccountUuid] ??
+                      transactionsByAccount[record.sourceAccountUuid]?.matching(
+                        record.fundingTxids,
+                      ) ??
                       const [],
                   chainTipHeight: chainTipHeight,
                 ),
@@ -1492,19 +1504,23 @@ class PaymentLinkService
     }
     if (legacyAwaitingReceipt.isEmpty) return _receivedStore.load();
 
-    final transactionsByAccount = <String, List<rust_sync.TransactionInfo>>{};
-    for (final accountUuid
-        in legacyAwaitingReceipt
-            .map((record) => record.destinationAccountUuid!)
-            .toSet()) {
-      transactionsByAccount[accountUuid] = await rust_sync
-          .getTransactionHistory(
-            dbPath: dbPath,
-            network: endpoint.networkName,
-            accountUuid: accountUuid,
-            limit: null,
-          );
+    final requested = <String, Set<String>>{};
+    for (final record in legacyAwaitingReceipt) {
+      addPaymentLinkTransactionIds(
+        requested,
+        record.destinationAccountUuid!,
+        record.claimTxids,
+      );
     }
+    final rowsByAccount = await loadPaymentLinkTransactionRows(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      txidsByAccount: requested,
+    );
+    final transactionsByAccount = {
+      for (final entry in rowsByAccount.entries)
+        entry.key: PaymentLinkTransactionIndex(entry.value),
+    };
     final syncState = _ref.read(syncProvider).value;
     // A polled tip can advance before the main wallet DB has scanned it. In
     // particular, after a reorg the DB can still expose a transaction's old
@@ -1520,7 +1536,10 @@ class PaymentLinkService
       await reconcilePaymentLinkClaimReceipt(
         record: record,
         transactions:
-            transactionsByAccount[record.destinationAccountUuid!] ?? const [],
+            transactionsByAccount[record.destinationAccountUuid!]?.matching(
+              record.claimTxids,
+            ) ??
+            const [],
         verifiedHeight: chainTipHeight,
         store: _receivedStore,
         deleteRetainedWallet: _claimWallet.deleteRetained,
