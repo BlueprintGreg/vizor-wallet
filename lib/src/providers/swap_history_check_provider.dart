@@ -2,9 +2,7 @@ import 'dart:developer';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../core/storage/wallet_paths.dart';
 import '../rust/api/one_time_ivk.dart' as rust_swap;
-import 'rpc_endpoint_failover_provider.dart';
 import 'sync_provider.dart';
 
 /// The wallet calls behind "Check swap history". Overridable in tests.
@@ -35,15 +33,17 @@ class SwapHistoryApi {
 }
 
 final swapHistoryApiProvider = Provider<SwapHistoryApi>((ref) {
-  String network() => ref.read(rpcEndpointFailoverProvider).current.networkName;
   return SwapHistoryApi(
     begin: (end) =>
         ref.read(syncProvider.notifier).checkSwapHistory(receiveEnd: end),
     cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
-    status: () async => rust_swap.getSwapRecoveryStatus(
-      dbPath: await getWalletDbPath(),
-      networkName: network(),
-    ),
+    // Without a wallet there is no history left to check.
+    status: () async =>
+        await ref.read(swapRecoveryStatusReaderProvider)() ??
+        const rust_swap.SwapRecoveryStatus(
+          checkingHistory: false,
+          upgradeRequired: false,
+        ),
   );
 });
 
@@ -104,7 +104,6 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
           state = SwapHistoryCheck.done;
           return;
         }
-        if (!ref.mounted || generation != _generation) return;
         if (!DateTime.now().isBefore(deadline)) {
           state = SwapHistoryCheck.continuing;
           return;
