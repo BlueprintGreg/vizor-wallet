@@ -1093,7 +1093,7 @@ impl Wallet {
     ) -> std::thread::JoinHandle<Result<Round, RecoveryError>> {
         let path = self.path.clone();
         let service = service.clone();
-        std::thread::spawn(move || run_worker(&path, &service, manual, budget))
+        std::thread::spawn(move || run_worker(&path, &*service, manual, budget))
     }
 
     /// Mined, unspent value of `account`'s one-time-key notes.
@@ -1185,11 +1185,11 @@ impl Wallet {
     }
 }
 
-/// Runs `recover_with_transport` with the generation the production entry point captures
-/// and the wallet's own descriptor store.
-fn run_worker(
+/// Runs `recover_with_transport` over `transport` with the generation the production entry
+/// point captures and the wallet's own descriptor store.
+pub(super) fn run_worker<T: Transport>(
     path: &str,
-    service: &Service,
+    transport: &T,
     manual: Option<Option<u64>>,
     budget: Duration,
 ) -> Result<Round, RecoveryError> {
@@ -1204,7 +1204,7 @@ fn run_worker(
                 NETWORK,
                 manual,
                 ORIGIN,
-                service,
+                transport,
                 &DescriptorTable::new(path, generation),
                 generation,
                 tokio::time::Instant::now() + budget,

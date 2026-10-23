@@ -509,33 +509,6 @@ impl Transport for Faulty<'_> {
     }
 }
 
-/// Runs one worker round over `transport`, as the production entry point does.
-pub(super) fn run_round<T: Transport>(
-    path: &str,
-    transport: &T,
-    manual: Option<Option<u64>>,
-    budget: Duration,
-) -> Result<Round, RecoveryError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let generation = CANCEL.load(Ordering::SeqCst);
-            recover_with_transport(
-                path,
-                NETWORK,
-                manual,
-                ORIGIN,
-                transport,
-                &DescriptorTable::new(path, generation),
-                generation,
-                tokio::time::Instant::now() + budget,
-            )
-            .await
-        })
-}
-
 /// One credited one-time note as the wallet stores it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Note {
@@ -1111,7 +1084,7 @@ impl World {
             fail,
             requests: AtomicUsize::new(0),
         };
-        let result = run_round(
+        let result = run_worker(
             &device.wallet.path,
             &faulty,
             manual,
@@ -1207,11 +1180,9 @@ impl World {
         let service = self.service(publication);
         let class = if query { "query" } else { "filters" };
         let held = service.hold(class, service.count(class) + nth);
-        let path = self.devices[dev].wallet.path.clone();
-        let worker_service = service.clone();
-        let worker = std::thread::spawn(move || {
-            run_round(&path, &*worker_service, None, Duration::from_secs(45))
-        });
+        let worker = self.devices[dev]
+            .wallet
+            .spawn(&service, None, Duration::from_secs(45));
         let mut line = String::new();
         if held.try_wait(Duration::from_secs(20)) {
             line = match during {
@@ -1821,16 +1792,9 @@ impl World {
         let publication = self.current();
         let service = self.service(publication);
         let held = service.hold("query", service.count("query") + nth);
-        let path = self.devices[dev].wallet.path.clone();
-        let worker_service = service.clone();
-        let worker = std::thread::spawn(move || {
-            run_round(
-                &path,
-                &*worker_service,
-                Some(bound),
-                Duration::from_secs(45),
-            )
-        });
+        let worker = self.devices[dev]
+            .wallet
+            .spawn(&service, Some(bound), Duration::from_secs(45));
         let arrived = held.try_wait(Duration::from_secs(20));
         if arrived {
             cancel_recovery();
