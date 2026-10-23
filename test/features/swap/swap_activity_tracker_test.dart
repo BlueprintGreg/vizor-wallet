@@ -502,6 +502,51 @@ void main() {
     expect(provider.statusRequests, isEmpty);
   });
 
+  test(
+    'an expired private quote is polled until the wallet releases it',
+    () async {
+      final store = _MemorySwapActivityStore();
+      final provider = _StatusSwapProvider({
+        'private': _snapshot(
+          id: 'private',
+          depositAddress: 'private',
+          status: SwapIntentStatus.awaitingExternalDeposit,
+        ),
+      });
+      // The wallet still holds the slot on the first poll and frees it there.
+      final tracked = [true, false];
+      final tracker = SwapActivityTracker(
+        activityStore: store,
+        swapProvider: provider,
+        onProviderSnapshot: (_, _, _) async => tracked.removeAt(0),
+      );
+      final intent =
+          _intent(
+            id: 'private',
+            depositAddress: 'private',
+            depositTxHash: null,
+            status: SwapIntentStatus.expired,
+          ).copyWith(
+            direction: SwapDirection.externalToZec,
+            privateAddress: true,
+            depositDeadline: DateTime.now().toUtc().subtract(
+              const Duration(days: 2),
+            ),
+          );
+      await tracker.saveIntents(accountUuid: 'account-1', intents: [intent]);
+      for (var poll = 0; poll < 3; poll++) {
+        await tracker.refreshOpenIntents(
+          accountUuid: 'account-1',
+          currentIntents: [],
+        );
+      }
+      expect(provider.statusRequests, ['private', 'private']);
+      final stored = await tracker.loadIntents(accountUuid: 'account-1');
+      expect(stored.single.status, SwapIntentStatus.expired);
+      expect(stored.single.walletReleased, isTrue);
+    },
+  );
+
   test('only private swaps share statuses with the wallet', () async {
     final store = _MemorySwapActivityStore();
     final provider = _StatusSwapProvider({});
