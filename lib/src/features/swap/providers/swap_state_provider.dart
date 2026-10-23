@@ -963,7 +963,8 @@ class SwapNotifier extends Notifier<SwapState> {
   /// can still hold a receive address: open ones, ones whose deposit deadline
   /// passed within the last day, and private ones the wallet may still hold
   /// however old. A started quote keeps its address until a recent status
-  /// releases it, so an expired quote cannot block issuance for good.
+  /// releases it, or a day past its deadline if it never gets one and the
+  /// address is unpaid, so an expired quote cannot block issuance for good.
   Future<void> _refreshReceiveQuoteStatuses() async {
     final recent = DateTime.now().toUtc().subtract(const Duration(days: 1));
     final ids = [
