@@ -878,6 +878,82 @@ void main() {
     );
   });
 
+  /// Turning NEAR swap privacy off hides Check swap history and ends a running
+  /// check paused. Turning it back on shows the check again, paused and ready
+  /// to start, not stuck checking or claiming it finished.
+  testWidgets('NEAR swap privacy toggles gate a running history check', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1512, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final privacy = _SwapPrivacyToggle(true);
+    var finished = false;
+    final begins = <BigInt?>[];
+    await tester.pumpWidget(
+      _settingsHarness(
+        nearSwapPrivacyEnabled: true,
+        extraOverrides: [
+          nearSwapPrivacyProvider.overrideWith(() => privacy),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: (end) async => begins.add(end),
+              cancel: () async {},
+              // The wallet reports a check only while the feature is on.
+              status: () async => SwapRecoveryStatus(
+                checkingHistory: privacy.on && !finished,
+                upgradeRequired: false,
+              ),
+              pollInterval: const Duration(seconds: 1),
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    final toggle = find.byKey(
+      const ValueKey('settings_near_swap_privacy_toggle'),
+    );
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    await tester.ensureVisible(start);
+    await tester.tap(start);
+    await tester.pump();
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+
+    await tester.tap(toggle);
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.byType(SwapHistoryCheckControl), findsOneWidget);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.paused),
+    );
+    expect(tester.widget<AppButton>(start).onPressed, isNotNull);
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
+    );
+
+    finished = true;
+    await tester.ensureVisible(start);
+    await tester.tap(start);
+    await tester.pump(const Duration(seconds: 2));
+    expect(begins, hasLength(2), reason: 'a new check resumes the job');
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+  });
+
   testWidgets('connected Tor state describes Vizor and external app routes', (
     tester,
   ) async {
@@ -1541,6 +1617,25 @@ bool _hasFocusRing(WidgetTester tester) {
 final _turnOffDialog = find.byKey(
   const ValueKey('private_queries_turn_off_dialog'),
 );
+
+/// NEAR swap privacy that flips when the settings toggle asks, as the real
+/// setting does once its change is applied, without storage or native calls.
+class _SwapPrivacyToggle extends NearSwapPrivacyNotifier {
+  _SwapPrivacyToggle(this.on);
+
+  /// The current setting, readable by fakes that follow it.
+  bool on;
+
+  @override
+  bool build() => on;
+
+  @override
+  Future<void> set(bool enabled) async {
+    if (enabled && !ref.read(enhancePirProvider)) return;
+    on = enabled;
+    state = enabled;
+  }
+}
 
 class _RecordingToggle extends EnhancePirNotifier {
   _RecordingToggle(this.enabled);
