@@ -106,11 +106,13 @@ impl Chain {
         chain
     }
 
-    /// Records the tree state of the block just mined.
+    /// Records the tree state of the block just mined. The chain's own wallet scans it so
+    /// [`Self::rewind`] can truncate that wallet with the block cache.
     fn advance(&mut self) -> u32 {
         let block = self.st.latest_cached_block().unwrap();
         let height = u32::from(block.height());
         self.states.insert(height, block.chain_state().clone());
+        self.st.scan_cached_blocks(height.into(), 1);
         height
     }
 
@@ -141,6 +143,16 @@ impl Chain {
     /// note. `indexed` says the receiver directory lists it, as for NEAR's zero-OVK
     /// payouts.
     pub(super) fn pay(&mut self, fvk: &FullViewingKey, value: u64, indexed: bool) -> u32 {
+        self.pay_tx(fvk, value, indexed).0
+    }
+
+    /// [`Self::pay`], also returning the paying transaction's ID in internal byte order.
+    pub(super) fn pay_tx(
+        &mut self,
+        fvk: &FullViewingKey,
+        value: u64,
+        indexed: bool,
+    ) -> (u32, [u8; 32]) {
         let (height, _, _) = self.st.generate_next_block(
             &IronwoodFvk(fvk.clone()),
             AddressType::DefaultExternal,
@@ -148,11 +160,25 @@ impl Chain {
         );
         let height = u32::from(height);
         self.advance();
+        let record = self.record(height, fvk);
+        let txid = record.payment.txid;
         if indexed {
-            let record = self.record(height, fvk);
             self.records.push(record);
         }
-        height
+        (height, txid)
+    }
+
+    /// Drops every block above `height`, as a reorg does before the replacement branch is
+    /// mined. Later blocks get fresh hashes, so wallets see a different chain.
+    pub(super) fn rewind(&mut self, height: u32) {
+        self.st.truncate_to_height(height.into());
+        self.states.split_off(&(height + 1));
+        self.records.retain(|r| r.payment.height <= height);
+    }
+
+    /// The hash of block `height` if the chain has it.
+    pub(super) fn hash_at(&self, height: u32) -> Option<[u8; 32]> {
+        self.states.get(&height).map(|s| s.block_hash().0)
     }
 
     /// Mines a block holding only `tx`, which an app wallet built and broadcast.
@@ -266,6 +292,11 @@ impl Held {
         self.arrived
             .recv_timeout(Duration::from_secs(30))
             .expect("the held request arrived");
+    }
+
+    /// Waits up to `timeout` for the held request, returning whether it arrived.
+    pub(super) fn try_wait(&self, timeout: Duration) -> bool {
+        self.arrived.recv_timeout(timeout).is_ok()
     }
 
     /// Lets the held response go.
@@ -478,6 +509,11 @@ impl Service {
     /// Makes the head name `protocol`, which this client does not support.
     pub(super) fn serve_protocol(&self, protocol: &str) {
         *self.protocol.lock().unwrap() = Some(protocol.into());
+    }
+
+    /// Makes the head name the supported protocol again.
+    pub(super) fn serve_supported(&self) {
+        *self.protocol.lock().unwrap() = None;
     }
 
     /// The published inventory.
@@ -812,6 +848,7 @@ pub(super) struct Wallet {
     pub(super) path: String,
     pub(super) accounts: Vec<Account>,
     scanned: u32,
+    birthday: u32,
 }
 
 impl Wallet {
@@ -837,6 +874,7 @@ impl Wallet {
                 seed,
             }],
             scanned: birthday - 1,
+            birthday,
         }
     }
 
@@ -858,6 +896,53 @@ impl Wallet {
         };
         self.accounts.push(account.clone());
         account
+    }
+
+    /// Deletes `account` through the app's per-account delete path.
+    pub(super) fn delete_account(&mut self, account: &Account) {
+        crate::wallet::keys::delete_account(&self.path, NETWORK, &account.uuid).unwrap();
+        self.accounts.retain(|a| a.id != account.id);
+    }
+
+    /// Imports a spending account with ZIP 32 metadata but no Orchard key, as an
+    /// unbackfilled hardware import can be.
+    pub(super) fn import_without_orchard(
+        &self,
+        seed: u8,
+        birthday: u32,
+        chain: &Chain,
+    ) -> AccountUuid {
+        use zcash_client_backend::data_api::{
+            Account as _, AccountBirthday, AccountPurpose, Zip32Derivation,
+        };
+        let seed = [seed; 32];
+        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
+            &NETWORK,
+            &seed,
+            zip32::AccountId::ZERO,
+        )
+        .unwrap();
+        let ufvk = zcash_keys::keys::UnifiedFullViewingKey::new(
+            Some(usk.transparent().to_account_pubkey()),
+            Some(usk.sapling().to_diversifiable_full_viewing_key()),
+            None,
+        )
+        .unwrap();
+        self.db()
+            .import_account_ufvk(
+                "No Orchard",
+                &ufvk,
+                &AccountBirthday::from_parts(chain.state(birthday - 1).clone(), None),
+                AccountPurpose::Spending {
+                    derivation: Some(Zip32Derivation::new(
+                        zip32::fingerprint::SeedFingerprint::from_seed(&seed).unwrap(),
+                        zip32::AccountId::ZERO,
+                    )),
+                },
+                None,
+            )
+            .unwrap()
+            .id()
     }
 
     /// The first account.
@@ -888,6 +973,51 @@ impl Wallet {
         )
         .unwrap();
         self.scanned = tip;
+    }
+
+    /// Ordinary sync that follows reorgs: rewinds below the highest scanned block still on
+    /// `chain` through the app's reorg path, scans to the tip, and stamps new blocks with
+    /// the current time so quote deadlines can pass. Returns the height it rewound to.
+    pub(super) fn sync(&mut self, chain: &Chain) -> Option<u32> {
+        let tip = chain.tip();
+        let mut db = self.db();
+        // Adding an account rewinds the wallet to that account's birthday.
+        let stored: Option<u32> = rusqlite::Connection::open(&self.path)
+            .unwrap()
+            .query_row("SELECT MAX(height) FROM blocks", [], |r| r.get(0))
+            .unwrap();
+        self.scanned = self.scanned.min(stored.unwrap_or(self.birthday - 1));
+        let mut fork = self.scanned;
+        while fork >= self.birthday {
+            let local = db.block_metadata(fork.into()).unwrap();
+            if local.is_some_and(|b| Some(b.block_hash().0) == chain.hash_at(fork)) {
+                break;
+            }
+            fork -= 1;
+        }
+        let mut rewound = None;
+        if fork < self.scanned {
+            let actual = super::super::super::truncate_wallet_to_height(
+                &self.path,
+                &mut db,
+                fork.into(),
+                tip.into(),
+                "scenario.rewind",
+            )
+            .unwrap();
+            self.scanned = u32::from(actual).min(fork).max(self.birthday - 1);
+            rewound = Some(self.scanned);
+        }
+        drop(db);
+        self.scan(chain);
+        rusqlite::Connection::open(&self.path)
+            .unwrap()
+            .execute(
+                "UPDATE blocks SET time = ?1 WHERE time = 0",
+                [one_time_ivk::now().unwrap()],
+            )
+            .unwrap();
+        rewound
     }
 
     /// The last block ordinary sync scanned.

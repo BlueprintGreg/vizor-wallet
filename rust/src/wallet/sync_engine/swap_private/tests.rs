@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use zakura_one_time_ivk::Purpose;
 
 mod fixture;
+mod scenarios;
 use fixture::*;
 
 const RECEIVE: bool = true;
