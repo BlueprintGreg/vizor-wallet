@@ -24,6 +24,9 @@ class _Privacy extends NearSwapPrivacyNotifier {
 
   /// Turns the setting off, as the Settings toggle does.
   void turnOff() => state = false;
+
+  /// Turns the setting back on, as the Settings toggle does.
+  void turnOn() => state = true;
 }
 
 /// The setting and a wallet with no saved recovery state, for every container.
@@ -285,13 +288,49 @@ void main() {
       await pumpEventQueue();
       expect(polls, hasLength(2));
 
-      (container.read(nearSwapPrivacyProvider.notifier) as _Privacy).turnOff();
+      final privacy =
+          container.read(nearSwapPrivacyProvider.notifier) as _Privacy;
+      privacy.turnOff();
       // A disabled account reports no unfinished check.
       polls.last.complete(_status());
       await running;
       expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+
+      // Turning it back on resumes the saved job, which shows as checking,
+      // with Pause, until the wallet finishes it.
+      privacy.turnOn();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.checking,
+      );
+      await pumpEventQueue();
+      expect(polls, hasLength(3));
+      polls.last.complete(_status(checking: true));
+      await pumpEventQueue();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.checking,
+      );
+      polls.last.complete(_status());
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     },
   );
+
+  test('re-enabling privacy does not resume a check the user paused', () async {
+    final (container, _, calls) = setup(checking: [true]);
+    final notifier = container.read(swapHistoryCheckProvider.notifier);
+    final running = notifier.check();
+    await notifier.cancel();
+    await running;
+    final privacy =
+        container.read(nearSwapPrivacyProvider.notifier) as _Privacy;
+    privacy.turnOff();
+    privacy.turnOn();
+    await pumpEventQueue();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    expect(calls, ['begin']);
+  });
 
   test('a round that finds the service compatible ends a manual update '
       'request', () async {

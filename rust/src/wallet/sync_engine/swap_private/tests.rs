@@ -1099,6 +1099,47 @@ fn a_stalled_shard_filter_falls_back_to_pir_in_every_round() {
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
 }
 
+/// Sealed-shard filters that each download within the per-request timeout, but together
+/// take longer than the round, share one filter budget. Past it the round reads the
+/// remaining shards over PIR, so every round commits progress and the restore finishes.
+#[test]
+fn slow_shard_filters_share_one_budget_and_leave_time_for_pir() {
+    isolated!(slow_shard_filters_share_one_budget_and_leave_time_for_pir);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    let mut sealed = Vec::new();
+    for _ in 0..7 {
+        chain.mine(2);
+        sealed.push(chain.tip());
+    }
+    chain.mine(2);
+    wallet.scan(&chain);
+    let service =
+        Service::publish_shards(&chain, &sealed, chain.tip(), activation(), chain.tip(), &[]);
+    assert!(shard_filters_cheaper(service.inventory(), 1));
+    // Every filter answers, each well inside the per-request timeout, but seven of them
+    // take longer than the whole round.
+    service.delay("shard-filter", Duration::from_secs(3));
+    let budget = Duration::from_secs(20);
+
+    let mut rounds = 0;
+    while !wallet.state(&account).restore_complete {
+        rounds += 1;
+        assert!(rounds <= 6, "the restore keeps progressing");
+        let before = (service.count("shard-filter"), service.queries());
+        wallet.recover_with(&service, None, budget).unwrap();
+        assert!(
+            service.count("shard-filter") - before.0 <= 3,
+            "filters stop once their budget is spent"
+        );
+        assert!(service.queries() > before.1, "every round reads PIR");
+    }
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+}
+
 /// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
 /// can be, is not a software account. Recovery, the status read and issuance keep working
 /// for the wallet's other accounts, with the feature off and on.

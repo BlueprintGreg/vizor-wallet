@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -76,8 +77,9 @@ enum SwapHistoryCheck {
 class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// Starts idle and follows two outside changes. Turning NEAR swap privacy
   /// off pauses discovery, which the wallet then reports as no unfinished
-  /// check, so a running or interrupted check ends paused instead of done. A
-  /// round that finds the service compatible again ends an update request.
+  /// check, so a running or interrupted check ends paused instead of done, and
+  /// turning it back on resumes watching that saved work. A round that finds
+  /// the service compatible again ends an update request.
   @override
   SwapHistoryCheck build() {
     ref.listen(nearSwapPrivacyProvider, (_, enabled) {
@@ -86,7 +88,13 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
               state == SwapHistoryCheck.continuing ||
               state == SwapHistoryCheck.failed)) {
         _generation++;
+        // A failed check may have no saved job left to resume.
+        _pausedBySetting = state != SwapHistoryCheck.failed;
         state = SwapHistoryCheck.paused;
+      } else if (enabled &&
+          _pausedBySetting &&
+          state == SwapHistoryCheck.paused) {
+        unawaited(_resume());
       }
     });
     ref.listen(swapRecoveryUpdateRequiredProvider, (_, required) {
@@ -99,22 +107,53 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
 
   int _generation = 0;
 
+  /// Whether the shown pause came from turning NEAR swap privacy off, which
+  /// keeps the saved job active, rather than from the user pausing it.
+  bool _pausedBySetting = false;
+
   /// Starts a check and polls until the wallet reports it done, or until
   /// [SwapHistoryApi.maxWait] passes. Does nothing while one is running.
   Future<void> check({BigInt? receiveEnd}) async {
     if (state == SwapHistoryCheck.checking) return;
     final generation = ++_generation;
+    _pausedBySetting = false;
     state = SwapHistoryCheck.checking;
     final api = ref.read(swapHistoryApiProvider);
     try {
       await api.begin(receiveEnd);
       if (!ref.mounted || generation != _generation) return;
-      final deadline = DateTime.now().add(api.maxWait);
-      while (true) {
-        // Receiver work has its own lifecycle and never occupies ordinary sync.
-        ref.read(syncProvider.notifier).continueSwapRecovery();
-        await Future<void>.delayed(api.pollInterval);
-        if (!ref.mounted || generation != _generation) return;
+      await _observe(generation, api);
+    } catch (error) {
+      _fail(generation, error);
+    }
+  }
+
+  /// Watches the saved job again once NEAR swap privacy is back on, since the
+  /// wallet resumes it in later rounds. It shows as checking, with Pause.
+  Future<void> _resume() async {
+    final generation = ++_generation;
+    _pausedBySetting = false;
+    state = SwapHistoryCheck.checking;
+    try {
+      await _observe(generation, ref.read(swapHistoryApiProvider));
+    } catch (error) {
+      _fail(generation, error);
+    }
+  }
+
+  /// Polls the wallet for the check started under `generation` until it is
+  /// done, needs an update, or outlasts [SwapHistoryApi.maxWait]. It reads no
+  /// status while a setting change is still being applied to the wallet,
+  /// whose accounts may not yet be enabled again.
+  Future<void> _observe(int generation, SwapHistoryApi api) async {
+    final deadline = DateTime.now().add(api.maxWait);
+    while (true) {
+      // Receiver work has its own lifecycle and never occupies ordinary sync.
+      ref.read(syncProvider.notifier).continueSwapRecovery();
+      await Future<void>.delayed(api.pollInterval);
+      if (!ref.mounted || generation != _generation) return;
+      if (ref.read(enhancePirTransitionProvider) !=
+          kEnhancePirChangingMessage) {
         final status = await api.status();
         if (!ref.mounted || generation != _generation) return;
         if (status.upgradeRequired) {
@@ -128,20 +167,24 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
               : SwapHistoryCheck.paused;
           return;
         }
-        if (!DateTime.now().isBefore(deadline)) {
-          state = SwapHistoryCheck.continuing;
-          return;
-        }
       }
-    } catch (error) {
-      log('Swap history check failed: $error');
-      if (ref.mounted && generation == _generation) {
-        if (error is rust_swap.ReceiveError &&
-            error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
-          _requireUpdate();
-        } else {
-          state = SwapHistoryCheck.failed;
-        }
+      if (!DateTime.now().isBefore(deadline)) {
+        state = SwapHistoryCheck.continuing;
+        return;
+      }
+    }
+  }
+
+  /// Ends the check under `generation` with `error`: an update request when
+  /// the service needs a newer app, else failed.
+  void _fail(int generation, Object error) {
+    log('Swap history check failed: $error');
+    if (ref.mounted && generation == _generation) {
+      if (error is rust_swap.ReceiveError &&
+          error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
+        _requireUpdate();
+      } else {
+        state = SwapHistoryCheck.failed;
       }
     }
   }
@@ -156,6 +199,7 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// Pauses the current job and prevents a late poll from overwriting that state.
   Future<void> cancel() async {
     final generation = ++_generation;
+    _pausedBySetting = false;
     try {
       await ref.read(swapHistoryApiProvider).cancel();
       if (ref.mounted && generation == _generation) {
