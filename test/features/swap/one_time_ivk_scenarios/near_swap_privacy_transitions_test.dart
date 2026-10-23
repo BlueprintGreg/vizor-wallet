@@ -16,6 +16,7 @@ import 'package:zcash_wallet/src/providers/app_security_provider.dart';
 import 'package:zcash_wallet/src/providers/chain_upgrade_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as rust_swap;
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
@@ -29,6 +30,10 @@ const _account = 'account-1';
 class _Api extends RustLibApi {
   bool running = false;
   bool swapPrivacy = false;
+
+  /// Whether the wallet has an unfinished history check. Rust reports one only
+  /// while the feature is on.
+  bool checking = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
   final rounds = <Completer<bool>>[];
   final manual = <Completer<void>>[];
@@ -303,6 +308,7 @@ void main() {
     api
       ..running = false
       ..swapPrivacy = false
+      ..checking = false
       ..open = 0
       ..mostOpen = 0
       ..drainOnCancel = true;
@@ -355,9 +361,24 @@ void main() {
           api.events.add('reconcile:${api.swapPrivacy}');
         }),
         syncProvider.overrideWith(() => sync),
+        // The production calls behind Check swap history, polled quickly.
+        swapHistoryApiProvider.overrideWith(
+          (ref) => SwapHistoryApi(
+            begin: (end) => ref
+                .read(syncProvider.notifier)
+                .checkSwapHistory(receiveEnd: end),
+            cancel: () => ref.read(syncProvider.notifier).cancelSwapHistory(),
+            status: () async => rust_swap.SwapRecoveryStatus(
+              checkingHistory: api.checking && api.swapPrivacy,
+              upgradeRequired: false,
+            ),
+            pollInterval: const Duration(milliseconds: 1),
+          ),
+        ),
       ],
     );
     addTearDown(container.dispose);
+    container.listen(swapHistoryCheckProvider, (_, _) {});
     container.listen(syncProvider, (_, _) {});
     container.listen(nearSwapPrivacyProvider, (_, _) {});
     rust_sync.setNearSwapPrivacyEnabled(
@@ -609,6 +630,61 @@ void main() {
     expect(api.events, containsAllInOrder(['cancel', 'swap:false']));
     expect(await batch(sync, 102), 1, reason: 'a later batch asks Rust');
     await finish(work: false);
+    await settle(sync);
+  });
+
+  /// Turning the setting off while Check swap history is starting cancels its
+  /// round, and the check ends paused, not failed or done. It stays paused
+  /// after turning back on, and a new check resumes the saved job.
+  test('turning off while a history check starts ends it paused', () async {
+    final (container, sync, _) = await app(true);
+    final history = container.read(swapHistoryCheckProvider.notifier);
+    api.checking = true;
+    final running = history.check();
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1), reason: 'the check round is held');
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
+
+    await container.read(nearSwapPrivacyProvider.notifier).set(false);
+    await running;
+    expect(api.manual.single.isCompleted, isTrue, reason: 'its round drained');
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+
+    await container.read(nearSwapPrivacyProvider.notifier).set(true);
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    api.checking = false;
+    final again = history.check();
+    await pumpEventQueue();
+    api.manual.last.complete();
+    await again;
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    await settle(sync);
+  });
+
+  /// Turning the setting off while a running check polls for completion ends
+  /// it paused, although the wallet then reports no unfinished check, and the
+  /// check drives no more rounds.
+  test('turning off while a history check polls ends it paused', () async {
+    final (container, sync, _) = await app(true);
+    final history = container.read(swapHistoryCheckProvider.notifier);
+    api.checking = true;
+    final running = history.check();
+    await pumpEventQueue();
+    api.manual.single.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
+
+    await container.read(nearSwapPrivacyProvider.notifier).set(false);
+    await running;
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    final rounds = api.rounds.length;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(api.rounds.length, rounds, reason: 'the check stopped polling');
+    for (final round in api.rounds.where((r) => !r.isCompleted)) {
+      round.complete(false);
+    }
     await settle(sync);
   });
 }
