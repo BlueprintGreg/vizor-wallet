@@ -40,10 +40,10 @@ The entire sync loop runs in Rust (`rust/src/wallet/sync_engine/mod.rs`). A sing
    completion heights, so the dense spam window gets short batches without
    hardcoded heights and the estimate sends no request; past the compiled table
    and off mainnet, where nothing says how dense blocks are, a batch takes at
-   most 2,000 blocks (`UNPLANNED_BATCH_BLOCKS`). The wallet backend comes from a
-   fork (see "Crate Versions") whose `put_blocks` skips work on history scanned
-   after newer ranges: when no height in a batch is retained and each tree
-   already holds `max_checkpoints` newer checkpoints, the batch adds none, and a
+   most 2,000 blocks (`UNPLANNED_BATCH_BLOCKS`). The wallet backend's
+   `put_blocks` skips work on history scanned after newer ranges: when no height
+   in a batch is retained and each tree already holds `max_checkpoints` newer
+   checkpoints, the batch adds none, and a
    note-free shard wholly inside it that is already stored as its downloaded
    subtree root is not rebuilt. Rebuilding never compared that root with the
    computed one, and the roots above the shards, which anchors and witnesses
@@ -51,16 +51,16 @@ The entire sync loop runs in Rust (`rust/src/wallet/sync_engine/mod.rs`). A sing
    the trust is unchanged. Only the shard's own row differs: it keeps the
    downloaded root instead of the computed subtree, which is read only if a
    truncation drops the cached roots above it. With matching roots the tree rows
-   come out the same as without the fork. About one in 16 such shards (random
+   come out the same as without the skip. About one in 16 such shards (random
    per process), and every shard with a wallet note, is rebuilt and its stored
    root compared; a mismatch is logged once per process
    (`stored_root_mismatches`), fails nothing, and turns the skip off for the
-   rest of the process. The fork also keeps a tree that a batch inserts
+   rest of the process. The backend also keeps a tree that a batch inserts
    nothing into, as Ironwood's is before its activation, to `max_checkpoints`
-   checkpoints. Upstream adds one at every height another pool checkpoints and
-   prunes only some of them once inserts begin: about 1.4 million Ironwood rows
-   after a full restore, or about 1,600 with the history skip above, against
-   784 with the pruning.
+   checkpoints. Without that, it gains one at every height another pool
+   checkpoints and prunes only some of them once inserts begin: about 1.4
+   million Ironwood rows after a full restore, or about 1,600 with the history
+   skip above, against 784 with the pruning.
 5. Enhancement: process each work queue separately. Status observations come
    from `transaction_status_work()`, which routes each obligation to public
    `GetTransaction` or private Status PIR. Payload recovery comes from

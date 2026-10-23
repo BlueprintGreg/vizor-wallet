@@ -8222,8 +8222,7 @@ dependencies = [
 [[package]]
 name = "zakura-client-sqlite"
 version = "0.1.0-rc9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "254b1bfaa83374f5f2b4afb1937eaf5d2bb60d135f0f529e96f14f606188b046"
+source = "git+https://github.com/piatoss3612/wallet-libraries?rev=92a3f2d6aca53d453f0ba9cb8e426aa33a3b5614#92a3f2d6aca53d453f0ba9cb8e426aa33a3b5614"
 dependencies = [
  "ambassador",
  "bip32",
