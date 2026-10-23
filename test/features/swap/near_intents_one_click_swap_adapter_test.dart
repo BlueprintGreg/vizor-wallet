@@ -1981,8 +1981,17 @@ void main() {
       ]);
       final provider = NearIntentsOneClickSwapAdapter(transport: transport);
 
-      final status = await provider.getStatus('unsupported-deposit');
-
+      final error = await _statusOnlyError(
+        provider.getStatus('unsupported-deposit'),
+      );
+      // It fails as an unreadable pair always did, with the status attached.
+      expect(error.operation, 'status');
+      expect(
+        error.message,
+        'Unsupported 1Click status pair: '
+        'nep141:unsupported.asset -> nep141:zec.omft.near',
+      );
+      final status = error.snapshot;
       expect(status.statusOnly, isTrue);
       expect(status.status, SwapIntentStatus.refunded);
       expect(status.providerStatusRaw, 'REFUNDED');
@@ -2059,7 +2068,9 @@ void main() {
       ]);
       final provider = NearIntentsOneClickSwapAdapter(transport: transport);
 
-      final status = await provider.getStatus(depositAddress);
+      final status = (await _statusOnlyError(
+        provider.getStatus(depositAddress),
+      )).snapshot;
 
       expect(status.statusOnly, isTrue);
       expect(status.status, SwapIntentStatus.processing);
@@ -3053,4 +3064,16 @@ class _StatusScenario {
   final SwapIntentStatus expectedStatus;
   final String expectedNextAction;
   final String expectedPairText;
+}
+
+/// The status-only failure `status` ends with.
+Future<OneClickStatusOnlyException> _statusOnlyError(
+  Future<SwapIntentSnapshot> status,
+) async {
+  try {
+    await status;
+  } on OneClickStatusOnlyException catch (error) {
+    return error;
+  }
+  fail('the status did not fail as status-only');
 }

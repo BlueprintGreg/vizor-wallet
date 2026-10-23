@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/features/ledger/services/ledger_operation_lifecycle.dart';
 import 'package:zcash_wallet/src/features/swap/integrations/near_intents/near_intents_one_click_swap_adapter.dart';
+import 'package:zcash_wallet/src/features/swap/integrations/near_intents/near_intents_one_click_swap_adapter.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_deposit_broadcast_result.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_activity_store.dart';
@@ -661,6 +662,65 @@ void main() {
       expect(skipped.didRefresh, isFalse);
       expect(provider.statusRequests, ['private']);
       lifecycle.resume();
+    },
+  );
+
+  test(
+    'a completed status without its token completes only private swaps',
+    () async {
+      // A flexible-input swap quoted 70 USDC, then paid out less. Its external
+      // token has left NEAR's catalog, so the status cannot state the payout.
+      final completed = SwapIntentSnapshot(
+        id: 'swap',
+        providerLabel: 'NEAR Intents',
+        pairText: 'ZEC -> Unlisted token',
+        sellAmountText: 'Not reported',
+        receiveEstimateText: 'Not reported',
+        status: SwapIntentStatus.complete,
+        nextAction: 'Swap completed',
+        depositInstruction: const SwapDepositInstruction(
+          asset: SwapAsset.zec,
+          address: 'swap',
+          expiresInLabel: '01:30',
+          reuseWarning: 'Do not reuse this address',
+        ),
+        providerStatusRaw: 'SUCCESS',
+        amountOutBaseUnits: '35000000',
+        statusOnly: true,
+      );
+      final store = _MemorySwapActivityStore();
+      final provider = _StatusSwapProvider({});
+      provider.onGetStatus = (_) async => throw OneClickStatusOnlyException(
+        'NEAR Intents does not currently list USDC',
+        snapshot: completed,
+      );
+      final tracker = SwapActivityTracker(
+        activityStore: store,
+        swapProvider: provider,
+        onProviderSnapshot: (_, _, _) async => true,
+      );
+
+      // An ordinary swap fails the refresh, as before private swaps existed, and
+      // never shows the quoted 70 USDC as its completed amount.
+      final ordinary = _intent(id: 'swap', depositAddress: 'swap');
+      await tracker.saveIntents(accountUuid: 'account-1', intents: [ordinary]);
+      final failed = await tracker.refreshOpenIntents(
+        accountUuid: 'account-1',
+        currentIntents: [ordinary],
+      );
+      expect(failed.refreshError, isNotNull);
+      expect(failed.intents.single.status, SwapIntentStatus.awaitingDeposit);
+      expect(failed.intents.single.receiveEstimate, '70.00 USDC');
+
+      // A private swap still takes the status, which its wallet records need.
+      final private = ordinary.copyWith(privateAddress: true);
+      await tracker.saveIntents(accountUuid: 'account-1', intents: [private]);
+      final refreshed = await tracker.refreshOpenIntents(
+        accountUuid: 'account-1',
+        currentIntents: [private],
+      );
+      expect(refreshed.refreshError, isNull);
+      expect(refreshed.intents.single.status, SwapIntentStatus.complete);
     },
   );
 
