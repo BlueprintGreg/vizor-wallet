@@ -236,7 +236,6 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiOneTimeIvkCheckSwapHistory({
     required String dbPath,
     required String networkName,
-    BigInt? receiveEnd,
   });
 
   Future<ApiVotingEligibility> crateApiVotingCheckVotingEligibility({
@@ -2663,7 +2662,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<void> crateApiOneTimeIvkCheckSwapHistory({
     required String dbPath,
     required String networkName,
-    BigInt? receiveEnd,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2671,7 +2669,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(dbPath, serializer);
           sse_encode_String(networkName, serializer);
-          sse_encode_opt_box_autoadd_u_64(receiveEnd, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2684,7 +2681,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_receive_error,
         ),
         constMeta: kCrateApiOneTimeIvkCheckSwapHistoryConstMeta,
-        argValues: [dbPath, networkName, receiveEnd],
+        argValues: [dbPath, networkName],
         apiImpl: this,
       ),
     );
@@ -2693,7 +2690,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiOneTimeIvkCheckSwapHistoryConstMeta =>
       const TaskConstMeta(
         debugName: "check_swap_history",
-        argNames: ["dbPath", "networkName", "receiveEnd"],
+        argNames: ["dbPath", "networkName"],
       );
 
   @override
