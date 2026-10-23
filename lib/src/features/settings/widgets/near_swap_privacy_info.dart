@@ -11,7 +11,7 @@ import '../../../providers/account_provider.dart';
 import '../../../providers/enhance_pir_provider.dart';
 
 /// NEAR swap privacy subtitle while Private queries is on.
-const kNearSwapPrivacyOnCopy = 'Each swap uses new one-time Zcash addresses.';
+const kNearSwapPrivacyOnCopy = 'Swaps use one-time Zcash addresses.';
 
 /// NEAR swap privacy subtitle while Private queries is off.
 const kNearSwapPrivacyOffCopy = 'Needs Private queries.';
@@ -70,9 +70,13 @@ const kNearSwapPrivacyInfoTitle = "What's this?";
 /// Paragraphs of the NEAR swap privacy explanation.
 const kNearSwapPrivacyInfoParagraphs = [
   'When you swap with NEAR Intents, your wallet gives NEAR a Zcash address for '
-      'the payout and another for any refund. With NEAR swap privacy on, each '
-      'swap gets new Zcash addresses made just for it, so any future quantum '
-      "adversary can't tie them to your wallet or to your other swaps.",
+      'the payout and another for any refund. With NEAR swap privacy on, these '
+      'are one-time addresses made just for swaps, so any future quantum '
+      "adversary can't tie them to your wallet.",
+  'A payout address from a quote that expired unpaid can be used again for a '
+      'later quote. Rarely, two devices with the same wallet that quote at the '
+      'same moment get the same address. NEAR can see that those quotes share '
+      'an address, but still not which wallet it belongs to.',
   'Addresses you enter yourself, like an Ethereum address you reuse for '
       'several swaps, are still shared with NEAR and can link those swaps. '
       "Hardware wallet accounts don't use one-time addresses.",

@@ -11,8 +11,8 @@ use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
 
 use super::{
     db::{
-        open_wallet_db_with_timeout, with_wallet_db_write_lock, WalletDatabase,
-        WALLET_DB_BUSY_TIMEOUT,
+        open_existing_wallet_db_with_timeout, open_wallet_db_with_timeout,
+        with_wallet_db_write_lock, WalletDatabase, WALLET_DB_BUSY_TIMEOUT,
     },
     keys::parse_account_uuid,
     network::WalletNetwork,
@@ -161,6 +161,18 @@ pub(crate) fn any_recovery_work(db: &WalletDatabase) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+/// Whether an automatic round at `path` would do nothing: discovery is off and no
+/// account has repair due (see [`any_recovery_work`]). A read that takes no write lock
+/// and never creates the wallet, so callers can check it before building a runtime or
+/// an HTTPS client.
+pub(crate) fn idle_while_off(path: &str, network: WalletNetwork) -> Result<bool, String> {
+    if discovery_enabled(network) {
+        return Ok(false);
+    }
+    let db = open_existing_wallet_db_with_timeout(path, network, WALLET_DB_BUSY_TIMEOUT)?;
+    Ok(!any_recovery_work(&db)?)
 }
 
 /// Whether an enabled account has unfinished seed recovery or an active manual job, and
