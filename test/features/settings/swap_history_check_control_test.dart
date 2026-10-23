@@ -24,17 +24,29 @@ class _Check extends SwapHistoryCheckNotifier {
   SwapHistoryCheck build() => shown;
 }
 
+/// Whether the wallet keeps a manual job, fixed.
+class _JobSaved extends SwapHistoryJobSaved {
+  _JobSaved(this.saved);
+
+  final bool saved;
+
+  @override
+  bool build() => saved;
+}
+
 /// The control at phone width in `theme`, showing `check`, with the wallet
-/// calls of `api` when given.
+/// calls of `api` when given and a saved manual job when `saved`.
 Widget _control(
   AppThemeData theme,
   SwapHistoryCheck check, {
   SwapHistoryApi? api,
+  bool saved = false,
 }) => ProviderScope(
   overrides: [
     nearSwapPrivacyProvider.overrideWith(_Privacy.new),
     swapRecoveryStatusReaderProvider.overrideWithValue(() async => null),
     swapHistoryCheckProvider.overrideWith(() => _Check(check)),
+    swapHistoryJobSavedProvider.overrideWith(() => _JobSaved(saved)),
     if (api != null) swapHistoryApiProvider.overrideWithValue(api),
   ],
   child: MaterialApp(
@@ -106,6 +118,7 @@ void main() {
       _control(
         AppThemeData.dark,
         SwapHistoryCheck.waitingForSync,
+        saved: true,
         api: SwapHistoryApi(
           begin: () async {},
           cancel: () async => cancelled++,
@@ -120,5 +133,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(cancelled, 1);
     expect(find.text('Paused. Check again to resume.'), findsOneWidget);
+  });
+
+  testWidgets('a fresh wait for sync with no saved job offers no pause', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.waitingForSync),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('settings_check_swap_history')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a finished check says so plainly', (tester) async {
+    await tester.pumpWidget(_control(AppThemeData.dark, SwapHistoryCheck.done));
+    await tester.pump();
+    expect(find.text('Swap history check complete.'), findsOneWidget);
   });
 }
