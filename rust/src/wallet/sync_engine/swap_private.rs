@@ -157,25 +157,37 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
 /// work, so a slow one is abandoned well inside the 45 second round budget.
 const SHARD_FILTER_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The most time one round spends on all its optional filter downloads together. The
+/// library fetches filters one at a time, so many downloads that each finish within
+/// [`SHARD_FILTER_TIMEOUT`] could otherwise fill the round before any PIR work commits.
+const SHARD_FILTER_BUDGET: Duration = Duration::from_secs(10);
+
 /// The route the library fetches sealed-shard filters from (see `InventoryClient::filter`).
 const SHARD_FILTER_ROUTE: &str = "/v1/receiver/shard-filters/";
 
 /// One round's lookup transport. Sealed-shard filters are optional: the library reads a
 /// shard over PIR when its filter cannot be fetched, but retries the download on every
-/// later step. So this bounds each filter download by [`SHARD_FILTER_TIMEOUT`], and for
-/// the rest of the round refuses a filter that failed, and every filter once one stalls,
-/// without another request. Other requests pass through unchanged.
+/// later step. So this bounds each filter download by [`SHARD_FILTER_TIMEOUT`] and all
+/// of them together by the round's filter deadline. For the rest of the round it refuses
+/// a filter that failed, and every filter once one stalls or the deadline passes, without
+/// another request. Other requests pass through unchanged.
 struct RoundTransport<'a, T> {
     inner: &'a T,
+    filter_deadline: tokio::time::Instant,
     stalled: AtomicBool,
     failed: Mutex<HashSet<String>>,
 }
 
 impl<'a, T> RoundTransport<'a, T> {
-    /// A fresh round over `inner`, with every filter still available.
-    fn new(inner: &'a T) -> Self {
+    /// A fresh round over `inner` ending at `deadline`, with every filter still available.
+    /// Filters get [`SHARD_FILTER_BUDGET`] at most, and never more than a third of the
+    /// time left, so the rest stays for PIR.
+    fn new(inner: &'a T, deadline: tokio::time::Instant) -> Self {
+        let now = tokio::time::Instant::now();
+        let budget = SHARD_FILTER_BUDGET.min(deadline.saturating_duration_since(now) / 3);
         Self {
             inner,
+            filter_deadline: now + budget,
             stalled: AtomicBool::new(false),
             failed: Mutex::new(HashSet::new()),
         }
@@ -188,12 +200,19 @@ impl<T: Transport> Transport for RoundTransport<'_, T> {
         if !url.contains(SHARD_FILTER_ROUTE) {
             return self.inner.get(url, limit).await;
         }
-        if self.stalled.load(Ordering::SeqCst) || self.failed.lock().unwrap().contains(url) {
+        let left = self
+            .filter_deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero()
+            || self.stalled.load(Ordering::SeqCst)
+            || self.failed.lock().unwrap().contains(url)
+        {
             return Err(session::Error::Transport(
                 "Receiver filter unavailable this round.".into(),
             ));
         }
-        match tokio::time::timeout(SHARD_FILTER_TIMEOUT, self.inner.get(url, limit)).await {
+        let wait = SHARD_FILTER_TIMEOUT.min(left);
+        match tokio::time::timeout(wait, self.inner.get(url, limit)).await {
             Ok(Ok(body)) => Ok(body),
             Ok(Err(error)) => {
                 self.failed.lock().unwrap().insert(url.to_owned());
@@ -658,7 +677,12 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         }
     }
     let filters = shard_filters_cheaper(&inventory, due.len());
-    let client = InventoryClient::new(origin, RoundTransport::new(transport), inventory, filters);
+    let client = InventoryClient::new(
+        origin,
+        RoundTransport::new(transport, deadline),
+        inventory,
+        filters,
+    );
     // Every account's due lookups share one traversal of each sealed shard's filter.
     zakura_pir_client::receiver::screen(&client, &due).await;
     let account_count = ready.len();
