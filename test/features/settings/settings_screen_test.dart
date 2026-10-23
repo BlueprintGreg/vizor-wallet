@@ -720,50 +720,6 @@ void main() {
     expect(tester.widget<AppButton>(button).onPressed, isNull);
   });
 
-  testWidgets('Check swap history reports its progress', (tester) async {
-    final checking = Completer<SwapRecoveryStatus>();
-    var begun = 0;
-    await tester.pumpWidget(
-      _settingsHarness(
-        nearSwapPrivacyEnabled: true,
-        extraOverrides: [
-          swapHistoryApiProvider.overrideWithValue(
-            SwapHistoryApi(
-              begin: (_) async => begun++,
-              cancel: () async {},
-              status: () => checking.future,
-              pollInterval: Duration.zero,
-            ),
-          ),
-        ],
-      ),
-    );
-    await tester.pump();
-    final button = find.byKey(const ValueKey('settings_check_swap_history'));
-    final status = find.byKey(
-      const ValueKey('settings_check_swap_history_status'),
-    );
-    expect(
-      tester.widget<Text>(status).data,
-      swapHistoryCheckStatus(SwapHistoryCheck.idle),
-    );
-    await tester.ensureVisible(button);
-    await tester.pumpAndSettle();
-    await tester.tap(button);
-    await tester.pump();
-    expect(begun, 1);
-    expect(
-      tester.widget<Text>(status).data,
-      swapHistoryCheckStatus(SwapHistoryCheck.checking),
-    );
-    checking.complete(_idleRecovery);
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<Text>(status).data,
-      swapHistoryCheckStatus(SwapHistoryCheck.done),
-    );
-  });
-
   testWidgets('an interrupted history check still offers pause', (
     tester,
   ) async {
@@ -836,6 +792,10 @@ void main() {
     final start = find.byKey(const ValueKey('settings_check_swap_history'));
     final status = find.byKey(
       const ValueKey('settings_check_swap_history_status'),
+    );
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.idle),
     );
     await tester.ensureVisible(field);
     await tester.enterText(field, '0');
