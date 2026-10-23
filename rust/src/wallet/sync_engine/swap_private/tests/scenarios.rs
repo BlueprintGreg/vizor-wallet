@@ -6,7 +6,8 @@
 //!
 //! `VIZOR_SCENARIO_SEED`, `VIZOR_SCENARIO_ITERS` and `VIZOR_SCENARIO_STEPS` pick the runs.
 //! `VIZOR_SCENARIO_KEEP` replays a seed with only the listed action indexes, which is what
-//! a shrunk failure prints. `VIZOR_SCENARIO_SHRINK` bounds shrinking replays.
+//! a shrunk failure prints. `VIZOR_SCENARIO_SHRINK` bounds shrinking replays, and 0 turns
+//! shrinking off.
 //! Known product findings are counted as notes rather than failed, so the default lane
 //! stays green while they are open. `VIZOR_SCENARIO_STRICT=1` fails on them too (see
 //! [`World::note`]). `VIZOR_SCENARIO_MIX=stress` weights the actions toward multi-device
@@ -2684,12 +2685,11 @@ fn run_many(default_iters: u64, default_steps: u64) {
     let base = setting("VIZOR_SCENARIO_SEED", 0x5eed);
     let iters = setting("VIZOR_SCENARIO_ITERS", default_iters);
     let steps = setting("VIZOR_SCENARIO_STEPS", default_steps) as usize;
-    let budget = setting("VIZOR_SCENARIO_SHRINK", 0) as usize;
-    let budget = if budget == 0 && default_iters > 10 {
-        24
-    } else {
-        budget
-    };
+    // Only the long run shrinks by default.
+    let budget = setting(
+        "VIZOR_SCENARIO_SHRINK",
+        if default_iters > 10 { 24 } else { 0 },
+    ) as usize;
     let strict = std::env::var("VIZOR_SCENARIO_STRICT").as_deref() == Ok("1");
     let keep: Option<BTreeSet<usize>> = std::env::var("VIZOR_SCENARIO_KEEP")
         .ok()
