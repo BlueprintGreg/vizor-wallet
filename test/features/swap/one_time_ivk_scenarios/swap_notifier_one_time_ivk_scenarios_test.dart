@@ -18,6 +18,7 @@ import 'package:zcash_wallet/src/features/swap/providers/swap_receive_reservatio
 import 'package:zcash_wallet/src/features/swap/providers/swap_state_provider.dart';
 import 'package:zcash_wallet/src/features/swap/providers/swap_zec_staging_address_service.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
+import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/network_privacy_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
@@ -25,6 +26,7 @@ import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as api;
 
 const _first = 'account-1';
 const _second = 'account-2';
+const _hardware = 'keystone-1';
 const _recipient = '0x52908400098527886e0f7030069857d2e4169ee7';
 
 void main() {
@@ -283,6 +285,71 @@ void main() {
     await h.review('25');
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
   });
+
+  /// Turning NEAR swap privacy off while a private swap is open drops the
+  /// review quoted with a private address, so it cannot be shown afterwards.
+  /// The open swap is still polled and its statuses still reach the wallet,
+  /// which needs them to settle or release its address. New quotes use an
+  /// ordinary address and reserve nothing until the setting is back on.
+  test('turning off with a private swap open keeps polling it and quotes an '
+      'ordinary address', () async {
+    final open = _privateIncomingSwap(
+      'open',
+      deadline: DateTime.now().toUtc().add(const Duration(hours: 1)),
+    );
+    final h = await _Harness.create(
+      intents: [open],
+      providerStatus: SwapIntentStatus.awaitingExternalDeposit,
+    );
+    await h.review('25');
+    expect(h.state.reviewVisible, isTrue);
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
+
+    await h.privacy(false);
+    expect(
+      h.state.reviewVisible,
+      isFalse,
+      reason: 'the private review is gone',
+    );
+    h.recorded.clear();
+    h.provider.statusRequests.clear();
+    await h.notifier.refreshOpenIntentStatuses();
+    await pumpEventQueue();
+    expect(h.provider.statusRequests, contains(open.depositAddress));
+    expect(h.recorded, [SwapIntentStatus.awaitingExternalDeposit]);
+
+    await h.review('26');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1ordinary-$_first');
+    expect(h.reservations, 1, reason: 'nothing is reserved while off');
+
+    await h.privacy(true);
+    await h.review('27');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-2');
+  });
+
+  /// A hardware account never gets a private address, whatever the setting
+  /// and however often it changes, while a software account in the same
+  /// wallet does whenever it is on.
+  test(
+    'a hardware account quotes ordinary addresses through every toggle',
+    () async {
+      final h = await _Harness.create();
+      await h.switchTo(_hardware);
+      for (final on in [true, false, true]) {
+        await h.privacy(on);
+        await h.review('25');
+        expect(
+          h.state.reviewAddressPlan?.oneClickRecipient,
+          'u1ordinary-$_hardware',
+          reason: 'on $on',
+        );
+      }
+      expect(h.reservations, 0);
+      await h.switchTo(_first);
+      await h.review('26');
+      expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
+    },
+  );
 }
 
 /// A started ZEC-to-USDC swap funded from a reserved refund key, whose
@@ -367,6 +434,7 @@ class _Harness {
       overrides: [
         appBootstrapProvider.overrideWithValue(_bootstrap),
         accountProvider.overrideWith(_Accounts.new),
+        nearSwapPrivacyProvider.overrideWith(_Privacy.new),
         networkPrivacyProvider.overrideWith(_DirectRoute.new),
         syncProvider.overrideWith(() => sync),
         swapIntentProvider.overrideWithValue(provider),
@@ -387,7 +455,10 @@ class _Harness {
         ),
         swapZecStagingAddressServiceProvider.overrideWith(
           (ref) => SwapZecStagingAddressService(
+            // As production: no swap address with NEAR swap privacy off or
+            // for a hardware account, which then quotes an ordinary address.
             reserveSwapAddress: ({required accountUuid, required direction}) {
+              if (_ordinary(ref, accountUuid)) return Future.value(null);
               h.reservations++;
               return reserve?.call(accountUuid) ??
                   Future.value(
@@ -397,8 +468,12 @@ class _Harness {
                     ),
                   );
             },
-            reserveFreshOrchardAddress: ({required accountUuid}) async =>
-                throw StateError('NEAR swap privacy is on'),
+            reserveFreshOrchardAddress: ({required accountUuid}) async {
+              if (!_ordinary(ref, accountUuid)) {
+                throw StateError('NEAR swap privacy is on');
+              }
+              return 'u1ordinary-$accountUuid';
+            },
             reservations: SwapReceiveReservationService(
               store: (_) async => reservationStore,
             ),
@@ -442,6 +517,13 @@ class _Harness {
     await pumpEventQueue();
   }
 
+  /// Turns NEAR swap privacy on or off, as the settings toggle does once its
+  /// change is applied.
+  Future<void> privacy(bool on) async {
+    (container.read(nearSwapPrivacyProvider.notifier) as _Privacy).turn(on);
+    await pumpEventQueue();
+  }
+
   /// Makes `account` active, as the account switcher does.
   Future<void> switchTo(String account) async {
     await container.read(accountProvider.notifier).switchAccount(account);
@@ -466,6 +548,7 @@ const _accounts = AccountState(
   accounts: [
     AccountInfo(uuid: _first, name: 'Primary', order: 0),
     AccountInfo(uuid: _second, name: 'Trading', order: 1),
+    AccountInfo(uuid: _hardware, name: 'Keystone', order: 2, isHardware: true),
   ],
   activeAccountUuid: _first,
   activeAddress: 'u1active',
@@ -481,6 +564,21 @@ class _Accounts extends AccountNotifier {
   Future<void> switchAccount(String uuid) async {
     state = AsyncData(state.requireValue.copyWith(activeAccountUuid: uuid));
   }
+}
+
+/// Whether `account` quotes an ordinary address: NEAR swap privacy is off or
+/// the account is a hardware one.
+bool _ordinary(Ref ref, String account) =>
+    !ref.read(nearSwapPrivacyProvider) ||
+    ref.read(accountProvider.notifier).isHardwareAccount(account);
+
+class _Privacy extends NearSwapPrivacyNotifier {
+  /// NEAR swap privacy on until [turn] changes it.
+  @override
+  bool build() => true;
+
+  /// Changes the setting without the settings store or native calls.
+  void turn(bool on) => state = on;
 }
 
 class _DirectRoute extends NetworkPrivacyNotifier {
