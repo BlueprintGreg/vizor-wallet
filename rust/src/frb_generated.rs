@@ -15338,9 +15338,11 @@ impl SseDecode for crate::api::one_time_ivk::SwapRecoveryStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_checkingHistory = <bool>::sse_decode(deserializer);
+        let mut var_manualCheckActive = <bool>::sse_decode(deserializer);
         let mut var_upgradeRequired = <bool>::sse_decode(deserializer);
         return crate::api::one_time_ivk::SwapRecoveryStatus {
             checking_history: var_checkingHistory,
+            manual_check_active: var_manualCheckActive,
             upgrade_required: var_upgradeRequired,
         };
     }
@@ -20420,6 +20422,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::one_time_ivk::SwapRecoverySta
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.checking_history.into_into_dart().into_dart(),
+            self.manual_check_active.into_into_dart().into_dart(),
             self.upgrade_required.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -24599,6 +24602,7 @@ impl SseEncode for crate::api::one_time_ivk::SwapRecoveryStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <bool>::sse_encode(self.checking_history, serializer);
+        <bool>::sse_encode(self.manual_check_active, serializer);
         <bool>::sse_encode(self.upgrade_required, serializer);
     }
 }

@@ -21,7 +21,7 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.failed =>
     'The check was interrupted. Saved work may continue. Pause or try again.',
   SwapHistoryCheck.waitingForSync =>
-    'Waiting for wallet sync. Try again in a minute.',
+    'Waiting for wallet sync. Try again in a few minutes.',
   SwapHistoryCheck.updateRequired => kSwapRecoveryUpdateMessage,
 };
 

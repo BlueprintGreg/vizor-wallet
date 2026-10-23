@@ -744,6 +744,7 @@ void main() {
               },
               status: () async => const SwapRecoveryStatus(
                 checkingHistory: true,
+                manualCheckActive: false,
                 upgradeRequired: false,
               ),
             ),
@@ -1661,5 +1662,6 @@ class _PrivateWallet extends WalletTransparentPrivateNotifier {
 /// A wallet with no unfinished history check and no update needed.
 const _idleRecovery = SwapRecoveryStatus(
   checkingHistory: false,
+  manualCheckActive: false,
   upgradeRequired: false,
 );

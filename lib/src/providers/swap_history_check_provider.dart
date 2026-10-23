@@ -44,6 +44,7 @@ final swapHistoryApiProvider = Provider<SwapHistoryApi>((ref) {
         await ref.read(swapRecoveryStatusReaderProvider)() ??
         const rust_swap.SwapRecoveryStatus(
           checkingHistory: false,
+          manualCheckActive: false,
           upgradeRequired: false,
         ),
   );
@@ -106,7 +107,30 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
         state = SwapHistoryCheck.idle;
       }
     });
+    unawaited(_restoreSaved());
     return SwapHistoryCheck.idle;
+  }
+
+  /// Picks up a history check the user started before a restart, which later
+  /// rounds resume, so it shows as checking, with Pause, and is watched as
+  /// usual. Automatic seed recovery alone leaves the check idle. A failed read
+  /// leaves it idle too.
+  Future<void> _restoreSaved() async {
+    final generation = _generation;
+    try {
+      final status = await ref.read(swapRecoveryStatusReaderProvider)();
+      if (!ref.mounted ||
+          generation != _generation ||
+          state != SwapHistoryCheck.idle ||
+          status == null ||
+          !status.manualCheckActive ||
+          !ref.read(nearSwapPrivacyProvider)) {
+        return;
+      }
+      await _resume();
+    } catch (error) {
+      log('Saved swap history check not read: $error');
+    }
   }
 
   int _generation = 0;

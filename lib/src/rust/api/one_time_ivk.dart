@@ -325,16 +325,24 @@ class SwapRecoveryStatus {
   /// An enabled account has unfinished seed recovery or an active history check.
   final bool checkingHistory;
 
+  /// An enabled account has an active history check the user started, which
+  /// later rounds resume, apart from automatic seed recovery.
+  final bool manualCheckActive;
+
   /// The receiver service needs a newer app. Recovery resumes after an update.
   final bool upgradeRequired;
 
   const SwapRecoveryStatus({
     required this.checkingHistory,
+    required this.manualCheckActive,
     required this.upgradeRequired,
   });
 
   @override
-  int get hashCode => checkingHistory.hashCode ^ upgradeRequired.hashCode;
+  int get hashCode =>
+      checkingHistory.hashCode ^
+      manualCheckActive.hashCode ^
+      upgradeRequired.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -342,5 +350,6 @@ class SwapRecoveryStatus {
       other is SwapRecoveryStatus &&
           runtimeType == other.runtimeType &&
           checkingHistory == other.checkingHistory &&
+          manualCheckActive == other.manualCheckActive &&
           upgradeRequired == other.upgradeRequired;
 }

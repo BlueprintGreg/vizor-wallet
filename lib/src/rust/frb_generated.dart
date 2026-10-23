@@ -15976,11 +15976,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SwapRecoveryStatus dco_decode_swap_recovery_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return SwapRecoveryStatus(
       checkingHistory: dco_decode_bool(arr[0]),
-      upgradeRequired: dco_decode_bool(arr[1]),
+      manualCheckActive: dco_decode_bool(arr[1]),
+      upgradeRequired: dco_decode_bool(arr[2]),
     );
   }
 
@@ -21304,9 +21305,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_checkingHistory = sse_decode_bool(deserializer);
+    var var_manualCheckActive = sse_decode_bool(deserializer);
     var var_upgradeRequired = sse_decode_bool(deserializer);
     return SwapRecoveryStatus(
       checkingHistory: var_checkingHistory,
+      manualCheckActive: var_manualCheckActive,
       upgradeRequired: var_upgradeRequired,
     );
   }
@@ -25952,6 +25955,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.checkingHistory, serializer);
+    sse_encode_bool(self.manualCheckActive, serializer);
     sse_encode_bool(self.upgradeRequired, serializer);
   }
 
