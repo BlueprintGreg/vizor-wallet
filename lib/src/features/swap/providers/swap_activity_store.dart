@@ -176,6 +176,24 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
     await _inner.saveRecords(accountUuid: accountUuid, records: records);
   });
 
+  /// Reads `accountUuid`'s activity, replaces it with what `transform` makes
+  /// of it and saves that, as one queued operation, so no other read or save
+  /// runs between the read and the save. Writes nothing for a deleted account.
+  /// Writers use this rather than reading and saving separately, which would
+  /// let a concurrent writer's save be overwritten by an older list.
+  Future<void> update({
+    required String accountUuid,
+    required List<SwapIntentRecord> Function(List<SwapIntentRecord> saved)
+    transform,
+  }) => _serialized(() async {
+    if (_deleted.contains(accountUuid)) return;
+    final saved = await _inner.loadRecords(accountUuid: accountUuid);
+    await _inner.saveRecords(
+      accountUuid: accountUuid,
+      records: transform(saved),
+    );
+  });
+
   /// Deletes `accountUuid`'s activity after any save under way, and drops
   /// every later save for it.
   @override
