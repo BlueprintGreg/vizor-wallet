@@ -1,0 +1,640 @@
+// Scenario tests for the swap composer's use of one-time swap addresses:
+// waiting states, the per-account review address cache, and how deposit
+// submissions and expired quotes hand statuses to the wallet. They drive
+// `SwapNotifier` through a ProviderContainer, without widgets or Rust.
+import 'dart:async';
+
+import 'package:flutter/material.dart' show ThemeMode;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:zcash_wallet/src/app_bootstrap.dart';
+import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
+import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
+import 'package:zcash_wallet/src/features/swap/providers/pay_selected_asset_store.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_activity_store.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_activity_tracker.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_composer_preferences_store.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_receive_reservation_service.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_state_provider.dart';
+import 'package:zcash_wallet/src/features/swap/providers/swap_zec_staging_address_service.dart';
+import 'package:zcash_wallet/src/providers/account_provider.dart';
+import 'package:zcash_wallet/src/providers/network_privacy_provider.dart';
+import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
+import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as api;
+
+const _first = 'account-1';
+const _second = 'account-2';
+const _recipient = '0x52908400098527886e0f7030069857d2e4169ee7';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  /// While unresolved quotes hold every address, the composer refreshes
+  /// statuses and asks once more, then shows the wallet's waiting message
+  /// instead of looping.
+  test(
+    'a persistent limit shows "No swap address is free" after one retry',
+    () async {
+      final h = await _Harness.create(
+        reserve: (_) async => throw const api.ReceiveError(
+          message:
+              'No swap address is free. Wait for a swap in progress to finish.',
+          kind: api.ReceiveErrorKind.limit,
+        ),
+      );
+      await h.review('25');
+      expect(h.reservations, 2);
+      expect(h.sync.awaited, 0, reason: 'a limit needs statuses, not a round');
+      expect(
+        h.state.quoteError,
+        'No swap address is free. Wait for a swap in progress to finish.',
+      );
+      expect(h.state.reviewVisible, isFalse);
+    },
+  );
+
+  /// An outdated receiver service is not something a retry fixes, so the
+  /// quote stops at once with the update message.
+  test(
+    'an upgrade-required reservation asks for an update without retrying',
+    () async {
+      final h = await _Harness.create(
+        reserve: (_) async => throw const api.ReceiveError(
+          message: 'Update Vizor to keep checking private swap addresses.',
+          kind: api.ReceiveErrorKind.upgradeRequired,
+        ),
+      );
+      await h.review('25');
+      expect(h.reservations, 1);
+      expect(h.sync.awaited, 0);
+      expect(
+        h.state.quoteError,
+        'Update Vizor to keep checking private swap addresses.',
+      );
+    },
+  );
+
+  /// A provider failure is not the address's fault, so the reserved incoming
+  /// address is quoted again on the next attempt.
+  test('a reserved incoming address survives a provider quote error', () async {
+    final h = await _Harness.create();
+    h.provider.quoteError = StateError('provider unavailable');
+    await h.review('25');
+    expect(h.state.quoteError, isNotNull);
+    h.provider.quoteError = null;
+    await h.review('26');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
+    expect(h.reservations, 1);
+    expect(h.store.begun, [BigInt.one, BigInt.one]);
+  });
+
+  /// Each account keeps its own reserved address, and switching back to an
+  /// account quotes its address again rather than reserving another.
+  test('reserved addresses are kept per account across switches', () async {
+    final h = await _Harness.create();
+    await h.review('25');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
+    await h.switchTo(_second);
+    await h.review('26');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_second-2');
+    await h.switchTo(_first);
+    await h.review('27');
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
+    expect(h.reservations, 2);
+  });
+
+  /// `/v0/deposit/submit` can answer with a terminal status. When the wallet
+  /// fails to record it, the swap must stay polled so a later refresh records
+  /// it, as a refresh already does for its own terminal statuses.
+  test(
+    'a terminal deposit status that fails to record keeps the swap polled',
+    () async {
+      final h = await _Harness.create(
+        intents: [_privateRefundSwap()],
+        failTerminalRecordsOnce: true,
+      );
+      h.provider.submitStatus = SwapIntentStatus.refunded;
+      h.provider.status = SwapIntentStatus.refunded;
+      await h.notifier.submitDepositTransactionForIntent(
+        intentId: 'refund-swap',
+        accountUuid: _first,
+        txHash: 'zec-funding-tx',
+      );
+      await pumpEventQueue();
+      expect(h.recorded, isEmpty, reason: 'the first record failed');
+
+      final stored = await h.tracker.loadIntents(accountUuid: _first);
+      await h.tracker.refreshOpenIntents(
+        accountUuid: _first,
+        currentIntents: stored,
+      );
+      expect(h.recorded, [SwapIntentStatus.refunded]);
+    },
+  );
+
+  /// An incoming swap that expired unpaid keeps its receive index until the
+  /// wallet sees a fresh provider status. With every address held by such
+  /// swaps, the composer's status refresh must reach them, or a new private
+  /// quote stays blocked. `age` is how long ago their deadlines passed.
+  Future<void> expectExpiredSwapsFreed(Duration age) async {
+    final expired = [
+      for (var i = 1; i <= 4; i++)
+        _privateIncomingSwap(
+          'held-$i',
+          deadline: DateTime.now().toUtc().subtract(age),
+        ),
+    ];
+    late _Harness h;
+    h = await _Harness.create(
+      intents: expired,
+      reserve: (account) async {
+        if (h.recorded.length < expired.length) {
+          throw const api.ReceiveError(
+            message:
+                'No swap address is free. Wait for a swap in progress to '
+                'finish.',
+            kind: api.ReceiveErrorKind.limit,
+          );
+        }
+        return SwapZecStagingAddress(
+          address: 'u1freed',
+          reservationIndex: BigInt.one,
+        );
+      },
+    );
+    h.provider.status = SwapIntentStatus.awaitingExternalDeposit;
+    await h.review('25');
+    expect(h.provider.statusRequests.toSet(), {
+      for (final intent in expired) intent.depositAddress,
+    }, reason: 'every held swap gets a fresh status');
+    expect(h.recorded, hasLength(expired.length));
+    expect(h.state.quoteError, isNull);
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
+  }
+
+  /// Control for the next test: quotes that expired within the last day are
+  /// refreshed when a limit blocks a new quote.
+  test(
+    'quotes that expired unpaid an hour ago are refreshed to free addresses',
+    () => expectExpiredSwapsFreed(const Duration(hours: 1)),
+  );
+
+  /// Four reserved swaps whose deadlines passed two days ago must not block
+  /// a new private quote forever.
+  test(
+    'quotes that expired unpaid days ago are refreshed to free addresses',
+    () => expectExpiredSwapsFreed(const Duration(days: 2)),
+  );
+
+  /// A private quote whose deadline passed between polls loads as expired, so
+  /// periodic polling never gives the wallet the post-deadline status it
+  /// needs (see the tracker scenario tests). Once that held address blocks a
+  /// new quote, the composer's refresh still records a fresh status for it.
+  test('a quote that expired between polls is refreshed once a quote needs '
+      'its address', () async {
+    final swap = _privateIncomingSwap(
+      'missed',
+      deadline: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+    );
+    late _Harness h;
+    h = await _Harness.create(
+      intents: [swap],
+      reserve: (account) async {
+        if (h.recorded.isEmpty) {
+          throw const api.ReceiveError(
+            message:
+                'No swap address is free. Wait for a swap in progress to '
+                'finish.',
+            kind: api.ReceiveErrorKind.limit,
+          );
+        }
+        return SwapZecStagingAddress(
+          address: 'u1freed',
+          reservationIndex: BigInt.one,
+        );
+      },
+    );
+    h.provider.status = SwapIntentStatus.awaitingExternalDeposit;
+    await h.notifier.refreshOpenIntentStatuses();
+    await pumpEventQueue();
+    expect(h.recorded, isEmpty, reason: 'periodic polling skips it');
+
+    await h.review('25');
+    expect(h.recorded, [SwapIntentStatus.awaitingExternalDeposit]);
+    expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
+  });
+}
+
+/// A started ZEC-to-USDC swap funded from a reserved refund key, whose
+/// deposit transaction has not been submitted yet.
+SwapIntent _privateRefundSwap() => SwapIntent(
+  id: 'refund-swap',
+  pair: 'ZEC -> USDC',
+  sellAmount: '1 ZEC',
+  receiveEstimate: '70 USDC',
+  provider: 'NEAR Intents',
+  status: SwapIntentStatus.awaitingDeposit,
+  nextAction: 'Send ZEC',
+  direction: SwapDirection.zecToExternal,
+  externalAsset: SwapAsset.usdc,
+  depositAddress: 't1deposit',
+  providerQuoteId: 'quote-refund',
+  oneClickRecipient: _recipient,
+  oneClickRefundTo: 'u1refund',
+  depositDeadline: DateTime.now().toUtc().add(const Duration(hours: 1)),
+  accountUuid: _first,
+  privateAddress: true,
+);
+
+/// A started USDC-to-ZEC swap quoted with a reserved receive address, never
+/// paid, whose deposit deadline is `deadline`.
+SwapIntent _privateIncomingSwap(String id, {required DateTime deadline}) =>
+    SwapIntent(
+      id: id,
+      pair: 'USDC -> ZEC',
+      sellAmount: '25 USDC',
+      receiveEstimate: '0.25 ZEC',
+      provider: 'NEAR Intents',
+      status: SwapIntentStatus.awaitingExternalDeposit,
+      nextAction: 'Send USDC',
+      direction: SwapDirection.externalToZec,
+      externalAsset: SwapAsset.usdc,
+      depositAddress: '0x$id',
+      depositMemo: 'memo',
+      providerQuoteId: 'quote-$id',
+      oneClickRecipient: 'u1$id',
+      oneClickRefundTo: _recipient,
+      depositDeadline: deadline,
+      accountUuid: _first,
+      privateAddress: true,
+    );
+
+/// A swap notifier over fakes: two software accounts with NEAR swap privacy
+/// treated as on (every reservation goes through [reserve]), an in-memory
+/// activity store and a tracker that records what reaches the wallet.
+class _Harness {
+  _Harness._(this.container, this.sync, this.provider, this.store);
+
+  final ProviderContainer container;
+  final _Sync sync;
+  final _Provider provider;
+  final _Reservations store;
+  var reservations = 0;
+
+  /// Statuses the wallet recorded, in order.
+  final recorded = <SwapIntentStatus>[];
+
+  /// Builds the notifier, with `intents` saved for the first account, and
+  /// waits for its asset catalog. `reserve` defaults to a new incoming
+  /// reservation per call, numbered across accounts. The wallet's first
+  /// terminal record fails when `failTerminalRecordsOnce`.
+  static Future<_Harness> create({
+    List<SwapIntent> intents = const [],
+    Future<SwapZecStagingAddress> Function(String account)? reserve,
+    bool failTerminalRecordsOnce = false,
+  }) async {
+    final sync = _Sync();
+    final provider = _Provider();
+    final reservationStore = _Reservations();
+    final activity = _MemoryStore(intents);
+    late _Harness h;
+    var failTerminal = failTerminalRecordsOnce;
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(_bootstrap),
+        accountProvider.overrideWith(_Accounts.new),
+        networkPrivacyProvider.overrideWith(_DirectRoute.new),
+        syncProvider.overrideWith(() => sync),
+        swapIntentProvider.overrideWithValue(provider),
+        swapActivityStoreProvider.overrideWithValue(activity),
+        swapComposerPreferencesStoreProvider.overrideWithValue(activity),
+        paySelectedAssetStoreProvider.overrideWithValue(activity),
+        swapStatusPollIntervalProvider.overrideWithValue(
+          const Duration(hours: 1),
+        ),
+        swapPriceRefreshIntervalProvider.overrideWithValue(
+          const Duration(hours: 1),
+        ),
+        rpcEndpointFailoverChainNameGetterProvider.overrideWithValue(
+          (_) async => 'inert-no-failover',
+        ),
+        rpcEndpointFailoverLatestBlockHeightGetterProvider.overrideWithValue(
+          (_, _) async => BigInt.zero,
+        ),
+        swapZecStagingAddressServiceProvider.overrideWith(
+          (ref) => SwapZecStagingAddressService(
+            reserveSwapAddress: ({required accountUuid, required direction}) {
+              h.reservations++;
+              return reserve?.call(accountUuid) ??
+                  Future.value(
+                    SwapZecStagingAddress(
+                      address: 'u1$accountUuid-${h.reservations}',
+                      reservationIndex: BigInt.from(h.reservations),
+                    ),
+                  );
+            },
+            reserveFreshOrchardAddress: ({required accountUuid}) async =>
+                throw StateError('NEAR swap privacy is on'),
+            reservations: SwapReceiveReservationService(
+              store: (_) async => reservationStore,
+            ),
+          ),
+        ),
+        swapActivityTrackerProvider.overrideWith(
+          (ref) => SwapActivityTracker(
+            activityStore: activity,
+            swapProvider: provider,
+            onProviderSnapshot: (_, snapshot, _) async {
+              if (failTerminal && snapshot.status.isTerminal) {
+                failTerminal = false;
+                throw StateError('database is locked');
+              }
+              h.recorded.add(snapshot.status);
+              return true;
+            },
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    h = _Harness._(container, sync, provider, reservationStore);
+    container.listen(swapStateProvider, (_, _) {});
+    await container.read(syncProvider.future);
+    await pumpEventQueue();
+    return h;
+  }
+
+  SwapNotifier get notifier => container.read(swapStateProvider.notifier);
+  SwapState get state => container.read(swapStateProvider);
+  SwapActivityTracker get tracker =>
+      container.read(swapActivityTrackerProvider);
+
+  /// Quotes `amount` USDC into ZEC for review on the active account.
+  Future<void> review(String amount) async {
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount(amount);
+    notifier.updateDestination(_recipient);
+    await notifier.showReview();
+    await pumpEventQueue();
+  }
+
+  /// Makes `account` active, as the account switcher does.
+  Future<void> switchTo(String account) async {
+    await container.read(accountProvider.notifier).switchAccount(account);
+    await pumpEventQueue();
+  }
+}
+
+final _bootstrap = AppBootstrapState(
+  initialLocation: '/swap',
+  initialAccountState: _accounts,
+  initialSyncSnapshot: AppSyncSnapshot.empty,
+  network: 'main',
+  rpcEndpointConfig: defaultRpcEndpointConfig('main'),
+  themeMode: ThemeMode.system,
+  privacyModeEnabled: false,
+  isPasswordConfigured: true,
+  isUnlocked: true,
+  passwordRotationRecoveryFailed: false,
+);
+
+const _accounts = AccountState(
+  accounts: [
+    AccountInfo(uuid: _first, name: 'Primary', order: 0),
+    AccountInfo(uuid: _second, name: 'Trading', order: 1),
+  ],
+  activeAccountUuid: _first,
+  activeAddress: 'u1active',
+);
+
+class _Accounts extends AccountNotifier {
+  /// Two software accounts, the first active.
+  @override
+  FutureOr<AccountState> build() => _accounts;
+
+  /// Makes `uuid` active without native calls.
+  @override
+  Future<void> switchAccount(String uuid) async {
+    state = AsyncData(state.requireValue.copyWith(activeAccountUuid: uuid));
+  }
+}
+
+class _DirectRoute extends NetworkPrivacyNotifier {
+  /// Tor off.
+  @override
+  NetworkPrivacyState build() => const NetworkPrivacyState.off();
+}
+
+class _Sync extends SyncNotifier {
+  var awaited = 0;
+
+  /// A synced wallet with spendable ZEC.
+  @override
+  Future<SyncState> build() async => SyncState(
+    accountUuid: _first,
+    hasAccountScopedData: true,
+    spendableBalance: BigInt.from(10000000000),
+    displaySpendableBalance: BigInt.from(10000000000),
+    totalBalance: BigInt.from(10000000000),
+  );
+
+  /// Counts the recovery rounds a quote waits for.
+  @override
+  Future<void> awaitSwapRecovery() async => awaited++;
+
+  /// Starts nothing.
+  @override
+  void continueSwapRecovery() {}
+
+  /// Refreshes nothing.
+  @override
+  Future<void> refreshAfterSend() async {}
+}
+
+/// Incoming reservation records that accept every quote.
+class _Reservations implements ReceiveReservationStore {
+  final begun = <BigInt>[];
+
+  @override
+  Future<String> begin(BigInt reservation, DateTime deadline) async {
+    begun.add(reservation);
+    return 'request-${begun.length}';
+  }
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) async {}
+
+  @override
+  Future<api.ReceiveDeposit> start(String request) =>
+      throw UnimplementedError();
+
+  @override
+  Future<api.SwapAddress> reserve({
+    required bool incoming,
+    required BigInt tip,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {}
+
+  @override
+  Future<bool> observe({
+    required bool incoming,
+    required String depositAddress,
+    required String? memo,
+    required SwapIntentSnapshot snapshot,
+    required DateTime checkedAt,
+  }) => throw UnimplementedError();
+}
+
+/// 1Click as the composer sees it: quotes that run the send hook, and
+/// configurable status and deposit-submission answers.
+class _Provider implements SwapProvider {
+  Object? quoteError;
+  SwapIntentStatus status = SwapIntentStatus.processing;
+  SwapIntentStatus submitStatus = SwapIntentStatus.depositObserved;
+  final statusRequests = <String>[];
+
+  @override
+  String get providerLabel => 'NEAR Intents';
+
+  @override
+  Future<List<SwapAsset>> listSupportedExternalAssets() async =>
+      swapExternalAssets;
+
+  /// Sends the request through its hook, then answers or fails with
+  /// [quoteError].
+  @override
+  Future<SwapQuote> quote(SwapQuoteRequest request) async {
+    await request.beforeSend?.call(
+      DateTime.now().toUtc().add(const Duration(hours: 1)),
+    );
+    if (quoteError case final error?) throw error;
+    final estimate = SwapQuote.estimate(
+      direction: request.direction,
+      externalAsset: request.externalAsset,
+      mode: request.mode,
+      amount: request.amount,
+      slippageBps: request.slippageBps ?? 50,
+    );
+    return SwapQuote(
+      direction: estimate.direction,
+      sellAsset: estimate.sellAsset,
+      receiveAsset: estimate.receiveAsset,
+      externalAsset: estimate.externalAsset,
+      mode: estimate.mode,
+      sellAmount: estimate.sellAmount,
+      receiveAmount: estimate.receiveAmount,
+      minimumReceiveAmount: estimate.minimumReceiveAmount,
+      providerLabel: providerLabel,
+      feeLabel: estimate.feeLabel,
+      expiryLabel: estimate.expiryLabel,
+      providerQuoteId: 'quote-live',
+      depositInstruction: SwapDepositInstruction(
+        asset: estimate.sellAsset,
+        address: '0xlive-deposit',
+        expiresInLabel: '10:00',
+        reuseWarning: '',
+        memo: 'memo-live',
+        deadline: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      ),
+    );
+  }
+
+  @override
+  Future<SwapIntentSnapshot> startSwap(SwapQuote quote) async =>
+      SwapIntentSnapshot.fromQuote(quote, id: quote.depositInstruction.address);
+
+  /// Answers [status] for `intentId`.
+  @override
+  Future<SwapIntentSnapshot> getStatus(
+    String intentId, {
+    String? depositMemo,
+  }) async {
+    statusRequests.add(intentId);
+    return _snapshot(intentId, status);
+  }
+
+  /// Answers [submitStatus] for the submitted deposit.
+  @override
+  Future<SwapIntentSnapshot> submitDepositTransaction({
+    required String depositAddress,
+    required String txHash,
+    String? depositMemo,
+    String? nearSenderAccount,
+  }) async => _snapshot(depositAddress, submitStatus);
+
+  /// A status-only answer for `address`.
+  SwapIntentSnapshot _snapshot(String address, SwapIntentStatus status) =>
+      SwapIntentSnapshot(
+        id: address,
+        providerLabel: providerLabel,
+        pairText: 'ZEC -> USDC',
+        sellAmountText: '1 ZEC',
+        receiveEstimateText: '70 USDC',
+        status: status,
+        nextAction: status.label,
+        providerStatusRaw: status.name,
+        statusOnly: true,
+        depositInstruction: SwapDepositInstruction(
+          asset: SwapAsset.zec,
+          address: address,
+          expiresInLabel: '10:00',
+          reuseWarning: '',
+        ),
+      );
+}
+
+/// Activity, composer preferences and Pay asset, kept in memory per account.
+class _MemoryStore
+    implements
+        SwapActivityStore,
+        SwapComposerPreferencesStore,
+        PaySelectedAssetStore {
+  _MemoryStore(List<SwapIntent> intents) {
+    for (final intent in intents) {
+      _records
+          .putIfAbsent(intent.accountUuid!, () => [])
+          .add(SwapIntentRecord.fromIntent(intent));
+    }
+  }
+
+  final _records = <String, List<SwapIntentRecord>>{};
+
+  @override
+  Future<List<SwapIntentRecord>> loadRecords({
+    required String accountUuid,
+  }) async => [...?_records[accountUuid]];
+
+  @override
+  Future<void> saveRecords({
+    required String accountUuid,
+    required List<SwapIntentRecord> records,
+  }) async => _records[accountUuid] = [...records];
+
+  @override
+  Future<void> deleteForAccount({required String accountUuid}) async =>
+      _records.remove(accountUuid);
+
+  @override
+  Future<SwapComposerPreferences?> loadPreferences({
+    required String accountUuid,
+  }) async => null;
+
+  @override
+  Future<void> savePreferences({
+    required String accountUuid,
+    required SwapComposerPreferences preferences,
+  }) async {}
+
+  @override
+  Future<SwapAsset?> loadSelectedAsset({required String accountUuid}) async =>
+      null;
+
+  @override
+  Future<void> saveSelectedAsset({
+    required String accountUuid,
+    required SwapAsset asset,
+  }) async {}
+}
