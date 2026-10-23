@@ -193,6 +193,7 @@ pub(super) enum Action {
         dev: usize,
         acct: usize,
     },
+    /// An app restart on a device, which reopens its wallet (see [`World::restart`]).
     Restart(usize),
     /// A whole incoming swap: quote, deposit and payout.
     Swap {
@@ -2532,8 +2533,7 @@ impl World {
             }
             Action::Restart(dev) => {
                 let dev = self.dev(dev);
-                cancel_recovery();
-                self.toggled(dev)
+                self.restart(dev)
             }
             Action::Swap { dev, acct, value } => {
                 let dev = self.dev(dev);
