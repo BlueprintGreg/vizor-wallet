@@ -2,7 +2,7 @@
 //! records, provider statuses and swap history checks. Provider polling stays in Dart.
 //! Allocation is durable in Rust.
 use super::sync::parse_network_and_migrate;
-use crate::wallet::db::open_wallet_db_with_timeout;
+use crate::wallet::db::open_existing_wallet_db_with_timeout;
 use crate::wallet::one_time_ivk::{self, with_db};
 use crate::wallet::sync_engine::RecoveryError;
 use crate::wallet::{db::WALLET_DB_BUSY_TIMEOUT, keys};
@@ -433,7 +433,8 @@ pub fn get_swap_recovery_status(
     if !one_time_ivk::supported(network) {
         return Ok(idle);
     }
-    let db = open_wallet_db_with_timeout(&db_path, network, WALLET_DB_BUSY_TIMEOUT)?;
+    // A reset may delete the wallet after the existence check, so never create one.
+    let db = open_existing_wallet_db_with_timeout(&db_path, network, WALLET_DB_BUSY_TIMEOUT)?;
     let (checking_history, upgrade_required) = one_time_ivk::recovery_flags(&db)?;
     Ok(SwapRecoveryStatus {
         checking_history,
