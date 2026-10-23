@@ -211,6 +211,19 @@ pub fn get_latest_block_height(lightwalletd_url: String, network: String) -> Res
 
 /// Get the lightwalletd chain name ("main" or "test") for endpoint validation.
 pub fn get_lightwalletd_chain_name(lightwalletd_url: String) -> Result<String, String> {
+    probe_lightwalletd_endpoint(lightwalletd_url).map(|probe| probe.chain_name)
+}
+
+/// A chain-info response timed inside Rust, excluding bridge execution queues.
+pub struct LightwalletdEndpointProbe {
+    pub chain_name: String,
+    pub latency_ms: u32,
+}
+
+/// Time connection establishment and the chain-info RPC on the selected route.
+pub fn probe_lightwalletd_endpoint(
+    lightwalletd_url: String,
+) -> Result<LightwalletdEndpointProbe, String> {
     catch(|| {
         let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
         rt.block_on(async {
@@ -220,6 +233,7 @@ pub fn get_lightwalletd_chain_name(lightwalletd_url: String) -> Result<String, S
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 use zcash_client_backend::proto::service::Empty;
 
+                let started_at = std::time::Instant::now();
                 let mut client = crate::wallet::sync_engine::open_lwd_channel(&lightwalletd_url)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -232,7 +246,11 @@ pub fn get_lightwalletd_chain_name(lightwalletd_url: String) -> Result<String, S
                 .map_err(|e| format!("get_lightd_info: {e}"))?
                 .into_inner();
 
-                Ok(info.chain_name)
+                Ok(LightwalletdEndpointProbe {
+                    chain_name: info.chain_name,
+                    // The request is bounded by the 30-second outer timeout.
+                    latency_ms: started_at.elapsed().as_millis() as u32,
+                })
             })
             .await
             .map_err(|_| "endpoint verification: timed out".to_string())?
@@ -1496,6 +1514,57 @@ pub fn get_recent_transparent_receive_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_probe_excludes_caller_wait_and_includes_rpc_wait() {
+        use crate::wallet::sync_engine::test_lwd::CapturingLwd;
+        use std::time::{Duration, Instant};
+
+        let _route = crate::network_privacy::test_route_policy::lock_route_policy();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let lwd = CapturingLwd::start(Vec::new()).await;
+            let gate = lwd.hold_responses("/GetLightdInfo");
+            let url = lwd.url.clone();
+            let caller_started_at = Instant::now();
+            let task = tokio::task::spawn_blocking(move || {
+                // Simulate time queued before the API starts executing.
+                std::thread::sleep(Duration::from_millis(250));
+                super::probe_lightwalletd_endpoint(url).unwrap()
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !lwd
+                    .requests()
+                    .iter()
+                    .any(|path| path.ends_with("/GetLightdInfo"))
+                {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("probe must reach lightwalletd");
+            // Delay the real RPC response, which must count towards latency.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            gate.notify_one();
+            let probe = task.await.unwrap();
+            assert_eq!(probe.chain_name, "main");
+            assert!(probe.latency_ms >= 50, "RPC response wait must be counted");
+            assert!(
+                caller_started_at.elapsed().as_millis() >= u128::from(probe.latency_ms) + 250,
+                "caller-side wait must not be counted"
+            );
+            gate.notify_one();
+            let url = lwd.url.clone();
+            assert_eq!(
+                tokio::task::spawn_blocking(move || super::get_lightwalletd_chain_name(url))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "main",
+                "the existing validation API must retain its result"
+            );
+        });
+    }
 
     #[cfg(not(ironwood_masquerade))]
     #[test]

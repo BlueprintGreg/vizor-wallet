@@ -24,6 +24,13 @@ Future<String> getLightwalletdChainName({required String lightwalletdUrl}) =>
       lightwalletdUrl: lightwalletdUrl,
     );
 
+/// Time connection establishment and the chain-info RPC on the selected route.
+Future<LightwalletdEndpointProbe> probeLightwalletdEndpoint({
+  required String lightwalletdUrl,
+}) => RustLib.instance.api.crateApiWalletProbeLightwalletdEndpoint(
+  lightwalletdUrl: lightwalletdUrl,
+);
+
 /// Get the connected chain upgrade state used to decide whether Ironwood is active.
 Future<ChainUpgradeStatus> getChainUpgradeStatus({
   required String lightwalletdUrl,
@@ -700,6 +707,28 @@ class LegacyHardwareAccount {
           runtimeType == other.runtimeType &&
           accountUuid == other.accountUuid &&
           hardwareSignerKind == other.hardwareSignerKind;
+}
+
+/// A chain-info response timed inside Rust, excluding bridge execution queues.
+class LightwalletdEndpointProbe {
+  final String chainName;
+  final int latencyMs;
+
+  const LightwalletdEndpointProbe({
+    required this.chainName,
+    required this.latencyMs,
+  });
+
+  @override
+  int get hashCode => chainName.hashCode ^ latencyMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LightwalletdEndpointProbe &&
+          runtimeType == other.runtimeType &&
+          chainName == other.chainName &&
+          latencyMs == other.latencyMs;
 }
 
 /// A higher ZIP32 software account that can be imported by user choice.

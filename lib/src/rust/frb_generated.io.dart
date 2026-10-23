@@ -601,6 +601,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LegacyHardwareAccount dco_decode_legacy_hardware_account(dynamic raw);
 
   @protected
+  LightwalletdEndpointProbe dco_decode_lightwalletd_endpoint_probe(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
@@ -2117,6 +2120,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LegacyHardwareAccount sse_decode_legacy_hardware_account(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  LightwalletdEndpointProbe sse_decode_lightwalletd_endpoint_probe(
     SseDeserializer deserializer,
   );
 
@@ -4007,6 +4015,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_legacy_hardware_account(
     LegacyHardwareAccount self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_lightwalletd_endpoint_probe(
+    LightwalletdEndpointProbe self,
     SseSerializer serializer,
   );
 
