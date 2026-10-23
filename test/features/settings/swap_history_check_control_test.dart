@@ -52,42 +52,33 @@ void main() {
     ('light', AppThemeData.light),
     ('dark', AppThemeData.dark),
   ]) {
-    testWidgets('the bound help wraps above the status in the $name theme', (
+    testWidgets('the control lays out without overlap in the $name theme', (
       tester,
     ) async {
       await tester.pumpWidget(_control(theme, SwapHistoryCheck.checking));
       await tester.pump();
 
-      final help = find.byKey(
-        const ValueKey('settings_swap_history_bound_help'),
+      // No address count to choose: no field, one explanation line.
+      expect(find.byType(EditableText), findsNothing);
+      final explanation = find.byKey(
+        const ValueKey('settings_swap_history_explanation'),
       );
       final status = find.byKey(
         const ValueKey('settings_check_swap_history_status'),
       );
-      final paragraph = tester.renderObject<RenderParagraph>(help);
+      final paragraph = tester.renderObject<RenderParagraph>(explanation);
       expect(paragraph.didExceedMaxLines, isFalse, reason: 'shown in full');
-      expect(
-        tester.getRect(help).height,
-        greaterThan(tester.getRect(status).height),
-        reason: 'the help wraps at phone width',
-      );
-      for (final above in [
-        help,
-        find.byKey(const ValueKey('settings_check_swap_history')),
-        find.byKey(const ValueKey('settings_cancel_swap_history')),
-      ]) {
-        expect(
-          tester.getRect(above).bottom,
-          lessThanOrEqualTo(tester.getRect(status).top),
-        );
-      }
-      // The two actions are separate buttons with a gap between them.
       final check = tester.getRect(
         find.byKey(const ValueKey('settings_check_swap_history')),
       );
       final pause = tester.getRect(
         find.byKey(const ValueKey('settings_cancel_swap_history')),
       );
+      expect(tester.getRect(explanation).bottom, lessThanOrEqualTo(check.top));
+      for (final above in [check, pause]) {
+        expect(above.bottom, lessThanOrEqualTo(tester.getRect(status).top));
+      }
+      // The two actions are separate buttons with a gap between them.
       expect(check.overlaps(pause), isFalse);
       expect(check.right < pause.left || check.bottom < pause.top, isTrue);
     });
@@ -116,7 +107,7 @@ void main() {
         AppThemeData.dark,
         SwapHistoryCheck.waitingForSync,
         api: SwapHistoryApi(
-          begin: (_) async {},
+          begin: () async {},
           cancel: () async => cancelled++,
           status: () async => throw StateError('not polled'),
         ),

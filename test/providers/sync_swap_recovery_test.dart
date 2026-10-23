@@ -25,7 +25,7 @@ class _Api extends RustLibApi {
   bool running = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
   final recoveries = <Completer<bool>>[];
-  final manual = <(BigInt?, Completer<void>)>[];
+  final manual = <Completer<void>>[];
   final statusReads = <Completer<rust_swap.SwapRecoveryStatus>>[];
   final events = <String>[];
   final balanceReads = <String>[];
@@ -108,16 +108,15 @@ class _Api extends RustLibApi {
     events.add('cancel');
   }
 
-  /// Starts a manual check with its bound, pending until the test completes it.
+  /// Starts a manual check, pending until the test completes it.
   @override
   Future<void> crateApiOneTimeIvkCheckSwapHistory({
     required String dbPath,
     required String networkName,
-    BigInt? receiveEnd,
   }) {
     events.add('manual');
     final check = Completer<void>();
-    manual.add((receiveEnd, check));
+    manual.add(check);
     return check.future;
   }
 
@@ -659,23 +658,23 @@ void main() {
     expect(api.balanceReads.toSet(), {_second});
   });
 
-  test('a manual check stops the automatic round first, passes its bound and '
-      'pauses through Rust after draining', () async {
+  test('a manual check stops the automatic round first and pauses through '
+      'Rust after draining', () async {
     final sync = await recovering();
-    final checking = sync.checkSwapHistory(receiveEnd: BigInt.from(10));
+    final checking = sync.checkSwapHistory();
     await pumpEventQueue();
     expect(api.cancels, 1);
     expect(api.manual, isEmpty, reason: 'the automatic round still runs');
     api.round.completeError('Swap recovery was cancelled.');
     await pumpEventQueue();
-    expect(api.manual.single.$1, BigInt.from(10));
+    expect(api.manual, hasLength(1));
 
     // Pausing cancels the manual round, waits for it, then records the pause.
     final pausing = sync.cancelSwapHistory();
     await pumpEventQueue();
     expect(api.cancels, 2);
     expect(api.events.last, 'cancel');
-    api.manual.single.$2.completeError('Swap recovery was cancelled.');
+    api.manual.single.completeError('Swap recovery was cancelled.');
     await expectLater(checking, throwsA(isA<Object>()));
     await pausing;
     expect(api.events.last, 'cancel manual');

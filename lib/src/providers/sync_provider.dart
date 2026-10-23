@@ -1132,11 +1132,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   }
 
   /// Holds admission until native work and the resulting display refresh have finished.
-  Future<void> _runSwapRecovery(
-    int generation, {
-    bool manual = false,
-    BigInt? receiveEnd,
-  }) async {
+  Future<void> _runSwapRecovery(int generation, {bool manual = false}) async {
     try {
       final path = await _getDbPath();
       if (!ref.mounted ||
@@ -1153,11 +1149,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         if (manual) {
           await _trackedWalletCall(
             () async => path,
-            (path) => rust_swap.checkSwapHistory(
-              dbPath: path,
-              networkName: network,
-              receiveEnd: receiveEnd,
-            ),
+            (path) =>
+                rust_swap.checkSwapHistory(dbPath: path, networkName: network),
           );
         } else {
           hadWork =
@@ -1212,8 +1205,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     }
   }
 
-  /// Starts or resumes explicit history recovery, including a caller-selected index bound.
-  Future<void> checkSwapHistory({BigInt? receiveEnd}) async {
+  /// Starts or resumes explicit history recovery of every enrolled address.
+  Future<void> checkSwapHistory() async {
     if (_swapRecoveryTransitions > 0) {
       throw StateError('A swap history transition is already running.');
     }
@@ -1227,11 +1220,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           _walletMutationPauseCount > 0) {
         throw StateError('Swap history check was cancelled.');
       }
-      final work = _runSwapRecovery(
-        generation,
-        manual: true,
-        receiveEnd: receiveEnd,
-      );
+      final work = _runSwapRecovery(generation, manual: true);
       _swapRecovery = work;
       await work;
     } finally {
