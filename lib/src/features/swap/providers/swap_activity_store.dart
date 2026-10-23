@@ -16,7 +16,9 @@ String _swapActivityKeyFor(String accountUuid) =>
     '$_swapActivityKey:$accountUuid';
 
 final swapActivityStoreProvider = Provider<SwapActivityStore>((ref) {
-  return AppSecureStoreSwapActivityStore(AppSecureStore.instance);
+  return DeletionSafeSwapActivityStore(
+    AppSecureStoreSwapActivityStore(AppSecureStore.instance),
+  );
 });
 
 class SwapActivityRecordsRevisionNotifier extends Notifier<int> {
@@ -134,6 +136,52 @@ class AppSecureStoreSwapActivityStore implements SwapActivityStore {
   Future<void> deleteForAccount({required String accountUuid}) async {
     await _storage.delete(_swapActivityKeyFor(accountUuid));
   }
+}
+
+/// The one gate every swap activity write passes, so no caller can race
+/// account deletion. Saves and deletions run one at a time, so deleting an
+/// account waits only for a storage write already under way, never for a
+/// provider request or recovery work. Once an account's activity is deleted,
+/// later saves for it are dropped, which stops a save prepared before the
+/// deletion from bringing the deleted account's swaps back. Account UUIDs are
+/// never reused, so a dropped account stays dropped.
+class DeletionSafeSwapActivityStore implements SwapActivityStore {
+  DeletionSafeSwapActivityStore(this._inner);
+
+  final SwapActivityStore _inner;
+  final Set<String> _deleted = {};
+  Future<void> _tail = Future.value();
+
+  /// Runs `action` after every save and deletion queued before it.
+  Future<T> _serialized<T>(Future<T> Function() action) {
+    final result = _tail.then((_) => action());
+    _tail = result.then<void>((_) {}, onError: (_) {});
+    return result;
+  }
+
+  @override
+  Future<List<SwapIntentRecord>> loadRecords({required String accountUuid}) =>
+      _inner.loadRecords(accountUuid: accountUuid);
+
+  /// Saves `records` unless `accountUuid`'s activity was deleted, in which case
+  /// it writes nothing.
+  @override
+  Future<void> saveRecords({
+    required String accountUuid,
+    required List<SwapIntentRecord> records,
+  }) => _serialized(() async {
+    if (_deleted.contains(accountUuid)) return;
+    await _inner.saveRecords(accountUuid: accountUuid, records: records);
+  });
+
+  /// Deletes `accountUuid`'s activity after any save under way, and drops
+  /// every later save for it.
+  @override
+  Future<void> deleteForAccount({required String accountUuid}) =>
+      _serialized(() {
+        _deleted.add(accountUuid);
+        return _inner.deleteForAccount(accountUuid: accountUuid);
+      });
 }
 
 @visibleForTesting
