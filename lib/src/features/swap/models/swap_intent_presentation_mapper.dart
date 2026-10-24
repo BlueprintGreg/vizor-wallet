@@ -50,6 +50,7 @@ SwapIntent _swapIntentFromRecord(SwapIntentRecord record, {DateTime? now}) {
     payMode: record.payMode,
     privateAddress: record.privateAddress,
     walletReleased: record.walletReleased,
+    startPending: record.startPending,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     completedAt:

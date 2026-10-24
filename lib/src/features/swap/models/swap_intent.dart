@@ -1,6 +1,14 @@
 import '../domain/swap_contract.dart';
 import 'swap_deposit_broadcast_result.dart';
 
+/// Shown in place of a swap's funding instructions while its wallet start is
+/// pending (see [SwapIntent.startPending]).
+const swapStartingText = 'Starting swap…';
+
+/// Shown for a swap whose wallet start never finished.
+const swapStartFailedText =
+    "This swap didn't finish starting. Start a new swap if you still want one.";
+
 class SwapIntentRecord {
   const SwapIntentRecord({
     required this.id,
@@ -40,6 +48,7 @@ class SwapIntentRecord {
     this.payMode = false,
     this.privateAddress = false,
     this.walletReleased = false,
+    this.startPending = false,
     this.createdAt,
     this.updatedAt,
     this.completedAt,
@@ -85,6 +94,7 @@ class SwapIntentRecord {
       payMode: intent.payMode,
       privateAddress: intent.privateAddress,
       walletReleased: intent.walletReleased,
+      startPending: intent.startPending,
       createdAt: intent.createdAt,
       updatedAt: intent.updatedAt,
       completedAt: intent.completedAt,
@@ -133,6 +143,9 @@ class SwapIntentRecord {
 
   /// See [SwapIntent.walletReleased].
   final bool walletReleased;
+
+  /// See [SwapIntent.startPending].
+  final bool startPending;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final DateTime? completedAt;
@@ -179,6 +192,7 @@ class SwapIntentRecord {
     bool? payMode,
     bool? privateAddress,
     bool? walletReleased,
+    bool? startPending,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? completedAt,
@@ -232,6 +246,7 @@ class SwapIntentRecord {
       payMode: payMode ?? this.payMode,
       privateAddress: privateAddress ?? this.privateAddress,
       walletReleased: walletReleased ?? this.walletReleased,
+      startPending: startPending ?? this.startPending,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       completedAt: completedAt ?? this.completedAt,
@@ -277,6 +292,7 @@ class SwapIntent {
     this.payMode = false,
     this.privateAddress = false,
     this.walletReleased = false,
+    this.startPending = false,
     this.createdAt,
     this.updatedAt,
     this.completedAt,
@@ -326,6 +342,13 @@ class SwapIntent {
   /// Whether the wallet reported that it no longer tracks the private address, so
   /// no later status can free a receive slot for it.
   final bool walletReleased;
+
+  /// Whether this incoming private swap was saved before the wallet locked its
+  /// reservation and the lock has not been confirmed. No surface shows its
+  /// deposit instructions, and it is never polled, until the start clears this.
+  /// One still set when loaded in a later launch never finished starting (see
+  /// `SwapActivityTracker.loadIntents`).
+  final bool startPending;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final DateTime? completedAt;
@@ -386,6 +409,7 @@ class SwapIntent {
     bool? payMode,
     bool? privateAddress,
     bool? walletReleased,
+    bool? startPending,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? completedAt,
@@ -435,6 +459,7 @@ class SwapIntent {
       payMode: payMode ?? this.payMode,
       privateAddress: privateAddress ?? this.privateAddress,
       walletReleased: walletReleased ?? this.walletReleased,
+      startPending: startPending ?? this.startPending,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       completedAt: completedAt ?? this.completedAt,

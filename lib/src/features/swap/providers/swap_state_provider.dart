@@ -2217,11 +2217,12 @@ class SwapNotifier extends Notifier<SwapState> {
         );
   }
 
-  /// Lists and saves `intent`, an incoming private swap, before starting its
-  /// wallet reservation, so any later save of its account's screen keeps it.
-  /// The start returns only the deposit the quote already carries, so success
-  /// leaves the saved swap as it is. If the save or the start fails, the swap
-  /// is removed by id, as when a start fails before it is listed. Returns
+  /// Lists and saves `intent`, an incoming private swap, as starting before
+  /// the wallet locks its reservation, so any later save of its account's
+  /// screen keeps it while no surface shows its funding instructions (see
+  /// [SwapIntent.startPending]). Once the lock succeeds only that flag is
+  /// cleared, on screen and in storage. If the save or the start fails, the
+  /// swap is removed by id, as when a start fails before it is listed. Returns
   /// whether it started with the screen still showing its account.
   Future<bool> _startPrivateReceive(
     String accountUuid,
@@ -2229,9 +2230,10 @@ class SwapNotifier extends Notifier<SwapState> {
     SwapIntent intent,
     bool Function() screenMoved,
   ) async {
-    state = state.copyWith(intents: [intent, ...state.intents]);
+    final starting = intent.copyWith(startPending: true);
+    state = state.copyWith(intents: [starting, ...state.intents]);
     try {
-      await _saveStartedIntentForAccount(accountUuid, intent);
+      await _saveStartedIntentForAccount(accountUuid, starting);
       await ref
           .read(swapZecStagingAddressServiceProvider)
           .startQuote(accountUuid, quote);
@@ -2242,6 +2244,28 @@ class SwapNotifier extends Notifier<SwapState> {
     }
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
+    if (_isAccountActive(accountUuid)) {
+      state = state.copyWith(
+        intents: [
+          for (final shown in state.intents)
+            shown.id == intent.id && shown.startPending
+                ? shown.copyWith(startPending: false)
+                : shown,
+        ],
+      );
+    }
+    try {
+      await ref
+          .read(swapActivityTrackerProvider)
+          .finishStart(accountUuid: accountUuid, intentId: intent.id);
+    } catch (e) {
+      // The screen's next save stores it started. Until then a later launch
+      // finds it starting and marks it failed, hiding its instructions.
+      log(
+        'Swap: started swap not saved as started '
+        'intent=${_shortSwapValue(intent.id)} error=$e',
+      );
+    }
     if (screenMoved()) {
       log(
         'Swap: start saved after an account switch '

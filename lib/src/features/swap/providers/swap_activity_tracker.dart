@@ -210,14 +210,66 @@ class SwapActivityTracker {
     return scopedAccountUuid;
   }
 
+  /// When this tracker, which lives as long as the app, was created. A swap
+  /// still starting that was created earlier lost its start to an app exit, or
+  /// its flip to a failed save.
+  final DateTime _launchedAt = DateTime.now().toUtc();
+
+  /// `accountUuid`'s saved swaps. A private swap left starting by an earlier
+  /// launch is marked failed first, keeping it starting so its instructions
+  /// stay hidden: its reservation may never have been locked, and without the
+  /// request it was quoted with the start cannot be retried. The wallet still
+  /// releases or recovers the address on its own.
   Future<List<SwapIntent>> loadIntents({required String? accountUuid}) async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid == null) return const [];
     final records = await _activityStore.loadRecords(
       accountUuid: scopedAccountUuid,
     );
-    return _intentsFromRecords(records);
+    final intents = _intentsFromRecords(records);
+    if (!intents.any(_leftStarting)) return intents;
+    await updateIntents(
+      accountUuid: scopedAccountUuid,
+      transform: (saved) => [
+        for (final intent in saved)
+          _leftStarting(intent) ? _startFailed(intent) : intent,
+      ],
+    );
+    return [
+      for (final intent in intents)
+        _leftStarting(intent) ? _startFailed(intent) : intent,
+    ];
   }
+
+  /// Whether `intent` is still starting from an earlier launch.
+  bool _leftStarting(SwapIntent intent) =>
+      intent.startPending &&
+      !intent.status.isTerminal &&
+      !(intent.createdAt?.isAfter(_launchedAt) ?? false);
+
+  /// `intent`, a swap that never finished starting, marked failed.
+  static SwapIntent _startFailed(SwapIntent intent) => intent.copyWith(
+    status: SwapIntentStatus.failed,
+    statusError: swapStartFailedText,
+  );
+
+  /// Clears `intentId`'s pending start on `accountUuid` once the wallet locked
+  /// its reservation, changing nothing else, and only while it is still
+  /// starting, so a newer saved copy keeps its other fields.
+  Future<void> finishStart({
+    required String accountUuid,
+    required String intentId,
+  }) => updateIntents(
+    accountUuid: accountUuid,
+    transform: (saved) => [
+      for (final intent in saved)
+        intent.id == intentId &&
+                intent.startPending &&
+                !intent.status.isTerminal
+            ? intent.copyWith(startPending: false)
+            : intent,
+    ],
+  );
 
   /// Hands a provider status, fetched at `checkedAt`, to the wallet when the
   /// swap uses a private address. Ordinary swaps never touch the wallet. A
@@ -510,6 +562,7 @@ class SwapActivityTracker {
     // failed, or after the provider has observed a deposit. An unknown
     // provider status does not establish that funds were never sent.
     return _isPersistableIntent(intent, accountUuid: accountUuid) &&
+        !intent.startPending &&
         (_awaitsWalletRelease(intent) ||
             (!intent.status.isTerminal &&
                 (intent.direction == SwapDirection.externalToZec ||
@@ -536,6 +589,8 @@ class SwapActivityTracker {
     required String accountUuid,
     required bool includeTerminal,
   }) {
+    // Its wallet start may still be refused, so it has no status to track.
+    if (intent.startPending) return false;
     if (includeTerminal) return intent.status != SwapIntentStatus.complete;
     return _shouldAutoRefreshIntent(intent, accountUuid: accountUuid);
   }
