@@ -968,8 +968,9 @@ fn toggles_reach_each_software_account_and_never_a_hardware_one() {
     world.quiesce().unwrap();
 }
 
-/// Rapid toggling: on, off and on again in quick succession, while a round starts and
-/// while two rounds overlap, with the app's worker drain on some flips. No call fails on
+/// Rapid toggling: on, off and on again in quick succession while an admitted round, and
+/// then two at once, wait at their inventory read, with the app's worker drain on some
+/// flips. No call fails on
 /// wallet lock contention, the wallet always ends on the last setting, nothing is stuck,
 /// and the pending payment is credited exactly once. The production entry point admits
 /// one round at a time.
@@ -996,9 +997,14 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
         println!("rapid toggle {i}: {line}");
         world.check_step().unwrap();
         if i % 3 == 0 {
-            // Two rounds overlap while the setting flips.
+            // Two admitted rounds, both held at their inventory read, overlap the flips.
+            world.ensure_on(0);
             let publication = world.current();
             let service = world.service(publication);
+            let first = service.count("inventory");
+            let holds: Vec<_> = (0..2)
+                .map(|k| service.hold("inventory", first + k))
+                .collect();
             let workers: Vec<_> = (0..2)
                 .map(|_| {
                     world.devices[0]
@@ -1006,7 +1012,13 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
                         .spawn(&service, None, Duration::from_secs(45))
                 })
                 .collect();
+            for held in &holds {
+                held.wait();
+            }
             world.rapid_toggle(0, 3, false).unwrap();
+            for held in &holds {
+                held.release();
+            }
             for worker in workers {
                 if let Err(e) = worker.join().unwrap() {
                     assert!(!locked(&e.to_string()), "{e}");

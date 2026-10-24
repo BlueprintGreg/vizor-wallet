@@ -1607,17 +1607,33 @@ impl World {
 
     /// Flips NEAR swap privacy `flips` times in quick succession on `dev`, each flip
     /// reconciled and every second one draining the worker as the app's toggle does,
-    /// optionally while a round starts. Nothing may fail on wallet lock contention, and
-    /// the wallet ends matching the last setting.
+    /// optionally while a round, turned on first, is held at its inventory read. Nothing
+    /// may fail on wallet lock contention, and the wallet ends matching the last setting.
     fn rapid_toggle(&mut self, dev: usize, flips: u8, round: bool) -> Result<String, Violation> {
+        if round {
+            // Only an admitted round overlaps the flips.
+            self.ensure_on(dev);
+        }
         apply(&self.devices[dev]);
         let publication = self.current();
         let service = self.service(publication);
+        // The round's first inventory read is held until the flips are done, so the
+        // round is mid-flight for all of them.
+        let held = round.then(|| service.hold("inventory", service.count("inventory")));
         let worker = round.then(|| {
             self.devices[dev]
                 .wallet
                 .spawn(&service, None, Duration::from_secs(45))
         });
+        if let Some(held) = &held {
+            if !held.try_wait(Duration::from_secs(20)) {
+                held.release();
+                return Err(violation(
+                    "harness",
+                    "the round never reached its inventory read",
+                ));
+            }
+        }
         for flip in 0..flips {
             let device = &mut self.devices[dev];
             device.feature = !device.feature;
@@ -1642,6 +1658,9 @@ impl World {
             }
         }
         let mut line = format!("{flips} flips, feature {}", self.devices[dev].feature);
+        if let Some(held) = held {
+            held.release();
+        }
         if let Some(worker) = worker {
             let result = worker
                 .join()
