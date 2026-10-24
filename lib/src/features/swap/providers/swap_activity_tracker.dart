@@ -195,7 +195,7 @@ class SwapActivityTracker {
   /// from its request through its saved activity (see [refreshIntents]).
   final LedgerOperationLifecycle? _lifecycle;
 
-  /// Every write is one atomic [DeletionSafeSwapActivityStore.update].
+  /// The deletion-safe store every read and write goes through.
   final DeletionSafeSwapActivityStore _activityStore;
   final SwapProvider _swapProvider;
 
@@ -240,17 +240,26 @@ class SwapActivityTracker {
     }
   }
 
-  /// Replaces `accountUuid`'s saved swaps with `intents`.
+  /// Replaces `accountUuid`'s saved swaps with `intents`, through the
+  /// deletion-safe store queue, without reading what it replaces. Merges use
+  /// [updateIntents] instead.
   Future<void> saveIntents({
     required String? accountUuid,
     required List<SwapIntent> intents,
-  }) => updateIntents(accountUuid: accountUuid, transform: (_) => intents);
+  }) async {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    if (scopedAccountUuid == null) return;
+    await _activityStore.saveRecords(
+      accountUuid: scopedAccountUuid,
+      records: _persistableRecords(intents, scopedAccountUuid),
+    );
+    _onRecordsChanged?.call();
+  }
 
   /// Replaces `accountUuid`'s saved swaps with what `transform` makes of them,
   /// as one atomic step of the store (see
   /// [DeletionSafeSwapActivityStore.update]), so a concurrent writer's swaps
-  /// are never overwritten by an older list. Every swap activity write goes
-  /// through here.
+  /// are never overwritten by an older list. Every merge goes through here.
   Future<void> updateIntents({
     required String? accountUuid,
     required List<SwapIntent> Function(List<SwapIntent> saved) transform,
@@ -259,17 +268,24 @@ class SwapActivityTracker {
     if (scopedAccountUuid == null) return;
     await _activityStore.update(
       accountUuid: scopedAccountUuid,
-      transform: (records) => [
-        for (final intent in transform(_intentsFromRecords(records)))
-          if (_isPersistableIntent(intent, accountUuid: scopedAccountUuid))
-            swapIntentRecordForPersistence(
-              intent,
-              accountUuid: scopedAccountUuid,
-            ),
-      ],
+      transform: (records) => _persistableRecords(
+        transform(_intentsFromRecords(records)),
+        scopedAccountUuid,
+      ),
     );
     _onRecordsChanged?.call();
   }
+
+  /// The records `accountUuid` saves for `intents`, leaving out any it keeps
+  /// no record of.
+  List<SwapIntentRecord> _persistableRecords(
+    List<SwapIntent> intents,
+    String accountUuid,
+  ) => [
+    for (final intent in intents)
+      if (_isPersistableIntent(intent, accountUuid: accountUuid))
+        swapIntentRecordForPersistence(intent, accountUuid: accountUuid),
+  ];
 
   Future<SwapActivityRefreshResult> refreshOpenIntents({
     required String accountUuid,

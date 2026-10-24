@@ -620,6 +620,20 @@ void main() {
     lifecycle.resume();
   });
 
+  test('a replacement save writes without reading what it replaces', () async {
+    final store = _MemorySwapActivityStore();
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: _StatusSwapProvider({}),
+    );
+    await tracker.saveIntents(
+      accountUuid: 'account-1',
+      intents: [_intent(id: 'swap', depositAddress: 'swap')],
+    );
+    expect(store.saveCount, 1);
+    expect(store.loadCount, 0);
+  });
+
   test('ordinary swaps stay outside the wallet deletion drain', () async {
     final lifecycle = LedgerOperationLifecycle();
     final store = _MemorySwapActivityStore();
@@ -936,6 +950,7 @@ SwapIntentSnapshot _snapshot({
 
 class _MemorySwapActivityStore implements SwapActivityStore {
   var saveCount = 0;
+  var loadCount = 0;
   List<SwapIntentRecord> savedRecords = const [];
 
   /// Runs before each save, for tests that hold a write.
@@ -945,6 +960,7 @@ class _MemorySwapActivityStore implements SwapActivityStore {
   Future<List<SwapIntentRecord>> loadRecords({
     required String accountUuid,
   }) async {
+    loadCount++;
     return savedRecords;
   }
 
