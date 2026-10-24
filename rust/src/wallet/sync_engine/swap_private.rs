@@ -90,12 +90,18 @@ impl std::fmt::Display for RecoveryError {
     }
 }
 
-/// What one finished round did, for logs and tests.
+/// What one finished round did (see `api::one_time_ivk::SwapRecoveryRound`).
 #[derive(Debug, Default)]
-pub(super) struct Round {
+pub(crate) struct Round {
     /// Whether any account had recovery work (see `one_time_ivk::has_recovery_work`).
     /// Without it, the round only read the wallet.
-    pub(super) active: bool,
+    pub(crate) active: bool,
+    /// Whether the round recorded a lookup page or a witness. Either can credit or queue
+    /// a payment, or settle an address.
+    pub(crate) changed: bool,
+    /// Whether the round accepted a receiver inventory, so the service speaks a format
+    /// this app supports.
+    pub(crate) checked: bool,
     /// Sealed-shard filter traversals. Screening the round's due lookups together
     /// keeps this to one per filter, plus any for addresses exposed mid-round.
     pub(super) filter_traversals: u64,
@@ -429,15 +435,13 @@ fn shard_filters_cheaper(inventory: &Inventory, lookups: usize) -> bool {
 
 /// Runs one bounded account round. The caller schedules it separately from block sync.
 /// A timeout leaves durable work pending and cannot be mistaken for an empty history.
-/// Returns whether any account had recovery work, so the caller can stop scheduling
-/// rounds while the feature is off and nothing is due.
 pub(crate) async fn recover(
     path: &str,
     network: WalletNetwork,
     manual: Option<Option<u64>>,
-) -> Result<bool, RecoveryError> {
+) -> Result<Round, RecoveryError> {
     if !one_time_ivk::supported(network) {
-        return Ok(false);
+        return Ok(Round::default());
     }
     if RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -474,7 +478,7 @@ pub(crate) async fn recover(
         "Swap recovery round finished with {} filter traversals",
         round.filter_traversals
     );
-    Ok(round.active)
+    Ok(round)
 }
 
 /// Records that the receiver service needs a newer client on every account in `accounts`.
@@ -579,20 +583,20 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     if active.is_empty() {
         return Ok(Round::default());
     }
+    let mut round = Round {
+        active: true,
+        ..Round::default()
+    };
     let inventory = match capture(path, network, generation, origin, transport, store).await {
         Ok(Ok(inventory)) => inventory,
         Ok(Err(waiting)) if manual.is_some() => return Err(waiting),
-        Ok(Err(_)) => {
-            return Ok(Round {
-                active: true,
-                ..Round::default()
-            })
-        }
+        Ok(Err(_)) => return Ok(round),
         Err(session::Error::Unsupported) => {
             return Err(require_upgrade(path, network, generation, &active))
         }
         Err(error) => return Err(error.to_string().into()),
     };
+    round.checked = true;
     let publication = zakura_pir_client::receiver::publication(&inventory);
     let filter_budget = FilterBudget::new(deadline);
     let head = if discovery_enabled {
@@ -763,7 +767,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         .await
         .unwrap_or_else(|_| Err("Swap account recovery remains pending.".into()));
         match result {
-            Ok(()) => {}
+            Ok(changed) => round.changed |= changed,
             Err(RecoveryError::UpgradeRequired) => {
                 return Err(require_upgrade(path, network, generation, &ready));
             }
@@ -775,27 +779,24 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
             }
         }
     }
-    failure.map_or(
-        Ok(Round {
-            active: true,
-            filter_traversals: client.filter_traversals(),
-        }),
-        Err,
-    )
+    round.filter_traversals = client.filter_traversals();
+    failure.map_or(Ok(round), Err)
 }
 
 /// Settles a bounded number of `account`'s due lookups and witness reads against the
-/// captured inventory. A failed lookup is deferred, never recorded as empty.
+/// captured inventory. A failed lookup is deferred, never recorded as empty. Returns
+/// whether the library accepted any lookup page or witness (see [`Round::changed`]).
 async fn drain<T: Transport>(
     path: &str,
     network: WalletNetwork,
     generation: u64,
     client: &InventoryClient<T>,
     account: AccountUuid,
-) -> Result<(), RecoveryError> {
+) -> Result<bool, RecoveryError> {
     let end = zakura_pir_client::receiver::publication(client.inventory())
         .end
         .height;
+    let mut changed = false;
     for _ in 0..16 {
         let state = wallet(path, network, generation, |db| {
             db.one_time_recovery(account, one_time_ivk::now()?)
@@ -805,9 +806,8 @@ async fn drain<T: Transport>(
         if let Some(work) = state.lookups.iter().find(|work| work.through <= end) {
             match lookup(client, work).await {
                 Ok(page) => {
-                    wallet(path, network, generation, |db| {
+                    changed |= wallet(path, network, generation, |db| {
                         db.record_one_time_lookup(account, work, &page, one_time_ivk::now()?)
-                            .map(|_| ())
                             .map_err(|e| e.to_string())
                     })?;
                 }
@@ -823,7 +823,7 @@ async fn drain<T: Transport>(
         } else if let Some(request) = state.witnesses.first() {
             match witness(client, request).await {
                 Ok(answer) => {
-                    wallet(path, network, generation, |db| {
+                    changed |= wallet(path, network, generation, |db| {
                         db.record_one_time_witness(
                             account,
                             state.token,
@@ -831,7 +831,6 @@ async fn drain<T: Transport>(
                             &answer,
                             one_time_ivk::now()?,
                         )
-                        .map(|_| ())
                         .map_err(|e| e.to_string())
                     })?;
                 }
@@ -850,7 +849,7 @@ async fn drain<T: Transport>(
             break;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Commits all matched keys with their contiguous canonical blocks, including old paid keys.

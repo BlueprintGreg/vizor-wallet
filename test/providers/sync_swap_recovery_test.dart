@@ -21,22 +21,52 @@ const _second = 'account-2';
 /// How many times the idle poll read the chain tip.
 var _tipReads = 0;
 
+/// The time the notifier's swap recovery backoff reads.
+var _clock = DateTime(2026);
+
+/// A round that committed results the wallet shows.
+const _changed = rust_swap.SwapRecoveryRound(
+  active: true,
+  changed: true,
+  checked: true,
+);
+
+/// A round that reached a compatible service and found nothing new.
+const _quiet = rust_swap.SwapRecoveryRound(
+  active: true,
+  changed: false,
+  checked: true,
+);
+
+/// A round that found no recovery work and contacted no service.
+const _idle = rust_swap.SwapRecoveryRound(
+  active: false,
+  changed: false,
+  checked: false,
+);
+
+/// A receiver outage.
+const _outage = rust_swap.ReceiveError(
+  message: 'HTTP 503',
+  kind: rust_swap.ReceiveErrorKind.other,
+);
+
 /// Rust as the scheduler sees it: ordinary sync streams that the test drives
 /// block by block, and receiver recovery rounds that the test holds and
 /// releases explicitly. Nothing here sleeps; every wait is a completer.
 class _Api extends RustLibApi {
   bool running = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
-  final recoveries = <Completer<bool>>[];
+  final recoveries = <Completer<rust_swap.SwapRecoveryRound>>[];
   final manual = <Completer<void>>[];
   final statusReads = <Completer<rust_swap.SwapRecoveryStatus>>[];
   final events = <String>[];
   final balanceReads = <String>[];
   int cancels = 0;
 
-  /// The newest automatic round, which the test completes with whether it had
-  /// work to release it.
-  Completer<bool> get round => recoveries.last;
+  /// The newest automatic round, which the test completes with what it did to
+  /// release it.
+  Completer<rust_swap.SwapRecoveryRound> get round => recoveries.last;
 
   /// Whether this fake's ordinary sync still holds the Rust guard.
   @override
@@ -94,12 +124,12 @@ class _Api extends RustLibApi {
 
   /// Starts a receiver round that stays pending until the test completes it.
   @override
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<rust_swap.SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
     events.add('recover');
-    final round = Completer<bool>();
+    final round = Completer<rust_swap.SwapRecoveryRound>();
     recoveries.add(round);
     return round.future;
   }
@@ -276,6 +306,7 @@ class _Sync extends SyncNotifier {
         walletDbPathResolver: () async => 'wallet.db',
         existingWalletDbPathResolver: () async => 'wallet.db',
         excludeCompanionsFromBackup: (_) async {},
+        now: () => _clock,
       );
 
   /// A completed sync of the first account at height 100.
@@ -326,12 +357,14 @@ void main() {
     api.balanceReads.clear();
     api.cancels = 0;
     _tipReads = 0;
+    _clock = DateTime(2026);
   });
 
   late ProviderContainer container;
 
-  /// A notifier whose first ordinary sync has scanned block 101, which starts a
-  /// receiver round the test holds. NEAR swap privacy is off unless `privacy`.
+  /// A notifier whose idle poll started a receiver round the test holds, and
+  /// whose first ordinary sync has then scanned block 101. NEAR swap privacy is
+  /// off unless `privacy`.
   Future<_Sync> recovering({bool privacy = false}) async {
     final sync = _Sync();
     container = ProviderContainer(
@@ -350,15 +383,14 @@ void main() {
     container.listen(syncProvider, (_, _) {});
     await container.read(syncProvider.future);
     sync.stopTipChecksForTesting();
+    await sync.checkTipForTesting();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(1), reason: 'a poll starts a round');
     sync.startSync();
     await pumpEventQueue();
     api.syncs[0].add(_scanned(101));
     await pumpEventQueue();
-    expect(
-      api.recoveries,
-      hasLength(1),
-      reason: 'sync progress starts a round',
-    );
+    expect(api.syncs, hasLength(1));
     return sync;
   }
 
@@ -370,11 +402,40 @@ void main() {
     await pumpEventQueue();
   }
 
-  /// Releases the held round, as Rust does once it stops, reporting whether
-  /// any account had recovery work.
-  Future<void> releaseRound({bool work = true}) async {
-    api.round.complete(work);
+  /// Releases the held round, as Rust does once it stops, reporting what it
+  /// did.
+  Future<void> releaseRound([
+    rust_swap.SwapRecoveryRound round = _changed,
+  ]) async {
+    api.round.complete(round);
     await pumpEventQueue();
+  }
+
+  /// Ends the first sync at block 101, so polls run, and settles the held
+  /// round with `round`, or fails it when `round` is null.
+  Future<void> finishSyncAndRound(
+    _Sync sync, [
+    rust_swap.SwapRecoveryRound? round = _quiet,
+  ]) async {
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    await api.finish(0);
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    if (round == null) {
+      api.round.completeError(_outage);
+      await pumpEventQueue();
+    } else {
+      await releaseRound(round);
+    }
+  }
+
+  /// Runs one idle poll and reports whether it started a round.
+  Future<bool> pollStartsRound(_Sync sync) async {
+    final rounds = api.recoveries.length;
+    await sync.checkTipForTesting();
+    sync.stopTipChecksForTesting();
+    return api.recoveries.length > rounds;
   }
 
   test(
@@ -418,8 +479,10 @@ void main() {
       expect(api.syncs, hasLength(2), reason: 'no new sync was needed');
       expect(api.manual, isEmpty, reason: 'no manual action was needed');
 
-      // The next batch starts the next round of durable work.
-      api.syncs[1].add(_scanned(110));
+      // The next completed sync starts the next round of durable work.
+      api.syncs[1].add(
+        _scanned(110, kind: rust_sync.ApiSyncEventKind.completed),
+      );
       await pumpEventQueue();
       sync.stopTipChecksForTesting();
       expect(api.recoveries, hasLength(2));
@@ -427,11 +490,11 @@ void main() {
   );
 
   test('with NEAR swap privacy off, a round without work skips the refresh '
-      'and stops batch and poll rounds until a sync completes', () async {
+      'and stops poll rounds until a sync completes', () async {
     final sync = await recovering();
     final reads = api.balanceReads.length;
     final followups = container.read(syncFollowupProvider);
-    await releaseRound(work: false);
+    await releaseRound(_idle);
     expect(container.read(syncFollowupProvider), followups);
     expect(api.balanceReads.length, reads);
 
@@ -447,7 +510,7 @@ void main() {
     await pumpEventQueue();
     sync.stopTipChecksForTesting();
     expect(api.recoveries, hasLength(2));
-    await releaseRound(work: false);
+    await releaseRound(_idle);
 
     // With the sync finished, an idle poll reads the tip but starts no round.
     await api.finish(0);
@@ -468,23 +531,117 @@ void main() {
     sync.continueSwapRecovery();
     await pumpEventQueue();
     expect(api.recoveries, hasLength(rounds + 1));
-    await releaseRound(work: false);
+    await releaseRound(_idle);
     await settle(sync);
   });
 
-  test(
-    'with NEAR swap privacy on, rounds keep following sync batches',
-    () async {
-      final sync = await recovering(privacy: true);
-      await releaseRound(work: false);
-      api.syncs[0].add(_scanned(102));
+  test('with NEAR swap privacy on, sync batches start no round until the '
+      'sync completes', () async {
+    final sync = await recovering(privacy: true);
+    await releaseRound(_quiet);
+    for (final height in [102, 103]) {
+      api.syncs[0].add(_scanned(height));
       await pumpEventQueue();
-      sync.stopTipChecksForTesting();
-      expect(api.recoveries, hasLength(2));
-      await releaseRound();
-      await settle(sync);
-    },
-  );
+    }
+    sync.stopTipChecksForTesting();
+    expect(
+      api.recoveries,
+      hasLength(1),
+      reason: 'the wallet has not scanned what the receiver publishes',
+    );
+    api.syncs[0].add(_scanned(103, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('a round that changed nothing reloads nothing, and one that changed '
+      'something reloads Activity and the balance', () async {
+    final sync = await recovering(privacy: true);
+    final reads = api.balanceReads.length;
+    final followups = container.read(syncFollowupProvider);
+    await releaseRound(_quiet);
+    expect(container.read(syncFollowupProvider), followups);
+    expect(api.balanceReads.length, reads);
+
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound();
+    expect(container.read(syncFollowupProvider), followups + 1);
+    expect(api.balanceReads.length, greaterThan(reads));
+    await settle(sync);
+  });
+
+  test('a failed round delays unforced rounds by a growing backoff, and a '
+      'successful one ends it', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+
+    expect(await pollStartsRound(sync), isFalse, reason: 'within 10 seconds');
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isTrue);
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isFalse, reason: 'within 30 seconds');
+    _clock = _clock.add(const Duration(seconds: 20));
+    expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+
+    expect(await pollStartsRound(sync), isTrue, reason: 'no backoff remains');
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    // The success started the steps over, so this failure waits 10 seconds.
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('a forced start ignores the backoff and starts it over', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+    expect(await pollStartsRound(sync), isFalse);
+
+    sync.continueSwapRecovery();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2), reason: 'a caller waits on it');
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    // The forced round's failure waits the first step again, not the second.
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('only a round that reached a compatible service clears the update '
+      'request', () async {
+    final sync = await recovering(privacy: true);
+    container.read(swapRecoveryUpdateRequiredProvider.notifier).set(true);
+    await releaseRound(
+      const rust_swap.SwapRecoveryRound(
+        active: true,
+        changed: false,
+        checked: false,
+      ),
+    );
+    expect(container.read(swapRecoveryUpdateRequiredProvider), isTrue);
+
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    await releaseRound(_quiet);
+    expect(container.read(swapRecoveryUpdateRequiredProvider), isFalse);
+    await settle(sync);
+  });
 
   test('locking cancels the held round and waits for it to drain; unlock '
       'resumes pending work', () async {
@@ -514,13 +671,9 @@ void main() {
   test('waiting on a round returns its failure, or nothing once it succeeds '
       'or was cancelled', () async {
     final sync = await recovering(privacy: true);
-    const outage = rust_swap.ReceiveError(
-      message: 'HTTP 503',
-      kind: rust_swap.ReceiveErrorKind.other,
-    );
     final failed = sync.awaitSwapRecovery();
-    api.round.completeError(outage);
-    expect(await failed, same(outage), reason: 'it waited on the held round');
+    api.round.completeError(_outage);
+    expect(await failed, same(_outage), reason: 'it waited on the held round');
 
     final succeeded = sync.awaitSwapRecovery();
     await pumpEventQueue();
@@ -534,7 +687,7 @@ void main() {
     security.setUnlocked(false);
     unawaited(sync.clearSensitiveStateForLock());
     await pumpEventQueue();
-    api.round.completeError(outage);
+    api.round.completeError(_outage);
     expect(await cancelled, isNull, reason: 'locking cancelled the round');
     await settle(sync);
   });
@@ -550,7 +703,7 @@ void main() {
     await releaseRound();
 
     sync.handleAppResumeForTesting();
-    api.syncs[0].add(_scanned(102));
+    api.syncs[0].add(_scanned(102, kind: rust_sync.ApiSyncEventKind.completed));
     await settle(sync);
     expect(api.recoveries, hasLength(2), reason: 'returning resumes the work');
   });
@@ -607,7 +760,7 @@ void main() {
   test('a wallet mutation waits for a swap status read, and none starts while '
       'it runs', () async {
     final sync = await recovering();
-    await releaseRound(work: false);
+    await releaseRound(_idle);
     const idle = rust_swap.SwapRecoveryStatus(
       checkingHistory: false,
       manualCheckActive: false,
@@ -647,7 +800,7 @@ void main() {
   test('a wallet mutation waits for a held history pause write, and none '
       'starts while it runs', () async {
     final sync = await recovering();
-    await releaseRound(work: false);
+    await releaseRound(_idle);
     // The round's answer starts the saved-state read.
     for (final read in api.statusReads) {
       read.complete(
