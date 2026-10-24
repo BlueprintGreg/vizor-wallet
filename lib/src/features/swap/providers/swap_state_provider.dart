@@ -775,17 +775,18 @@ class SwapNotifier extends Notifier<SwapState> {
   /// A refund address serves one quote request, so [_showReview] drops it once
   /// it commits to sending one, and returns it only if the request never left
   /// the device. An ordinary address, with no reservation, is never kept or
-  /// shared. A quote that joined a preparation that turned out ordinary, or
-  /// failed before reserving anything, prepares its own, as each quote did
-  /// before private swaps.
+  /// shared: when the account uses ordinary addresses, each quote prepares its
+  /// own at once, as before private swaps. So does a quote that joined a
+  /// preparation that turned out ordinary, or failed before reserving anything.
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
   ) async {
+    final service = ref.read(swapZecStagingAddressServiceProvider);
+    Future<SwapZecStagingAddress> prepare() =>
+        service.prepareForQuote(accountUuid: accountUuid, direction: direction);
+    if (!service.usesSwapAddress(accountUuid)) return prepare();
     final key = (accountUuid, direction);
-    Future<SwapZecStagingAddress> prepare() => ref
-        .read(swapZecStagingAddressServiceProvider)
-        .prepareForQuote(accountUuid: accountUuid, direction: direction);
     final joined = _reviewStagingAddresses[key];
     final pending = joined ?? (_reviewStagingAddresses[key] = prepare());
     final SwapZecStagingAddress address;
@@ -999,17 +1000,20 @@ class SwapNotifier extends Notifier<SwapState> {
     }
   }
 
-  /// Refreshes the provider statuses of the active account's incoming swaps that
-  /// can still hold a receive address: open ones, ones whose deposit deadline
-  /// passed within the last day, and private ones the wallet may still hold
+  /// Refreshes the provider statuses of the active account's private incoming
+  /// swaps that can still hold a receive address: open ones, ones whose deposit
+  /// deadline passed within the last day, and ones the wallet may still hold
   /// however old. A started quote keeps its address until a recent status
   /// releases it, or a day past its deadline if it never gets one and the
   /// address is unpaid, so an expired quote cannot block issuance for good.
+  /// Ordinary swaps hold no reserved address, so they are left to the usual
+  /// polling.
   Future<void> _refreshReceiveQuoteStatuses() async {
     final recent = DateTime.now().toUtc().subtract(const Duration(days: 1));
     final ids = [
       for (final intent in state.intents)
         if (intent.direction == SwapDirection.externalToZec &&
+            intent.privateAddress &&
             (!intent.status.isTerminal ||
                 (intent.depositDeadline?.isAfter(recent) ?? false) ||
                 (intent.privateAddress && !intent.walletReleased)))
