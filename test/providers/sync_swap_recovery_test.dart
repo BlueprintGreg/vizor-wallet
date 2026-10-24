@@ -490,7 +490,7 @@ void main() {
   );
 
   test('with NEAR swap privacy off, a round without work skips the refresh '
-      'and stops batch and poll rounds until a sync completes', () async {
+      'and stops poll rounds until a sync completes', () async {
     final sync = await recovering();
     final reads = api.balanceReads.length;
     final followups = container.read(syncFollowupProvider);
@@ -594,6 +594,12 @@ void main() {
     await releaseRound(_quiet);
 
     expect(await pollStartsRound(sync), isTrue, reason: 'no backoff remains');
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    // The success started the steps over, so this failure waits 10 seconds.
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isTrue);
     await releaseRound(_quiet);
     await settle(sync);
   });
