@@ -46,6 +46,7 @@ typedef NearSwapPrivacySetting = ({
   String description,
   bool canToggle,
   bool showHistoryCheck,
+  String? transition,
 });
 
 /// The NEAR swap privacy option's state, or null when Settings doesn't offer
@@ -70,6 +71,7 @@ final nearSwapPrivacySettingProvider = Provider<NearSwapPrivacySetting?>((ref) {
     canToggle: !changingRecovery && privateQueriesOn,
     // The check is discovery's, so it needs NEAR swap privacy too.
     showHistoryCheck: !hardwareAccount && enabled,
+    transition: ref.watch(nearSwapPrivacyTransitionProvider),
   );
 });
 

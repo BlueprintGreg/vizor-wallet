@@ -78,6 +78,17 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                         : null,
                     onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                   ),
+                  // Feedback for this toggle only, as under Private queries.
+                  if (nearSwapPrivacy.transition case final transition?)
+                    Text(
+                      transition,
+                      key: const ValueKey(
+                        'mobile_settings_near_swap_privacy_transition',
+                      ),
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: colors.text.secondary,
+                      ),
+                    ),
                   const SizedBox(height: AppSpacing.sm),
                   Padding(
                     padding: const EdgeInsets.symmetric(
