@@ -581,6 +581,49 @@ void main() {
     expect(recorded, ['private']);
   });
 
+  test('a started swap whose final save failed is still polled and saved '
+      'started', () async {
+    final store = _MemorySwapActivityStore();
+    final provider = _StatusSwapProvider({});
+    final tracker = SwapActivityTracker(
+      activityStore: store,
+      swapProvider: provider,
+    );
+    // Created in this launch, after the tracker.
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+    final starting =
+        _intent(
+          id: 'private',
+          depositAddress: 'private',
+          status: SwapIntentStatus.awaitingExternalDeposit,
+        ).copyWith(
+          direction: SwapDirection.externalToZec,
+          privateAddress: true,
+          startPending: true,
+          createdAt: DateTime.now().toUtc(),
+        );
+    await tracker.saveIntents(accountUuid: 'account-1', intents: [starting]);
+    // The save that would store it started fails once.
+    store.onSave = () async {
+      store.onSave = null;
+      throw StateError('secure storage unavailable');
+    };
+    await expectLater(
+      tracker.finishStart(accountUuid: 'account-1', intentId: 'private'),
+      throwsStateError,
+    );
+    expect(store.savedRecords.single.startPending, isTrue);
+
+    await tracker.refreshOpenIntents(
+      accountUuid: 'account-1',
+      currentIntents: const [],
+    );
+
+    expect(provider.statusRequests, ['private']);
+    expect(store.savedRecords.single.startPending, isFalse);
+    expect(store.savedRecords.single.status, SwapIntentStatus.processing);
+  });
+
   test('wallet deletion waits for saved private swap activity', () async {
     final lifecycle = LedgerOperationLifecycle();
     final store = _MemorySwapActivityStore();

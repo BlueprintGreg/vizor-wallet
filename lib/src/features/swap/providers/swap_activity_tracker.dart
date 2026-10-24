@@ -215,18 +215,22 @@ class SwapActivityTracker {
   /// its flip to a failed save.
   final DateTime _launchedAt = DateTime.now().toUtc();
 
-  /// `accountUuid`'s saved swaps. A private swap left starting by an earlier
-  /// launch is marked failed first, keeping it starting so its instructions
-  /// stay hidden: its reservation may never have been locked, and without the
-  /// request it was quoted with the start cannot be retried. The wallet still
-  /// releases or recovers the address on its own.
+  /// `accountUuid`'s saved swaps, with starts finished in this launch cleared
+  /// even if saving them failed (see [_finishedStarts]). A private swap left
+  /// starting by an earlier launch is marked failed first, keeping it starting
+  /// so its instructions stay hidden: its reservation may never have been
+  /// locked, and without the request it was quoted with the start cannot be
+  /// retried. The wallet still releases or recovers the address on its own.
   Future<List<SwapIntent>> loadIntents({required String? accountUuid}) async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid == null) return const [];
     final records = await _activityStore.loadRecords(
       accountUuid: scopedAccountUuid,
     );
-    final intents = _intentsFromRecords(records);
+    final intents = withFinishedStarts(
+      scopedAccountUuid,
+      _intentsFromRecords(records),
+    );
     if (!intents.any(_leftStarting)) return intents;
     await updateIntents(
       accountUuid: scopedAccountUuid,
@@ -254,14 +258,15 @@ class SwapActivityTracker {
   );
 
   /// Swaps whose start finished in this launch, by account and id. A start
-  /// never goes back to pending, so every save clears the flag on any copy of
-  /// these, including one read while the swap was still starting.
+  /// never goes back to pending, so every load and save clears the flag on
+  /// any copy of these, including one read while the swap was still starting.
   final _finishedStarts = <(String, String)>{};
 
   /// Records that `intentId` on `accountUuid` started once the wallet locked
   /// its reservation, then saves its account's swaps with nothing else
   /// changed, which clears its pending start (see [_finishedStarts]). If that
-  /// save fails, the account's next save clears it.
+  /// save fails, loads still read it started, so polling picks it up, and the
+  /// account's next save stores it.
   Future<void> finishStart({
     required String accountUuid,
     required String intentId,

@@ -8546,10 +8546,12 @@ void main() {
     notifier.updateAmount('0.5');
     final first = notifier.showReview();
     await tester.pump();
-    // The edit quotes again while the first address is still being prepared.
+    // The edit quotes again while the first address is still being prepared,
+    // and starts preparing its own without waiting for the first.
     notifier.updateAmount('0.6');
     final second = notifier.showReview();
     await tester.pump();
+    expect(prepared, 2);
     held.complete();
     await tester.pumpAndSettle();
     await Future.wait([first, second]);
@@ -8767,7 +8769,7 @@ void main() {
             _persistedExternalToZecIntent(
               id: 'held-incoming-quote',
               stagingAddress: 'u1held',
-            ),
+            ).copyWith(privateAddress: true),
           ],
         ),
         swapProvider: swapProvider,
@@ -8798,6 +8800,52 @@ void main() {
       }
     });
   }
+
+  testWidgets('a Limit retry refreshes only private incoming swaps', (
+    tester,
+  ) async {
+    final expired = DateTime.now().toUtc().subtract(const Duration(hours: 1));
+    final swapProvider = _FakeSwapProvider(zecDepositMemo: null);
+    final container = await _pumpSwapScreen(
+      tester,
+      sessionStore: _FakeSwapPersistenceStore(
+        initialIntents: [
+          _persistedExternalToZecIntent(
+            id: 'expired-ordinary',
+            stagingAddress: 'u1ordinary',
+          ).copyWith(
+            status: SwapIntentStatus.expired,
+            depositDeadline: expired,
+          ),
+          _persistedExternalToZecIntent(
+            id: 'expired-private',
+            stagingAddress: 'u1private',
+          ).copyWith(
+            status: SwapIntentStatus.expired,
+            depositDeadline: expired,
+            privateAddress: true,
+          ),
+        ],
+      ),
+      swapProvider: swapProvider,
+      reservationStore: _StaleFirstReservationStore(),
+      reserveSwapAddress: _WaitingFirstReservation(
+        ReceiveErrorKind.limit,
+      ).reserve,
+    );
+    final statuses = swapProvider.statusRequests.length;
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    expect(
+      swapProvider.statusRequests.skip(statuses).map((r) => r.depositAddress),
+      ['expired-private'],
+    );
+  });
 
   for (final (failure, message, name) in <(Object?, String, String)>[
     (
@@ -8948,7 +8996,7 @@ void main() {
         _persistedExternalToZecIntent(
           id: 'held-incoming-quote',
           stagingAddress: 'u1held',
-        ),
+        ).copyWith(privateAddress: true),
       ],
     );
     final container = await _pumpSwapScreen(
