@@ -728,7 +728,7 @@ void main() {
         expect(
           await complete(sync, 110 + i),
           rounds + 1,
-          reason: 'each completed sync asks Rust while the last toggle drains',
+          reason: 'the next toggle has a round to drain',
         );
       }
       await pumpEventQueue();
