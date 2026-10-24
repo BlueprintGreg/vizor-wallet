@@ -13,13 +13,10 @@ final swapZecStagingAddressServiceProvider =
     Provider<SwapZecStagingAddressService>((ref) {
       final reservations = ref.read(swapReceiveReservationServiceProvider);
       return SwapZecStagingAddressService(
+        usesSwapAddress: (accountUuid) =>
+            ref.read(nearSwapPrivacyProvider) &&
+            !ref.read(accountProvider.notifier).isHardwareAccount(accountUuid),
         reserveSwapAddress: ({required accountUuid, required direction}) async {
-          if (!ref.read(nearSwapPrivacyProvider) ||
-              ref
-                  .read(accountProvider.notifier)
-                  .isHardwareAccount(accountUuid)) {
-            return null;
-          }
           final liveTip = await ref
               .read(rpcEndpointFailoverProvider.notifier)
               .getLatestBlockHeight();
@@ -51,6 +48,9 @@ typedef ReserveSwapAddress =
       required String accountUuid,
       required SwapDirection direction,
     });
+
+/// Whether quotes on `accountUuid` use a private swap address.
+typedef UsesSwapAddress = bool Function(String accountUuid);
 
 /// Builds and sends a quote request, putting `beforeSend` on it when given.
 typedef FetchSwapQuote =
@@ -119,14 +119,24 @@ class SwapZecStagingAddressService {
   const SwapZecStagingAddressService({
     required ReserveOrchardAddress reserveFreshOrchardAddress,
     ReserveSwapAddress? reserveSwapAddress,
+    UsesSwapAddress? usesSwapAddress,
     SwapReceiveReservationService? reservations,
   }) : _reserveFreshOrchardAddress = reserveFreshOrchardAddress,
        _reserveSwapAddress = reserveSwapAddress,
+       _usesSwapAddress = usesSwapAddress,
        _reservations = reservations;
 
   final ReserveOrchardAddress _reserveFreshOrchardAddress;
   final ReserveSwapAddress? _reserveSwapAddress;
+  final UsesSwapAddress? _usesSwapAddress;
   final SwapReceiveReservationService? _reservations;
+
+  /// Whether [prepareForQuote] tries a private swap address for `accountUuid`
+  /// rather than going straight to an ordinary one. Without a
+  /// `usesSwapAddress` check, it does whenever it can reserve one.
+  bool usesSwapAddress(String accountUuid) =>
+      _reserveSwapAddress != null &&
+      (_usesSwapAddress?.call(accountUuid) ?? true);
 
   /// Quotes with `address`, carrying its local key identity: an incoming quote is
   /// saved with its reservation, and a refund quote recorded on its refund key (see
@@ -164,10 +174,12 @@ class SwapZecStagingAddressService {
     try {
       // With NEAR swap privacy on, a software account fails closed on reservation
       // errors. Hardware accounts get no swap address and use an ordinary one.
-      final swapAddress = await _reserveSwapAddress?.call(
-        accountUuid: accountUuid,
-        direction: direction,
-      );
+      final swapAddress = usesSwapAddress(accountUuid)
+          ? await _reserveSwapAddress?.call(
+              accountUuid: accountUuid,
+              direction: direction,
+            )
+          : null;
       if (swapAddress != null) return swapAddress;
       privateAddress = false;
       final address = await _reserveFreshOrchardAddress(

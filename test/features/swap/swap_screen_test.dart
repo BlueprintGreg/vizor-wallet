@@ -8546,10 +8546,12 @@ void main() {
     notifier.updateAmount('0.5');
     final first = notifier.showReview();
     await tester.pump();
-    // The edit quotes again while the first address is still being prepared.
+    // The edit quotes again while the first address is still being prepared,
+    // and starts preparing its own without waiting for the first.
     notifier.updateAmount('0.6');
     final second = notifier.showReview();
     await tester.pump();
+    expect(prepared, 2);
     held.complete();
     await tester.pumpAndSettle();
     await Future.wait([first, second]);
