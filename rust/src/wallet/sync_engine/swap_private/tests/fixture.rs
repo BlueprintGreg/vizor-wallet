@@ -706,27 +706,23 @@ impl Service {
         if class == "query" {
             self.record_query();
         }
-        let gate = {
-            let seen = self
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(c, ..)| *c == class)
-                .count();
-            // Counted on arrival so a later request of the same class gets the next index.
-            self.requests
-                .lock()
-                .unwrap()
-                .push((class, route.clone(), body.len(), 0));
+        let (index, gate) = {
+            // Counted and recorded under one lock, so concurrent requests of a class get
+            // distinct indexes and never share a hold.
+            let mut requests = self.requests.lock().unwrap();
+            let seen = requests.iter().filter(|(c, ..)| *c == class).count();
+            requests.push((class, route.clone(), body.len(), 0));
+            let index = requests.len() - 1;
+            drop(requests);
             let holds = self.holds.lock().unwrap();
-            holds
+            let gate = holds
                 .iter()
                 .find(|h| h.class == class && h.nth == seen)
                 .map(|h| {
                     let _ = h.arrived.send(());
                     h.release.clone()
-                })
+                });
+            (index, gate)
         };
         if let Some(gate) = gate {
             gate.acquire().await.unwrap().forget();
@@ -739,15 +735,7 @@ impl Service {
         if response.len() > limit {
             return Err(session::Error::Transport("response over its limit".into()));
         }
-        let mut requests = self.requests.lock().unwrap();
-        let entry = requests
-            .iter_mut()
-            .rev()
-            .find(|(c, r, req, resp)| {
-                *c == class && *r == route && *req == body.len() && *resp == 0
-            })
-            .unwrap();
-        entry.3 = response.len();
+        self.requests.lock().unwrap()[index].3 = response.len();
         Ok(response)
     }
 

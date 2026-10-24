@@ -1060,16 +1060,19 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
             let holds: Vec<_> = (0..2)
                 .map(|k| service.hold("inventory", first + k))
                 .collect();
-            let workers: Vec<_> = (0..2)
-                .map(|_| {
-                    world.devices[0]
-                        .wallet
-                        .spawn(&service, None, Duration::from_secs(45))
+            // Each worker starts once the one before it is held, so each takes its own
+            // hold.
+            let workers: Vec<_> = holds
+                .iter()
+                .map(|held| {
+                    let worker =
+                        world.devices[0]
+                            .wallet
+                            .spawn(&service, None, Duration::from_secs(45));
+                    held.wait();
+                    worker
                 })
                 .collect();
-            for held in &holds {
-                held.wait();
-            }
             // Three flips through the wallet alone, without the app's worker drain, so
             // the rounds go on after their release and must not undo the last setting.
             for on in [false, true, false] {
