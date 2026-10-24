@@ -1106,6 +1106,45 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
     world.quiesce().unwrap();
 }
 
+/// An answer held while the feature turns off and straight back on is still rejected:
+/// both changes fence the round that asked, so the round reads the payment again under
+/// the new setting and credits it once.
+#[test]
+fn an_answer_held_across_off_and_on_is_rejected() {
+    if isolated("toggles::an_answer_held_across_off_and_on_is_rejected") {
+        return;
+    }
+    let mut world = world();
+    world
+        .act(&Action::Swap {
+            dev: 0,
+            acct: 0,
+            value: 700_000,
+        })
+        .unwrap();
+    world.mine(1);
+    world.sync(0, false);
+    let publication = world.current();
+    let service = world.service(publication);
+    let held = service.hold("query", service.count("query"));
+    let worker = world.devices[0]
+        .wallet
+        .spawn(&service, None, Duration::from_secs(45));
+    held.wait();
+    let asked = service.queries();
+    set_feature(&mut world, 0, false);
+    set_feature(&mut world, 0, true);
+    held.release();
+    worker.join().unwrap().unwrap();
+    assert!(
+        service.queries() > asked,
+        "the old answer was rejected, so the round asked again"
+    );
+    settle(&mut world, 0);
+    world.check_step().unwrap();
+    assert_eq!(credited(&world, 0, 0), BTreeSet::from([(true, 0, 700_000)]));
+}
+
 /// Turning the feature off while the settings history check is mid-run stops it
 /// cleanly: the held answer writes nothing, a new check is refused, and the status stops
 /// reporting a check. The saved job keeps its place: turned back on, it resumes and
