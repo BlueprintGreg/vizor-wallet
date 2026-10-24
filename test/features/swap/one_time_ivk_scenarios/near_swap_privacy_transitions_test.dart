@@ -468,6 +468,17 @@ void main() {
     await pumpEventQueue();
   }
 
+  /// Waits in real time, for at most five seconds, until `done` holds, and
+  /// fails with `what` if it never does. Unlike a fixed delay, this does not
+  /// depend on how soon a loaded machine runs the history check's 1 ms poll.
+  Future<void> until(bool Function() done, String what) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (!done()) {
+      if (!DateTime.now().isBefore(deadline)) fail('Timed out waiting: $what');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+  }
+
   /// Off to on with work pending: an idle wallet with the setting off starts no
   /// round per batch. Turning it on saves the setting, applies it to Rust, then
   /// reconciles the wallet, and the next batch starts a round with no manual
@@ -719,7 +730,10 @@ void main() {
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
 
     await container.read(nearSwapPrivacyProvider.notifier).set(true);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await until(
+      () => container.read(swapHistoryCheckProvider) != SwapHistoryCheck.paused,
+      'the check leaves paused',
+    );
     expect(
       container.read(swapHistoryCheckProvider),
       SwapHistoryCheck.checking,
@@ -727,7 +741,11 @@ void main() {
     );
     expect(api.manual, hasLength(1), reason: 'no new check was started');
     api.checking = false;
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await until(
+      () =>
+          container.read(swapHistoryCheckProvider) != SwapHistoryCheck.checking,
+      'the watched check ends',
+    );
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     for (final round in api.rounds.where((r) => !r.isCompleted)) {
       round.complete(false);
