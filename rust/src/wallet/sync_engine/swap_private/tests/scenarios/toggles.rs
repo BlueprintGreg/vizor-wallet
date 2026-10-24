@@ -1130,19 +1130,27 @@ fn an_answer_held_across_off_and_on_is_rejected() {
     world.sync(0, false);
     let publication = world.current();
     let service = world.service(publication);
+    let account = world.devices[0].accts[0].account.clone();
+    service.trace(&world.devices[0].wallet, &account);
     let held = service.hold("query", service.count("query"));
     let worker = world.devices[0]
         .wallet
         .spawn(&service, None, Duration::from_secs(45));
     held.wait();
-    let asked = service.queries();
     set_feature(&mut world, 0, false);
     set_feature(&mut world, 0, true);
     held.release();
     worker.join().unwrap().unwrap();
-    assert!(
-        service.queries() > asked,
-        "the old answer was rejected, so the round asked again"
+    let first_page = service
+        .traced()
+        .iter()
+        .filter(|q| **q == (true, 0, 0))
+        .count();
+    assert_eq!(
+        first_page,
+        2,
+        "the old answer was rejected, so the round read I0's first page again: {:?}",
+        service.traced()
     );
     settle(&mut world, 0);
     world.check_step().unwrap();
