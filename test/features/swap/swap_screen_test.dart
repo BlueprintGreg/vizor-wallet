@@ -8526,6 +8526,45 @@ void main() {
     expect(provider.requests.single.refundAddress, 'u1poc');
   });
 
+  testWidgets('ordinary amount edits each prepare an address and send a '
+      'quote', (tester) async {
+    final provider = _FakeSwapProvider(zecDepositMemo: null);
+    final held = Completer<void>();
+    var prepared = 0;
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: provider,
+      loadShieldedAddress: ({required accountUuid}) async {
+        final index = ++prepared;
+        await held.future;
+        return 'u1ordinary$index';
+      },
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.zecToExternal);
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    notifier.updateAmount('0.5');
+    final first = notifier.showReview();
+    await tester.pump();
+    // The edit quotes again while the first address is still being prepared.
+    notifier.updateAmount('0.6');
+    final second = notifier.showReview();
+    await tester.pump();
+    held.complete();
+    await tester.pumpAndSettle();
+    await Future.wait([first, second]);
+
+    expect(prepared, 2);
+    expect(provider.requests.map((r) => r.refundAddress), [
+      'u1ordinary1',
+      'u1ordinary2',
+    ]);
+    expect(
+      container.read(swapStateProvider).reviewAddressPlan?.oneClickRefundTo,
+      'u1ordinary2',
+    );
+  });
+
   testWidgets('starting a POC swap consumes the cached receiving key', (
     tester,
   ) async {
