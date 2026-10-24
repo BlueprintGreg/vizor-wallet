@@ -1015,15 +1015,19 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
             world.check_setting_applied(0).unwrap();
         }
     }
-    // While a round is admitted, the production entry point refuses another.
+    // While a round is admitted, the production entry point refuses another. With the
+    // feature on and work due, nothing short-circuits before admission.
+    world.ensure_on(0);
+    world.check_setting_applied(0).unwrap();
     super::super::super::RUNNING.store(true, AtomicOrdering::SeqCst);
     let busy = api::run_swap_recovery(world.devices[0].wallet.path.clone(), "main".into());
     super::super::super::RUNNING.store(false, AtomicOrdering::SeqCst);
-    let enabled = world.devices[0].discovery();
-    match busy {
-        Err(e) => assert!(e.message.contains("already running"), "{}", e.message),
-        Ok(work) => assert!(!enabled && !work, "only an idle feature-off round returns"),
-    }
+    assert!(
+        busy.as_ref()
+            .is_err_and(|e| e.message.contains("already running")),
+        "{:?}",
+        busy.map_err(|e| e.message)
+    );
 
     world.ensure_on(0);
     world.check_setting_applied(0).unwrap();
