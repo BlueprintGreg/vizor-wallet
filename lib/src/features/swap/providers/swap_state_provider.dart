@@ -1000,17 +1000,20 @@ class SwapNotifier extends Notifier<SwapState> {
     }
   }
 
-  /// Refreshes the provider statuses of the active account's incoming swaps that
-  /// can still hold a receive address: open ones, ones whose deposit deadline
-  /// passed within the last day, and private ones the wallet may still hold
+  /// Refreshes the provider statuses of the active account's private incoming
+  /// swaps that can still hold a receive address: open ones, ones whose deposit
+  /// deadline passed within the last day, and ones the wallet may still hold
   /// however old. A started quote keeps its address until a recent status
   /// releases it, or a day past its deadline if it never gets one and the
   /// address is unpaid, so an expired quote cannot block issuance for good.
+  /// Ordinary swaps hold no reserved address, so they are left to the usual
+  /// polling.
   Future<void> _refreshReceiveQuoteStatuses() async {
     final recent = DateTime.now().toUtc().subtract(const Duration(days: 1));
     final ids = [
       for (final intent in state.intents)
         if (intent.direction == SwapDirection.externalToZec &&
+            intent.privateAddress &&
             (!intent.status.isTerminal ||
                 (intent.depositDeadline?.isAfter(recent) ?? false) ||
                 (intent.privateAddress && !intent.walletReleased)))
