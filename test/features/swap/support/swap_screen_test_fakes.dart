@@ -776,6 +776,9 @@ class _HeldStartReservationStore extends Fake
   final _held = Completer<void>();
   final _accepted = <String, SwapQuote>{};
 
+  /// How many starts were asked for.
+  var starts = 0;
+
   /// Lets the held start finish.
   void release() => _held.complete();
 
@@ -790,6 +793,7 @@ class _HeldStartReservationStore extends Fake
 
   @override
   Future<ReceiveDeposit> start(String request) async {
+    starts++;
     await _held.future;
     final deposit = _accepted[request]!.depositInstruction;
     return ReceiveDeposit(

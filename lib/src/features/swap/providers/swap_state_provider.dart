@@ -1084,50 +1084,20 @@ class SwapNotifier extends Notifier<SwapState> {
         );
         return null;
       }
-      // A switch to another account while the deposit was checked leaves
-      // nothing started, so a private swap is not started for an account the
-      // user left.
-      if (privateQuote && screenMoved()) {
-        log('Swap: start dropped after an account switch');
-        return null;
-      }
     }
 
     late final SwapIntentSnapshot snapshot;
     try {
-      // Only an incoming private quote holds a wallet reservation to start.
-      if (quote.receiveRequestId != null) {
-        await ref
-            .read(swapZecStagingAddressServiceProvider)
-            .startQuote(accountUuid, quote);
-      }
       snapshot = await ref.read(swapIntentProvider).startSwap(quote);
     } catch (e) {
       if (privateQuote && screenMoved()) return null;
-      log(
-        'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
-        'error=$e',
-      );
-      final receiveError = _receiveError(e);
-      final historyPending =
-          receiveError?.kind == ReceiveErrorKind.receiveHistory;
-      // A reservation another request started, or whose deposit deadline
-      // passed, cannot be quoted again. One whose history needs checking again
-      // may have been paid elsewhere, so the next quote prepares an address
-      // after a recovery round.
-      if (historyPending || receiveError?.kind == ReceiveErrorKind.stale) {
-        _dropReviewAddress(accountUuid, quote.direction);
-      }
-      if (historyPending) {
-        ref.read(syncProvider.notifier).continueSwapRecovery();
-      }
-      state = state.copyWith(
-        startSubmitting: false,
-        quoteLoading: false,
-        statusError: historyPending
-            ? receiveError!.message
-            : _providerFailureMessage(SwapFailureOperation.start, e),
-      );
+      _showStartFailure(accountUuid, quote, e);
+      return null;
+    }
+    // A switch to another account during these checks leaves nothing started,
+    // so a private swap is not started for an account the user left.
+    if (privateQuote && screenMoved()) {
+      log('Swap: start dropped after an account switch');
       return null;
     }
     var intent = swapIntentFromSnapshot(
@@ -1144,50 +1114,13 @@ class SwapNotifier extends Notifier<SwapState> {
           'Sign and send the ZEC deposit with $hardwareSignerLabel.';
       intent = intent.copyWith(nextAction: nextAction);
     }
+    // Only an incoming private quote holds a wallet reservation to start.
+    if (quote.receiveRequestId != null &&
+        !await _startPrivateReceive(accountUuid, quote, intent, screenMoved)) {
+      return null;
+    }
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
-    // Whether a private swap's merge below saved it.
-    var privateSaved = false;
-    if (privateQuote) {
-      // A private swap holds wallet state for its account, so it is saved by
-      // merging into that account's stored swaps, never by saving the screen's
-      // list, which may belong to another account or an unfinished reload.
-      // A failed save must not strand the start: its reservation is already
-      // started, so the save is tried again shortly in the background.
-      // No later save for this account may drop it, whatever list it saves.
-      ref
-          .read(swapActivityTrackerProvider)
-          .registerStartedPrivate(accountUuid, intent);
-      try {
-        await _saveStartedIntentForAccount(accountUuid, intent);
-        privateSaved = true;
-      } catch (e) {
-        log(
-          'Swap: private start not saved yet '
-          'intent=${_shortSwapValue(intent.id)} error=$e',
-        );
-      }
-      if (!privateSaved) {
-        unawaited(_retrySaveStartedIntent(accountUuid, intent));
-      }
-      if (screenMoved()) {
-        // The screen moved during the start, so it is left alone. If it shows
-        // this account again, reload its swaps, now including this one.
-        if (_isAccountActive(accountUuid)) {
-          unawaited(
-            _restorePersistedIntents(
-              accountUuid: accountUuid,
-              replaceExisting: true,
-            ),
-          );
-        }
-        log(
-          'Swap: start saved after an account switch '
-          'intent=${_shortSwapValue(intent.id)}',
-        );
-        return null;
-      }
-    }
     _quoteGeneration++;
     if (activeAccountIsHardware && quote.direction.sendsZec) {
       if (hardwareSignerKind == HardwareSignerKind.ledger) {
@@ -1221,7 +1154,9 @@ class SwapNotifier extends Notifier<SwapState> {
           clearStatusError: true,
           clearPendingHardwareSigningIntent: true,
         );
-        await _persistCurrentIntents();
+        await (privateQuote
+            ? _saveStartedIntentForAccount(accountUuid, intent)
+            : _persistCurrentIntents());
         log(
           'Swap: persisted Ledger signing checkpoint '
           'intent=${_shortSwapValue(intent.id)}',
@@ -1275,12 +1210,11 @@ class SwapNotifier extends Notifier<SwapState> {
       receiveFiatText: '',
       destinationText: '',
       clearUserExternalContactId: true,
-      // A reload may already show a private swap its own save stored.
-      intents: [
-        intent,
-        for (final stored in state.intents)
-          if (stored.id != intent.id) stored,
-      ],
+      // An incoming private swap is listed already, perhaps with a newer
+      // status, since it was saved before its wallet start.
+      intents: state.intents.any((stored) => stored.id == intent.id)
+          ? state.intents
+          : [intent, ...state.intents],
       startSubmitting: false,
       quoteLoading: false,
       selectedIntentId: intent.id,
@@ -1290,9 +1224,11 @@ class SwapNotifier extends Notifier<SwapState> {
       clearStatusError: true,
       clearPendingHardwareSigningIntent: true,
     );
-    // A private swap saved by its merge above needs no second save. One whose
-    // merge failed is on this account's screen now, so it saves with it.
-    if (!privateSaved) await _persistCurrentIntents();
+    if (quote.receiveRequestId == null) {
+      await (privateQuote
+          ? _saveStartedIntentForAccount(accountUuid, intent)
+          : _persistCurrentIntents());
+    }
 
     if (quote.direction.sendsZec) {
       unawaited(
@@ -1366,12 +1302,6 @@ class SwapNotifier extends Notifier<SwapState> {
         if (intent.id != intentId) intent,
     ];
     if (remaining.length == state.intents.length) return;
-    final activeAccountUuid = _activeAccountUuidOrNull;
-    if (activeAccountUuid != null) {
-      ref
-          .read(swapActivityTrackerProvider)
-          .forgetStartedPrivate(activeAccountUuid, intentId);
-    }
 
     final removedSelected =
         state.selectedIntentId == intentId ||
@@ -2102,31 +2032,14 @@ class SwapNotifier extends Notifier<SwapState> {
       return;
     }
     final accountScopeGeneration = _accountScopeGeneration;
-    // Read before build has a state when this restores the first account.
-    final shownBefore = {
-      for (final intent in stateOrNull?.intents ?? const <SwapIntent>[])
-        intent.id,
-    };
     try {
-      final loaded = await ref
+      final persisted = await ref
           .read(swapActivityTrackerProvider)
           .loadIntents(accountUuid: scopedAccountUuid);
       if (accountScopeGeneration != _accountScopeGeneration ||
           !_isAccountActive(scopedAccountUuid)) {
         return;
       }
-      // A private swap started on this account while its swaps loaded may be
-      // missing from what was read, so it stays on screen. Its own save keeps
-      // it in storage (see `registerStartedPrivate`).
-      final loadedIds = {for (final intent in loaded) intent.id};
-      final persisted = [
-        for (final intent in state.intents)
-          if (intent.privateAddress &&
-              !shownBefore.contains(intent.id) &&
-              !loadedIds.contains(intent.id))
-            intent,
-        ...loaded,
-      ];
       if (persisted.isEmpty && !replaceExisting) return;
       state = state.copyWith(
         intents: persisted,
@@ -2286,8 +2199,10 @@ class SwapNotifier extends Notifier<SwapState> {
         .saveIntents(accountUuid: accountUuid, intents: intentsToPersist);
   }
 
-  /// Adds `intent` to `accountUuid`'s saved swaps, keeping the others, for a
-  /// swap that started after the user switched to another account.
+  /// Adds `intent`, a private swap starting on `accountUuid`, to that
+  /// account's saved swaps by id, keeping the others and any saved copy of it.
+  /// The screen's list may not hold every saved swap yet, so it is not what a
+  /// private swap saves.
   Future<void> _saveStartedIntentForAccount(
     String accountUuid,
     SwapIntent intent,
@@ -2296,42 +2211,113 @@ class SwapNotifier extends Notifier<SwapState> {
         .read(swapActivityTrackerProvider)
         .updateIntents(
           accountUuid: accountUuid,
-          transform: (saved) => [
-            intent,
-            for (final stored in saved)
-              if (stored.id != intent.id) stored,
-          ],
+          transform: (saved) => saved.any((stored) => stored.id == intent.id)
+              ? saved
+              : [intent, ...saved],
         );
   }
 
-  /// Tries again, a few times, to merge a started private swap whose first
-  /// save failed, since its reservation is already started and nothing else
-  /// may save it. Once it lands, a screen showing its account reloads to
-  /// include it.
-  Future<void> _retrySaveStartedIntent(
+  /// Lists and saves `intent`, an incoming private swap, before starting its
+  /// wallet reservation, so any later save of its account's screen keeps it.
+  /// The start returns only the deposit the quote already carries, so success
+  /// leaves the saved swap as it is. If the save or the start fails, the swap
+  /// is removed by id, as when a start fails before it is listed. Returns
+  /// whether it started with the screen still showing its account.
+  Future<bool> _startPrivateReceive(
     String accountUuid,
+    SwapQuote quote,
     SwapIntent intent,
+    bool Function() screenMoved,
   ) async {
-    for (var attempt = 1; attempt <= 3; attempt++) {
-      await Future<void>.delayed(Duration(seconds: 2 * attempt));
-      if (!ref.mounted) return;
-      try {
-        await _saveStartedIntentForAccount(accountUuid, intent);
-        // The screen may show this account again without the swap.
-        if (_isAccountActive(accountUuid)) {
-          await _restorePersistedIntents(
-            accountUuid: accountUuid,
-            replaceExisting: true,
-          );
-        }
-        return;
-      } catch (e) {
-        log(
-          'Swap: private start save retry $attempt failed '
-          'intent=${_shortSwapValue(intent.id)} error=$e',
-        );
-      }
+    state = state.copyWith(intents: [intent, ...state.intents]);
+    try {
+      await _saveStartedIntentForAccount(accountUuid, intent);
+      await ref
+          .read(swapZecStagingAddressServiceProvider)
+          .startQuote(accountUuid, quote);
+    } catch (e) {
+      await _removeUnstartedIntent(accountUuid, intent.id);
+      if (!screenMoved()) _showStartFailure(accountUuid, quote, e);
+      return false;
     }
+    // The swap started on this address, so the next swap prepares another.
+    _dropReviewAddress(accountUuid, quote.direction);
+    if (screenMoved()) {
+      log(
+        'Swap: start saved after an account switch '
+        'intent=${_shortSwapValue(intent.id)}',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /// Removes `intentId`, a private swap whose wallet start failed, from
+  /// `accountUuid`'s screen and saved swaps, by id. The screen drops it first,
+  /// so no later save of it brings the swap back, and again once the removal
+  /// is saved, in case a reload read it before. A failed removal is logged.
+  Future<void> _removeUnstartedIntent(
+    String accountUuid,
+    String intentId,
+  ) async {
+    void dropFromScreen() {
+      if (!_isAccountActive(accountUuid)) return;
+      state = state.copyWith(
+        intents: [
+          for (final intent in state.intents)
+            if (intent.id != intentId) intent,
+        ],
+        clearSelectedIntent: state.selectedIntentId == intentId,
+      );
+    }
+
+    dropFromScreen();
+    try {
+      await ref
+          .read(swapActivityTrackerProvider)
+          .updateIntents(
+            accountUuid: accountUuid,
+            transform: (saved) => [
+              for (final intent in saved)
+                if (intent.id != intentId) intent,
+            ],
+          );
+    } catch (e) {
+      log(
+        'Swap: unstarted swap not removed '
+        'intent=${_shortSwapValue(intentId)} error=$e',
+      );
+    }
+    dropFromScreen();
+  }
+
+  /// Shows why the start of `quote` failed with `error`, and lets a wallet
+  /// reservation that cannot start again go.
+  void _showStartFailure(String accountUuid, SwapQuote quote, Object error) {
+    log(
+      'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
+      'error=$error',
+    );
+    final receiveError = _receiveError(error);
+    final historyPending =
+        receiveError?.kind == ReceiveErrorKind.receiveHistory;
+    // A reservation another request started, or whose deposit deadline
+    // passed, cannot be quoted again. One whose history needs checking again
+    // may have been paid elsewhere, so the next quote prepares an address
+    // after a recovery round.
+    if (historyPending || receiveError?.kind == ReceiveErrorKind.stale) {
+      _dropReviewAddress(accountUuid, quote.direction);
+    }
+    if (historyPending) {
+      ref.read(syncProvider.notifier).continueSwapRecovery();
+    }
+    state = state.copyWith(
+      startSubmitting: false,
+      quoteLoading: false,
+      statusError: historyPending
+          ? receiveError!.message
+          : _providerFailureMessage(SwapFailureOperation.start, error),
+    );
   }
 
   bool _isAccountActive(String? accountUuid) {
