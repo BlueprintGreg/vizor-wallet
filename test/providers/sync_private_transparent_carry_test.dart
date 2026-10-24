@@ -6,6 +6,7 @@ import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/providers/account_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
+import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as rust_swap;
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 import 'package:zcash_wallet/src/rust/frb_generated.dart';
 
@@ -33,10 +34,14 @@ class _Api extends RustLibApi {
 
   /// Finishes a receiver round at once without wallet work.
   @override
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<rust_swap.SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
-  }) async => false;
+  }) async => const rust_swap.SwapRecoveryRound(
+    active: false,
+    changed: false,
+    checked: false,
+  );
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -754,7 +759,9 @@ void main() {
           overrides: [
             appBootstrapProvider.overrideWithValue(
               _bootstrapWith(
-                _stoppedSnapshot(rust_sync.TransparentStopReason.optOutUnfinished),
+                _stoppedSnapshot(
+                  rust_sync.TransparentStopReason.optOutUnfinished,
+                ),
               ),
             ),
             accountProvider.overrideWith(_Accounts.new),
@@ -797,7 +804,9 @@ void main() {
           overrides: [
             appBootstrapProvider.overrideWithValue(
               _bootstrapWith(
-                _stoppedSnapshot(rust_sync.TransparentStopReason.optOutUnfinished),
+                _stoppedSnapshot(
+                  rust_sync.TransparentStopReason.optOutUnfinished,
+                ),
               ),
             ),
             accountProvider.overrideWith(_Accounts.new),
