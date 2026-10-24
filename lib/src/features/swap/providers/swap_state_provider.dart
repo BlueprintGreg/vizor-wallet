@@ -1158,6 +1158,10 @@ class SwapNotifier extends Notifier<SwapState> {
       // list, which may belong to another account or an unfinished reload.
       // A failed save must not strand the start: its reservation is already
       // started, so the swap stays on screen or is saved again shortly.
+      // No later save for this account may drop it, whatever list it saves.
+      ref
+          .read(swapActivityTrackerProvider)
+          .registerStartedPrivate(accountUuid, intent);
       try {
         await _saveStartedIntentForAccount(accountUuid, intent);
         privateSaved = true;
@@ -2278,7 +2282,8 @@ class SwapNotifier extends Notifier<SwapState> {
 
   /// Tries again, a few times, to merge a started private swap whose first
   /// save failed after the screen moved to other swaps, since nothing else
-  /// would save it and its reservation is already started.
+  /// would save it and its reservation is already started. Once it lands, a
+  /// screen showing its account reloads to include it.
   Future<void> _retrySaveStartedIntent(
     String accountUuid,
     SwapIntent intent,
@@ -2288,6 +2293,13 @@ class SwapNotifier extends Notifier<SwapState> {
       if (!ref.mounted) return;
       try {
         await _saveStartedIntentForAccount(accountUuid, intent);
+        // The screen may show this account again without the swap.
+        if (_isAccountActive(accountUuid)) {
+          await _restorePersistedIntents(
+            accountUuid: accountUuid,
+            replaceExisting: true,
+          );
+        }
         return;
       } catch (e) {
         log(

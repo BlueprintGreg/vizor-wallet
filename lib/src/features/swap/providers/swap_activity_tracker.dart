@@ -256,6 +256,22 @@ class SwapActivityTracker {
     _onRecordsChanged?.call();
   }
 
+  /// Marks `intent`, a private swap that just started for `accountUuid`, as one
+  /// no later write for that account may drop (see
+  /// [DeletionSafeSwapActivityStore.registerStartedPrivate]). Synchronous, so
+  /// it can run before the swap's first save.
+  void registerStartedPrivate(String accountUuid, SwapIntent intent) {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    if (scopedAccountUuid == null ||
+        !_isPersistableIntent(intent, accountUuid: scopedAccountUuid)) {
+      return;
+    }
+    _activityStore.registerStartedPrivate(
+      scopedAccountUuid,
+      swapIntentRecordForPersistence(intent, accountUuid: scopedAccountUuid),
+    );
+  }
+
   /// Replaces `accountUuid`'s saved swaps with what `transform` makes of them,
   /// as one atomic step of the store (see
   /// [DeletionSafeSwapActivityStore.update]), so a concurrent writer's swaps
