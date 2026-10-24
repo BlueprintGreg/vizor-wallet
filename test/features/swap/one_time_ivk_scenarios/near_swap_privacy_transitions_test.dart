@@ -24,6 +24,9 @@ import 'package:zcash_wallet/src/rust/frb_generated.dart';
 
 const _account = 'account-1';
 
+/// How many times a poll read the chain tip.
+var _tipReads = 0;
+
 /// Rust as the settings toggle and the scheduler see it: ordinary sync streams
 /// the test feeds, recovery rounds the test completes, and Rust's NEAR swap
 /// privacy switch. Every call is logged in [events].
@@ -237,9 +240,12 @@ class _Tip extends RpcEndpointFailoverNotifier {
     fallbackCandidates: const [],
   );
 
-  /// The tip the initial state already scanned.
+  /// The tip the initial state already scanned, counting reads.
   @override
-  Future<BigInt> getLatestBlockHeight() async => BigInt.from(100);
+  Future<BigInt> getLatestBlockHeight() async {
+    _tipReads++;
+    return BigInt.from(100);
+  }
 }
 
 class _Upgrade extends ChainUpgradeStatusNotifier {
@@ -311,6 +317,7 @@ void main() {
       ..open = 0
       ..mostOpen = 0
       ..drainOnCancel = true;
+    _tipReads = 0;
     api.syncs.clear();
     api.rounds.clear();
     api.manual.clear();
@@ -492,9 +499,17 @@ void main() {
     for (final height in [103, 104, 105]) {
       expect(await batch(sync, height), asked, reason: 'inert at $height');
     }
+    // With that sync finished, an idle poll reads the tip and starts nothing.
+    api.running = false;
+    await api.syncs.last.close();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    final rounds = api.rounds.length;
+    final reads = _tipReads;
     await sync.checkTipForTesting();
     sync.stopTipChecksForTesting();
-    expect(api.rounds.length, asked, reason: 'an idle poll starts nothing');
+    expect(_tipReads, reads + 1, reason: 'the poll ran');
+    expect(api.rounds.length, rounds, reason: 'an idle poll starts nothing');
     await settle(sync);
   });
 
