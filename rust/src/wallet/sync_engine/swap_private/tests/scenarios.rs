@@ -1962,9 +1962,10 @@ impl World {
     }
 
     /// A window slot of `dev`'s account `acct` that the reuse rules say is free: unpaid,
-    /// with every quote on it expired, unfunded and not shown live, or started but without
-    /// any funded status [`STARTED_STATUS_GRACE`] past its deadline while no payment to
-    /// it is pending.
+    /// with no payment to it pending recovery, and every quote on it expired, unfunded and
+    /// not shown live, or started but without any funded status [`STARTED_STATUS_GRACE`]
+    /// past its deadline. A pending payment blocks reuse even when no quote saw it, as
+    /// when a held toggle pays I0 directly.
     fn reusable_slot(&self, dev: usize, acct: usize) -> Option<u64> {
         let device = &self.devices[dev];
         let a = &device.accts[acct];
@@ -1977,6 +1978,7 @@ impl World {
         let clock = deadline_clock(&device.wallet);
         (0..end).find(|index| {
             !paid.contains(index)
+                && !receive_pending(&device.wallet, &a.account.id, *index)
                 && self.quotes.iter().any(|q| {
                     q.dev == dev && q.uuid == a.account.uuid && q.incoming && q.index == *index
                 })
@@ -1986,8 +1988,7 @@ impl World {
                         // The wallet's deadline is a minute after the provider's.
                         || (q.started
                             && !q.funded_seen
-                            && q.deadline + 60 + STARTED_STATUS_GRACE <= clock
-                            && !receive_pending(&device.wallet, &a.account.id, *index))
+                            && q.deadline + 60 + STARTED_STATUS_GRACE <= clock)
                 })
         })
     }
