@@ -1180,9 +1180,14 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(true);
         }
-        if (manual) rethrow;
-        log('Swap recovery remains pending: $error');
         // A cancelled round's error says nothing about the receiver service.
+        if (manual) {
+          if (generation != _swapRecoveryGeneration) {
+            throw StateError('Swap history check was cancelled.');
+          }
+          rethrow;
+        }
+        log('Swap recovery remains pending: $error');
         return generation == _swapRecoveryGeneration ? error : null;
       }
       // A round without work changed nothing to show.

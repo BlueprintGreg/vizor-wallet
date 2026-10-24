@@ -729,4 +729,27 @@ void main() {
     expect(api.events.last, 'cancel manual');
     sync.stopTipChecksForTesting();
   });
+
+  test('a manual check cancelled under it reports the cancellation, not the '
+      'round error', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1));
+
+    final security = container.read(appSecurityProvider.notifier) as _Security;
+    security.setUnlocked(false);
+    unawaited(sync.clearSensitiveStateForLock());
+    await pumpEventQueue();
+    api.manual.single.completeError(
+      const rust_swap.ReceiveError(
+        message: 'Swap recovery was cancelled.',
+        kind: rust_swap.ReceiveErrorKind.other,
+      ),
+    );
+    await expectLater(checking, throwsA(isA<StateError>()));
+    await settle(sync);
+  });
 }
