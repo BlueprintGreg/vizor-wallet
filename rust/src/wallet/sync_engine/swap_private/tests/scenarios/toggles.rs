@@ -1070,7 +1070,11 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
             for held in &holds {
                 held.wait();
             }
-            world.rapid_toggle(0, 3, false).unwrap();
+            // Three flips through the wallet alone, without the app's worker drain, so
+            // the rounds go on after their release and must not undo the last setting.
+            for on in [false, true, false] {
+                set_feature(&mut world, 0, on);
+            }
             for held in &holds {
                 held.release();
             }
