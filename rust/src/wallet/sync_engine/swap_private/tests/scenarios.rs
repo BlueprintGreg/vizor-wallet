@@ -822,6 +822,28 @@ fn receive_pending(wallet: &Wallet, account: &AccountUuid, index: u64) -> bool {
         .unwrap()
 }
 
+/// The frontier of `account`'s unfinished manual job, if it has one: a paused job, or a
+/// finished one that a rewind below its frontier reopened. A history check resumes such a
+/// job rather than starting a new one (see the library's `check_one_time_history`), so it
+/// keeps that frontier (spec MAN-4).
+fn resumed_frontier(wallet: &Wallet, account: &AccountUuid) -> Option<u32> {
+    use rusqlite::OptionalExtension as _;
+    let (purpose, next, end, height): (u8, [u8; 8], Option<[u8; 8]>, Option<u32>) =
+        rusqlite::Connection::open(&wallet.path)
+            .unwrap()
+            .query_row(
+                "SELECT r.manual_purpose, r.manual_next, r.manual_end, r.manual_height
+                 FROM ironwood_one_time_recovery r JOIN accounts a ON a.id = r.account_id
+                 WHERE a.uuid = ?1",
+                [account.expose_uuid().as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .unwrap()?;
+    let (end, height) = (u64::from_be_bytes(end?), height?);
+    (purpose == 0 || u64::from_be_bytes(next) < end).then_some(height)
+}
+
 /// The refund indexes the worker still monitors for `account`.
 fn monitored_refunds(wallet: &Wallet, account: &AccountUuid) -> BTreeSet<u64> {
     wallet
@@ -2938,19 +2960,16 @@ impl World {
             if !self.devices[dev].discovery() || self.devices[dev].broken {
                 continue;
             }
-            for _ in 0..12 {
-                let publication = self.current();
-                self.round(dev, 0, false, publication, 0, Some(None))?;
-                let device = &self.devices[dev];
-                if device.accts.iter().all(|a| {
-                    !device
-                        .wallet
-                        .state(&a.account)
-                        .manual
-                        .is_some_and(|m| m.active)
-                }) {
-                    break;
-                }
+            let resumed: Vec<Option<u32>> = self.devices[dev]
+                .accts
+                .iter()
+                .map(|a| resumed_frontier(&self.devices[dev].wallet, &a.account.id))
+                .collect();
+            self.history_check(dev)?;
+            // A payment after a resumed check's frontier needs a new search, which must
+            // find it.
+            if self.only_missed_after_frontier(dev, &resumed) {
+                self.history_check(dev)?;
             }
             let device = &self.devices[dev];
             for acct in &device.accts {
@@ -3018,6 +3037,61 @@ impl World {
             self.age()?;
         }
         Ok(())
+    }
+
+    /// Runs the settings history check on `dev` until no account's manual job is active,
+    /// for at most 12 rounds.
+    fn history_check(&mut self, dev: usize) -> Result<(), Violation> {
+        for _ in 0..12 {
+            let publication = self.current();
+            self.round(dev, 0, false, publication, 0, Some(None))?;
+            let device = &self.devices[dev];
+            if device.accts.iter().all(|a| {
+                !device
+                    .wallet
+                    .state(&a.account)
+                    .manual
+                    .is_some_and(|m| m.active)
+            }) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the history check on `dev` missed some credit, and every credit it missed
+    /// is a repeat payment mined after the frontier its account's check resumed under, as
+    /// `resumed` lists them per account (see [`resumed_frontier`]). Such a check need not
+    /// find those (spec MAN-4). First payments stay owed to automatic recovery.
+    fn only_missed_after_frontier(&self, dev: usize, resumed: &[Option<u32>]) -> bool {
+        let device = &self.devices[dev];
+        let mut missed = false;
+        for (acct, resumed) in device.accts.iter().zip(resumed) {
+            let credited: BTreeSet<(bool, u64, [u8; 32], u64)> =
+                notes(&device.wallet, &acct.account.id)
+                    .iter()
+                    .filter(|n| n.mined)
+                    .map(|n| (n.receive, n.index, n.txid, n.value))
+                    .collect();
+            for (receive, index, txid, _) in self.expected(dev, acct).difference(&credited) {
+                let to_key = |p: &&Pay| {
+                    !p.orphaned && p.seed == acct.seed && (p.receive, p.index) == (*receive, *index)
+                };
+                let Some(pay) = self.pays.iter().filter(to_key).find(|p| p.txid == *txid) else {
+                    return false;
+                };
+                let repeat = self
+                    .pays
+                    .iter()
+                    .filter(to_key)
+                    .any(|p| p.height < pay.height);
+                if !repeat || !resumed.is_some_and(|frontier| pay.height > frontier) {
+                    return false;
+                }
+                missed = true;
+            }
+        }
+        missed
     }
 
     /// Mines past every funding's [`MEMO_REFUND_WINDOW`] and settles every device again,

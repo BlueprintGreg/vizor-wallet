@@ -662,3 +662,85 @@ fn a_restored_device_never_reuses_a_funded_refund_key() {
         "the restored device reserved R1, not R0: {line}"
     );
 }
+
+/// The toggle seed 3000213, shrunk to ten actions. Its history check finishes, then the
+/// rewind that importing an account makes reopens it. The next check resumes it under
+/// its first frontier, so it misses the repeat I0 payment mined after that (spec MAN-4),
+/// which the harness took for a credit mismatch. A new check then finds it.
+#[test]
+fn a_history_check_reopened_by_a_rewind_keeps_its_frontier() {
+    if isolated("directed::a_history_check_reopened_by_a_rewind_keeps_its_frontier") {
+        return;
+    }
+    let mut world = World::new();
+    world.sync(0, false);
+    let publication = world.current();
+    world.round(0, 0, false, publication, 0, None).unwrap();
+    let account = world.devices[0].accts[0].account.id;
+    let held = |dev, class, nth, cancel| Action::HeldToggle {
+        dev,
+        class,
+        nth,
+        cancel,
+        back: true,
+    };
+    let mut frontier = None;
+    for (step, action) in [
+        Action::Manual {
+            dev: 3,
+            bound: None,
+            cancel: None,
+        },
+        Action::Status {
+            quote: 8,
+            change: Change::Done,
+        },
+        held(7, 3, 1, false),
+        Action::AddNoOrchard(0),
+        held(6, 0, 0, true),
+        Action::Enhance(7),
+        Action::Swap {
+            dev: 3,
+            acct: 2,
+            value: 670_000,
+        },
+        Action::Payout {
+            quote: 3,
+            value: 890_000,
+        },
+        Action::QuoteOut {
+            dev: 3,
+            acct: 2,
+            ttl: 6435,
+        },
+        held(6, 3, 0, false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        world.act(action).unwrap();
+        world.check_step().unwrap();
+        let reopened = resumed_frontier(&world.devices[0].wallet, &account);
+        match step {
+            0 => {
+                assert_eq!(reopened, None, "the check finished");
+                frontier = Some(world.chain.tip());
+            }
+            3 => assert_eq!(reopened, frontier, "the import's rewind reopened the check"),
+            _ => {}
+        }
+    }
+    let frontier = frontier.unwrap();
+    let repeat = world.pays.last().unwrap();
+    assert!(repeat.receive && repeat.index == 0 && repeat.height > frontier);
+    let repeat = repeat.txid;
+    let paid = |world: &World| credited(world, 0).iter().any(|n| n.txid == repeat);
+    assert!(!paid(&world), "only a history check finds the repeat");
+
+    world.history_check(0).unwrap();
+    assert!(!paid(&world), "the resumed check stops at its frontier");
+    assert!(world.only_missed_after_frontier(0, &[Some(frontier)]));
+    world.history_check(0).unwrap();
+    assert!(paid(&world), "a new check finds the repeat");
+    world.quiesce().unwrap();
+}
