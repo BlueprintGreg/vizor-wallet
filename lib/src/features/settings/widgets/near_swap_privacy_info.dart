@@ -10,11 +10,15 @@ import '../../../core/widgets/app_modal_shape.dart';
 import '../../../providers/account_provider.dart';
 import '../../../providers/enhance_pir_provider.dart';
 
-/// NEAR swap privacy subtitle while Private queries is on.
+/// NEAR swap privacy subtitle while it is on.
 const kNearSwapPrivacyOnCopy = 'Swaps use one-time Zcash addresses.';
 
+/// NEAR swap privacy subtitle while it is off and could be turned on. Swaps
+/// then use a fresh address of the wallet, as hardware accounts always do.
+const kNearSwapPrivacyOffCopy = 'Swaps use regular Zcash addresses.';
+
 /// NEAR swap privacy subtitle while Private queries is off.
-const kNearSwapPrivacyOffCopy = 'Needs Private queries.';
+const kNearSwapPrivacyNeedsPrivateQueriesCopy = 'Needs Private queries.';
 
 /// NEAR swap privacy subtitle while a hardware wallet account is active, since
 /// only software accounts get one-time swap addresses.
@@ -22,13 +26,17 @@ const kNearSwapPrivacyHardwareCopy =
     'Not available for hardware wallet accounts. Their swaps use regular '
     'Zcash addresses.';
 
-/// The NEAR swap privacy subtitle for the active account and Private queries.
+/// The NEAR swap privacy subtitle for the active account, Private queries,
+/// and whether NEAR swap privacy is `enabled`.
 String nearSwapPrivacyDescription({
   required bool hardwareAccount,
   required bool privateQueriesOn,
+  required bool enabled,
 }) => hardwareAccount
     ? kNearSwapPrivacyHardwareCopy
-    : privateQueriesOn
+    : !privateQueriesOn
+    ? kNearSwapPrivacyNeedsPrivateQueriesCopy
+    : enabled
     ? kNearSwapPrivacyOnCopy
     : kNearSwapPrivacyOffCopy;
 
@@ -57,6 +65,7 @@ final nearSwapPrivacySettingProvider = Provider<NearSwapPrivacySetting?>((ref) {
     description: nearSwapPrivacyDescription(
       hardwareAccount: hardwareAccount,
       privateQueriesOn: privateQueriesOn,
+      enabled: enabled,
     ),
     canToggle: !changingRecovery && privateQueriesOn,
     // The check is discovery's, so it needs NEAR swap privacy too.

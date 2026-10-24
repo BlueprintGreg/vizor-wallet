@@ -622,7 +622,7 @@ void main() {
   testWidgets('NEAR swap privacy explains itself', (tester) async {
     await tester.pumpWidget(_settingsHarness());
     await tester.pump();
-    expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+    expect(find.text(kNearSwapPrivacyNeedsPrivateQueriesCopy), findsOneWidget);
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
@@ -666,9 +666,30 @@ void main() {
   });
 
   testWidgets('NEAR swap privacy describes one-time addresses', (tester) async {
-    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pumpWidget(
+      _settingsHarness(enhancePirEnabled: true, nearSwapPrivacyEnabled: true),
+    );
     await tester.pump();
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
+    expect(find.text(kNearSwapPrivacyOffCopy), findsNothing);
+  });
+
+  testWidgets('NEAR swap privacy off describes regular addresses', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pump();
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(
+              const ValueKey('settings_near_swap_privacy_description'),
+            ),
+          )
+          .data,
+      kNearSwapPrivacyOffCopy,
+    );
+    expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
   });
 
   testWidgets('Check swap history needs NEAR swap privacy', (tester) async {
