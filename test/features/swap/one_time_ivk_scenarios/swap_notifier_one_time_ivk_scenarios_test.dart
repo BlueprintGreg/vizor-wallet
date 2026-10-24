@@ -261,7 +261,7 @@ void main() {
       intents: [swap],
       providerStatus: SwapIntentStatus.awaitingExternalDeposit,
       reserve: (account) async {
-        if (h.recorded.isEmpty) {
+        if (!h.walletReleased) {
           throw const api.ReceiveError(
             message:
                 'No swap address is free. Wait for a swap in progress to '
@@ -275,13 +275,22 @@ void main() {
         );
       },
     );
+    // Start from a clean log: the load-time poll may already have asked.
+    h.recorded.clear();
+    h.provider.statusRequests.clear();
+    // The wallet releases the address on the next post-deadline status.
+    h.tracks = false;
     await h.notifier.refreshOpenIntentStatuses();
     await pumpEventQueue();
-    expect(
-      h.recorded,
-      contains(SwapIntentStatus.awaitingExternalDeposit),
-      reason: 'periodic polling still asks',
-    );
+    expect(h.provider.statusRequests, [swap.depositAddress]);
+    expect(h.recorded, [
+      SwapIntentStatus.awaitingExternalDeposit,
+    ], reason: 'periodic polling still asks after the deadline');
+
+    // Released, the swap is polled no more.
+    await h.notifier.refreshOpenIntentStatuses();
+    await pumpEventQueue();
+    expect(h.provider.statusRequests, [swap.depositAddress]);
 
     await h.review('25');
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1freed');
@@ -499,7 +508,8 @@ class _Harness {
                 throw StateError('database is locked');
               }
               h.recorded.add(snapshot.status);
-              return true;
+              if (!h.tracks) h.walletReleased = true;
+              return h.tracks;
             },
           ),
         ),
