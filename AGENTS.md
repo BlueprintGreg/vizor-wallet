@@ -697,7 +697,14 @@ a sync's large block download (below).
   and fails closed with it. If the direct connection cannot open, the
   session downloads over Tor. A direct batch that fails, queued or not, is
   downloaded again over Tor, and three failures in a row
-  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the rest of the session to Tor.
+  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the session to Tor
+  (`DirectBlockRoute`). After `DIRECT_BLOCK_RETRY_AFTER` (a minute, doubling
+  with each demotion up to `DIRECT_BLOCK_RETRY_MAX`, ten minutes) the session
+  opens a fresh direct connection and restarts its queue; a connection that
+  could not open, or a reopened one whose first batch fails, waits again. A
+  connection that stops answering fails every request on it while a fresh
+  one to the same server works, as on a phone restore where three queued
+  batches timed out together.
   Only main-scan batches of ChainTip, Historic and
   LatestPoolActivation ranges, and Verify batches above the blocks scanned
   before the session (the frontier continuity check, often merged into a full

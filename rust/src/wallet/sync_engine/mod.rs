@@ -673,17 +673,75 @@ fn fetches_blocks_directly(
     tor_desired && private_queries && pending_download_bytes >= DIRECT_BLOCK_DOWNLOAD_MIN_BYTES
 }
 
-/// Direct batch failures in a row after which a session downloads the rest of
-/// its blocks over Tor. Each failed batch is downloaded again over Tor.
+/// Direct batch failures in a row after which a session downloads its blocks
+/// over Tor until it tries a fresh direct connection. Each failed batch is
+/// downloaded again over Tor.
 const DIRECT_BLOCK_FAILURES_BEFORE_TOR: u32 = 3;
 
-/// The run of direct batch failures after one more direct batch: a success
-/// ends the run.
-fn next_direct_failures(failures: u32, failed: bool) -> u32 {
-    if failed {
-        failures + 1
-    } else {
-        0
+/// How long a session downloads over Tor after its direct connection is
+/// demoted before it opens a fresh one. Each later demotion doubles the wait,
+/// up to [`DIRECT_BLOCK_RETRY_MAX`]. A connection that stops answering (three
+/// queued batches timed out together on a phone restore) fails every request
+/// on it, while a fresh connection to the same server works.
+const DIRECT_BLOCK_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+const DIRECT_BLOCK_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The direct block connection of a session that may download directly: in
+/// use, or demoted to Tor until a fresh connection may be tried.
+#[derive(Debug)]
+struct DirectBlockRoute {
+    /// Direct batch failures in a row.
+    failures: u32,
+    /// Demotions so far, which set the wait before the next fresh connection.
+    demotions: u32,
+    /// When a demoted route may open a fresh connection; `None` while in use.
+    retry_at: Option<std::time::Instant>,
+}
+
+impl DirectBlockRoute {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            demotions: 0,
+            retry_at: None,
+        }
+    }
+
+    fn in_use(&self) -> bool {
+        self.retry_at.is_none()
+    }
+
+    /// Records one direct batch. Returns the wait before a fresh connection
+    /// when this failure demotes the route.
+    fn record(&mut self, failed: bool, now: std::time::Instant) -> Option<std::time::Duration> {
+        if !failed {
+            self.failures = 0;
+            return None;
+        }
+        self.failures += 1;
+        (self.failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR).then(|| self.demote(now))
+    }
+
+    /// Moves the route to Tor and returns the wait before a fresh connection.
+    fn demote(&mut self, now: std::time::Instant) -> std::time::Duration {
+        self.demotions += 1;
+        self.failures = 0;
+        let wait = DIRECT_BLOCK_RETRY_AFTER
+            .saturating_mul(1 << (self.demotions - 1).min(4))
+            .min(DIRECT_BLOCK_RETRY_MAX);
+        self.retry_at = Some(now + wait);
+        wait
+    }
+
+    fn retry_due(&self, now: std::time::Instant) -> bool {
+        self.retry_at.is_some_and(|at| now >= at)
+    }
+
+    /// A fresh connection opened. Its first direct batch decides: a failure
+    /// moves the route back to Tor for a longer wait.
+    fn reopened(&mut self) {
+        self.retry_at = None;
+        self.failures = DIRECT_BLOCK_FAILURES_BEFORE_TOR - 1;
     }
 }
 
@@ -3942,8 +4000,8 @@ async fn run_sync_impl(
             enhancement.policy().is_private(),
             pending_download_bytes,
         );
-    let mut direct_failures = 0;
-    let (mut block_client, mut direct_blocks) = if opens_direct {
+    let mut direct_route = opens_direct.then(DirectBlockRoute::new);
+    let mut block_client = if opens_direct {
         let opened = tokio::select! {
             biased;
             _ = watch_for_exit(&should_exit) => {
@@ -3959,20 +4017,25 @@ async fn run_sync_impl(
                     elapsed(),
                     (pending_download_bytes / 1_000_000.0).round(),
                 );
-                (CompactTxStreamerClient::new(transport), true)
+                CompactTxStreamerClient::new(transport)
             }
             // A network that blocks the server but not Tor keeps the
             // download on Tor rather than failing every attempt.
             Err(error) => {
+                let wait = direct_route
+                    .as_mut()
+                    .map(|route| route.demote(std::time::Instant::now()))
+                    .unwrap_or_default();
                 log::warn!(
-                    "[{}] sync: direct block download unavailable ({error}); downloading over Tor",
+                    "[{}] sync: direct block download unavailable ({error}); downloading over Tor, retrying in {}s",
                     elapsed(),
+                    wait.as_secs(),
                 );
-                (client.clone(), false)
+                client.clone()
             }
         }
     } else {
-        (client.clone(), false)
+        client.clone()
     };
     let (mut job, job_start) = JobProgress::start(
         stored_progress_job,
@@ -4602,10 +4665,43 @@ async fn run_sync_impl(
             batch_size,
         );
 
+        // A demoted direct route opens a fresh connection once its wait is
+        // over. The queue then holds batches fetched over Tor, so it starts
+        // again from this batch.
+        if let Some(route) = direct_route
+            .as_mut()
+            .filter(|route| route.retry_due(std::time::Instant::now()))
+        {
+            let opened = tokio::select! {
+                biased;
+                _ = watch_for_exit(&should_exit) => {
+                    log::info!("[{}] sync: exiting while reopening the direct block connection", elapsed());
+                    return Ok(());
+                }
+                opened = open_block_download_lwd_transport(lightwalletd_url) => opened,
+            };
+            match opened {
+                Ok(transport) => {
+                    log::info!("[{}] sync: reopened the direct block connection", elapsed());
+                    block_client = CompactTxStreamerClient::new(transport);
+                    route.reopened();
+                    prefetch.clear();
+                }
+                Err(error) => {
+                    let wait = route.demote(std::time::Instant::now());
+                    log::warn!(
+                        "[{}] sync: direct block download still unavailable ({error}); retrying in {}s",
+                        elapsed(),
+                        wait.as_secs(),
+                    );
+                }
+            }
+        }
+
         // Download blocks and their preceding frontier together, or consume a
         // matching tuple that an earlier iteration prefetched.
         let queued = take_queued_batch(&mut prefetch, start, end);
-        let batch_is_direct = direct_blocks
+        let batch_is_direct = direct_route.as_ref().is_some_and(DirectBlockRoute::in_use)
             && batch_uses_direct_connection(
                 checking_cycle,
                 range.priority(),
@@ -4635,19 +4731,20 @@ async fn run_sync_impl(
             }
         })
         .await?;
-        if batch_is_direct {
-            // A network that lets the connection open but breaks its streams
-            // fails every batch; a passing blip should not move a restore to Tor.
-            direct_failures = next_direct_failures(direct_failures, direct_failed);
-            if direct_failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR {
-                log::warn!(
-                    "[{}] sync: {direct_failures} direct block downloads failed in a row; downloading the rest over Tor",
-                    elapsed(),
-                );
-                direct_blocks = false;
-                block_client = client.clone();
-                prefetch.clear();
-            }
+        // A network that lets the connection open but breaks its streams
+        // fails every batch; a passing blip should not move a restore to Tor.
+        if let Some(wait) = direct_route
+            .as_mut()
+            .filter(|_| batch_is_direct)
+            .and_then(|route| route.record(direct_failed, std::time::Instant::now()))
+        {
+            log::warn!(
+                "[{}] sync: direct block downloads failed {DIRECT_BLOCK_FAILURES_BEFORE_TOR} times in a row; downloading over Tor, retrying a fresh connection in {}s",
+                elapsed(),
+                wait.as_secs(),
+            );
+            block_client = client.clone();
+            prefetch.clear();
         }
         let Some((block_source, from_state)) = batch else {
             log::info!("[{}] sync: exiting after download", elapsed());
@@ -6034,13 +6131,12 @@ mod tests {
 
     #[test]
     fn only_failures_in_a_row_move_a_session_to_tor() {
+        let now = std::time::Instant::now();
         let runs = |outcomes: &[bool]| {
+            let mut route = DirectBlockRoute::new();
             outcomes
                 .iter()
-                .scan(0, |failures, &failed| {
-                    *failures = next_direct_failures(*failures, failed);
-                    Some(*failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR)
-                })
+                .map(|&failed| route.record(failed, now).is_some())
                 .collect::<Vec<_>>()
         };
         // A success between failures keeps the direct connection.
@@ -6049,6 +6145,42 @@ mod tests {
             [false, false, false, false, false]
         );
         assert_eq!(runs(&[true, true, true]), [false, false, true]);
+    }
+
+    #[test]
+    fn a_demoted_direct_route_retries_a_fresh_connection_after_a_wait() {
+        let start = std::time::Instant::now();
+        let mut route = DirectBlockRoute::new();
+        let wait = (0..DIRECT_BLOCK_FAILURES_BEFORE_TOR)
+            .find_map(|_| route.record(true, start))
+            .expect("three failures demote the route");
+        assert_eq!(wait, DIRECT_BLOCK_RETRY_AFTER);
+        assert!(!route.in_use());
+        assert!(!route.retry_due(start + wait - std::time::Duration::from_secs(1)));
+        assert!(route.retry_due(start + wait));
+
+        route.reopened();
+        assert!(route.in_use());
+        assert!(route.record(false, start + wait).is_none());
+        assert!(route.in_use());
+    }
+
+    #[test]
+    fn a_reopened_direct_route_that_fails_at_once_waits_longer() {
+        let start = std::time::Instant::now();
+        let mut route = DirectBlockRoute::new();
+        let first = (0..DIRECT_BLOCK_FAILURES_BEFORE_TOR)
+            .find_map(|_| route.record(true, start))
+            .expect("three failures demote the route");
+        route.reopened();
+        let second = route
+            .record(true, start + first)
+            .expect("the reopened connection's first failure demotes it");
+        assert_eq!(second, DIRECT_BLOCK_RETRY_AFTER * 2);
+
+        // A connection that will not open keeps doubling the wait, up to the cap.
+        let waits: Vec<_> = (0..5).map(|_| route.demote(start).as_secs()).collect();
+        assert_eq!(waits, [240, 480, 600, 600, 600]);
     }
 
     async fn download_routes(
