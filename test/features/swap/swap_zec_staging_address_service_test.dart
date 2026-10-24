@@ -89,7 +89,14 @@ void main() {
       );
       await expectLater(
         service.prepareForQuote(accountUuid: 'hardware'),
-        throwsA(isA<SwapZecStagingAddressUnavailableException>()),
+        throwsA(
+          isA<SwapZecStagingAddressUnavailableException>().having(
+            (e) => e.toString(),
+            'message',
+            'Could not prepare a fresh wallet receive address. '
+                'Try again after wallet sync.',
+          ),
+        ),
       );
       expect(ordinaryCalls, 0);
     },
@@ -104,9 +111,18 @@ void main() {
         },
       );
 
+      // Worded as before private swaps.
       expect(
         () => service.prepareForQuote(accountUuid: 'account-1'),
-        throwsA(isA<SwapZecStagingAddressUnavailableException>()),
+        throwsA(
+          isA<SwapZecStagingAddressUnavailableException>().having(
+            (e) => e.toString(),
+            'message',
+            'Could not prepare a fresh wallet receive address. '
+                'Retry after wallet sync or close older pending swaps before '
+                'requesting a new quote.',
+          ),
+        ),
       );
     },
   );
