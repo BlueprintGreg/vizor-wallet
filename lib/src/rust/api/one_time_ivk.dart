@@ -138,10 +138,8 @@ Future<void> reconcileSwapRecovery({
 void cancelSwapRecovery() =>
     RustLib.instance.api.crateApiOneTimeIvkCancelSwapRecovery();
 
-/// Runs a bounded private recovery step independently of ordinary wallet sync. Returns
-/// whether any account had recovery work. `false` means the round changed nothing, and
-/// with the feature off, that no round is needed until the wallet changes.
-Future<bool> runSwapRecovery({
+/// Runs a bounded private recovery step independently of ordinary wallet sync.
+Future<SwapRecoveryRound> runSwapRecovery({
   required String dbPath,
   required String networkName,
 }) => RustLib.instance.api.crateApiOneTimeIvkRunSwapRecovery(
@@ -320,6 +318,39 @@ class SwapProviderStatus {
           amountOut == other.amountOut &&
           originTxHashes == other.originTxHashes &&
           destinationTxHashes == other.destinationTxHashes;
+}
+
+/// What one automatic swap recovery round did.
+class SwapRecoveryRound {
+  /// Some account had recovery work. `false` with the feature off means no round is
+  /// needed until the wallet changes.
+  final bool active;
+
+  /// The round committed receiver results that can change the balance, activity or
+  /// address reservations.
+  final bool changed;
+
+  /// The round accepted a receiver inventory, so the service speaks a format this app
+  /// supports.
+  final bool checked;
+
+  const SwapRecoveryRound({
+    required this.active,
+    required this.changed,
+    required this.checked,
+  });
+
+  @override
+  int get hashCode => active.hashCode ^ changed.hashCode ^ checked.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SwapRecoveryRound &&
+          runtimeType == other.runtimeType &&
+          active == other.active &&
+          changed == other.changed &&
+          checked == other.checked;
 }
 
 /// Private swap recovery state across the wallet's software accounts.

@@ -1183,6 +1183,63 @@ fn stalled_rolling_filters_leave_every_account_time_to_drain() {
     assert_eq!(wallet.one_time_unspent(&first), 1_000_000);
 }
 
+/// A round that finds nothing new reports no change, so the app reloads nothing, while
+/// one that credits a payout does. Both report the service as checked.
+#[test]
+fn only_a_round_that_records_results_reports_a_change() {
+    isolated!(only_a_round_that_records_results_reports_a_change);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.mine(2);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    assert!(wallet.recover(&service).unwrap().changed, "the seed walk");
+    assert!(wallet.state(&account).restore_complete);
+
+    // The same publication again, then two empty blocks found through filters.
+    let again = wallet.recover(&service).unwrap();
+    assert!(again.active && again.checked && !again.changed);
+    chain.mine(2);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    let quiet = wallet.recover(&service).unwrap();
+    assert!(quiet.active && quiet.checked && !quiet.changed);
+    assert_eq!(service.queries(), 0);
+
+    chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let paid = wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert!(paid.active && paid.checked && paid.changed);
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+}
+
+/// An automatic round that cannot accept the receiver's inventory, because the wallet
+/// has not scanned its end or the service ends below the wallet birthday, waits without
+/// reporting the service as checked.
+#[test]
+fn a_round_waiting_at_capture_does_not_check_the_service() {
+    isolated!(a_round_waiting_at_capture_does_not_check_the_service);
+    enable_feature();
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let birthday = chain.tip() + 1;
+    let mut wallet = Wallet::new(4, birthday);
+    chain.mine(3);
+    wallet.scan(&chain);
+    let behind = Service::publish(&chain, birthday - 1, activation(), chain.tip(), &[]);
+    let round = wallet.recover(&behind).unwrap();
+    assert!(round.active && !round.checked && !round.changed);
+
+    chain.mine(2);
+    let unscanned = wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert!(unscanned.active && !unscanned.checked && !unscanned.changed);
+    wallet.scan(&chain);
+    assert!(wallet.recover(&Service::at_tip(&chain)).unwrap().checked);
+}
+
 /// A history check against a publication the wallet has not scanned yet reports that
 /// it is waiting for sync, a kind of its own the app can show honestly, rather than a
 /// failure.
@@ -1365,11 +1422,11 @@ fn feature_off_rounds_without_work_take_no_lock_or_request() {
     })
     .expect("the round waited for the wallet write lock")
     .unwrap();
-    assert!(!round.active);
+    assert!(!round.active && !round.changed && !round.checked);
     assert_eq!(off.bytes(), 0, "no receiver request");
-    assert!(
-        !crate::api::one_time_ivk::run_swap_recovery(wallet.path.clone(), "main".into()).unwrap()
-    );
+    let round =
+        crate::api::one_time_ivk::run_swap_recovery(wallet.path.clone(), "main".into()).unwrap();
+    assert!(!round.active && !round.changed && !round.checked);
 
     // An account left enabled is disabled by the next round, which then reports no work.
     enable_feature();
@@ -1393,12 +1450,12 @@ fn feature_off_idle_entry_point_builds_no_runtime() {
     let mut wallet = Wallet::new(4, activation());
     wallet.scan(&chain);
     let path = wallet.path.clone();
-    let had_work = tokio::runtime::Builder::new_current_thread()
+    let round = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(async move { crate::api::one_time_ivk::run_swap_recovery(path, "main".into()) })
         .unwrap();
-    assert!(!had_work);
+    assert!(!round.active);
 }
 
 /// With the feature off, no app entry point commits to a wallet that never enabled it:
@@ -1428,7 +1485,7 @@ fn feature_off_entry_points_leave_the_wallet_untouched() {
     let before = version();
 
     assert!(!wallet.recover(&Service::at_tip(&chain)).unwrap().active);
-    assert!(!api::run_swap_recovery(path.clone(), main()).unwrap());
+    assert!(!api::run_swap_recovery(path.clone(), main()).unwrap().active);
     api::get_swap_recovery_status(path.clone(), main()).unwrap();
     api::reconcile_swap_recovery(path.clone(), main()).unwrap();
     api::cancel_swap_history(path.clone(), main()).unwrap();

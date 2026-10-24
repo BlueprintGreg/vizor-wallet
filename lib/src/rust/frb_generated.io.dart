@@ -1305,6 +1305,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SwapProviderStatus dco_decode_swap_provider_status(dynamic raw);
 
   @protected
+  SwapRecoveryRound dco_decode_swap_recovery_round(dynamic raw);
+
+  @protected
   SwapRecoveryStatus dco_decode_swap_recovery_status(dynamic raw);
 
   @protected
@@ -3032,6 +3035,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SwapProviderStatus sse_decode_swap_provider_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SwapRecoveryRound sse_decode_swap_recovery_round(
     SseDeserializer deserializer,
   );
 
@@ -5131,6 +5139,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_swap_provider_status(
     SwapProviderStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_swap_recovery_round(
+    SwapRecoveryRound self,
     SseSerializer serializer,
   );
 
