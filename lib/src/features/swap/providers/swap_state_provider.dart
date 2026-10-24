@@ -1150,13 +1150,27 @@ class SwapNotifier extends Notifier<SwapState> {
     }
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
+    // Whether a private swap's merge below saved it.
+    var privateSaved = false;
     if (privateQuote) {
-      // A private swap holds wallet state for its account, so it is always
-      // saved by merging into that account's stored swaps, never by saving the
-      // screen's list, which may belong to another account or an unfinished
-      // reload.
-      await _saveStartedIntentForAccount(accountUuid, intent);
+      // A private swap holds wallet state for its account, so it is saved by
+      // merging into that account's stored swaps, never by saving the screen's
+      // list, which may belong to another account or an unfinished reload.
+      // A failed save must not strand the start: its reservation is already
+      // started, so the swap stays on screen or is saved again shortly.
+      try {
+        await _saveStartedIntentForAccount(accountUuid, intent);
+        privateSaved = true;
+      } catch (e) {
+        log(
+          'Swap: private start not saved yet '
+          'intent=${_shortSwapValue(intent.id)} error=$e',
+        );
+      }
       if (screenMoved()) {
+        if (!privateSaved) {
+          unawaited(_retrySaveStartedIntent(accountUuid, intent));
+        }
         // The screen moved during the start, so it is left alone. If it shows
         // this account again, reload its swaps, now including this one.
         if (_isAccountActive(accountUuid)) {
@@ -1271,8 +1285,9 @@ class SwapNotifier extends Notifier<SwapState> {
       clearStatusError: true,
       clearPendingHardwareSigningIntent: true,
     );
-    // A private swap is already saved by its merge above.
-    if (!privateQuote) await _persistCurrentIntents();
+    // A private swap saved by its merge above needs no second save. One whose
+    // merge failed is on this account's screen now, so it saves with it.
+    if (!privateSaved) await _persistCurrentIntents();
 
     if (quote.direction.sendsZec) {
       unawaited(
@@ -2259,6 +2274,28 @@ class SwapNotifier extends Notifier<SwapState> {
               if (stored.id != intent.id) stored,
           ],
         );
+  }
+
+  /// Tries again, a few times, to merge a started private swap whose first
+  /// save failed after the screen moved to other swaps, since nothing else
+  /// would save it and its reservation is already started.
+  Future<void> _retrySaveStartedIntent(
+    String accountUuid,
+    SwapIntent intent,
+  ) async {
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      await Future<void>.delayed(Duration(seconds: 2 * attempt));
+      if (!ref.mounted) return;
+      try {
+        await _saveStartedIntentForAccount(accountUuid, intent);
+        return;
+      } catch (e) {
+        log(
+          'Swap: private start save retry $attempt failed '
+          'intent=${_shortSwapValue(intent.id)} error=$e',
+        );
+      }
+    }
   }
 
   bool _isAccountActive(String? accountUuid) {
