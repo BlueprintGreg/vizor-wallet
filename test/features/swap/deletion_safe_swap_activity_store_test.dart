@@ -144,75 +144,13 @@ void main() {
     expect(await slow, isEmpty);
   });
 
-  group('started private swaps', () {
-    final started = _record.copyWith(id: 'started');
-
-    test('a replacement that never saw one keeps it', () async {
-      final inner = _MemoryStore();
-      final store = DeletionSafeSwapActivityStore(inner);
-      await store.saveRecords(accountUuid: 'a', records: [_record]);
-      inner.hold = Completer<void>();
-      store.registerStartedPrivate('a', started);
-      // The start's merge, then the switch-away save of the screen's old list.
-      final merge = store.update(
-        accountUuid: 'a',
-        transform: (saved) => [started, ...saved],
-      );
-      final replace = store.saveRecords(accountUuid: 'a', records: [_record]);
-      inner.hold!.complete();
-      await merge;
-      await replace;
-      expect(inner.records['a']!.map((r) => r.id), ['started', 'swap']);
-    });
-
-    test('a list that once had it cannot drop it later', () async {
-      final inner = _MemoryStore();
-      final store = DeletionSafeSwapActivityStore(inner);
-      store.registerStartedPrivate('a', started);
-      await store.saveRecords(accountUuid: 'a', records: [started, _record]);
-      // A screen whose swaps have not loaded yet saves without it.
-      await store.saveRecords(accountUuid: 'a', records: [_record]);
-      expect(inner.records['a']!.map((r) => r.id), ['started', 'swap']);
-    });
-
-    test('forgetting it lets a later save remove it', () async {
-      final inner = _MemoryStore();
-      final store = DeletionSafeSwapActivityStore(inner);
-      store.registerStartedPrivate('a', started);
-      store.forgetStartedPrivate('a', 'started');
-      await store.saveRecords(accountUuid: 'a', records: [_record]);
-      expect(inner.records['a']!.map((r) => r.id), ['swap']);
-    });
-
-    test('a merge keeps the newest copy for later replacements', () async {
-      final inner = _MemoryStore();
-      final store = DeletionSafeSwapActivityStore(inner);
-      store.registerStartedPrivate('a', started);
-      final refreshed = started.copyWith(nextAction: 'Refreshed');
-      await store.update(accountUuid: 'a', transform: (_) => [refreshed]);
-      await store.saveRecords(accountUuid: 'a', records: const []);
-      expect(inner.records['a']!.single.nextAction, 'Refreshed');
-    });
-
-    test('deleting the account forgets them', () async {
-      final inner = _MemoryStore();
-      final store = DeletionSafeSwapActivityStore(inner);
-      store.registerStartedPrivate('a', started);
-      await store.deleteForAccount(accountUuid: 'a');
-      store.registerStartedPrivate('a', started);
-      await store.saveRecords(accountUuid: 'a', records: const []);
-      expect(inner.records.containsKey('a'), isFalse);
-    });
-
-    test('a replacement does not read what it replaces', () async {
-      final inner = _MemoryStore()
-        ..slowAccount = 'a'
-        ..holdRead = Completer<void>();
-      final store = DeletionSafeSwapActivityStore(inner);
-      store.registerStartedPrivate('a', started);
-      // A read would wait on the held read and never finish.
-      await store.saveRecords(accountUuid: 'a', records: [_record]);
-      expect(inner.records['a']!.map((r) => r.id), ['started', 'swap']);
-    });
+  test('a replacement does not read what it replaces', () async {
+    final inner = _MemoryStore()
+      ..slowAccount = 'a'
+      ..holdRead = Completer<void>();
+    final store = DeletionSafeSwapActivityStore(inner);
+    // A read would wait on the held read and never finish.
+    await store.saveRecords(accountUuid: 'a', records: [_record]);
+    expect(inner.records['a']!.map((r) => r.id), ['swap']);
   });
 }

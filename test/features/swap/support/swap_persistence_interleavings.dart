@@ -38,10 +38,14 @@ void _count(String event) =>
 
 /// One held operation, released by the seed's driver.
 class _HeldOp {
-  _HeldOp(this.label, {required this.canFail});
+  _HeldOp(this.label, {required this.canFail, this.failRate});
 
   final String label;
   final bool canFail;
+
+  /// How often it fails whenever released, or null to fail only as often as
+  /// the release asks.
+  final double? failRate;
   final done = Completer<bool>();
 }
 
@@ -51,8 +55,12 @@ class _HeldOps {
 
   /// Waits until the driver releases this operation, throwing if it releases
   /// it as failed.
-  Future<void> wait(String label, {bool canFail = false}) async {
-    final op = _HeldOp(label, canFail: canFail);
+  Future<void> wait(
+    String label, {
+    bool canFail = false,
+    double? failRate,
+  }) async {
+    final op = _HeldOp(label, canFail: canFail, failRate: failRate);
     _trace('hold $label');
     pending.add(op);
     if (await op.done.future) {
@@ -65,8 +73,8 @@ class _HeldOps {
   bool releaseOne(Random rng, {double failure = 0}) {
     if (pending.isEmpty) return false;
     final op = pending.removeAt(rng.nextInt(pending.length));
-    final failed = op.canFail && rng.nextDouble() < failure;
-    if (failed) _count('failed saves');
+    final failed = op.canFail && rng.nextDouble() < (op.failRate ?? failure);
+    if (failed) _count(op.failRate == null ? 'failed saves' : 'refused starts');
     _trace('release ${op.label}${failed ? ' (fails)' : ''}');
     op.done.complete(failed);
     return true;
@@ -107,12 +115,16 @@ class _HeldActivityStore extends _FakeSwapPersistenceStore {
   }
 }
 
-/// Incoming reservations whose start waits on a held operation.
+/// Incoming reservations whose start waits on a held operation, and fails
+/// when the driver fails it, as a stale reservation does.
 class _HeldReservationStore extends Fake implements ReceiveReservationStore {
   _HeldReservationStore(this.ops);
 
   final _HeldOps ops;
   final _accepted = <String, SwapQuote>{};
+
+  /// Deposit addresses whose reservation start succeeded.
+  final started = <String>{};
 
   @override
   Future<String> begin(BigInt reservation, DateTime deadline) async =>
@@ -125,8 +137,10 @@ class _HeldReservationStore extends Fake implements ReceiveReservationStore {
 
   @override
   Future<ReceiveDeposit> start(String request) async {
-    await ops.wait('start $request');
+    // A quarter of starts are refused, whether or not saves fail.
+    await ops.wait('start $request', canFail: true, failRate: 0.25);
     final deposit = _accepted[request]!.depositInstruction;
+    started.add(deposit.address);
     return ReceiveDeposit(
       address: deposit.address,
       memo: deposit.memo,
@@ -156,6 +170,61 @@ class _HeldStatusSwapProvider extends _FakeSwapProvider {
   }
 }
 
+/// The deletion-safe store, recording every merge that would put an older
+/// copy of a swap over a newer saved one.
+class _CheckedSwapActivityStore extends DeletionSafeSwapActivityStore {
+  _CheckedSwapActivityStore(super.inner);
+
+  @override
+  Future<void> saveRecords({
+    required String accountUuid,
+    required List<SwapIntentRecord> records,
+  }) {
+    _trace('replace $accountUuid ${[for (final r in records) r.id]}');
+    return super.saveRecords(accountUuid: accountUuid, records: records);
+  }
+
+  final regressions = <String>[];
+
+  @override
+  Future<void> update({
+    required String accountUuid,
+    required List<SwapIntentRecord> Function(List<SwapIntentRecord> saved)
+    transform,
+  }) => super.update(
+    accountUuid: accountUuid,
+    transform: (saved) {
+      final merged = transform(saved);
+      _trace(
+        'merge $accountUuid ${[for (final r in saved) r.id]} -> ${[for (final r in merged) r.id]}',
+      );
+      final before = {for (final record in saved) record.id: record};
+      for (final after in merged) {
+        final old = before[after.id];
+        if (old == null) continue;
+        final lost = <String>[
+          if (old.depositClaimedAt != null && after.depositClaimedAt == null)
+            'depositClaimedAt',
+          if ((old.depositTxHash ?? '').isNotEmpty &&
+              (after.depositTxHash ?? '').isEmpty)
+            'depositTxHash',
+          if (old.lastStatusCheckedAt != null &&
+              (after.lastStatusCheckedAt == null ||
+                  after.lastStatusCheckedAt!.isBefore(
+                    old.lastStatusCheckedAt!,
+                  )))
+            'lastStatusCheckedAt',
+          if (old.status.isTerminal && !after.status.isTerminal) 'status',
+        ];
+        if (lost.isNotEmpty) {
+          regressions.add('merge regressed ${after.id} $lost');
+        }
+      }
+      return merged;
+    },
+  );
+}
+
 /// NEAR swap privacy the driver turns on and off.
 class _DrivenPrivacy extends NearSwapPrivacyNotifier {
   @override
@@ -174,9 +243,10 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
   final rng = Random(seed);
   final ops = _HeldOps();
   final inner = _HeldActivityStore(ops);
-  final store = DeletionSafeSwapActivityStore(inner);
+  final store = _CheckedSwapActivityStore(inner);
   final provider = _HeldStatusSwapProvider(ops);
   final reservations = _CountingReservations('u1incoming');
+  final reservationStore = _HeldReservationStore(ops);
   var privacyOn = true;
   // Half the seeds inject failed saves, which ordinary swaps also lose.
   final failure = rng.nextBool() ? 0.2 : 0.0;
@@ -192,7 +262,7 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
       swapProvider: provider,
       seedSwapActivityFixtures: false,
       activityStore: store,
-      reservationStore: _HeldReservationStore(ops),
+      reservationStore: reservationStore,
       reserveSwapAddress: ({required accountUuid, required direction}) async =>
           privacyOn
           ? reservations.reserve(accountUuid: accountUuid, direction: direction)
@@ -253,6 +323,8 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
   String? startingAccount;
   String? startingId;
   final deleted = <String>{};
+  // Refused private starts whose account switched while they ran.
+  final refusedAcrossSwitch = <String>{};
   Future<void>? starting;
 
   for (var step = 0; step < 14; step++) {
@@ -281,7 +353,15 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
       final account = active();
       var switchedDuring = false;
       final id = quote.depositInstruction.address;
-      if (quote.receiveRequestId != null) privateIds.add(id);
+      if (quote.receiveRequestId != null) {
+        privateIds.add(id);
+        if (loading.contains(account)) {
+          // A start while its account's swaps load can be overwritten by the
+          // load, as an ordinary one is on #1037 (filed separately).
+          _count('private starts before a load');
+          exposed.add(id);
+        }
+      }
       startingAccount = account;
       startingId = id;
       final switchWatch = container.listen(
@@ -294,14 +374,25 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
           .whenComplete(() {
             switchWatch.close();
             _trace('start of $id finished');
-            if (provider.startedQuotes.any(
-              (q) => q.depositInstruction.address == id,
-            )) {
+            // A private swap started once its wallet reservation did.
+            if (privateIds.contains(id)
+                ? reservationStore.started.contains(id)
+                : provider.startedQuotes.any(
+                    (q) => q.depositInstruction.address == id,
+                  )) {
               _count(
                 privateIds.contains(id) ? 'private starts' : 'ordinary starts',
               );
               if (switchedDuring) _count('starts across a switch');
               started.add((id: id, account: account, switched: switchedDuring));
+            }
+            if (privateIds.contains(id) &&
+                !reservationStore.started.contains(id) &&
+                switchedDuring) {
+              // A reload during the start can show it again after its removal,
+              // and a later save of that screen store it again.
+              _count('refused starts across a switch');
+              refusedAcrossSwitch.add(id);
             }
             starting = null;
             startingAccount = null;
@@ -360,8 +451,7 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
     await settle();
   }
 
-  // Let everything finish: release every held operation, without failures,
-  // and run out the background retries' timers.
+  // Let everything finish: release every held operation, without failures.
   for (var i = 0; i < 400; i++) {
     if (!ops.releaseOne(rng) && starting == null) {
       await tester.pump(const Duration(seconds: 30));
@@ -381,10 +471,12 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
     if (deleted.contains(swap.account)) continue;
     final stored = inner.storedIds(swap.account);
     final isPrivate = privateIds.contains(swap.id);
-    // Ordinary swaps keep #1037's behavior: one that finished after an
-    // account switch, or whose save failed, can be lost (filed separately).
-    if (!isPrivate &&
-        (swap.switched || failure > 0 || exposed.contains(swap.id))) {
+    // A swap a #1037 wipe reached can be lost, private or not (filed
+    // separately). An ordinary one that finished after an account switch, or
+    // whose save failed, can be lost too. A private one is saved before its
+    // wallet start, so neither loses it.
+    if (exposed.contains(swap.id) ||
+        (!isPrivate && (swap.switched || failure > 0))) {
       continue;
     }
     _count(isPrivate ? 'private checked' : 'ordinary checked');
@@ -398,6 +490,24 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
       broken.add('private ${swap.id} missing from the screen $screen');
     }
   }
+  // A private swap whose wallet start never succeeded is removed, unless a
+  // failed save kept its removal from landing or an account switch during the
+  // start let a reload bring it back.
+  if (failure == 0) {
+    for (final id in privateIds) {
+      if (reservationStore.started.contains(id) ||
+          refusedAcrossSwitch.contains(id)) {
+        continue;
+      }
+      for (final account in ['account-1', 'account-2']) {
+        if (inner.storedIds(account).contains(id)) {
+          broken.add('unstarted $id still stored for $account');
+        }
+      }
+      if (screen.contains(id)) broken.add('unstarted $id still on the screen');
+    }
+  }
+  broken.addAll(store.regressions);
   for (final account in deleted) {
     if (inner.hasStored(account)) {
       broken.add('deleted $account still stores ${inner.storedIds(account)}');
