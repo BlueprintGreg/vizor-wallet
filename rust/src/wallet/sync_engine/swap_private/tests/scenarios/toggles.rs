@@ -735,9 +735,43 @@ fn turning_off_with_private_swaps_open() {
     assert!(line.contains("funded R0"), "{line}");
     let refund = world.quotes.len() - 1;
 
-    set_feature(&mut world, 0, false);
+    // Valid quote inputs while the feature is on: the reserved slot of the timed-out
+    // quote, which reserving resumes, two reserved refund keys and a real deposit
+    // address. The quotes above show a reserved slot begins a quote while on.
     let path = world.devices[0].wallet.path.clone();
     let uuid = kept_uuid(&world);
+    let reserve = |incoming: bool| {
+        api::reserve_swap_address(
+            path.clone(),
+            "main".into(),
+            uuid.clone(),
+            incoming,
+            world.chain.tip().into(),
+        )
+        .map_err(|e| e.message)
+        .unwrap()
+    };
+    let slot = reserve(true).reservation_index.unwrap();
+    assert_eq!(slot, 2, "the timed-out quote's draft is resumed");
+    let deposit_address = zcash_keys::address::Address::Transparent(
+        transparent::address::TransparentAddress::PublicKeyHash([9; 20]),
+    )
+    .encode(&NETWORK);
+    let first = reserve(false).refund_index.unwrap();
+    api::record_swap_refund_quote(
+        path.clone(),
+        "main".into(),
+        uuid.clone(),
+        first,
+        deposit_address.clone(),
+        now() + 600,
+    )
+    .map_err(|e| e.message)
+    .expect("a reserved refund key records its quote while on");
+    let second = reserve(false).refund_index.unwrap();
+    assert!(second > first);
+
+    set_feature(&mut world, 0, false);
     for incoming in [true, false] {
         let refused = api::reserve_swap_address(
             path.clone(),
@@ -748,19 +782,25 @@ fn turning_off_with_private_swaps_open() {
         );
         assert!(refused.is_err_and(|e| e.message.contains("Enable Private queries")));
     }
+    // The same valid inputs are refused once the feature is off.
+    let begun =
+        api::begin_receive_quote(path.clone(), "main".into(), uuid.clone(), slot, now() + 600);
     assert!(
-        api::begin_receive_quote(path.clone(), "main".into(), uuid.clone(), 3, now() + 600)
-            .is_err()
+        begun.is_err_and(|e| e.message.contains("Enable Private queries")),
+        "a reserved slot begins no quote while off"
     );
-    assert!(api::record_swap_refund_quote(
+    let recorded = api::record_swap_refund_quote(
         path.clone(),
         "main".into(),
         uuid.clone(),
-        1,
-        "t1paused".into(),
+        second,
+        deposit_address.clone(),
         now() + 600,
-    )
-    .is_err());
+    );
+    assert!(
+        recorded.is_err_and(|e| e.message.contains("disabled")),
+        "a reserved refund key records no quote while off"
+    );
     let line = world
         .act(&Action::LateReply {
             quote: 0,
@@ -847,7 +887,15 @@ fn turning_off_with_private_swaps_open() {
         "the expired, unpaid I1 is reused and the paid I0 is not"
     );
     let line = world.quote_out(0, 0, 3_600).unwrap();
-    assert!(line.starts_with("R1 quote"), "{line}");
+    let index: u64 = line
+        .strip_prefix('R')
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no refund quote: {line}"));
+    assert!(
+        index > first,
+        "recorded refund keys are not issued again: {line}"
+    );
     world.quiesce().unwrap();
 }
 
