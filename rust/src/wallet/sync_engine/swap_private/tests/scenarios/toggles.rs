@@ -414,7 +414,11 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
                 assert!(!result.unwrap().active, "{class}: no work while off");
                 assert_eq!(requests, 0, "{class}: no receiver request while off");
                 untouched(&world, "a round");
-                assert!(!api::run_swap_recovery(path.clone(), "main".into()).unwrap());
+                let round = api::run_swap_recovery(path.clone(), "main".into()).unwrap();
+                assert!(
+                    !round.active && !round.changed && !round.checked,
+                    "{class}: the production round is idle while off"
+                );
                 untouched(&world, "the production round");
                 let status = api::get_swap_recovery_status(path.clone(), "main".into()).unwrap();
                 assert!(!status.checking_history && !status.upgrade_required);
@@ -1102,7 +1106,7 @@ fn rapid_toggles_while_rounds_start_leave_nothing_stuck() {
         busy.as_ref()
             .is_err_and(|e| e.message.contains("already running")),
         "{:?}",
-        busy.map_err(|e| e.message)
+        busy.map(|r| r.active).map_err(|e| e.message)
     );
 
     world.ensure_on(0);
