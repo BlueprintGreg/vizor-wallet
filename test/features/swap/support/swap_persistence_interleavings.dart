@@ -93,6 +93,10 @@ class _HeldActivityStore extends _FakeSwapPersistenceStore {
       intent.id,
   ];
 
+  /// The swaps `accountUuid` has stored, read without waiting.
+  List<SwapIntent> stored(String accountUuid) =>
+      _intentsByAccount[accountUuid] ?? const [];
+
   /// Whether `accountUuid` has anything stored.
   bool hasStored(String accountUuid) =>
       _intentsByAccount.containsKey(accountUuid);
@@ -215,6 +219,7 @@ class _CheckedSwapActivityStore extends DeletionSafeSwapActivityStore {
                   )))
             'lastStatusCheckedAt',
           if (old.status.isTerminal && !after.status.isTerminal) 'status',
+          if (!old.startPending && after.startPending) 'startPending',
         ];
         if (lost.isNotEmpty) {
           regressions.add('merge regressed ${after.id} $lost');
@@ -287,11 +292,36 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
   final loading = <String>{};
   // Status refreshes in flight, by the account they started on.
   final refreshing = <String, int>{};
+  final privateIds = <String>{};
+  // Private swaps whose funding instructions were visible, on screen or in
+  // storage, before the wallet locked their reservation.
+  final exposedEarly = <String>{};
+
+  /// Records every private swap whose funding instructions could be shown
+  /// before its wallet start succeeded.
+  void checkHidden() {
+    final visible = [
+      ...container.read(swapStateProvider).intents,
+      for (final account in ['account-1', 'account-2'])
+        ...inner.stored(account),
+    ];
+    for (final intent in visible) {
+      if (!privateIds.contains(intent.id) ||
+          reservationStore.started.contains(intent.id)) {
+        continue;
+      }
+      if (!intent.startPending ||
+          SwapActivityDepositInstruction.fromIntent(intent) != null) {
+        exposedEarly.add(intent.id);
+      }
+    }
+  }
 
   /// Lets microtasks and short timers run.
   Future<void> settle() async {
     for (var i = 0; i < 4; i++) {
       await tester.pump();
+      checkHidden();
     }
     if (ops.pending.isEmpty) loading.clear();
   }
@@ -317,7 +347,6 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
   }
 
   final started = <_StartedSwap>[];
-  final privateIds = <String>{};
   // Ordinary swaps a #1037 wipe can reach (see the switch below).
   final exposed = <String>{};
   String? startingAccount;
@@ -489,6 +518,15 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
     if (isPrivate && swap.account == active() && !screen.contains(swap.id)) {
       broken.add('private ${swap.id} missing from the screen $screen');
     }
+    // A failed save can leave its flip unsaved, which a later launch handles.
+    if (isPrivate && failure == 0) {
+      final record = inner
+          .stored(swap.account)
+          .where((intent) => intent.id == swap.id);
+      if (record.any((intent) => intent.startPending)) {
+        broken.add('started ${swap.id} is still saved as starting');
+      }
+    }
   }
   // A private swap whose wallet start never succeeded is removed, unless a
   // failed save kept its removal from landing or an account switch during the
@@ -508,6 +546,9 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
     }
   }
   broken.addAll(store.regressions);
+  for (final id in exposedEarly) {
+    broken.add('instructions for $id visible before its wallet start');
+  }
   for (final account in deleted) {
     if (inner.hasStored(account)) {
       broken.add('deleted $account still stores ${inner.storedIds(account)}');

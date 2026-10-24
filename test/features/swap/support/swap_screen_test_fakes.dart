@@ -770,9 +770,13 @@ class _HistoryPendingStartStore extends Fake
 }
 
 /// Incoming reservation records whose start waits until [release], returning
-/// the deposit instructions the quote was saved with.
+/// the deposit instructions the quote was saved with, or throwing [refusal]
+/// when set, as the wallet does for a stale reservation.
 class _HeldStartReservationStore extends Fake
     implements ReceiveReservationStore {
+  _HeldStartReservationStore({this.refusal});
+
+  final ReceiveError? refusal;
   final _held = Completer<void>();
   final _accepted = <String, SwapQuote>{};
 
@@ -795,6 +799,7 @@ class _HeldStartReservationStore extends Fake
   Future<ReceiveDeposit> start(String request) async {
     starts++;
     await _held.future;
+    if (refusal case final refusal?) throw refusal;
     final deposit = _accepted[request]!.depositInstruction;
     return ReceiveDeposit(
       address: deposit.address,
