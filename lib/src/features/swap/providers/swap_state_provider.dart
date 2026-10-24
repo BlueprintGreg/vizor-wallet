@@ -86,10 +86,6 @@ class SwapNotifier extends Notifier<SwapState> {
   String? _payAssetRestoreAccountUuid;
   Future<SwapAsset?>? _payAssetRestoreFuture;
 
-  /// Advances on every switch of the active account, including a switch back,
-  /// so a start can tell its screen still shows the swaps it was started from.
-  int _accountScope = 0;
-
   String? get _activeAccountUuidOrNull =>
       ref.read(accountProvider).value?.activeAccountUuid;
 
@@ -138,7 +134,6 @@ class SwapNotifier extends Notifier<SwapState> {
       accountProvider.select((value) => value.value?.activeAccountUuid),
       (previous, next) {
         if (previous == next) return;
-        _accountScope++;
         if (previous != null) {
           unawaited(_persistCurrentIntents(accountUuid: previous));
           // In Pay mode the composer state carries Pay's direction/payout
@@ -1042,11 +1037,12 @@ class SwapNotifier extends Notifier<SwapState> {
     // stay with it across an account switch during the start.
     final privateQuote =
         quote.receiveRequestId != null || quote.swapRefundIndex != null;
-    final scope = _accountScope;
+    // Advances on every account switch, including a switch back.
+    final scope = _accountScopeGeneration;
     // Whether the screen moved to other swaps since the start began: another
     // account, or this one again while its swaps reload.
     bool screenMoved() =>
-        scope != _accountScope || !_isAccountActive(accountUuid);
+        scope != _accountScopeGeneration || !_isAccountActive(accountUuid);
     final startingPayMode = state.payMode;
     final startingUserExternalContactId = state.userExternalContactId;
     state = state.copyWith(startSubmitting: true, clearStatusError: true);
@@ -1157,7 +1153,11 @@ class SwapNotifier extends Notifier<SwapState> {
       // merging into that account's stored swaps, never by saving the screen's
       // list, which may belong to another account or an unfinished reload.
       // A failed save must not strand the start: its reservation is already
-      // started, so the swap stays on screen or is saved again shortly.
+      // started, so the save is tried again shortly in the background.
+      // No later save for this account may drop it, whatever list it saves.
+      ref
+          .read(swapActivityTrackerProvider)
+          .registerStartedPrivate(accountUuid, intent);
       try {
         await _saveStartedIntentForAccount(accountUuid, intent);
         privateSaved = true;
@@ -1167,10 +1167,10 @@ class SwapNotifier extends Notifier<SwapState> {
           'intent=${_shortSwapValue(intent.id)} error=$e',
         );
       }
+      if (!privateSaved) {
+        unawaited(_retrySaveStartedIntent(accountUuid, intent));
+      }
       if (screenMoved()) {
-        if (!privateSaved) {
-          unawaited(_retrySaveStartedIntent(accountUuid, intent));
-        }
         // The screen moved during the start, so it is left alone. If it shows
         // this account again, reload its swaps, now including this one.
         if (_isAccountActive(accountUuid)) {
@@ -1275,7 +1275,12 @@ class SwapNotifier extends Notifier<SwapState> {
       receiveFiatText: '',
       destinationText: '',
       clearUserExternalContactId: true,
-      intents: [intent, ...state.intents],
+      // A reload may already show a private swap its own save stored.
+      intents: [
+        intent,
+        for (final stored in state.intents)
+          if (stored.id != intent.id) stored,
+      ],
       startSubmitting: false,
       quoteLoading: false,
       selectedIntentId: intent.id,
@@ -1361,6 +1366,12 @@ class SwapNotifier extends Notifier<SwapState> {
         if (intent.id != intentId) intent,
     ];
     if (remaining.length == state.intents.length) return;
+    final activeAccountUuid = _activeAccountUuidOrNull;
+    if (activeAccountUuid != null) {
+      ref
+          .read(swapActivityTrackerProvider)
+          .forgetStartedPrivate(activeAccountUuid, intentId);
+    }
 
     final removedSelected =
         state.selectedIntentId == intentId ||
@@ -2091,14 +2102,31 @@ class SwapNotifier extends Notifier<SwapState> {
       return;
     }
     final accountScopeGeneration = _accountScopeGeneration;
+    // Read before build has a state when this restores the first account.
+    final shownBefore = {
+      for (final intent in stateOrNull?.intents ?? const <SwapIntent>[])
+        intent.id,
+    };
     try {
-      final persisted = await ref
+      final loaded = await ref
           .read(swapActivityTrackerProvider)
           .loadIntents(accountUuid: scopedAccountUuid);
       if (accountScopeGeneration != _accountScopeGeneration ||
           !_isAccountActive(scopedAccountUuid)) {
         return;
       }
+      // A private swap started on this account while its swaps loaded may be
+      // missing from what was read, so it stays on screen. Its own save keeps
+      // it in storage (see `registerStartedPrivate`).
+      final loadedIds = {for (final intent in loaded) intent.id};
+      final persisted = [
+        for (final intent in state.intents)
+          if (intent.privateAddress &&
+              !shownBefore.contains(intent.id) &&
+              !loadedIds.contains(intent.id))
+            intent,
+        ...loaded,
+      ];
       if (persisted.isEmpty && !replaceExisting) return;
       state = state.copyWith(
         intents: persisted,
@@ -2277,8 +2305,9 @@ class SwapNotifier extends Notifier<SwapState> {
   }
 
   /// Tries again, a few times, to merge a started private swap whose first
-  /// save failed after the screen moved to other swaps, since nothing else
-  /// would save it and its reservation is already started.
+  /// save failed, since its reservation is already started and nothing else
+  /// may save it. Once it lands, a screen showing its account reloads to
+  /// include it.
   Future<void> _retrySaveStartedIntent(
     String accountUuid,
     SwapIntent intent,
@@ -2288,6 +2317,13 @@ class SwapNotifier extends Notifier<SwapState> {
       if (!ref.mounted) return;
       try {
         await _saveStartedIntentForAccount(accountUuid, intent);
+        // The screen may show this account again without the swap.
+        if (_isAccountActive(accountUuid)) {
+          await _restorePersistedIntents(
+            accountUuid: accountUuid,
+            replaceExisting: true,
+          );
+        }
         return;
       } catch (e) {
         log(
