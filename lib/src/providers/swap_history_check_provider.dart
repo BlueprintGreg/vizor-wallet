@@ -66,8 +66,21 @@ enum SwapHistoryCheck {
   /// The user paused the durable job.
   paused,
 
-  /// A round failed. A previously saved job may still need pausing or resuming.
+  /// A round ran but did not finish, such as when the receiver service can't
+  /// be reached. A job the wallet saved shows as checking again.
   failed,
+
+  /// A round stopped because the wallet was changing, such as an account
+  /// change. A job it saved shows as checking again once the change is done.
+  walletChanged,
+
+  /// The check never reached the receiver service, because another wallet or
+  /// setting change was running or the wallet was locked.
+  notStarted,
+
+  /// Pausing did not reach the wallet, which still has the job and resumes it
+  /// in later rounds. Pause stays offered.
+  pauseFailed,
 
   /// The check could not start because wallet sync has not caught up with the
   /// receiver service yet. Nothing was lost; checking again shortly starts it.
@@ -98,8 +111,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
         _setJobSaved(false);
         if (state == SwapHistoryCheck.checking ||
             state == SwapHistoryCheck.continuing ||
-            state == SwapHistoryCheck.failed ||
-            state == SwapHistoryCheck.waitingForSync) {
+            state == SwapHistoryCheck.pauseFailed ||
+            _stopped.contains(state)) {
           _generation++;
           _observing = false;
           state = SwapHistoryCheck.paused;
@@ -138,10 +151,11 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   /// Reads the wallet's saved job and projects it: while the user's manual
   /// check is still active, a state that shows no running job turns into a
   /// watched check, with Pause, and once it is gone a check left to continue in
-  /// the background shows as done. Automatic seed recovery alone changes
-  /// nothing. A refused read, such as one made while a wallet change holds
-  /// admission, is tried again shortly.
-  Future<void> _reconcile() async {
+  /// the background, or one the user could not pause, shows as done.
+  /// Automatic seed recovery alone changes nothing. A refused read, such as
+  /// one made while a wallet change holds admission, is tried again shortly.
+  /// Run `afterFailure`, a refused read means such a change stopped that round.
+  Future<void> _reconcile({bool afterFailure = false}) async {
     if (_observing || _cancelling || !ref.read(nearSwapPrivacyProvider)) {
       return;
     }
@@ -151,6 +165,14 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       status = await ref.read(swapRecoveryStatusReaderProvider)();
     } catch (error) {
       log('Saved swap history check not read: $error');
+      // Rust read errors arrive as ReceiveError. A StateError is the refusal.
+      if (afterFailure &&
+          error is StateError &&
+          ref.mounted &&
+          generation == _generation &&
+          state == SwapHistoryCheck.failed) {
+        state = SwapHistoryCheck.walletChanged;
+      }
       if (ref.mounted && _refusedReads++ < 6) {
         final retry = ref.read(swapHistoryApiProvider).pollInterval;
         unawaited(
@@ -172,7 +194,9 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
     _setJobSaved(saved);
     if (saved && _shownWithoutJob.contains(state)) {
       await _resume();
-    } else if (!saved && state == SwapHistoryCheck.continuing) {
+    } else if (!saved &&
+        (state == SwapHistoryCheck.continuing ||
+            state == SwapHistoryCheck.pauseFailed)) {
       state = SwapHistoryCheck.done;
     }
   }
@@ -182,13 +206,20 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   void _setJobSaved(bool saved) =>
       ref.read(swapHistoryJobSavedProvider.notifier).set(saved);
 
+  /// States for a check that stopped before it finished.
+  static const _stopped = {
+    SwapHistoryCheck.failed,
+    SwapHistoryCheck.walletChanged,
+    SwapHistoryCheck.notStarted,
+    SwapHistoryCheck.waitingForSync,
+  };
+
   /// States that show no running job, so a saved one must replace them.
   static const _shownWithoutJob = {
     SwapHistoryCheck.idle,
     SwapHistoryCheck.done,
     SwapHistoryCheck.paused,
-    SwapHistoryCheck.failed,
-    SwapHistoryCheck.waitingForSync,
+    ..._stopped,
   };
 
   /// Starts a check and polls until the wallet reports it done, or until
@@ -238,19 +269,28 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
       if (!ref.mounted || generation != _generation) return;
       if (ref.read(enhancePirTransitionProvider) !=
           kEnhancePirChangingMessage) {
-        final status = await api.status();
-        if (!ref.mounted || generation != _generation) return;
-        _setJobSaved(status.manualCheckActive);
-        if (status.upgradeRequired) {
-          _requireUpdate();
-          return;
+        rust_swap.SwapRecoveryStatus? status;
+        try {
+          status = await api.status();
+        } catch (error) {
+          // A wallet change refuses reads for a moment without touching the
+          // job, so the next poll asks again.
+          log('Swap history check progress not read: $error');
         }
-        if (!status.checkingHistory) {
-          // Disabled accounts report no check, finished or not.
-          state = ref.read(nearSwapPrivacyProvider)
-              ? SwapHistoryCheck.done
-              : SwapHistoryCheck.paused;
-          return;
+        if (!ref.mounted || generation != _generation) return;
+        if (status != null) {
+          _setJobSaved(status.manualCheckActive);
+          if (status.upgradeRequired) {
+            _requireUpdate();
+            return;
+          }
+          if (!status.checkingHistory) {
+            // Disabled accounts report no check, finished or not.
+            state = ref.read(nearSwapPrivacyProvider)
+                ? SwapHistoryCheck.done
+                : SwapHistoryCheck.paused;
+            return;
+          }
         }
       }
       if (!DateTime.now().isBefore(deadline)) {
@@ -262,7 +302,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
 
   /// Ends the check under `generation` with `error`: an update request when
   /// the service needs a newer app, waiting when wallet sync has not caught up,
-  /// else failed.
+  /// not started when the wallet refused to begin, else failed. The saved-state
+  /// read that follows can still show it as a wallet change.
   void _fail(int generation, Object error) {
     log('Swap history check failed: $error');
     if (ref.mounted && generation == _generation) {
@@ -271,11 +312,15 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
         _requireUpdate();
       } else if (kind == rust_swap.ReceiveErrorKind.waitingForSync) {
         state = SwapHistoryCheck.waitingForSync;
+      } else if (error is StateError) {
+        // Sync refuses before any request while the wallet is locked or
+        // another wallet or setting change holds it.
+        state = SwapHistoryCheck.notStarted;
       } else {
         state = SwapHistoryCheck.failed;
       }
       // Whether an earlier job is still saved decides if Pause is offered.
-      unawaited(Future<void>.microtask(_reconcile));
+      unawaited(Future<void>.microtask(() => _reconcile(afterFailure: true)));
     }
   }
 
@@ -303,7 +348,11 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
     } catch (error) {
       log('Could not pause swap history check: $error');
       if (ref.mounted && generation == _generation) {
-        state = SwapHistoryCheck.failed;
+        // The round has stopped either way. Only a job the wallet still has
+        // resumes, and later reads show it again if this answer is stale.
+        state = ref.read(swapHistoryJobSavedProvider)
+            ? SwapHistoryCheck.pauseFailed
+            : SwapHistoryCheck.paused;
       }
     } finally {
       _cancelling = false;

@@ -127,9 +127,201 @@ void main() {
   test('reports a check the wallet could not start', () async {
     final (container, sync, calls) = setup(checking: [], failBegin: true);
     await container.read(swapHistoryCheckProvider.notifier).check();
-    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.failed);
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.notStarted,
+    );
     expect(calls, ['begin']);
     expect(sync.starts, 0);
+  });
+
+  group('a round that fails', () {
+    /// A container whose check round fails as the receiver service does when
+    /// it can't be reached, and whose saved-state reads answer with `saved`.
+    ProviderContainer failing(Future<SwapRecoveryStatus?> Function() saved) {
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(saved: saved),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async => throw const ReceiveError(
+                message: 'transport: connection refused',
+                kind: ReceiveErrorKind.other,
+              ),
+              cancel: () async {},
+              status: () async => _status(manual: true),
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test('with no saved job reports the failed round', () async {
+      final container = failing(() async => _status());
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.failed);
+      expect(container.read(swapHistoryJobSavedProvider), isFalse);
+    });
+
+    test('with a saved job shows it checking again, with Pause', () async {
+      final container = failing(() async => _status(manual: true));
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      await pumpEventQueue();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        isIn([SwapHistoryCheck.checking, SwapHistoryCheck.continuing]),
+      );
+      expect(container.read(swapHistoryJobSavedProvider), isTrue);
+    });
+
+    test('while a wallet change refuses reads reports the change', () async {
+      final container = failing(
+        () async =>
+            throw StateError('The wallet is changing. Try again in a moment.'),
+      );
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      await pumpEventQueue();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.walletChanged,
+      );
+    });
+
+    test("while Rust can't read the wallet still reports the failed "
+        'round', () async {
+      final container = failing(
+        () async => throw const ReceiveError(
+          message: 'database is locked',
+          kind: ReceiveErrorKind.other,
+        ),
+      );
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.failed);
+    });
+  });
+
+  test(
+    'a progress read refused during a wallet change keeps watching',
+    () async {
+      final answers = <Object>[
+        StateError('The wallet is changing. Try again in a moment.'),
+        _status(manual: true),
+        _status(),
+      ];
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async {},
+              cancel: () async {},
+              status: () async => switch (answers.removeAt(0)) {
+                final SwapRecoveryStatus status => status,
+                final Object error => throw error,
+              },
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(swapHistoryCheckProvider.notifier).check();
+      expect(answers, isEmpty);
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    },
+  );
+
+  group('a pause the wallet refuses', () {
+    /// A container showing a saved job, resumed after a restart, whose pause
+    /// fails, and whose saved-state reads answer from `saved`.
+    Future<ProviderContainer> refusing(
+      SwapRecoveryStatus Function() saved,
+    ) async {
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(saved: () async => saved()),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async {},
+              cancel: () async => throw StateError('database is locked'),
+              status: () async => saved(),
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.read(swapHistoryCheckProvider);
+      await pumpEventQueue();
+      expect(container.read(swapHistoryJobSavedProvider), isTrue);
+      await container.read(swapHistoryCheckProvider.notifier).cancel();
+      return container;
+    }
+
+    test('keeps Pause offered while the wallet has the job, then shows done '
+        'once a round ends it', () async {
+      var manual = true;
+      final container = await refusing(() => _status(manual: manual));
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.pauseFailed,
+      );
+      expect(container.read(swapHistoryJobSavedProvider), isTrue);
+
+      // A round ending with the job still saved leaves the refusal shown.
+      container.read(swapRecoveryRoundsProvider.notifier).ended();
+      await pumpEventQueue();
+      expect(
+        container.read(swapHistoryCheckProvider),
+        SwapHistoryCheck.pauseFailed,
+      );
+
+      manual = false;
+      container.read(swapRecoveryRoundsProvider.notifier).ended();
+      await pumpEventQueue();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+      expect(container.read(swapHistoryJobSavedProvider), isFalse);
+    });
+
+    test('shows paused once NEAR swap privacy is turned off', () async {
+      final container = await refusing(() => _status(manual: true));
+      (container.read(nearSwapPrivacyProvider.notifier) as _Privacy).turnOff();
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    });
+
+    test('with no saved job shows paused', () async {
+      final cancel = Completer<void>();
+      final container = ProviderContainer(
+        overrides: [
+          ..._wallet(),
+          syncProvider.overrideWith(_Sync.new),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () => cancel.future,
+              cancel: () async => throw StateError('database is locked'),
+              status: () async => _status(),
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(swapHistoryCheckProvider.notifier);
+      final running = notifier.check();
+      await notifier.cancel();
+      cancel.complete();
+      await running;
+      expect(container.read(swapHistoryJobSavedProvider), isFalse);
+      expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.paused);
+    });
   });
 
   test(
