@@ -86,6 +86,11 @@ enum SwapHistoryCheck {
   /// receiver service yet. Nothing was lost; checking again shortly starts it.
   waitingForSync,
 
+  /// The check could not start because the receiver service has not yet
+  /// published the blocks this wallet starts from, as for a wallet created
+  /// moments ago. Nothing was lost; checking again shortly starts it.
+  waitingForService,
+
   /// The receiver service needs a newer app. The saved job resumes after an update.
   updateRequired,
 }
@@ -212,6 +217,7 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
     SwapHistoryCheck.walletChanged,
     SwapHistoryCheck.notStarted,
     SwapHistoryCheck.waitingForSync,
+    SwapHistoryCheck.waitingForService,
   };
 
   /// States that show no running job, so a saved one must replace them.
@@ -301,7 +307,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
   }
 
   /// Ends the check under `generation` with `error`: an update request when
-  /// the service needs a newer app, waiting when wallet sync has not caught up,
+  /// the service needs a newer app, waiting when wallet sync or the service
+  /// has not caught up,
   /// not started when the wallet refused to begin, else failed. The saved-state
   /// read that follows can still show it as a wallet change.
   void _fail(int generation, Object error) {
@@ -312,6 +319,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
         _requireUpdate();
       } else if (kind == rust_swap.ReceiveErrorKind.waitingForSync) {
         state = SwapHistoryCheck.waitingForSync;
+      } else if (kind == rust_swap.ReceiveErrorKind.waitingForService) {
+        state = SwapHistoryCheck.waitingForService;
       } else if (error is StateError) {
         // Sync refuses before any request while the wallet is locked or
         // another wallet or setting change holds it.

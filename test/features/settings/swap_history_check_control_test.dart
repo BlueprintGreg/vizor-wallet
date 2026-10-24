@@ -111,6 +111,27 @@ void main() {
     expect(find.textContaining('interrupted'), findsNothing);
   });
 
+  testWidgets('a check waiting for the service blames the service, not sync', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.waitingForService),
+    );
+    await tester.pump();
+    expect(
+      find.text(
+        "The swap recovery service hasn't caught up with this wallet yet. "
+        'Try again in a few minutes.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('wallet sync'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
+    );
+  });
+
   testWidgets('a check waiting for sync can still pause a saved job', (
     tester,
   ) async {

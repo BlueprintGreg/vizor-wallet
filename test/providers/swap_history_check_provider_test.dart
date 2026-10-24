@@ -728,6 +728,35 @@ void main() {
     );
   });
 
+  test('a check before the service reaches a new wallet waits for the '
+      'service', () async {
+    final container = ProviderContainer(
+      overrides: [
+        ..._wallet(),
+        syncProvider.overrideWith(_Sync.new),
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: () async => throw const ReceiveError(
+              message:
+                  "The swap recovery service hasn't caught up with this "
+                  'wallet yet. Try again in a few minutes.',
+              kind: ReceiveErrorKind.waitingForService,
+            ),
+            cancel: () async {},
+            status: () async => _status(),
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(swapHistoryCheckProvider.notifier).check();
+    expect(
+      container.read(swapHistoryCheckProvider),
+      SwapHistoryCheck.waitingForService,
+    );
+  });
+
   group('after a restart', () {
     /// A container whose wallet saved `saved` before the restart and answers
     /// polls with `polls`, recording cancellations in `cancels`.
