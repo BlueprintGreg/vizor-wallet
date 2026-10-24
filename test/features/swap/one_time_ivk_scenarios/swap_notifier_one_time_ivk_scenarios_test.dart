@@ -34,7 +34,8 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   /// While unresolved quotes hold every address, the composer refreshes
-  /// statuses and asks once more, then shows the wallet's waiting message
+  /// statuses, runs a recovery round that can free a recovered payout's
+  /// address, and asks once more, then shows the wallet's waiting message
   /// instead of looping.
   test(
     'a persistent limit shows "No swap address is free" after one retry',
@@ -48,7 +49,7 @@ void main() {
       );
       await h.review('25');
       expect(h.reservations, 2);
-      expect(h.sync.awaited, 0, reason: 'a limit needs statuses, not a round');
+      expect(h.sync.awaited, 1, reason: 'a recovered payout frees its address');
       expect(
         h.state.quoteError,
         'No swap address is free. Wait for a swap in progress to finish.',
@@ -64,7 +65,9 @@ void main() {
     () async {
       final h = await _Harness.create(
         reserve: (_) async => throw const api.ReceiveError(
-          message: 'Update Vizor to keep checking private swap addresses.',
+          message:
+              'Update Vizor to keep checking private swap addresses. '
+              'Your saved progress is kept.',
           kind: api.ReceiveErrorKind.upgradeRequired,
         ),
       );
@@ -73,7 +76,8 @@ void main() {
       expect(h.sync.awaited, 0);
       expect(
         h.state.quoteError,
-        'Update Vizor to keep checking private swap addresses.',
+        'Update Vizor to keep checking private swap addresses. '
+        'Your saved progress is kept.',
       );
     },
   );
@@ -614,9 +618,12 @@ class _Sync extends SyncNotifier {
     totalBalance: BigInt.from(10000000000),
   );
 
-  /// Counts the recovery rounds a quote waits for.
+  /// Counts the recovery rounds a quote waits for, each of which succeeds.
   @override
-  Future<void> awaitSwapRecovery() async => awaited++;
+  Future<Object?> awaitSwapRecovery() async {
+    awaited++;
+    return null;
+  }
 
   /// Starts nothing.
   @override

@@ -138,7 +138,7 @@ void main() {
   /// check, surfaces the wallet's error unchanged so the app can explain it.
   test('a refused start keeps the wallet error', () async {
     store.startError = const api.ReceiveError(
-      message: 'Checking older swap addresses. Try again in a moment.',
+      message: 'Preparing a private swap address. Try again in a moment.',
       kind: api.ReceiveErrorKind.receiveHistory,
     );
     final quote = SwapQuote.withLocalIdentity(

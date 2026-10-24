@@ -301,7 +301,9 @@ void main() {
       final followups = container.read(syncFollowupProvider);
       api.rounds.last.completeError(
         const rust_swap.ReceiveError(
-          message: 'Update Vizor to keep checking private swap addresses.',
+          message:
+              'Update Vizor to keep checking private swap addresses. '
+              'Your saved progress is kept.',
           kind: rust_swap.ReceiveErrorKind.upgradeRequired,
         ),
       );
