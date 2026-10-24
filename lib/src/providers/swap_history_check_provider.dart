@@ -270,7 +270,8 @@ class SwapHistoryCheckNotifier extends Notifier<SwapHistoryCheck> {
     final deadline = DateTime.now().add(api.maxWait);
     while (true) {
       // Receiver work has its own lifecycle and never occupies ordinary sync.
-      ref.read(syncProvider.notifier).continueSwapRecovery();
+      // A failed round's backoff applies. Check itself started it over.
+      ref.read(syncProvider.notifier).pollSwapRecovery();
       await Future<void>.delayed(api.pollInterval);
       if (!ref.mounted || generation != _generation) return;
       if (ref.read(enhancePirTransitionProvider) !=

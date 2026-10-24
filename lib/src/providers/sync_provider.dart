@@ -1134,6 +1134,14 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Before this time, only a forced start begins a round.
   DateTime? _swapRecoveryRetryAt;
 
+  /// Whether a round that reached the wallet ended without its Activity and
+  /// balance refresh, because it was cancelled or the wallet could not be
+  /// read then. It may have committed results that no later round reports, so
+  /// the next round's end, resume, unlock or Pause refreshes once wallet
+  /// reads are safe. Any follow-up refresh clears it, and a wallet reset
+  /// drops it.
+  bool _swapRecoveryRefreshOwed = false;
+
   /// Forgets failed rounds, so the next unforced start is not delayed.
   void _resetSwapRecoveryBackoff() {
     _swapRecoveryFailures = 0;
@@ -1143,8 +1151,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Starts receiver work without occupying the ordinary sync lifecycle.
   /// `force` starts a round even while an idle wallet or a failed round's
   /// backoff would skip it, for callers waiting on recovery, and starts the
-  /// backoff over.
-  void _startSwapRecovery({bool force = false}) {
+  /// backoff over. `evenIfIdle` only ignores the idle wallet, for callers
+  /// polling saved work.
+  void _startSwapRecovery({bool force = false, bool evenIfIdle = false}) {
     if (_swapRecovery != null ||
         _swapRecoveryTransitions > 0 ||
         _requiresUnlock ||
@@ -1157,7 +1166,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _resetSwapRecoveryBackoff();
     } else {
       final retryAt = _swapRecoveryRetryAt;
-      if ((_swapRecoveryIdle && !ref.read(nearSwapPrivacyProvider)) ||
+      if ((_swapRecoveryIdle &&
+              !evenIfIdle &&
+              !ref.read(nearSwapPrivacyProvider)) ||
           (retryAt != null && _now().isBefore(retryAt))) {
         return;
       }
@@ -1225,29 +1236,30 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
             error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(true);
         }
+        if (!manual) log('Swap recovery remains pending: $error');
         // A cancelled round's error says nothing about the receiver service.
-        if (manual) {
-          if (generation != _swapRecoveryGeneration) {
-            throw StateError('Swap history check was cancelled.');
-          }
-          rethrow;
+        if (generation != _swapRecoveryGeneration) {
+          _swapRecoveryRefreshOwed = true;
+          if (manual) throw StateError('Swap history check was cancelled.');
+          return null;
         }
-        log('Swap recovery remains pending: $error');
-        if (generation != _swapRecoveryGeneration) return null;
-        final delay =
-            _swapRecoveryBackoff[math.min(
-              _swapRecoveryFailures,
-              _swapRecoveryBackoff.length - 1,
-            )];
-        _swapRecoveryFailures++;
-        _swapRecoveryRetryAt = _now().add(delay);
+        if (!manual) {
+          final delay =
+              _swapRecoveryBackoff[math.min(
+                _swapRecoveryFailures,
+                _swapRecoveryBackoff.length - 1,
+              )];
+          _swapRecoveryFailures++;
+          _swapRecoveryRetryAt = _now().add(delay);
+        }
+        // A round can commit results and then fail (see
+        // `SwapRecoveryRound.changed`).
+        await _refreshAfterSwapRecovery();
+        if (manual) rethrow;
         return error;
       }
-      if (round.changed &&
-          ref.mounted &&
-          !_requiresUnlock &&
-          _walletMutationPauseCount == 0) {
-        await _onSyncFollowupUpdated();
+      if (round.changed || _swapRecoveryRefreshOwed) {
+        await _refreshAfterSwapRecovery();
       }
     } catch (error) {
       if (manual) rethrow;
@@ -1260,8 +1272,28 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     return null;
   }
 
+  /// Reloads Activity and the balance after a receiver round. While the
+  /// wallet is locked or being changed, it owes the refresh instead (see
+  /// [_swapRecoveryRefreshOwed]).
+  Future<void> _refreshAfterSwapRecovery() async {
+    if (ref.mounted && !_requiresUnlock && _walletMutationPauseCount == 0) {
+      await _onSyncFollowupUpdated();
+    } else {
+      _swapRecoveryRefreshOwed = true;
+    }
+  }
+
+  /// Runs the refresh an earlier round skipped, if one is owed.
+  Future<void> _refreshOwedSwapRecovery() async {
+    if (_swapRecoveryRefreshOwed) await _refreshAfterSwapRecovery();
+  }
+
   /// Continues durable receiver work without starting or waiting for a block sync.
   void continueSwapRecovery() => _startSwapRecovery(force: true);
+
+  /// Like [continueSwapRecovery], for a caller polling saved work on a timer,
+  /// but it waits out a failed round's backoff instead of starting it over.
+  void pollSwapRecovery() => _startSwapRecovery(evenIfIdle: true);
 
   /// Starts a receiver round unless one is running, then waits for the current
   /// round to end. Returns the round's failure, or null when it succeeded, was
@@ -1325,13 +1357,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _swapRecoveryTransitions++;
     try {
       await _stopSwapRecovery();
-      await _trackedWalletCall(
-        _getDbPath,
-        (path) => rust_swap.cancelSwapHistory(
-          dbPath: path,
-          networkName: _endpointConfig.networkName,
-        ),
-      );
+      try {
+        await _trackedWalletCall(
+          _getDbPath,
+          (path) => rust_swap.cancelSwapHistory(
+            dbPath: path,
+            networkName: _endpointConfig.networkName,
+          ),
+        );
+      } finally {
+        await _refreshOwedSwapRecovery();
+      }
     } finally {
       _swapRecoveryTransitions--;
     }
@@ -1664,6 +1700,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   void _clearAccountScopedStateFor(String? accountUuid) {
     ++_balanceReadVersion;
     _authoritativeBalanceRecovery = null;
+    // The incoming account's swaps should not wait out an earlier outage.
+    _resetSwapRecoveryBackoff();
     final prev = state.value;
     if (prev == null) return;
 
@@ -2531,6 +2569,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// is still deferred to the last exit as usual.
   void endWalletMutationPause() {
     _walletResetEpoch++;
+    _swapRecoveryRefreshOwed = false;
     // The applied policy belonged to the wallet just reset; a replacement
     // wallet reports its own.
     _appliedTransparentPolicy = null;
@@ -2868,9 +2907,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (_isShuttingDown) return;
     _isInForeground = true;
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(true);
-    // A resume is public: the recovery restart schedule starts over.
+    // A resume is public: the recovery restart schedule and the swap
+    // recovery backoff start over.
     _recoveryRestartGate.reset();
+    _resetSwapRecoveryBackoff();
     unawaited(_refreshBalanceAfterResume());
+    unawaited(_refreshOwedSwapRecovery());
     // Coalesce repeated focus/resume events. An old mobile check spanning
     // backgrounding cannot certify foreground freshness; follow it immediately.
     _resumeTipCheckPending = true;
@@ -3181,6 +3223,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// are re-read. The sync is not completed again.
   Future<void> _onSyncFollowupUpdated() async {
     if (!ref.mounted || _requiresUnlock) return;
+    _swapRecoveryRefreshOwed = false;
     ref.read(syncFollowupProvider.notifier).updated();
     // Let the completion's own reads land first, so this refresh does not
     // supersede them.
@@ -3621,7 +3664,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     clearRestoredSnapshotIfUnavailable: true,
   );
 
-  Future<void> refreshAfterUnlock() => _requestBalanceRefresh();
+  /// Reloads the balance, and Activity too when a recovery round owes it.
+  Future<void> refreshAfterUnlock() {
+    unawaited(_refreshOwedSwapRecovery());
+    return _requestBalanceRefresh();
+  }
 
   Future<void> _refreshBalanceAfterResume() async {
     if (_isShuttingDown) return;
