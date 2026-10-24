@@ -5303,11 +5303,16 @@ async fn run_sync_impl(
         // Truncation can temporarily clear a transaction's mined height while
         // retaining note positions that prove compact scanning found it mined.
         // Exclude those transactions from recovery resubmission while scanning
-        // can still restore their mined heights.
-        let post_scan_ranges = db
-            .suggest_scan_ranges()
-            .map_err(|e| SyncError::db(format!("suggest_scan_ranges: {e}")))?;
-        let resubmit_exclusions = recovery_resubmit_exclusions(db_data_path, &post_scan_ranges)?;
+        // can still restore their mined heights. Only a batch that checks the
+        // tip resubmits, so the others skip the lookup.
+        let resubmit_exclusions = if tip_check_due {
+            let post_scan_ranges = db
+                .suggest_scan_ranges()
+                .map_err(|e| SyncError::db(format!("suggest_scan_ranges: {e}")))?;
+            recovery_resubmit_exclusions(db_data_path, &post_scan_ranges)?
+        } else {
+            HashSet::new()
+        };
 
         // Status and transparent history run before the routed payload snapshot,
         // so transactions discovered by history are enhanced in this checkpoint.
