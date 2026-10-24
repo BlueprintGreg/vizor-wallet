@@ -2569,10 +2569,12 @@ class SwapNotifier extends Notifier<SwapState> {
   /// is unfinished or every address is held, shows after the recovery round
   /// before its retry ended with `failure`, or null to keep the wallet's
   /// wording. Without a failure, or while the round only waits for wallet
-  /// sync, the wallet's wording still holds. A round that needs a newer app
-  /// says so.
+  /// sync or for the receiver service to reach a new wallet's birthday, the
+  /// wallet's wording still holds. A round that needs a newer app says so.
   String? _addressRecoveryFailureMessage(Object? failure) => switch (failure) {
-    null || ReceiveError(kind: ReceiveErrorKind.waitingForSync) => null,
+    null ||
+    ReceiveError(kind: ReceiveErrorKind.waitingForSync) ||
+    ReceiveError(kind: ReceiveErrorKind.waitingForService) => null,
     ReceiveError(kind: ReceiveErrorKind.upgradeRequired, :final message) =>
       message,
     _ => kPrivateSwapAddressUnavailableMessage,

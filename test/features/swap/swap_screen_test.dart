@@ -8814,6 +8814,16 @@ void main() {
       'a round waiting for wallet sync asks to try again soon',
     ),
     (
+      const ReceiveError(
+        message:
+            "The swap recovery service hasn't caught up with this "
+            'wallet yet. Try again in a few minutes.',
+        kind: ReceiveErrorKind.waitingForService,
+      ),
+      'Preparing a private swap address. Try again in a moment.',
+      'a round waiting for the receiver service asks to try again soon',
+    ),
+    (
       const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
       kPrivateSwapAddressUnavailableMessage,
       'a failed round says private swap addresses are unavailable',
@@ -8873,6 +8883,16 @@ void main() {
       null,
       'No swap address is free. Wait for a swap in progress to finish.',
       'a round that succeeded keeps the wallet wording',
+    ),
+    (
+      const ReceiveError(
+        message:
+            "The swap recovery service hasn't caught up with this "
+            'wallet yet. Try again in a few minutes.',
+        kind: ReceiveErrorKind.waitingForService,
+      ),
+      'No swap address is free. Wait for a swap in progress to finish.',
+      'a round waiting for the receiver service keeps the wallet wording',
     ),
     (
       const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
