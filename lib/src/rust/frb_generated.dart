@@ -1417,7 +1417,7 @@ abstract class RustLibApi extends BaseApi {
     required bool allowResubmit,
   });
 
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   });
@@ -10551,7 +10551,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
@@ -10569,7 +10569,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_bool,
+          decodeSuccessData: sse_decode_swap_recovery_round,
           decodeErrorData: sse_decode_receive_error,
         ),
         constMeta: kCrateApiOneTimeIvkRunSwapRecoveryConstMeta,
@@ -15970,6 +15970,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SwapRecoveryRound dco_decode_swap_recovery_round(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SwapRecoveryRound(
+      active: dco_decode_bool(arr[0]),
+      changed: dco_decode_bool(arr[1]),
+      checked: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
   SwapRecoveryStatus dco_decode_swap_recovery_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -21297,6 +21310,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SwapRecoveryRound sse_decode_swap_recovery_round(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_active = sse_decode_bool(deserializer);
+    var var_changed = sse_decode_bool(deserializer);
+    var var_checked = sse_decode_bool(deserializer);
+    return SwapRecoveryRound(
+      active: var_active,
+      changed: var_changed,
+      checked: var_checked,
+    );
+  }
+
+  @protected
   SwapRecoveryStatus sse_decode_swap_recovery_status(
     SseDeserializer deserializer,
   ) {
@@ -25943,6 +25971,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.amountOut, serializer);
     sse_encode_list_String(self.originTxHashes, serializer);
     sse_encode_list_String(self.destinationTxHashes, serializer);
+  }
+
+  @protected
+  void sse_encode_swap_recovery_round(
+    SwapRecoveryRound self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.active, serializer);
+    sse_encode_bool(self.changed, serializer);
+    sse_encode_bool(self.checked, serializer);
   }
 
   @protected

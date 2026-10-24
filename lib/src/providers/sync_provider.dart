@@ -958,7 +958,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     IronwoodMigrationBackgroundLifecycle? recoveryLifecycle,
     Duration recoveryTransitionTimeout = const Duration(seconds: 120),
     Future<void> Function(String dbPath)? excludeCompanionsFromBackup,
-  }) : _walletDbPathResolver = walletDbPathResolver ?? getWalletDbPath,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now,
+       _walletDbPathResolver = walletDbPathResolver ?? getWalletDbPath,
        _existingWalletDbPathResolver =
            existingWalletDbPathResolver ?? getExistingWalletDbPath,
        _recoveryLifecycle =
@@ -970,6 +972,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   final IronwoodMigrationBackgroundLifecycle _recoveryLifecycle;
   final Duration _recoveryTransitionTimeout;
+
+  /// The clock swap recovery backoff reads.
+  final DateTime Function() _now;
   final Future<void> Function(String dbPath) _excludeCompanionsFromBackup;
 
   /// Whether the wallet's transparent policy may be private now even though
@@ -1108,14 +1113,37 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   int _swapRecoveryTransitions = 0;
 
   /// Whether the last automatic round found no recovery work. While NEAR swap
-  /// privacy is off, sync batches and idle polls then start no round. A
-  /// completed sync, which may have queued repair of received swap notes, and
-  /// every stop for a wallet or setting change ask Rust again.
+  /// privacy is off, idle polls then start no round. A completed sync, which
+  /// may have queued repair of received swap notes, and every stop for a
+  /// wallet or setting change ask Rust again.
   bool _swapRecoveryIdle = false;
 
+  /// How long unforced rounds wait after one, two, three, four, and five or
+  /// more consecutive failed automatic rounds.
+  static const _swapRecoveryBackoff = <Duration>[
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
+
+  /// Consecutive failed automatic rounds (see [_swapRecoveryBackoff]).
+  int _swapRecoveryFailures = 0;
+
+  /// Before this time, only a forced start begins a round.
+  DateTime? _swapRecoveryRetryAt;
+
+  /// Forgets failed rounds, so the next unforced start is not delayed.
+  void _resetSwapRecoveryBackoff() {
+    _swapRecoveryFailures = 0;
+    _swapRecoveryRetryAt = null;
+  }
+
   /// Starts receiver work without occupying the ordinary sync lifecycle.
-  /// `force` starts a round even while an idle wallet would skip it, for
-  /// callers waiting on recovery.
+  /// `force` starts a round even while an idle wallet or a failed round's
+  /// backoff would skip it, for callers waiting on recovery, and starts the
+  /// backoff over.
   void _startSwapRecovery({bool force = false}) {
     if (_swapRecovery != null ||
         _swapRecoveryTransitions > 0 ||
@@ -1125,8 +1153,14 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         _getActiveAccountUuid() == null) {
       return;
     }
-    if (!force && _swapRecoveryIdle && !ref.read(nearSwapPrivacyProvider)) {
-      return;
+    if (force) {
+      _resetSwapRecoveryBackoff();
+    } else {
+      final retryAt = _swapRecoveryRetryAt;
+      if ((_swapRecoveryIdle && !ref.read(nearSwapPrivacyProvider)) ||
+          (retryAt != null && _now().isBefore(retryAt))) {
+        return;
+      }
     }
     _swapRecovery = _runSwapRecovery(_swapRecoveryGeneration);
   }
@@ -1149,7 +1183,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         return null;
       }
       final network = _endpointConfig.networkName;
-      var hadWork = true;
+      // A manual check returns nothing, so its success is treated as a round
+      // that reached the service and changed what the wallet shows.
+      var round = const rust_swap.SwapRecoveryRound(
+        active: true,
+        changed: true,
+        checked: true,
+      );
       try {
         if (manual) {
           await _trackedWalletCall(
@@ -1158,7 +1198,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
                 rust_swap.checkSwapHistory(dbPath: path, networkName: network),
           );
         } else {
-          hadWork =
+          round =
               await _trackedWalletCall(
                 () async => path,
                 (path) => rust_swap.runSwapRecovery(
@@ -1166,12 +1206,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
                   networkName: network,
                 ),
               ) ??
-              false;
+              const rust_swap.SwapRecoveryRound(
+                active: false,
+                changed: false,
+                checked: false,
+              );
           if (generation == _swapRecoveryGeneration) {
-            _swapRecoveryIdle = !hadWork;
+            _swapRecoveryIdle = !round.active;
+            _resetSwapRecoveryBackoff();
           }
         }
-        if (ref.mounted) {
+        if (ref.mounted && round.checked) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
         }
       } catch (error) {
@@ -1188,10 +1233,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           rethrow;
         }
         log('Swap recovery remains pending: $error');
-        return generation == _swapRecoveryGeneration ? error : null;
+        if (generation != _swapRecoveryGeneration) return null;
+        final delay =
+            _swapRecoveryBackoff[math.min(
+              _swapRecoveryFailures,
+              _swapRecoveryBackoff.length - 1,
+            )];
+        _swapRecoveryFailures++;
+        _swapRecoveryRetryAt = _now().add(delay);
+        return error;
       }
-      // A round without work changed nothing to show.
-      if (hadWork &&
+      if (round.changed &&
           ref.mounted &&
           !_requiresUnlock &&
           _walletMutationPauseCount == 0) {
@@ -1259,6 +1311,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   Future<void> _stopSwapRecovery() async {
     _cancelSwapRecoveryRound();
     _swapRecoveryIdle = false;
+    _resetSwapRecoveryBackoff();
     try {
       await _swapRecovery;
     } catch (_) {
@@ -3148,8 +3201,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (!ref.mounted || _requiresUnlock) {
       return;
     }
-    if (event.isComplete) _swapRecoveryIdle = false;
-    _startSwapRecovery();
+    // A batch before completion leaves blocks the receiver may already
+    // publish unscanned, so a round could not accept its inventory.
+    if (event.isComplete) {
+      _swapRecoveryIdle = false;
+      _startSwapRecovery();
+    }
     final progressEventVersion = ++_progressEventVersion;
     final epoch = _sensitiveStateEpoch;
     if (event.scannedHeight != _lastLoggedHeight) {
