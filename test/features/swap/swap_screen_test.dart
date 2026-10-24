@@ -3,6 +3,7 @@
 // wallet DB path under test. These are transitive deps, hence the ignore.
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
+import 'dart:math';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
@@ -80,8 +81,10 @@ import 'support/swap_activity_fixture_intents.dart';
 import '../../support/leading_decimal_input.dart';
 
 part 'support/swap_screen_test_fakes.dart';
+part 'support/swap_persistence_interleavings.dart';
 
 void main() {
+  _swapPersistenceInterleavingTests();
   test('swapIntentProvider uses the Vizor proxy and referral', () {
     final container = ProviderContainer();
     addTearDown(container.dispose);
@@ -11298,6 +11301,7 @@ Widget _routerHarness(
   LedgerSignedOperationService? ledgerOperationService,
   Future<bool?> Function(SwapIntent, SwapIntentSnapshot, DateTime)?
   onProviderSnapshot,
+  SwapActivityStore? activityStore,
 }) {
   final fixtureIntents = seedSwapActivityFixtures
       ? _accountScopedSwapActivityFixtureIntents()
@@ -11370,12 +11374,14 @@ Widget _routerHarness(
       ledgerSignedOperationServiceProvider.overrideWithValue(
         ledgerOperationService ?? _FakeLedgerSignedOperationService(),
       ),
-      swapActivityStoreProvider.overrideWithValue(effectiveSessionStore),
+      swapActivityStoreProvider.overrideWithValue(
+        activityStore ?? effectiveSessionStore,
+      ),
       // These widget tests use an in-memory activity store, not a wallet database.
       // Durable private-swap hooks are covered by the service and registry tests.
       swapActivityTrackerProvider.overrideWith(
         (ref) => SwapActivityTracker(
-          activityStore: effectiveSessionStore,
+          activityStore: activityStore ?? effectiveSessionStore,
           swapProvider: ref.read(swapIntentProvider),
           isTorEnabled: () => ref.read(networkPrivacyProvider).torEnabled,
           onRecordsChanged: () =>

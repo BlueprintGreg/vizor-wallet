@@ -127,6 +127,9 @@ class _FakeSwapProvider implements SwapProvider {
   /// The address on ZEC deposit instructions, read after the request is recorded.
   String get zecDepositAddress => 't1live-deposit';
 
+  /// The address on external deposit instructions, read once per quote.
+  String get externalDepositAddress => '0xlive-deposit';
+
   @override
   String get providerLabel => 'NEAR Intents';
 
@@ -183,7 +186,7 @@ class _FakeSwapProvider implements SwapProvider {
         asset: estimate.sellAsset,
         address: request.direction == SwapDirection.zecToExternal
             ? zecDepositAddress
-            : '0xlive-deposit',
+            : externalDepositAddress,
         expiresInLabel: '07:12',
         reuseWarning: 'Do not reuse this address',
         memo: request.direction == SwapDirection.zecToExternal
