@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
@@ -10,6 +11,7 @@ import 'package:zcash_wallet/src/providers/app_security_provider.dart';
 import 'package:zcash_wallet/src/providers/chain_upgrade_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as rust_swap;
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
@@ -364,8 +366,11 @@ void main() {
 
   /// A notifier whose idle poll started a receiver round the test holds, and
   /// whose first ordinary sync has then scanned block 101. NEAR swap privacy is
-  /// off unless `privacy`.
-  Future<_Sync> recovering({bool privacy = false}) async {
+  /// off unless `privacy`. `overrides` add to the container's.
+  Future<_Sync> recovering({
+    bool privacy = false,
+    List<Override> overrides = const [],
+  }) async {
     final sync = _Sync();
     container = ProviderContainer(
       overrides: [
@@ -377,6 +382,7 @@ void main() {
         enhancePirProvider.overrideWith(_NoPrivateQueries.new),
         if (privacy) nearSwapPrivacyProvider.overrideWith(_PrivacyOn.new),
         syncProvider.overrideWith(() => sync),
+        ...overrides,
       ],
     );
     addTearDown(container.dispose);
@@ -532,6 +538,12 @@ void main() {
     await pumpEventQueue();
     expect(api.recoveries, hasLength(rounds + 1));
     await releaseRound(_idle);
+
+    // So does a watched history check.
+    sync.pollSwapRecovery();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(rounds + 2));
+    await releaseRound(_idle);
     await settle(sync);
   });
 
@@ -659,6 +671,62 @@ void main() {
     _clock = _clock.add(const Duration(seconds: 10));
     expect(await pollStartsRound(sync), isTrue);
     await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('a watched history check keeps polling rounds within the backoff '
+      'instead of starting it over', () async {
+    final reads = <Completer<rust_swap.SwapRecoveryStatus>>[];
+    const checking = rust_swap.SwapRecoveryStatus(
+      checkingHistory: true,
+      manualCheckActive: true,
+      upgradeRequired: false,
+    );
+    final sync = await recovering(
+      privacy: true,
+      overrides: [
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: () async {},
+            cancel: () async {},
+            status: () {
+              final read = Completer<rust_swap.SwapRecoveryStatus>();
+              reads.add(read);
+              return read.future;
+            },
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    await finishSyncAndRound(sync, null);
+
+    final history = container.read(swapHistoryCheckProvider.notifier);
+    final watching = history.check();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(1), reason: 'within 10 seconds');
+
+    _clock = _clock.add(const Duration(seconds: 10));
+    reads.last.complete(checking);
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2));
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    _clock = _clock.add(const Duration(seconds: 10));
+    reads.last.complete(checking);
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2), reason: 'within 30 seconds');
+
+    reads.last.complete(
+      const rust_swap.SwapRecoveryStatus(
+        checkingHistory: false,
+        manualCheckActive: false,
+        upgradeRequired: false,
+      ),
+    );
+    await watching;
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     await settle(sync);
   });
 

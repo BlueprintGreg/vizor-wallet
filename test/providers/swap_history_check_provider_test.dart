@@ -14,7 +14,7 @@ class _Sync extends SyncNotifier {
   @override
   Future<SyncState> build() async => SyncState();
   @override
-  void continueSwapRecovery() => starts++;
+  void pollSwapRecovery() => starts++;
 }
 
 /// NEAR swap privacy, on until a test turns it off.

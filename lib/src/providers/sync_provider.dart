@@ -1143,8 +1143,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Starts receiver work without occupying the ordinary sync lifecycle.
   /// `force` starts a round even while an idle wallet or a failed round's
   /// backoff would skip it, for callers waiting on recovery, and starts the
-  /// backoff over.
-  void _startSwapRecovery({bool force = false}) {
+  /// backoff over. `evenIfIdle` only ignores the idle wallet, for callers
+  /// polling saved work.
+  void _startSwapRecovery({bool force = false, bool evenIfIdle = false}) {
     if (_swapRecovery != null ||
         _swapRecoveryTransitions > 0 ||
         _requiresUnlock ||
@@ -1157,7 +1158,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _resetSwapRecoveryBackoff();
     } else {
       final retryAt = _swapRecoveryRetryAt;
-      if ((_swapRecoveryIdle && !ref.read(nearSwapPrivacyProvider)) ||
+      if ((_swapRecoveryIdle &&
+              !evenIfIdle &&
+              !ref.read(nearSwapPrivacyProvider)) ||
           (retryAt != null && _now().isBefore(retryAt))) {
         return;
       }
@@ -1269,6 +1272,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   /// Continues durable receiver work without starting or waiting for a block sync.
   void continueSwapRecovery() => _startSwapRecovery(force: true);
+
+  /// Like [continueSwapRecovery], for a caller polling saved work on a timer,
+  /// but it waits out a failed round's backoff instead of starting it over.
+  void pollSwapRecovery() => _startSwapRecovery(evenIfIdle: true);
 
   /// Starts a receiver round unless one is running, then waits for the current
   /// round to end. Returns the round's failure, or null when it succeeded, was
