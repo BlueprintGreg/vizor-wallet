@@ -3,6 +3,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
+import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/swap_history_check_control.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
@@ -110,6 +111,27 @@ void main() {
     expect(find.textContaining('interrupted'), findsNothing);
   });
 
+  testWidgets('a check waiting for the service blames the service, not sync', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.waitingForService),
+    );
+    await tester.pump();
+    expect(
+      find.text(
+        "The swap recovery service hasn't caught up with this wallet yet. "
+        'Try again in a few minutes.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('wallet sync'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
+    );
+  });
+
   testWidgets('a check waiting for sync can still pause a saved job', (
     tester,
   ) async {
@@ -150,6 +172,82 @@ void main() {
       find.byKey(const ValueKey('settings_check_swap_history')),
       findsOneWidget,
     );
+  });
+
+  for (final (check, line) in [
+    (
+      SwapHistoryCheck.failed,
+      "Swap history can't be checked right now. Try again later.",
+    ),
+    (
+      SwapHistoryCheck.walletChanged,
+      'The check stopped because the wallet changed. Try again.',
+    ),
+    (
+      SwapHistoryCheck.notStarted,
+      "The check couldn't start. Try again in a moment.",
+    ),
+  ]) {
+    testWidgets('${check.name} with no saved job offers no pause and never '
+        'mentions it', (tester) async {
+      await tester.pumpWidget(_control(AppThemeData.dark, check));
+      await tester.pump();
+      expect(find.text(line), findsOneWidget);
+      expect(line.toLowerCase(), isNot(contains('pause')));
+      expect(
+        find.byKey(const ValueKey('settings_cancel_swap_history')),
+        findsNothing,
+      );
+      expect(
+        tester
+            .widget<AppButton>(
+              find.byKey(const ValueKey('settings_check_swap_history')),
+            )
+            .onPressed,
+        isNotNull,
+        reason: 'the user can try again',
+      );
+    });
+  }
+
+  testWidgets('a refused pause keeps Pause on screen', (tester) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.pauseFailed, saved: true),
+    );
+    await tester.pump();
+    expect(find.text("Couldn't pause the check. Try again."), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an update request uses the quote wording', (tester) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.updateRequired),
+    );
+    await tester.pump();
+    expect(
+      find.text(
+        'Update Vizor to keep checking private swap addresses. '
+        'Your saved progress is kept.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a long check promises progress only while Vizor is open', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.continuing, saved: true),
+    );
+    await tester.pump();
+    expect(
+      find.text('The check will keep going while Vizor is open.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('background'), findsNothing);
   });
 
   testWidgets('a finished check says so plainly', (tester) async {

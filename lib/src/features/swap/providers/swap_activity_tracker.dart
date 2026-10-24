@@ -253,23 +253,45 @@ class SwapActivityTracker {
     statusError: swapStartFailedText,
   );
 
-  /// Clears `intentId`'s pending start on `accountUuid` once the wallet locked
-  /// its reservation, changing nothing else, and only while it is still
-  /// starting, so a newer saved copy keeps its other fields.
+  /// Swaps whose start finished in this launch, by account and id. A start
+  /// never goes back to pending, so every save clears the flag on any copy of
+  /// these, including one read while the swap was still starting.
+  final _finishedStarts = <(String, String)>{};
+
+  /// Records that `intentId` on `accountUuid` started once the wallet locked
+  /// its reservation, then saves its account's swaps with nothing else
+  /// changed, which clears its pending start (see [_finishedStarts]). If that
+  /// save fails, the account's next save clears it.
   Future<void> finishStart({
     required String accountUuid,
     required String intentId,
-  }) => updateIntents(
-    accountUuid: accountUuid,
-    transform: (saved) => [
-      for (final intent in saved)
-        intent.id == intentId &&
-                intent.startPending &&
-                !intent.status.isTerminal
-            ? intent.copyWith(startPending: false)
-            : intent,
-    ],
-  );
+  }) {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    if (scopedAccountUuid != null) {
+      _finishedStarts.add((scopedAccountUuid, intentId));
+    }
+    return updateIntents(
+      accountUuid: scopedAccountUuid,
+      transform: (saved) => saved,
+    );
+  }
+
+  /// `intents` of `accountUuid` with the pending start cleared on each whose
+  /// start finished in this launch (see [_finishedStarts]). Returns `intents`
+  /// itself when none needs it.
+  List<SwapIntent> withFinishedStarts(
+    String accountUuid,
+    List<SwapIntent> intents,
+  ) {
+    bool finished(SwapIntent intent) =>
+        intent.startPending &&
+        _finishedStarts.contains((accountUuid, intent.id));
+    if (!intents.any(finished)) return intents;
+    return [
+      for (final intent in intents)
+        finished(intent) ? intent.copyWith(startPending: false) : intent,
+    ];
+  }
 
   /// Hands a provider status, fetched at `checkedAt`, to the wallet when the
   /// swap uses a private address. Ordinary swaps never touch the wallet. A
@@ -329,12 +351,12 @@ class SwapActivityTracker {
   }
 
   /// The records `accountUuid` saves for `intents`, leaving out any it keeps
-  /// no record of.
+  /// no record of and clearing finished starts.
   List<SwapIntentRecord> _persistableRecords(
     List<SwapIntent> intents,
     String accountUuid,
   ) => [
-    for (final intent in intents)
+    for (final intent in withFinishedStarts(accountUuid, intents))
       if (_isPersistableIntent(intent, accountUuid: accountUuid))
         swapIntentRecordForPersistence(intent, accountUuid: accountUuid),
   ];

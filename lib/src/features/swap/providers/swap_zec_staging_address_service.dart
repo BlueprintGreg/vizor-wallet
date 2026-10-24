@@ -86,14 +86,28 @@ class SwapZecStagingAddress {
 }
 
 class SwapZecStagingAddressUnavailableException implements Exception {
-  const SwapZecStagingAddressUnavailableException(this.cause);
+  const SwapZecStagingAddressUnavailableException(
+    this.cause, {
+    this.privateAddress = false,
+  });
 
   final Object cause;
 
+  /// Whether reserving a private swap address failed. Its text leaves out
+  /// closing older swaps, which frees no private address. Running out of them
+  /// has its own wallet error.
+  final bool privateAddress;
+
+  /// The quote error shown for this failure, worded as before private swaps
+  /// for an ordinary address.
   @override
   String toString() {
+    if (privateAddress) {
+      return 'Could not prepare a fresh wallet receive address. '
+          'Try again after wallet sync.';
+    }
     return 'Could not prepare a fresh wallet receive address. '
-        'Try again after wallet sync.';
+        'Retry after wallet sync or close older pending swaps before requesting a new quote.';
   }
 }
 
@@ -142,6 +156,7 @@ class SwapZecStagingAddressService {
     required String accountUuid,
     SwapDirection direction = SwapDirection.zecToExternal,
   }) async {
+    var privateAddress = true;
     try {
       // With NEAR swap privacy on, a software account fails closed on reservation
       // errors. Hardware accounts get no swap address and use an ordinary one.
@@ -150,6 +165,7 @@ class SwapZecStagingAddressService {
         direction: direction,
       );
       if (swapAddress != null) return swapAddress;
+      privateAddress = false;
       final address = await _reserveFreshOrchardAddress(
         accountUuid: accountUuid,
       );
@@ -159,7 +175,10 @@ class SwapZecStagingAddressService {
         'SwapZecStagingAddressService: Orchard receive address preparation '
         'failed; blocking quote: $e',
       );
-      throw SwapZecStagingAddressUnavailableException(e);
+      throw SwapZecStagingAddressUnavailableException(
+        e,
+        privateAddress: privateAddress,
+      );
     }
   }
 }

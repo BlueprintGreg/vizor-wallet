@@ -42,13 +42,20 @@ class _FakeSwapSyncNotifier extends SyncNotifier {
   var swapRecoveryRounds = 0;
   var swapRecoveryContinues = 0;
 
+  /// What each waited round reports: its failure, or null when it succeeded.
+  Object? swapRecoveryFailure;
+
   /// Counts recovery rounds a swap flow starts without waiting.
   @override
   void continueSwapRecovery() => swapRecoveryContinues++;
 
-  /// Counts the receiver rounds a swap flow waits for, without native work.
+  /// Counts the receiver rounds a swap flow waits for, without native work,
+  /// each ending with [swapRecoveryFailure].
   @override
-  Future<void> awaitSwapRecovery() async => swapRecoveryRounds++;
+  Future<Object?> awaitSwapRecovery() async {
+    swapRecoveryRounds++;
+    return swapRecoveryFailure;
+  }
 
   @override
   Future<SyncState> build() async => SyncState(
@@ -764,7 +771,7 @@ class _HistoryPendingStartStore extends Fake
   @override
   Future<ReceiveDeposit> start(String request) async =>
       throw const ReceiveError(
-        message: 'Checking older swap addresses. Try again in a moment.',
+        message: 'Preparing a private swap address. Try again in a moment.',
         kind: ReceiveErrorKind.receiveHistory,
       );
 }

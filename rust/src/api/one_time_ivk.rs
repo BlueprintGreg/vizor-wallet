@@ -31,6 +31,9 @@ pub enum ReceiveErrorKind {
     /// A swap history check cannot start until wallet sync catches up with the
     /// receiver service. Ask again shortly.
     WaitingForSync,
+    /// A swap history check cannot start until the receiver service publishes past this
+    /// wallet's birthday. Ask again shortly.
+    WaitingForService,
 }
 
 /// A private swap failure. `message` is display text, never a parsing protocol. `kind`
@@ -57,16 +60,20 @@ impl From<String> for ReceiveError {
     }
 }
 impl From<RecoveryError> for ReceiveError {
-    /// Keeps the upgrade and waiting-for-sync outcomes distinct so the app can act on them.
+    /// Keeps the upgrade and both waiting outcomes distinct so the app can act on them.
     fn from(error: RecoveryError) -> Self {
         match error {
             RecoveryError::UpgradeRequired => Self {
-                message: "Update Vizor to keep checking private swap addresses.".into(),
+                message: "Update Vizor to keep checking private swap addresses. Your saved progress is kept.".into(),
                 kind: ReceiveErrorKind::UpgradeRequired,
             },
             RecoveryError::NotCaughtUp => Self {
                 message: error.to_string(),
                 kind: ReceiveErrorKind::WaitingForSync,
+            },
+            RecoveryError::ReceiverBehind => Self {
+                message: error.to_string(),
+                kind: ReceiveErrorKind::WaitingForService,
             },
             RecoveryError::Other(message) => message.into(),
         }
@@ -92,7 +99,7 @@ impl From<ReservationPolicy> for ReceiveError {
                 ReceiveErrorKind::Limit,
             ),
             ReservationPolicy::ReceiveHistory => (
-                "Checking older swap addresses. Try again in a moment.",
+                "Preparing a private swap address. Try again in a moment.",
                 ReceiveErrorKind::ReceiveHistory,
             ),
             ReservationPolicy::Stale => (

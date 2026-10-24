@@ -622,7 +622,7 @@ void main() {
   testWidgets('NEAR swap privacy explains itself', (tester) async {
     await tester.pumpWidget(_settingsHarness());
     await tester.pump();
-    expect(find.text(kNearSwapPrivacyOffCopy), findsOneWidget);
+    expect(find.text(kNearSwapPrivacyNeedsPrivateQueriesCopy), findsOneWidget);
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
@@ -666,10 +666,70 @@ void main() {
   });
 
   testWidgets('NEAR swap privacy describes one-time addresses', (tester) async {
-    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pumpWidget(
+      _settingsHarness(enhancePirEnabled: true, nearSwapPrivacyEnabled: true),
+    );
     await tester.pump();
     expect(find.text(kNearSwapPrivacyOnCopy), findsOneWidget);
+    expect(find.text(kNearSwapPrivacyOffCopy), findsNothing);
   });
+
+  testWidgets('NEAR swap privacy off describes regular addresses', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
+    await tester.pump();
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(
+              const ValueKey('settings_near_swap_privacy_description'),
+            ),
+          )
+          .data,
+      kNearSwapPrivacyOffCopy,
+    );
+    expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
+  });
+
+  for (final (name, shared, own) in [
+    (
+      'while it changes',
+      kEnhancePirChangingMessage,
+      kEnhancePirChangingMessage,
+    ),
+    ('once saved', null, kSwapRecoveryPendingMessage),
+  ]) {
+    testWidgets('NEAR swap privacy feedback shows under its own row $name', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _settingsHarness(
+          nearSwapPrivacyEnabled: true,
+          extraOverrides: [
+            enhancePirTransitionProvider.overrideWith(() => _Feedback(shared)),
+            nearSwapPrivacyTransitionProvider.overrideWith(
+              () => _Feedback(own),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('settings_near_swap_privacy_sub_option'),
+          ),
+          matching: find.text(own),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('settings_enhance_pir_transition')),
+        findsNothing,
+      );
+    });
+  }
 
   testWidgets('Check swap history needs NEAR swap privacy', (tester) async {
     await tester.pumpWidget(_settingsHarness(enhancePirEnabled: true));
@@ -1492,6 +1552,16 @@ Widget _settingsHarness({
       builder: (_, child) => AppTheme(data: AppThemeData.light, child: child!),
     ),
   );
+}
+
+/// Setting feedback fixed at `message`.
+class _Feedback extends EnhancePirTransitionNotifier {
+  _Feedback(this.message);
+
+  final String? message;
+
+  @override
+  String? build() => message;
 }
 
 class _FakeNetworkPrivacyNotifier extends NetworkPrivacyNotifier {

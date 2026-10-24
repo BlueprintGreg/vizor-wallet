@@ -511,6 +511,34 @@ void main() {
     expect(api.recoveries, hasLength(2), reason: 'saved work resumes');
   });
 
+  test('waiting on a round returns its failure, or nothing once it succeeds '
+      'or was cancelled', () async {
+    final sync = await recovering(privacy: true);
+    const outage = rust_swap.ReceiveError(
+      message: 'HTTP 503',
+      kind: rust_swap.ReceiveErrorKind.other,
+    );
+    final failed = sync.awaitSwapRecovery();
+    api.round.completeError(outage);
+    expect(await failed, same(outage), reason: 'it waited on the held round');
+
+    final succeeded = sync.awaitSwapRecovery();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2), reason: 'it started a new round');
+    await releaseRound();
+    expect(await succeeded, isNull);
+
+    final cancelled = sync.awaitSwapRecovery();
+    await pumpEventQueue();
+    final security = container.read(appSecurityProvider.notifier) as _Security;
+    security.setUnlocked(false);
+    unawaited(sync.clearSensitiveStateForLock());
+    await pumpEventQueue();
+    api.round.completeError(outage);
+    expect(await cancelled, isNull, reason: 'locking cancelled the round');
+    await settle(sync);
+  });
+
   test('backgrounding cancels the round where process work must stop; '
       'otherwise the round keeps running', () async {
     final sync = await recovering();
@@ -700,5 +728,28 @@ void main() {
     await pausing;
     expect(api.events.last, 'cancel manual');
     sync.stopTipChecksForTesting();
+  });
+
+  test('a manual check cancelled under it reports the cancellation, not the '
+      'round error', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1));
+
+    final security = container.read(appSecurityProvider.notifier) as _Security;
+    security.setUnlocked(false);
+    unawaited(sync.clearSensitiveStateForLock());
+    await pumpEventQueue();
+    api.manual.single.completeError(
+      const rust_swap.ReceiveError(
+        message: 'Swap recovery was cancelled.',
+        kind: rust_swap.ReceiveErrorKind.other,
+      ),
+    );
+    await expectLater(checking, throwsA(isA<StateError>()));
+    await settle(sync);
   });
 }

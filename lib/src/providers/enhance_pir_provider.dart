@@ -221,6 +221,9 @@ class EnhancePirNotifier extends Notifier<bool> {
       return;
     }
     transition.update(kEnhancePirChangingMessage);
+    // Turning private queries off also turns NEAR swap privacy off, so its
+    // last feedback no longer applies.
+    ref.read(nearSwapPrivacyTransitionProvider.notifier).update(null);
     try {
       String? outcome;
       await ref
@@ -365,6 +368,7 @@ class EnhancePirNotifier extends Notifier<bool> {
     ref.read(transparentOptOutPendingProvider.notifier).update(false);
     ref.read(walletTransparentPrivateProvider.notifier).update(false);
     ref.read(enhancePirTransitionProvider.notifier).update(null);
+    ref.read(nearSwapPrivacyTransitionProvider.notifier).update(null);
   }
 
   bool get _controlEnabled =>
@@ -390,6 +394,24 @@ final enhancePirTransitionProvider =
       EnhancePirTransitionNotifier.new,
     );
 
+/// Feedback for the NEAR swap privacy toggle, shown under its own row. While
+/// it changes, [enhancePirTransitionProvider] also holds
+/// [kEnhancePirChangingMessage], which keeps other setting changes waiting.
+final nearSwapPrivacyTransitionProvider =
+    NotifierProvider<EnhancePirTransitionNotifier, String?>(
+      EnhancePirTransitionNotifier.new,
+    );
+
+/// Feedback for the Private queries row: the shared feedback, unless the
+/// change running is NEAR swap privacy's (see
+/// [nearSwapPrivacyTransitionProvider]).
+final privateQueriesTransitionProvider = Provider<String?>(
+  (ref) =>
+      ref.watch(nearSwapPrivacyTransitionProvider) == kEnhancePirChangingMessage
+      ? null
+      : ref.watch(enhancePirTransitionProvider),
+);
+
 final nearSwapPrivacyPreferenceStoreProvider =
     Provider<EnhancePirPreferenceStore>(
       (_) => const SharedPreferencesEnhancePirStore(
@@ -410,9 +432,10 @@ final swapRecoveryReconcilerProvider = Provider<Future<void> Function()>((ref) {
   };
 });
 
-/// The preference is saved even if the wallet must retry applying it.
+/// The preference is saved even if the wallet must retry applying it, which
+/// a later receiver round does.
 const kSwapRecoveryPendingMessage =
-    'Setting saved. Wallet recovery will apply it on the next check.';
+    'Saved. Vizor will finish applying it shortly.';
 
 /// Install-scoped opt-in for private addresses and automatic receiver recovery.
 class NearSwapPrivacyNotifier extends Notifier<bool> {
@@ -431,8 +454,11 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
     if (enabled && !ref.read(enhancePirProvider)) return;
     if (enabled == state) return;
     final transition = ref.read(enhancePirTransitionProvider.notifier);
+    final feedback = ref.read(nearSwapPrivacyTransitionProvider.notifier);
     transition.update(kEnhancePirChangingMessage);
+    feedback.update(kEnhancePirChangingMessage);
     var reconciled = true;
+    String? outcome;
     try {
       await ref
           .read(linuxKeyringCoordinatorProvider)
@@ -445,15 +471,15 @@ class NearSwapPrivacyNotifier extends Notifier<bool> {
               },
             ),
           );
-      transition.update(reconciled ? null : kSwapRecoveryPendingMessage);
+      outcome = reconciled ? null : kSwapRecoveryPendingMessage;
     } catch (error) {
       log('NEAR swap privacy transition stopped: $error');
-      transition.update(
-        state == enabled
-            ? kSwapRecoveryPendingMessage
-            : kEnhancePirUnchangedMessage,
-      );
+      outcome = state == enabled
+          ? kSwapRecoveryPendingMessage
+          : kEnhancePirUnchangedMessage;
     }
+    transition.update(null);
+    feedback.update(outcome);
   }
 
   /// Called while the parent already holds the shared recovery pause.
