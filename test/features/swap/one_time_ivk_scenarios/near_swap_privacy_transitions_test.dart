@@ -778,11 +778,18 @@ void main() {
 
     // Back on, the saved job is watched again until the wallet finishes it.
     await container.read(nearSwapPrivacyProvider.notifier).set(true);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await until(
+      () => container.read(swapHistoryCheckProvider) != SwapHistoryCheck.paused,
+      'the check leaves paused',
+    );
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
     expect(api.manual, hasLength(1), reason: 'no new check was started');
     api.checking = false;
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await until(
+      () =>
+          container.read(swapHistoryCheckProvider) != SwapHistoryCheck.checking,
+      'the watched check ends',
+    );
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     for (final round in api.rounds.where((r) => !r.isCompleted)) {
       round.complete(false);
