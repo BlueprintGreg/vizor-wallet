@@ -8842,6 +8842,63 @@ void main() {
     expect(saved.single.privateAddress, isTrue);
   });
 
+  testWidgets('a private start that finishes while its account reloads keeps '
+      "the account's other swaps", (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final store = _HeldStartReservationStore();
+    // Account-1 already has swap X. Its loads are held once the test asks.
+    final sessionStore = _DelayedLoadSwapPersistenceStore(
+      delayedAccounts: <String>{},
+      initialIntents: [
+        _persistedExternalToZecIntent(id: 'swap-x', stagingAddress: 'u1x'),
+      ],
+    );
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: reservations.reserve,
+      bootstrap: _twoAccountBootstrap,
+      accountNotifier: () =>
+          _FakeSwapAccountNotifier(_twoAccountBootstrap.initialAccountState),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    // The start waits on the wallet while the user goes to account-2 and back,
+    // and account-1's swaps are still reloading when the start finishes.
+    final start = notifier.startIntent();
+    await tester.pump();
+    final accounts = container.read(accountProvider.notifier);
+    await accounts.switchAccount('account-2');
+    await tester.pumpAndSettle();
+    sessionStore.delayedAccounts.add('account-1');
+    await accounts.switchAccount('account-1');
+    await tester.pump();
+    store.release();
+    await tester.pump();
+    sessionStore.completeLoad('account-1');
+    expect(await start, isNull, reason: 'the screen moved during the start');
+    await tester.pumpAndSettle();
+
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(
+      saved.map((record) => record.id),
+      containsAll(<String>['swap-x', '0xlive-deposit']),
+      reason: 'the new swap merged in beside swap X',
+    );
+    expect(
+      container.read(swapStateProvider).intents.map((intent) => intent.id),
+      containsAll(<String>['swap-x', '0xlive-deposit']),
+      reason: "account-1's reload shows both",
+    );
+  });
+
   testWidgets('an ordinary start still starts after an account switch during '
       'the fee check, as before private swaps', (tester) async {
     final swapProvider = _FakeSwapProvider(zecDepositMemo: null);

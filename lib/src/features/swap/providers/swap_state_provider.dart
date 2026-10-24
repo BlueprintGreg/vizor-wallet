@@ -86,6 +86,10 @@ class SwapNotifier extends Notifier<SwapState> {
   String? _payAssetRestoreAccountUuid;
   Future<SwapAsset?>? _payAssetRestoreFuture;
 
+  /// Advances on every switch of the active account, including a switch back,
+  /// so a start can tell its screen still shows the swaps it was started from.
+  int _accountScope = 0;
+
   String? get _activeAccountUuidOrNull =>
       ref.read(accountProvider).value?.activeAccountUuid;
 
@@ -134,6 +138,7 @@ class SwapNotifier extends Notifier<SwapState> {
       accountProvider.select((value) => value.value?.activeAccountUuid),
       (previous, next) {
         if (previous == next) return;
+        _accountScope++;
         if (previous != null) {
           unawaited(_persistCurrentIntents(accountUuid: previous));
           // In Pay mode the composer state carries Pay's direction/payout
@@ -1037,6 +1042,11 @@ class SwapNotifier extends Notifier<SwapState> {
     // stay with it across an account switch during the start.
     final privateQuote =
         quote.receiveRequestId != null || quote.swapRefundIndex != null;
+    final scope = _accountScope;
+    // Whether the screen moved to other swaps since the start began: another
+    // account, or this one again while its swaps reload.
+    bool screenMoved() =>
+        scope != _accountScope || !_isAccountActive(accountUuid);
     final startingPayMode = state.payMode;
     final startingUserExternalContactId = state.userExternalContactId;
     state = state.copyWith(startSubmitting: true, clearStatusError: true);
@@ -1064,7 +1074,7 @@ class SwapNotifier extends Notifier<SwapState> {
             .estimateZecDepositFee(accountUuid: accountUuid, quote: quote);
       } catch (e) {
         // The screen now belongs to another account.
-        if (privateQuote && !_isAccountActive(accountUuid)) return null;
+        if (privateQuote && screenMoved()) return null;
         log(
           'Swap: live ZEC deposit preflight failed '
           'quote=${_shortSwapValue(quote.providerQuoteId)} error=$e',
@@ -1081,7 +1091,7 @@ class SwapNotifier extends Notifier<SwapState> {
       // A switch to another account while the deposit was checked leaves
       // nothing started, so a private swap is not started for an account the
       // user left.
-      if (privateQuote && !_isAccountActive(accountUuid)) {
+      if (privateQuote && screenMoved()) {
         log('Swap: start dropped after an account switch');
         return null;
       }
@@ -1097,7 +1107,7 @@ class SwapNotifier extends Notifier<SwapState> {
       }
       snapshot = await ref.read(swapIntentProvider).startSwap(quote);
     } catch (e) {
-      if (privateQuote && !_isAccountActive(accountUuid)) return null;
+      if (privateQuote && screenMoved()) return null;
       log(
         'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
         'error=$e',
@@ -1140,16 +1150,29 @@ class SwapNotifier extends Notifier<SwapState> {
     }
     // The swap started on this address, so the next swap prepares another.
     _dropReviewAddress(accountUuid, quote.direction);
-    if (privateQuote && !_isAccountActive(accountUuid)) {
-      // The user switched accounts while the private swap started. It exists,
-      // so it is saved and tracked for the account that started it, and the
-      // screen now showing another account is left alone.
+    if (privateQuote) {
+      // A private swap holds wallet state for its account, so it is always
+      // saved by merging into that account's stored swaps, never by saving the
+      // screen's list, which may belong to another account or an unfinished
+      // reload.
       await _saveStartedIntentForAccount(accountUuid, intent);
-      log(
-        'Swap: start saved for an inactive account '
-        'intent=${_shortSwapValue(intent.id)}',
-      );
-      return null;
+      if (screenMoved()) {
+        // The screen moved during the start, so it is left alone. If it shows
+        // this account again, reload its swaps, now including this one.
+        if (_isAccountActive(accountUuid)) {
+          unawaited(
+            _restorePersistedIntents(
+              accountUuid: accountUuid,
+              replaceExisting: true,
+            ),
+          );
+        }
+        log(
+          'Swap: start saved after an account switch '
+          'intent=${_shortSwapValue(intent.id)}',
+        );
+        return null;
+      }
     }
     _quoteGeneration++;
     if (activeAccountIsHardware && quote.direction.sendsZec) {
@@ -1248,7 +1271,8 @@ class SwapNotifier extends Notifier<SwapState> {
       clearStatusError: true,
       clearPendingHardwareSigningIntent: true,
     );
-    await _persistCurrentIntents();
+    // A private swap is already saved by its merge above.
+    if (!privateQuote) await _persistCurrentIntents();
 
     if (quote.direction.sendsZec) {
       unawaited(
