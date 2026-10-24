@@ -321,9 +321,10 @@ void main() {
   }
 
   /// A round that reports the service needs a newer app raises the update
-  /// request and refreshes nothing. The retry waits out the first backoff
-  /// step. A successful round that never reached the receiver keeps the
-  /// request, and only one that checked a supported receiver clears it.
+  /// request and, like any failed round, refreshes once in case it committed
+  /// results first. The retry waits out the first backoff step. A successful
+  /// round that never reached the receiver keeps the request, and only one
+  /// that checked a supported receiver clears it.
   test('an outdated service asks for an update until a round checks the '
       'receiver', () async {
     await recovering();
@@ -338,7 +339,7 @@ void main() {
     );
     await pumpEventQueue();
     expect(container.read(swapRecoveryUpdateRequiredProvider), isTrue);
-    expect(container.read(syncFollowupProvider), followups);
+    expect(container.read(syncFollowupProvider), followups + 1);
 
     expect(await poll(), 1, reason: 'within the 10 second backoff');
     _clock = _clock.add(const Duration(seconds: 10));
@@ -361,7 +362,11 @@ void main() {
     api.rounds.last.complete(_quiet);
     await pumpEventQueue();
     expect(container.read(swapRecoveryUpdateRequiredProvider), isFalse);
-    expect(container.read(syncFollowupProvider), followups);
+    expect(
+      container.read(syncFollowupProvider),
+      followups + 1,
+      reason: 'the later rounds changed nothing',
+    );
     await settle();
   });
 
@@ -395,25 +400,37 @@ void main() {
   /// With NEAR swap privacy off, a round that fails leaves the wallet's work
   /// unknown, so a poll asks Rust again rather than going idle, but only once
   /// a growing backoff passes. A persistently failing feature-off round costs
-  /// one Rust call after 10 seconds, then 30, then 60, with no follow-up
-  /// refresh.
+  /// one Rust call after 10 seconds, then 30, then 60, and one follow-up
+  /// refresh each, since a failed round may have committed results first.
   test(
     'a failed round with the feature off is retried after a growing backoff',
     () async {
       await recovering();
-      final reads = api.balanceReads.length;
+      // The completed sync's own balance read lands first.
+      await pumpEventQueue();
       for (final wait in [10, 30, 60]) {
         final rounds = api.rounds.length;
+        final reads = api.balanceReads.length;
+        final followups = container.read(syncFollowupProvider);
         api.rounds.last.completeError(StateError('database is locked'));
         await pumpEventQueue();
+        expect(container.read(syncFollowupProvider), followups + 1);
+        expect(api.balanceReads.length, reads + 1);
         _clock = _clock.add(Duration(seconds: wait - 1));
         expect(await poll(), rounds, reason: 'within $wait seconds');
         _clock = _clock.add(const Duration(seconds: 1));
         expect(await poll(), rounds + 1, reason: 'after $wait seconds');
       }
-      expect(api.balanceReads.length, reads, reason: 'no follow-up refresh');
+      final reads = api.balanceReads.length;
+      final followups = container.read(syncFollowupProvider);
       api.rounds.last.complete(_idle);
       await pumpEventQueue();
+      expect(container.read(syncFollowupProvider), followups);
+      expect(
+        api.balanceReads.length,
+        reads,
+        reason: 'an idle round refreshes nothing',
+      );
       expect(await poll(), 4, reason: 'an idle answer stops the retries');
       await settle();
     },
