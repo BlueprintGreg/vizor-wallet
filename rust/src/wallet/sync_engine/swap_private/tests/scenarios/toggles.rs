@@ -1226,6 +1226,11 @@ fn turning_off_mid_history_check_stops_it_cleanly() {
                 .unwrap();
             assert!(credited(&world, 0, 0).contains(&(true, 0, 123_000)));
         }
+        let manual = world.devices[0].wallet.state(&account).manual;
+        assert!(
+            manual.is_some_and(|m| !m.active),
+            "pause {pause}: the history check finished: {manual:?}"
+        );
         world.check_step().unwrap();
     }
 }

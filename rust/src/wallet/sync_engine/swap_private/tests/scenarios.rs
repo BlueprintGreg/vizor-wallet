@@ -2954,6 +2954,19 @@ impl World {
             }
             let device = &self.devices[dev];
             for acct in &device.accts {
+                if let Some(manual) = device.wallet.state(&acct.account).manual {
+                    if manual.active {
+                        return Err(violation(
+                            "manual-stuck",
+                            format!(
+                                "device {dev} seed {}: the history check is still running after 12 rounds: {manual:?}",
+                                acct.seed
+                            ),
+                        ));
+                    }
+                }
+            }
+            for acct in &device.accts {
                 let expected = self.expected(dev, acct);
                 let credited: BTreeSet<(bool, u64, [u8; 32], u64)> =
                     notes(&device.wallet, &acct.account.id)
