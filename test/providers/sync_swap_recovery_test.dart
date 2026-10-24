@@ -18,6 +18,9 @@ import 'package:zcash_wallet/src/rust/frb_generated.dart';
 const _first = 'account-1';
 const _second = 'account-2';
 
+/// How many times the idle poll read the chain tip.
+var _tipReads = 0;
+
 /// Rust as the scheduler sees it: ordinary sync streams that the test drives
 /// block by block, and receiver recovery rounds that the test holds and
 /// releases explicitly. Nothing here sleeps; every wait is a completer.
@@ -236,9 +239,12 @@ class _Tip extends RpcEndpointFailoverNotifier {
     fallbackCandidates: const [],
   );
 
-  /// Reports the chain tip the initial state already scanned.
+  /// Reports the chain tip the initial state already scanned, counting reads.
   @override
-  Future<BigInt> getLatestBlockHeight() async => BigInt.from(100);
+  Future<BigInt> getLatestBlockHeight() async {
+    _tipReads++;
+    return BigInt.from(100);
+  }
 }
 
 class _Upgrade extends ChainUpgradeStatusNotifier {
@@ -319,6 +325,7 @@ void main() {
     api.events.clear();
     api.balanceReads.clear();
     api.cancels = 0;
+    _tipReads = 0;
   });
 
   late ProviderContainer container;
@@ -432,7 +439,6 @@ void main() {
       api.syncs[0].add(_scanned(height));
       await pumpEventQueue();
     }
-    await sync.checkTipForTesting();
     sync.stopTipChecksForTesting();
     expect(api.recoveries, hasLength(1), reason: 'nothing is due');
 
@@ -443,10 +449,25 @@ void main() {
     expect(api.recoveries, hasLength(2));
     await releaseRound(work: false);
 
+    // With the sync finished, an idle poll reads the tip but starts no round.
+    await api.finish(0);
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    final rounds = api.recoveries.length;
+    final tipReads = _tipReads;
+    await sync.checkTipForTesting();
+    sync.stopTipChecksForTesting();
+    expect(_tipReads, tipReads + 1, reason: 'the poll ran');
+    expect(
+      api.recoveries,
+      hasLength(rounds),
+      reason: 'the idle poll asks nothing',
+    );
+
     // Callers waiting on recovery still start a round.
     sync.continueSwapRecovery();
     await pumpEventQueue();
-    expect(api.recoveries, hasLength(3));
+    expect(api.recoveries, hasLength(rounds + 1));
     await releaseRound(work: false);
     await settle(sync);
   });
