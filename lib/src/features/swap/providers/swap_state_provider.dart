@@ -26,8 +26,8 @@ import 'swap_zec_staging_address_service.dart';
 
 export 'swap_provider_config.dart';
 
-/// Shown when a private incoming quote still waits on its receive address's
-/// history check because the recovery round meant to finish it failed.
+/// Shown when a private incoming quote still gets no receive address after
+/// the recovery round before its retry failed.
 const kPrivateSwapAddressUnavailableMessage =
     'Private swap addresses are unavailable right now. Try again later, or '
     'turn off NEAR swap privacy to swap now.';
@@ -933,7 +933,9 @@ class SwapNotifier extends Notifier<SwapState> {
       // A stale reservation is quoted once more with a new address. Issuance
       // can also wait on work the wallet finishes itself, so do it once and ask
       // again: a recovery round for an address whose history is unchecked, or
-      // fresh statuses for started quotes holding every eligible address.
+      // fresh statuses and a recovery round for swaps holding every eligible
+      // address, since a paid one holds its address until its payout is
+      // recovered.
       if (retry &&
           (kind == ReceiveErrorKind.stale ||
               kind == ReceiveErrorKind.receiveHistory ||
@@ -942,7 +944,8 @@ class SwapNotifier extends Notifier<SwapState> {
         try {
           if (kind == ReceiveErrorKind.limit) {
             await _refreshReceiveQuoteStatuses();
-          } else if (kind == ReceiveErrorKind.receiveHistory) {
+          }
+          if (kind != ReceiveErrorKind.stale) {
             recoveryFailure = await ref
                 .read(syncProvider.notifier)
                 .awaitSwapRecovery();
@@ -973,8 +976,10 @@ class SwapNotifier extends Notifier<SwapState> {
       state = state.copyWith(
         reviewVisible: false,
         quoteLoading: false,
-        quoteError: kind == ReceiveErrorKind.receiveHistory
-            ? _receiveHistoryFailureMessage(recoveryFailure) ??
+        quoteError:
+            kind == ReceiveErrorKind.receiveHistory ||
+                kind == ReceiveErrorKind.limit
+            ? _addressRecoveryFailureMessage(recoveryFailure) ??
                   _friendlyQuoteError(e)
             : _friendlyQuoteError(e),
         clearReview: true,
@@ -2548,12 +2553,13 @@ class SwapNotifier extends Notifier<SwapState> {
     _ => null,
   };
 
-  /// What a quote whose receive address still waits on its history check
-  /// shows after the recovery round meant to finish that check ended with
-  /// `failure`, or null to keep the wallet's wording. Without a failure, or
-  /// while the round only waits for wallet sync, the check can still finish
-  /// soon. A round that needs a newer app says so.
-  String? _receiveHistoryFailureMessage(Object? failure) => switch (failure) {
+  /// What a quote still refused a receive address, because its history check
+  /// is unfinished or every address is held, shows after the recovery round
+  /// before its retry ended with `failure`, or null to keep the wallet's
+  /// wording. Without a failure, or while the round only waits for wallet
+  /// sync, the wallet's wording still holds. A round that needs a newer app
+  /// says so.
+  String? _addressRecoveryFailureMessage(Object? failure) => switch (failure) {
     null || ReceiveError(kind: ReceiveErrorKind.waitingForSync) => null,
     ReceiveError(kind: ReceiveErrorKind.upgradeRequired, :final message) =>
       message,

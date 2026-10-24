@@ -8750,12 +8750,11 @@ void main() {
       expect(state.quoteError, isNull);
       expect(state.reviewAddressPlan?.oneClickRecipient, 'u1incoming2');
       expect(reservation.calls, 2);
-      if (kind == ReceiveErrorKind.receiveHistory) {
-        // The wallet checks the next address's history in a recovery round.
-        expect(sync.swapRecoveryRounds, rounds + 1);
-      } else {
+      // A recovery round checks the next address's history, or recovers
+      // payouts of paid swaps still holding their addresses.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      if (kind == ReceiveErrorKind.limit) {
         // Fresh statuses let the wallet release expired quotes it holds.
-        expect(sync.swapRecoveryRounds, rounds);
         expect(swapProvider.statusRequests.length, greaterThan(statuses));
       }
     });
@@ -8824,6 +8823,57 @@ void main() {
       expect(state.quoteLoading, isFalse);
       expect(state.reviewVisible, isFalse);
       expect(find.text(message), findsOneWidget);
+      // One round ran, and the address was asked for again after it.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      expect(reservations, 2);
+    });
+  }
+
+  for (final (failure, message, name) in <(Object?, String, String)>[
+    (
+      null,
+      'No swap address is free. Wait for a swap in progress to finish.',
+      'a round that succeeded keeps the wallet wording',
+    ),
+    (
+      const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
+      kPrivateSwapAddressUnavailableMessage,
+      'a failed round says private swap addresses are unavailable',
+    ),
+  ]) {
+    testWidgets('every receive address still held after its retry: $name', (
+      tester,
+    ) async {
+      var reservations = 0;
+      final container = await _pumpSwapScreen(
+        tester,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        reservationStore: _StaleFirstReservationStore(),
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          throw const ReceiveError(
+            message:
+                'No swap address is free. Wait for a swap in progress to '
+                'finish.',
+            kind: ReceiveErrorKind.limit,
+          );
+        },
+      );
+      final sync =
+          container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+      sync.swapRecoveryFailure = failure;
+      final rounds = sync.swapRecoveryRounds;
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.externalToZec);
+      notifier.updateAmount('25');
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+
+      final state = container.read(swapStateProvider);
+      expect(state.quoteError, message);
+      expect(state.quoteLoading, isFalse);
+      expect(state.reviewVisible, isFalse);
       // One round ran, and the address was asked for again after it.
       expect(sync.swapRecoveryRounds, rounds + 1);
       expect(reservations, 2);
