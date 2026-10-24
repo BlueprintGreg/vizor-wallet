@@ -774,30 +774,41 @@ class SwapNotifier extends Notifier<SwapState> {
   /// starts; the wallet also resumes its draft until the latest quote expires.
   /// A refund address serves one quote request, so [_showReview] drops it once
   /// it commits to sending one, and returns it only if the request never left
-  /// the device. An ordinary address, with no reservation, is never kept, so
-  /// each later quote gets a fresh one.
+  /// the device. An ordinary address, with no reservation, is never kept or
+  /// shared. A quote that joined a preparation that turned out ordinary, or
+  /// failed before reserving anything, prepares its own, as each quote did
+  /// before private swaps.
   Future<SwapZecStagingAddress> _prepareReviewAddress(
     String accountUuid,
     SwapDirection direction,
   ) async {
     final key = (accountUuid, direction);
-    final pending = _reviewStagingAddresses[key] ??= ref
+    Future<SwapZecStagingAddress> prepare() => ref
         .read(swapZecStagingAddressServiceProvider)
         .prepareForQuote(accountUuid: accountUuid, direction: direction);
+    final joined = _reviewStagingAddresses[key];
+    final pending = joined ?? (_reviewStagingAddresses[key] = prepare());
+    final SwapZecStagingAddress address;
     try {
-      final address = await pending;
-      if (address.reservationIndex == null &&
-          address.refundIndex == null &&
-          identical(_reviewStagingAddresses[key], pending)) {
-        _reviewStagingAddresses.remove(key);
-      }
-      return address;
-    } catch (_) {
+      address = await pending;
+    } catch (e) {
       if (identical(_reviewStagingAddresses[key], pending)) {
         _reviewStagingAddresses.remove(key);
       }
+      if (joined != null &&
+          e is SwapZecStagingAddressUnavailableException &&
+          !e.privateAddress) {
+        return prepare();
+      }
       rethrow;
     }
+    if (!address.isPrivate) {
+      if (identical(_reviewStagingAddresses[key], pending)) {
+        _reviewStagingAddresses.remove(key);
+      }
+      if (joined != null) return prepare();
+    }
+    return address;
   }
 
   /// Drops the swap address cached for `accountUuid` and `direction`, so the
@@ -854,14 +865,15 @@ class SwapNotifier extends Notifier<SwapState> {
       if (!state.payMode) {
         await _persistComposerPreferences(preferences);
       }
-      if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
-        return;
-      }
       final stagingAddress = await _prepareReviewAddress(
         accountUuid,
         direction,
       );
-      if (generation != _quoteGeneration || !_isAccountActive(accountUuid)) {
+      // An outdated quote with a private address stops before it takes the
+      // address or reaches NEAR. An ordinary one is still sent, as before
+      // private swaps, and its response is discarded below.
+      if (stagingAddress.isPrivate &&
+          (generation != _quoteGeneration || !_isAccountActive(accountUuid))) {
         return;
       }
       // This request binds the refund key to its deposit, so no other quote,
@@ -2557,10 +2569,12 @@ class SwapNotifier extends Notifier<SwapState> {
   /// is unfinished or every address is held, shows after the recovery round
   /// before its retry ended with `failure`, or null to keep the wallet's
   /// wording. Without a failure, or while the round only waits for wallet
-  /// sync, the wallet's wording still holds. A round that needs a newer app
-  /// says so.
+  /// sync or for the receiver service to reach a new wallet's birthday, the
+  /// wallet's wording still holds. A round that needs a newer app says so.
   String? _addressRecoveryFailureMessage(Object? failure) => switch (failure) {
-    null || ReceiveError(kind: ReceiveErrorKind.waitingForSync) => null,
+    null ||
+    ReceiveError(kind: ReceiveErrorKind.waitingForSync) ||
+    ReceiveError(kind: ReceiveErrorKind.waitingForService) => null,
     ReceiveError(kind: ReceiveErrorKind.upgradeRequired, :final message) =>
       message,
     _ => kPrivateSwapAddressUnavailableMessage,

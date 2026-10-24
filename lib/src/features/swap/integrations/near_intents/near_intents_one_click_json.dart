@@ -232,7 +232,10 @@ String _decimalStringToBaseUnits(String value, int decimals) {
 }
 
 String _expiryLabel(String? isoDate) {
-  final parsed = _parseIsoDateTime(isoDate);
+  if (isoDate == null) {
+    return 'Quote expiry pending';
+  }
+  final parsed = DateTime.tryParse(isoDate);
   if (parsed == null) {
     return 'Quote expiry pending';
   }
@@ -242,22 +245,9 @@ String _expiryLabel(String? isoDate) {
   return 'Expires $hour:$minute';
 }
 
-/// 1Click reports UTC timestamps. Dart reads one without a zone designator as
-/// device-local time, so such a timestamp is taken as UTC instead.
 DateTime? _parseIsoDateTime(String? isoDate) {
   if (isoDate == null) return null;
-  final parsed = DateTime.tryParse(isoDate);
-  if (parsed == null || parsed.isUtc) return parsed;
-  return DateTime.utc(
-    parsed.year,
-    parsed.month,
-    parsed.day,
-    parsed.hour,
-    parsed.minute,
-    parsed.second,
-    parsed.millisecond,
-    parsed.microsecond,
-  );
+  return DateTime.tryParse(isoDate)?.toUtc();
 }
 
 String _rateText({
