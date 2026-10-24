@@ -345,21 +345,45 @@ pub fn cancel_swap_recovery() {
     crate::wallet::sync_engine::cancel_recovery();
 }
 
-/// Runs a bounded private recovery step independently of ordinary wallet sync. Returns
-/// whether any account had recovery work. `false` means the round changed nothing, and
-/// with the feature off, that no round is needed until the wallet changes.
-pub fn run_swap_recovery(db_path: String, network_name: String) -> Result<bool, ReceiveError> {
+/// What one automatic swap recovery round did.
+pub struct SwapRecoveryRound {
+    /// Some account had recovery work. `false` with the feature off means no round is
+    /// needed until the wallet changes.
+    pub active: bool,
+    /// The round committed receiver results that can change the balance, activity or
+    /// address reservations.
+    pub changed: bool,
+    /// The round accepted a receiver inventory, so the service speaks a format this app
+    /// supports.
+    pub checked: bool,
+}
+
+/// Runs a bounded private recovery step independently of ordinary wallet sync.
+pub fn run_swap_recovery(
+    db_path: String,
+    network_name: String,
+) -> Result<SwapRecoveryRound, ReceiveError> {
+    let idle = SwapRecoveryRound {
+        active: false,
+        changed: false,
+        checked: false,
+    };
     if !keys::wallet_exists(&db_path) {
-        return Ok(false);
+        return Ok(idle);
     }
     let network = parse_network_and_migrate(&db_path, &network_name)?;
-    // The app asks after every completed sync, so a wallet with nothing to do returns
-    // before building a worker thread pool and an HTTPS client.
+    // The app asks after completed syncs and on polls, so a wallet with nothing to do
+    // returns before building a worker thread pool and an HTTPS client.
     if !one_time_ivk::supported(network) || one_time_ivk::idle_while_off(&db_path, network)? {
-        return Ok(false);
+        return Ok(idle);
     }
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    Ok(runtime.block_on(crate::wallet::sync_engine::recover(&db_path, network, None))?)
+    let round = runtime.block_on(crate::wallet::sync_engine::recover(&db_path, network, None))?;
+    Ok(SwapRecoveryRound {
+        active: round.active,
+        changed: round.changed,
+        checked: round.checked,
+    })
 }
 
 /// Starts or resumes an explicit PIR search of every address the wallet has enrolled.
