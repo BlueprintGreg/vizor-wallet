@@ -20,6 +20,7 @@ import 'package:zcash_wallet/src/features/swap/providers/swap_zec_staging_addres
 import 'package:zcash_wallet/src/providers/account_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/network_privacy_provider.dart';
+import 'package:zcash_wallet/src/providers/receive_address_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as api;
@@ -321,6 +322,7 @@ void main() {
     await h.review('26');
     expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1ordinary-$_first');
     expect(h.reservations, 1, reason: 'nothing is reserved while off');
+    expect(h.ordinary, [_first], reason: 'the ordinary service quoted it');
 
     await h.privacy(true);
     await h.review('27');
@@ -345,6 +347,11 @@ void main() {
         );
       }
       expect(h.reservations, 0);
+      expect(
+        h.ordinary,
+        List.filled(3, _hardware),
+        reason: 'every hardware quote used the ordinary service',
+      );
       await h.switchTo(_first);
       await h.review('26');
       expect(h.state.reviewAddressPlan?.oneClickRecipient, 'u1$_first-1');
@@ -410,6 +417,14 @@ class _Harness {
   /// Statuses the wallet recorded, in order.
   final recorded = <SwapIntentStatus>[];
 
+  /// Accounts the ordinary receive address service handed an address to.
+  final ordinary = <String>[];
+
+  /// Whether the wallet still tracks a swap's address after recording its
+  /// status, and whether it has reported one released.
+  var tracks = true;
+  var walletReleased = false;
+
   /// Builds the notifier, with `intents` saved for the first account, and
   /// waits for its asset catalog. `reserve` defaults to a new incoming
   /// reservation per call, numbered across accounts. The wallet's first
@@ -453,31 +468,26 @@ class _Harness {
         rpcEndpointFailoverLatestBlockHeightGetterProvider.overrideWithValue(
           (_, _) async => BigInt.zero,
         ),
-        swapZecStagingAddressServiceProvider.overrideWith(
-          (ref) => SwapZecStagingAddressService(
-            // As production: no swap address with NEAR swap privacy off or
-            // for a hardware account, which then quotes an ordinary address.
-            reserveSwapAddress: ({required accountUuid, required direction}) {
-              if (_ordinary(ref, accountUuid)) return Future.value(null);
-              h.reservations++;
-              return reserve?.call(accountUuid) ??
-                  Future.value(
-                    SwapZecStagingAddress(
-                      address: 'u1$accountUuid-${h.reservations}',
-                      reservationIndex: BigInt.from(h.reservations),
-                    ),
-                  );
-            },
-            reserveFreshOrchardAddress: ({required accountUuid}) async {
-              if (!_ordinary(ref, accountUuid)) {
-                throw StateError('NEAR swap privacy is on');
-              }
-              return 'u1ordinary-$accountUuid';
-            },
-            reservations: SwapReceiveReservationService(
-              store: (_) async => reservationStore,
-            ),
+        // The production staging address provider decides between a private
+        // and an ordinary address. Only the wallet calls behind it are fake.
+        swapReceiveReservationServiceProvider.overrideWithValue(
+          SwapReceiveReservationService(
+            store: (account) async =>
+                _AccountReservations(reservationStore, () {
+                  h.reservations++;
+                  return reserve?.call(account) ??
+                      Future.value(
+                        SwapZecStagingAddress(
+                          address: 'u1$account-${h.reservations}',
+                          reservationIndex: BigInt.from(h.reservations),
+                        ),
+                      );
+                }),
           ),
+        ),
+        receiveAddressServiceProvider.overrideWith(
+          (ref) =>
+              _OrdinaryAddresses(ref, (account) => h.ordinary.add(account)),
         ),
         swapActivityTrackerProvider.overrideWith(
           (ref) => SwapActivityTracker(
@@ -566,12 +576,6 @@ class _Accounts extends AccountNotifier {
   }
 }
 
-/// Whether `account` quotes an ordinary address: NEAR swap privacy is off or
-/// the account is a hardware one.
-bool _ordinary(Ref ref, String account) =>
-    !ref.read(nearSwapPrivacyProvider) ||
-    ref.read(accountProvider.notifier).isHardwareAccount(account);
-
 class _Privacy extends NearSwapPrivacyNotifier {
   /// NEAR swap privacy on until [turn] changes it.
   @override
@@ -626,6 +630,69 @@ class _Reservations extends Fake implements ReceiveReservationStore {
 
   @override
   Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) async {}
+}
+
+/// One account's view of the shared reservation fake, whose reservations
+/// come from `reserve`.
+class _AccountReservations implements ReceiveReservationStore {
+  _AccountReservations(this.shared, this.reserveNext);
+  final _Reservations shared;
+  final Future<SwapZecStagingAddress> Function() reserveNext;
+
+  @override
+  Future<api.SwapAddress> reserve({
+    required bool incoming,
+    required BigInt tip,
+  }) async {
+    final staged = await reserveNext();
+    return api.SwapAddress(
+      address: staged.address,
+      refundIndex: staged.refundIndex,
+      reservationIndex: staged.reservationIndex,
+    );
+  }
+
+  @override
+  Future<String> begin(BigInt reservation, DateTime deadline) =>
+      shared.begin(reservation, deadline);
+
+  @override
+  Future<void> finish(String request, SwapQuote? accepted) =>
+      shared.finish(request, accepted);
+
+  @override
+  Future<api.ReceiveDeposit> start(String request) => shared.start(request);
+
+  @override
+  Future<void> recordRefund(BigInt refundIndex, SwapQuote quote) =>
+      shared.recordRefund(refundIndex, quote);
+
+  @override
+  Future<bool> observe({
+    required bool incoming,
+    required String depositAddress,
+    required String? memo,
+    required SwapIntentSnapshot snapshot,
+    required DateTime checkedAt,
+  }) => shared.observe(
+    incoming: incoming,
+    depositAddress: depositAddress,
+    memo: memo,
+    snapshot: snapshot,
+    checkedAt: checkedAt,
+  );
+}
+
+/// Ordinary receive addresses without a wallet, recording each account asked.
+class _OrdinaryAddresses extends ReceiveAddressService {
+  _OrdinaryAddresses(super.ref, this.onReserve);
+  final void Function(String account) onReserve;
+
+  @override
+  Future<String> reserveOrchardAddress({required String accountUuid}) async {
+    onReserve(accountUuid);
+    return 'u1ordinary-$accountUuid';
+  }
 }
 
 /// 1Click as the composer sees it: quotes that run the send hook, and
