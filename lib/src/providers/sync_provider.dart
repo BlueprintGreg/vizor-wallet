@@ -1103,7 +1103,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// Resolves the recorded wallet path without assigning one, or null after a
   /// reset (see [getExistingWalletDbPath]).
   final Future<String?> Function() _existingWalletDbPathResolver;
-  Future<void>? _swapRecovery;
+  Future<Object?>? _swapRecovery;
   int _swapRecoveryGeneration = 0;
   int _swapRecoveryTransitions = 0;
 
@@ -1132,7 +1132,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   }
 
   /// Holds admission until native work and the resulting display refresh have finished.
-  Future<void> _runSwapRecovery(int generation, {bool manual = false}) async {
+  /// An automatic round returns the wallet call's failure, or null when it
+  /// succeeded or was cancelled. A manual one throws it.
+  Future<Object?> _runSwapRecovery(
+    int generation, {
+    bool manual = false,
+  }) async {
     try {
       final path = await _getDbPath();
       if (!ref.mounted ||
@@ -1141,7 +1146,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           _walletMutationPauseCount > 0 ||
           !canRunAppProcessWork(isInForeground: _isInForeground)) {
         if (manual) throw StateError('Swap history check was cancelled.');
-        return;
+        return null;
       }
       final network = _endpointConfig.networkName;
       var hadWork = true;
@@ -1169,12 +1174,16 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         if (ref.mounted) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(false);
         }
-      } on rust_swap.ReceiveError catch (error) {
+      } catch (error) {
         if (ref.mounted &&
+            error is rust_swap.ReceiveError &&
             error.kind == rust_swap.ReceiveErrorKind.upgradeRequired) {
           ref.read(swapRecoveryUpdateRequiredProvider.notifier).set(true);
         }
-        rethrow;
+        if (manual) rethrow;
+        log('Swap recovery remains pending: $error');
+        // A cancelled round's error says nothing about the receiver service.
+        return generation == _swapRecoveryGeneration ? error : null;
       }
       // A round without work changed nothing to show.
       if (hadWork &&
@@ -1191,19 +1200,23 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       // Any round can resume or finish a saved history check.
       if (ref.mounted) ref.read(swapRecoveryRoundsProvider.notifier).ended();
     }
+    return null;
   }
 
   /// Continues durable receiver work without starting or waiting for a block sync.
   void continueSwapRecovery() => _startSwapRecovery(force: true);
 
   /// Starts a receiver round unless one is running, then waits for the current
-  /// round to end. Its outcome stays with the round.
-  Future<void> awaitSwapRecovery() async {
+  /// round to end. Returns the round's failure, or null when it succeeded, was
+  /// cancelled or could not start.
+  Future<Object?> awaitSwapRecovery() async {
     _startSwapRecovery(force: true);
+    final generation = _swapRecoveryGeneration;
     try {
-      await _swapRecovery;
-    } catch (_) {
-      // A manual check reports its own failure to its caller.
+      return await _swapRecovery;
+    } catch (error) {
+      // A manual check also reports its failure to its own caller.
+      return generation == _swapRecoveryGeneration ? error : null;
     }
   }
 

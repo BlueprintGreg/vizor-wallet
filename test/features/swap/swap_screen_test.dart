@@ -8761,6 +8761,75 @@ void main() {
     });
   }
 
+  for (final (failure, message, name) in <(Object?, String, String)>[
+    (
+      null,
+      'Preparing a private swap address. Try again in a moment.',
+      'a round that leaves the check running asks to try again soon',
+    ),
+    (
+      const ReceiveError(
+        message: 'Swap history check has not started.',
+        kind: ReceiveErrorKind.waitingForSync,
+      ),
+      'Preparing a private swap address. Try again in a moment.',
+      'a round waiting for wallet sync asks to try again soon',
+    ),
+    (
+      const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
+      kPrivateSwapAddressUnavailableMessage,
+      'a failed round says private swap addresses are unavailable',
+    ),
+    (
+      const ReceiveError(
+        message:
+            'Update Vizor to keep checking private swap addresses. '
+            'Your saved progress is kept.',
+        kind: ReceiveErrorKind.upgradeRequired,
+      ),
+      'Update Vizor to keep checking private swap addresses. '
+          'Your saved progress is kept.',
+      'a round that needs a newer app asks for an update',
+    ),
+  ]) {
+    testWidgets('an address history still unchecked after its retry: $name', (
+      tester,
+    ) async {
+      var reservations = 0;
+      final container = await _pumpSwapScreen(
+        tester,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        reservationStore: _StaleFirstReservationStore(),
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          throw const ReceiveError(
+            message: 'Preparing a private swap address. Try again in a moment.',
+            kind: ReceiveErrorKind.receiveHistory,
+          );
+        },
+      );
+      final sync =
+          container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+      sync.swapRecoveryFailure = failure;
+      final rounds = sync.swapRecoveryRounds;
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.externalToZec);
+      notifier.updateAmount('25');
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+
+      final state = container.read(swapStateProvider);
+      expect(state.quoteError, message);
+      expect(state.quoteLoading, isFalse);
+      expect(state.reviewVisible, isFalse);
+      expect(find.text(message), findsOneWidget);
+      // One round ran, and the address was asked for again after it.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      expect(reservations, 2);
+    });
+  }
+
   testWidgets('a failed status refresh during a Limit retry ends loading', (
     tester,
   ) async {
@@ -9209,7 +9278,7 @@ void main() {
 
     expect(
       container.read(swapStateProvider).statusError,
-      'Checking older swap addresses. Try again in a moment.',
+      'Preparing a private swap address. Try again in a moment.',
     );
     // The swap saved before the wallet start is removed, as if never started.
     expect(container.read(swapStateProvider).intents, isEmpty);

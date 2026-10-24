@@ -26,6 +26,12 @@ import 'swap_zec_staging_address_service.dart';
 
 export 'swap_provider_config.dart';
 
+/// Shown when a private incoming quote still waits on its receive address's
+/// history check because the recovery round meant to finish it failed.
+const kPrivateSwapAddressUnavailableMessage =
+    'Private swap addresses are unavailable right now. Try again later, or '
+    'turn off NEAR swap privacy to swap now.';
+
 final swapInitialIntentsProvider = Provider<List<SwapIntent>>((ref) {
   return const [];
 });
@@ -804,10 +810,12 @@ class SwapNotifier extends Notifier<SwapState> {
       _showReview(preserveCurrentReview: preserveCurrentReview, retry: true);
 
   /// Quotes for review. A reservation that went stale is dropped and, when
-  /// `retry` is set, quoted once more with a new address.
+  /// `retry` is set, quoted once more with a new address. `recoveryFailure`
+  /// is how the recovery round before that retry failed, if it did.
   Future<void> _showReview({
     required bool preserveCurrentReview,
     required bool retry,
+    Object? recoveryFailure,
   }) async {
     if (!state.canReviewQuote) return;
 
@@ -930,11 +938,14 @@ class SwapNotifier extends Notifier<SwapState> {
           (kind == ReceiveErrorKind.stale ||
               kind == ReceiveErrorKind.receiveHistory ||
               kind == ReceiveErrorKind.limit)) {
+        Object? recoveryFailure;
         try {
           if (kind == ReceiveErrorKind.limit) {
             await _refreshReceiveQuoteStatuses();
           } else if (kind == ReceiveErrorKind.receiveHistory) {
-            await ref.read(syncProvider.notifier).awaitSwapRecovery();
+            recoveryFailure = await ref
+                .read(syncProvider.notifier)
+                .awaitSwapRecovery();
           }
         } catch (retryError) {
           // The wallet work that could free an address failed, so the quote
@@ -956,12 +967,16 @@ class SwapNotifier extends Notifier<SwapState> {
         return _showReview(
           preserveCurrentReview: preserveCurrentReview,
           retry: false,
+          recoveryFailure: recoveryFailure,
         );
       }
       state = state.copyWith(
         reviewVisible: false,
         quoteLoading: false,
-        quoteError: _friendlyQuoteError(e),
+        quoteError: kind == ReceiveErrorKind.receiveHistory
+            ? _receiveHistoryFailureMessage(recoveryFailure) ??
+                  _friendlyQuoteError(e)
+            : _friendlyQuoteError(e),
         clearReview: true,
       );
     }
@@ -2529,6 +2544,18 @@ class SwapNotifier extends Notifier<SwapState> {
     SwapZecStagingAddressUnavailableException(:final ReceiveError cause) =>
       cause,
     _ => null,
+  };
+
+  /// What a quote whose receive address still waits on its history check
+  /// shows after the recovery round meant to finish that check ended with
+  /// `failure`, or null to keep the wallet's wording. Without a failure, or
+  /// while the round only waits for wallet sync, the check can still finish
+  /// soon. A round that needs a newer app says so.
+  String? _receiveHistoryFailureMessage(Object? failure) => switch (failure) {
+    null || ReceiveError(kind: ReceiveErrorKind.waitingForSync) => null,
+    ReceiveError(kind: ReceiveErrorKind.upgradeRequired, :final message) =>
+      message,
+    _ => kPrivateSwapAddressUnavailableMessage,
   };
 
   String _friendlyQuoteError(Object error) {
