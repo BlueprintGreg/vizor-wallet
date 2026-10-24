@@ -851,12 +851,19 @@ class _FailingSaveSwapPersistenceStore extends _FakeSwapPersistenceStore {
 
   var failSaves = false;
 
-  /// Throws while [failSaves] is set, else saves.
+  /// How many next saves fail, apart from [failSaves].
+  var failNextSaves = 0;
+
+  /// Throws while [failSaves] is set or [failNextSaves] counts down, else saves.
   @override
   Future<void> saveRecords({
     required String accountUuid,
     required List<SwapIntentRecord> records,
   }) {
+    if (failNextSaves > 0) {
+      failNextSaves--;
+      throw StateError('Secure storage is unavailable.');
+    }
     if (failSaves) throw StateError('Secure storage is unavailable.');
     return super.saveRecords(accountUuid: accountUuid, records: records);
   }

@@ -8899,6 +8899,47 @@ void main() {
     );
   });
 
+  testWidgets('a private start whose save fails stays on screen and saves '
+      'with it', (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final store = _HeldStartReservationStore()..release();
+    final sessionStore = _FailingSaveSwapPersistenceStore();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: reservations.reserve,
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    // The merge fails once, as when secure storage is briefly unavailable.
+    sessionStore.failNextSaves = 1;
+    var failures = 0;
+    final result = notifier.startIntent().catchError((Object _) {
+      failures++;
+      return null;
+    });
+    await tester.pumpAndSettle();
+    await result;
+
+    final state = container.read(swapStateProvider);
+    expect(state.startSubmitting, isFalse, reason: 'another start can run');
+    expect(
+      state.intents.map((intent) => intent.id),
+      contains('0xlive-deposit'),
+    );
+    expect(failures, 0);
+    // The screen's save stored it once storage answered again.
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(saved.map((record) => record.id), contains('0xlive-deposit'));
+  });
+
   testWidgets('an ordinary start still starts after an account switch during '
       'the fee check, as before private swaps', (tester) async {
     final swapProvider = _FakeSwapProvider(zecDepositMemo: null);
