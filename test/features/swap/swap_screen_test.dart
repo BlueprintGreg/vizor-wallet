@@ -8902,8 +8902,8 @@ void main() {
     );
   });
 
-  testWidgets('a private start whose save fails stays on screen and saves '
-      'with it', (tester) async {
+  testWidgets('a private start whose save fails never starts its '
+      'reservation', (tester) async {
     final reservations = _CountingReservations('u1incoming');
     final store = _HeldStartReservationStore()..release();
     final sessionStore = _FailingSaveSwapPersistenceStore();
@@ -8921,28 +8921,61 @@ void main() {
     await notifier.showReview();
     await tester.pumpAndSettle();
 
-    // The merge fails once, as when secure storage is briefly unavailable.
+    // The save fails once, as when secure storage is briefly unavailable.
     sessionStore.failNextSaves = 1;
-    var failures = 0;
-    final result = notifier.startIntent().catchError((Object _) {
-      failures++;
-      return null;
-    });
+    expect(await notifier.startIntent(), isNull);
     await tester.pumpAndSettle();
-    await result;
 
     final state = container.read(swapStateProvider);
     expect(state.startSubmitting, isFalse, reason: 'another start can run');
-    expect(
-      state.intents.map((intent) => intent.id),
-      contains('0xlive-deposit'),
+    expect(state.statusError, isNotNull);
+    expect(state.intents, isEmpty);
+    expect(store.starts, 0, reason: 'the wallet start never ran');
+    expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
+  });
+
+  testWidgets('a private start keeps a status saved while the wallet started '
+      'it', (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final store = _HeldStartReservationStore();
+    final sessionStore = _FakeSwapPersistenceStore();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: reservations.reserve,
     );
-    expect(failures, 0);
-    // The screen's save stored it once storage answered again, and the
-    // background retry of the merge finds it there.
-    await tester.pump(const Duration(seconds: 30));
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    final start = notifier.startIntent();
+    await tester.pump();
+    // A status refresh saves newer fields while the wallet start is held.
+    final claimedAt = DateTime.utc(2030);
+    await container
+        .read(swapActivityTrackerProvider)
+        .updateIntents(
+          accountUuid: 'account-1',
+          transform: (saved) => [
+            for (final intent in saved)
+              intent.copyWith(
+                status: SwapIntentStatus.processing,
+                depositClaimedAt: claimedAt,
+              ),
+          ],
+        );
+    store.release();
+    expect(await start, isA<SwapStartedActivity>());
+    await tester.pumpAndSettle();
+
     final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
-    expect(saved.map((record) => record.id), contains('0xlive-deposit'));
+    expect(saved.single.status, SwapIntentStatus.processing);
+    expect(saved.single.depositClaimedAt, claimedAt);
   });
 
   testWidgets('an ordinary start still starts after an account switch during '
@@ -8985,9 +9018,11 @@ void main() {
     tester,
   ) async {
     final reservations = _CountingReservations('u1incoming');
+    final sessionStore = _FakeSwapPersistenceStore();
     final container = await _pumpSwapScreen(
       tester,
       swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
       reservationStore: _HistoryPendingStartStore(),
       reserveSwapAddress: reservations.reserve,
     );
@@ -9005,6 +9040,9 @@ void main() {
       container.read(swapStateProvider).statusError,
       'Checking older swap addresses. Try again in a moment.',
     );
+    // The swap saved before the wallet start is removed, as if never started.
+    expect(container.read(swapStateProvider).intents, isEmpty);
+    expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
     expect(sync.swapRecoveryContinues, greaterThan(0));
     // The next quote prepares an address again instead of reusing this one.
     await notifier.showReview();
