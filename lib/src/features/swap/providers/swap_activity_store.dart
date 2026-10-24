@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/storage/app_secure_store.dart';
 import '../models/swap_intent_presentation_mapper.dart';
 import '../models/swap_models.dart';
+import 'swap_activity_tracker.dart';
 
 const _swapActivityKey = 'zcash_swap_activities_v1';
 const _swapActivityStorageVersion = 1;
@@ -36,12 +37,19 @@ final swapActivityRecordsRevisionProvider =
       SwapActivityRecordsRevisionNotifier.new,
     );
 
+/// `accountUuid`'s saved swaps as Home and Activity show them (see
+/// [SwapActivityTracker.recordsWithFinishedStarts]).
 final swapActivityRecordsProvider =
-    FutureProvider.family<List<SwapIntentRecord>, String>((ref, accountUuid) {
+    FutureProvider.family<List<SwapIntentRecord>, String>((
+      ref,
+      accountUuid,
+    ) async {
       ref.watch(swapActivityRecordsRevisionProvider);
-      return ref
+      final tracker = ref.read(swapActivityTrackerProvider);
+      final records = await ref
           .read(swapActivityStoreProvider)
           .loadRecords(accountUuid: accountUuid);
+      return tracker.recordsWithFinishedStarts(accountUuid, records);
     });
 
 final swapPendingIntentCountProvider = FutureProvider.family<int, String>((
