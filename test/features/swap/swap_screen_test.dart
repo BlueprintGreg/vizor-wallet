@@ -8750,14 +8750,133 @@ void main() {
       expect(state.quoteError, isNull);
       expect(state.reviewAddressPlan?.oneClickRecipient, 'u1incoming2');
       expect(reservation.calls, 2);
-      if (kind == ReceiveErrorKind.receiveHistory) {
-        // The wallet checks the next address's history in a recovery round.
-        expect(sync.swapRecoveryRounds, rounds + 1);
-      } else {
+      // A recovery round checks the next address's history, or recovers
+      // payouts of paid swaps still holding their addresses.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      if (kind == ReceiveErrorKind.limit) {
         // Fresh statuses let the wallet release expired quotes it holds.
-        expect(sync.swapRecoveryRounds, rounds);
         expect(swapProvider.statusRequests.length, greaterThan(statuses));
       }
+    });
+  }
+
+  for (final (failure, message, name) in <(Object?, String, String)>[
+    (
+      null,
+      'Preparing a private swap address. Try again in a moment.',
+      'a round that leaves the check running asks to try again soon',
+    ),
+    (
+      const ReceiveError(
+        message: 'Swap history check has not started.',
+        kind: ReceiveErrorKind.waitingForSync,
+      ),
+      'Preparing a private swap address. Try again in a moment.',
+      'a round waiting for wallet sync asks to try again soon',
+    ),
+    (
+      const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
+      kPrivateSwapAddressUnavailableMessage,
+      'a failed round says private swap addresses are unavailable',
+    ),
+    (
+      const ReceiveError(
+        message:
+            'Update Vizor to keep checking private swap addresses. '
+            'Your saved progress is kept.',
+        kind: ReceiveErrorKind.upgradeRequired,
+      ),
+      'Update Vizor to keep checking private swap addresses. '
+          'Your saved progress is kept.',
+      'a round that needs a newer app asks for an update',
+    ),
+  ]) {
+    testWidgets('an address history still unchecked after its retry: $name', (
+      tester,
+    ) async {
+      var reservations = 0;
+      final container = await _pumpSwapScreen(
+        tester,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        reservationStore: _StaleFirstReservationStore(),
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          throw const ReceiveError(
+            message: 'Preparing a private swap address. Try again in a moment.',
+            kind: ReceiveErrorKind.receiveHistory,
+          );
+        },
+      );
+      final sync =
+          container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+      sync.swapRecoveryFailure = failure;
+      final rounds = sync.swapRecoveryRounds;
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.externalToZec);
+      notifier.updateAmount('25');
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+
+      final state = container.read(swapStateProvider);
+      expect(state.quoteError, message);
+      expect(state.quoteLoading, isFalse);
+      expect(state.reviewVisible, isFalse);
+      expect(find.text(message), findsOneWidget);
+      // One round ran, and the address was asked for again after it.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      expect(reservations, 2);
+    });
+  }
+
+  for (final (failure, message, name) in <(Object?, String, String)>[
+    (
+      null,
+      'No swap address is free. Wait for a swap in progress to finish.',
+      'a round that succeeded keeps the wallet wording',
+    ),
+    (
+      const ReceiveError(message: 'HTTP 503', kind: ReceiveErrorKind.other),
+      kPrivateSwapAddressUnavailableMessage,
+      'a failed round says private swap addresses are unavailable',
+    ),
+  ]) {
+    testWidgets('every receive address still held after its retry: $name', (
+      tester,
+    ) async {
+      var reservations = 0;
+      final container = await _pumpSwapScreen(
+        tester,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        reservationStore: _StaleFirstReservationStore(),
+        reserveSwapAddress: ({required accountUuid, required direction}) async {
+          reservations++;
+          throw const ReceiveError(
+            message:
+                'No swap address is free. Wait for a swap in progress to '
+                'finish.',
+            kind: ReceiveErrorKind.limit,
+          );
+        },
+      );
+      final sync =
+          container.read(syncProvider.notifier) as _FakeSwapSyncNotifier;
+      sync.swapRecoveryFailure = failure;
+      final rounds = sync.swapRecoveryRounds;
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.externalToZec);
+      notifier.updateAmount('25');
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+
+      final state = container.read(swapStateProvider);
+      expect(state.quoteError, message);
+      expect(state.quoteLoading, isFalse);
+      expect(state.reviewVisible, isFalse);
+      // One round ran, and the address was asked for again after it.
+      expect(sync.swapRecoveryRounds, rounds + 1);
+      expect(reservations, 2);
     });
   }
 
@@ -8901,6 +9020,64 @@ void main() {
       container.read(swapStateProvider).intents.map((intent) => intent.id),
       containsAll(<String>['swap-x', '0xlive-deposit']),
       reason: "account-1's reload shows both",
+    );
+  });
+
+  testWidgets('a private start that finishes while its account reloads is '
+      'never shown or saved as starting again', (tester) async {
+    final store = _HeldStartReservationStore();
+    final sessionStore = _DelayedLoadSwapPersistenceStore(
+      delayedAccounts: <String>{},
+    );
+    // Status refreshes stay held, so none replaces the reloaded copy.
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _PendingExternalDepositSwapProvider(
+        statusGate: Completer<void>(),
+      ),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: _CountingReservations('u1incoming').reserve,
+      bootstrap: _twoAccountBootstrap,
+      accountNotifier: () =>
+          _FakeSwapAccountNotifier(_twoAccountBootstrap.initialAccountState),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    // Account-1's reload reads the swap while it is still starting, and lands
+    // after the start finished.
+    final start = notifier.startIntent();
+    await tester.pump();
+    final accounts = container.read(accountProvider.notifier);
+    await accounts.switchAccount('account-2');
+    await tester.pumpAndSettle();
+    sessionStore.delayedAccounts.add('account-1');
+    await accounts.switchAccount('account-1');
+    await tester.pump();
+    store.release();
+    await tester.pumpAndSettle();
+    sessionStore.completeLoad('account-1');
+    await start;
+    await tester.pumpAndSettle();
+
+    final shown = container
+        .read(swapStateProvider)
+        .intents
+        .swapIntentById('0xlive-deposit');
+    expect(shown?.startPending, isFalse, reason: 'its instructions show');
+    // Leaving account-1 saves its screen over its storage.
+    await accounts.switchAccount('account-2');
+    await tester.pumpAndSettle();
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(
+      saved.single.startPending,
+      isFalse,
+      reason: 'a later launch would mark it failed',
     );
   });
 
@@ -9151,13 +9328,51 @@ void main() {
 
     expect(
       container.read(swapStateProvider).statusError,
-      'Checking older swap addresses. Try again in a moment.',
+      'Preparing a private swap address. Try again in a moment.',
     );
     // The swap saved before the wallet start is removed, as if never started.
     expect(container.read(swapStateProvider).intents, isEmpty);
     expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
     expect(sync.swapRecoveryContinues, greaterThan(0));
     // The next quote prepares an address again instead of reusing this one.
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(reservations.count, 2);
+  });
+
+  testWidgets('a start refused because its address went stale asks for a '
+      'new quote', (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final sessionStore = _FakeSwapPersistenceStore();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: _HeldStartReservationStore(
+        refusal: const ReceiveError(
+          message:
+              'This swap address is no longer available. Request a new quote.',
+          kind: ReceiveErrorKind.stale,
+        ),
+      )..release(),
+      reserveSwapAddress: reservations.reserve,
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(await notifier.startIntent(), isNull);
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(swapStateProvider).statusError,
+      'This swap address is no longer available. Request a new quote.',
+    );
+    expect(container.read(swapStateProvider).intents, isEmpty);
+    expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
+    // The next quote prepares a new address.
     await notifier.showReview();
     await tester.pumpAndSettle();
     expect(reservations.count, 2);

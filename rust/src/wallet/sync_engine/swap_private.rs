@@ -52,6 +52,10 @@ pub(crate) enum RecoveryError {
     /// A history check could not start because the wallet has not scanned the
     /// receiver service's latest publication yet. It can start once sync catches up.
     NotCaughtUp,
+    /// A history check could not start because the receiver service's latest
+    /// publication ends below this wallet's birthday, as it does for a fresh wallet. It
+    /// can start once the service publishes past the birthday.
+    ReceiverBehind,
     /// Any other failure, as display text.
     Other(String),
 }
@@ -77,6 +81,9 @@ impl std::fmt::Display for RecoveryError {
             Self::UpgradeRequired => f.write_str("The swap recovery service needs a newer app."),
             Self::NotCaughtUp => f.write_str(
                 "Swap history check has not started. Wait for wallet sync to catch up and try again.",
+            ),
+            Self::ReceiverBehind => f.write_str(
+                "The swap recovery service hasn't caught up with this wallet yet. Try again in a few minutes.",
             ),
             Self::Other(message) => f.write_str(message),
         }
@@ -489,7 +496,9 @@ fn require_upgrade(
 }
 
 /// Captures the current inventory, reusing durable descriptors, and accepts it only when
-/// its end is a block this wallet scanned. `None` means the wallet has not reached it.
+/// its end is a block this wallet scanned. The inner error says why the wallet cannot
+/// match that end yet: sync is behind the end, the service is behind the wallet
+/// birthday, or the two disagree on the block there. Each can clear on a later round.
 async fn capture<T: Transport, S: DescriptorStore>(
     path: &str,
     network: WalletNetwork,
@@ -497,16 +506,29 @@ async fn capture<T: Transport, S: DescriptorStore>(
     origin: &str,
     transport: &T,
     store: &S,
-) -> Result<Option<Inventory>, session::Error> {
+) -> Result<Result<Inventory, RecoveryError>, session::Error> {
     let head = Inventories::head(origin, transport, &MAINNET_GENESIS).await?;
-    let end = head.end_height;
-    let local = wallet(path, network, generation, |db| {
-        db.block_metadata(BlockHeight::from(end))
-            .map_err(|e| e.to_string())
+    let end = BlockHeight::from(head.end_height);
+    let (local, birthday) = wallet(path, network, generation, |db| {
+        Ok((
+            db.block_metadata(end).map_err(|e| e.to_string())?,
+            db.get_wallet_birthday().map_err(|e| e.to_string())?,
+        ))
     })
     .map_err(session::Error::Transport)?;
-    let Some(local) = local.filter(|block| block.block_hash().0 == head.end_hash) else {
-        return Ok(None);
+    let local = match local {
+        Some(block) if block.block_hash().0 == head.end_hash => block,
+        Some(_) => {
+            return Ok(Err(
+                "The swap recovery service and this wallet see different recent blocks. Try again in a few minutes.".into(),
+            ))
+        }
+        // The wallet stores no block below its birthday, so only the service can close
+        // this gap.
+        None if birthday.is_some_and(|birthday| end < birthday) => {
+            return Ok(Err(RecoveryError::ReceiverBehind))
+        }
+        None => return Ok(Err(RecoveryError::NotCaughtUp)),
     };
     let inventory = Inventories::capture_cached(origin, transport, head, store).await?;
     let required_start = network
@@ -518,7 +540,7 @@ async fn capture<T: Transport, S: DescriptorStore>(
         local.block_height().into(),
         &local.block_hash().0,
     )?;
-    Ok(Some(inventory))
+    Ok(Ok(inventory))
 }
 
 /// Captures one inventory and shares it and its filters across accounts, while each
@@ -558,9 +580,9 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         return Ok(Round::default());
     }
     let inventory = match capture(path, network, generation, origin, transport, store).await {
-        Ok(Some(inventory)) => inventory,
-        Ok(None) if manual.is_some() => return Err(RecoveryError::NotCaughtUp),
-        Ok(None) => {
+        Ok(Ok(inventory)) => inventory,
+        Ok(Err(waiting)) if manual.is_some() => return Err(waiting),
+        Ok(Err(_)) => {
             return Ok(Round {
                 active: true,
                 ..Round::default()

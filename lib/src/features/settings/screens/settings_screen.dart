@@ -627,7 +627,7 @@ class _SettingsList extends ConsumerWidget {
               const SizedBox(height: AppSpacing.sm),
               EnhancePirPrivacyControl(
                 enabled: enhancePirEnabled,
-                transition: recoveryTransition,
+                transition: ref.watch(privateQueriesTransitionProvider),
                 onToggle: changingRecovery
                     ? null
                     : () => unawaited(togglePrivateQueries(context, ref)),
@@ -648,7 +648,7 @@ class _SettingsList extends ConsumerWidget {
                   description: nearSwapPrivacy.description,
                   onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                   enabled: nearSwapPrivacy.enabled,
-                  transition: null,
+                  transition: nearSwapPrivacy.transition,
                   onToggle: nearSwapPrivacy.canToggle
                       ? () => unawaited(
                           ref.read(nearSwapPrivacyProvider.notifier).toggle(),

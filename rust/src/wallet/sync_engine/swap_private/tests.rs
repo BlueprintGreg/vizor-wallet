@@ -1211,6 +1211,68 @@ fn a_history_check_ahead_of_sync_waits_for_sync() {
     );
 }
 
+/// A fresh wallet's birthday is the chain tip, so a service publishing a block or two
+/// behind ends below any block the wallet stores. A history check reports that the
+/// service is behind, not that sync is, while automatic rounds keep waiting. Once the
+/// service publishes past the birthday, the check starts.
+#[test]
+fn a_history_check_behind_the_birthday_waits_for_the_service() {
+    isolated!(a_history_check_behind_the_birthday_waits_for_the_service);
+    enable_feature();
+    let mut chain = Chain::new();
+    chain.mine(3);
+    let birthday = chain.tip() + 1;
+    let mut wallet = Wallet::new(4, birthday);
+    let account = wallet.account().clone();
+    chain.mine(3);
+    wallet.scan(&chain);
+    let behind = Service::publish(&chain, birthday - 1, activation(), chain.tip(), &[]);
+    assert!(wallet.recover(&behind).unwrap().active);
+    let error = wallet
+        .recover_with(&behind, Some(None), Duration::from_secs(45))
+        .unwrap_err();
+    assert!(matches!(error, RecoveryError::ReceiverBehind), "{error}");
+    let error = crate::api::one_time_ivk::ReceiveError::from(error);
+    assert_eq!(
+        error.kind,
+        crate::api::one_time_ivk::ReceiveErrorKind::WaitingForService
+    );
+    assert!(wallet.state(&account).manual.is_none());
+
+    let caught_up = Service::publish(&chain, birthday, activation(), chain.tip(), &[]);
+    wallet
+        .recover_with(&caught_up, Some(None), Duration::from_secs(45))
+        .unwrap();
+    assert!(wallet.state(&account).manual.is_some());
+}
+
+/// A history check against a publication whose end block differs from the one the
+/// wallet scanned at that height is a retryable failure, not a wait for either side.
+#[test]
+fn a_history_check_on_another_fork_fails_for_retry() {
+    isolated!(a_history_check_on_another_fork_fails_for_retry);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.mine(2);
+    wallet.scan(&chain);
+    let mut fork = Chain::new();
+    fork.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
+    fork.mine(1);
+    assert_eq!(fork.tip(), chain.tip());
+    let other = Service::at_tip(&fork);
+    assert!(wallet.recover(&other).unwrap().active);
+    let error = wallet
+        .recover_with(&other, Some(None), Duration::from_secs(45))
+        .unwrap_err();
+    assert!(matches!(error, RecoveryError::Other(_)), "{error}");
+    assert_eq!(
+        crate::api::one_time_ivk::ReceiveError::from(error).kind,
+        crate::api::one_time_ivk::ReceiveErrorKind::Other
+    );
+}
+
 /// An account with ZIP 32 metadata but no Orchard key, as an unbackfilled hardware import
 /// can be, is not a software account. Recovery, the status read and issuance keep working
 /// for the wallet's other accounts, with the feature off and on.

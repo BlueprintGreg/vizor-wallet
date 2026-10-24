@@ -194,7 +194,54 @@ void main() {
     expect(store.value, isTrue);
     expect(c.read(nearSwapPrivacyProvider), isTrue);
     expect(api.events, ['swap:true']);
-    expect(c.read(enhancePirTransitionProvider), kSwapRecoveryPendingMessage);
+    expect(
+      c.read(nearSwapPrivacyTransitionProvider),
+      kSwapRecoveryPendingMessage,
+    );
+    expect(c.read(enhancePirTransitionProvider), isNull);
+    expect(c.read(privateQueriesTransitionProvider), isNull);
+  });
+  test('its feedback stays off the Private queries row', () async {
+    final sync = _Sync();
+    final c = setup(_Store(), sync, private: true);
+    final change = c.read(nearSwapPrivacyProvider.notifier).set(true);
+    // Other setting changes still wait for this one.
+    expect(c.read(enhancePirTransitionProvider), kEnhancePirChangingMessage);
+    expect(
+      c.read(nearSwapPrivacyTransitionProvider),
+      kEnhancePirChangingMessage,
+    );
+    expect(c.read(privateQueriesTransitionProvider), isNull);
+    sync.gate.complete();
+    await change;
+    expect(c.read(enhancePirTransitionProvider), isNull);
+    expect(c.read(nearSwapPrivacyTransitionProvider), isNull);
+  });
+  test('a failed change says so under its own row', () async {
+    final store = _Store()..fail = true;
+    final c = setup(store, _Sync()..gate.complete(), private: true);
+    await c.read(nearSwapPrivacyProvider.notifier).set(true);
+    expect(
+      c.read(nearSwapPrivacyTransitionProvider),
+      kEnhancePirUnchangedMessage,
+    );
+    expect(c.read(privateQueriesTransitionProvider), isNull);
+  });
+  test('changing Private queries clears its old feedback', () async {
+    final c = setup(
+      _Store(),
+      _Sync()..gate.complete(),
+      private: true,
+      failReconcile: true,
+    );
+    await c.read(nearSwapPrivacyProvider.notifier).set(true);
+    expect(
+      c.read(nearSwapPrivacyTransitionProvider),
+      kSwapRecoveryPendingMessage,
+    );
+    await c.read(enhancePirProvider.notifier).set(false);
+    expect(c.read(nearSwapPrivacyProvider), isFalse);
+    expect(c.read(nearSwapPrivacyTransitionProvider), isNull);
   });
   test(
     'reconcile failure does not leave an enabled child under an off parent',

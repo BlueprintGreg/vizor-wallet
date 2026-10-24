@@ -246,6 +246,10 @@ enum ReceiveErrorKind {
   /// A swap history check cannot start until wallet sync catches up with the
   /// receiver service. Ask again shortly.
   waitingForSync,
+
+  /// A swap history check cannot start until the receiver service publishes past this
+  /// wallet's birthday. Ask again shortly.
+  waitingForService,
 }
 
 /// A durably reserved swap address. A refund address carries its refund key index, an

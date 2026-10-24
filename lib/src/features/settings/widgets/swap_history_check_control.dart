@@ -14,18 +14,30 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.idle => 'Check older addresses for repeat payments.',
   SwapHistoryCheck.checking => 'Checking swap history…',
   SwapHistoryCheck.done => 'Swap history check complete.',
-  SwapHistoryCheck.continuing => 'The check will continue in the background.',
+  // Mobile runs no rounds in the background (see canRunAppProcessWork).
+  SwapHistoryCheck.continuing =>
+    'The check will keep going while Vizor is open.',
   SwapHistoryCheck.paused => 'Paused. Check again to resume.',
   SwapHistoryCheck.failed =>
-    'The check was interrupted. Saved work may continue. Pause or try again.',
+    "Swap history can't be checked right now. Try again later.",
+  SwapHistoryCheck.walletChanged =>
+    'The check stopped because the wallet changed. Try again.',
+  SwapHistoryCheck.notStarted =>
+    "The check couldn't start. Try again in a moment.",
+  SwapHistoryCheck.pauseFailed => "Couldn't pause the check. Try again.",
   SwapHistoryCheck.waitingForSync =>
     'Waiting for wallet sync. Try again in a few minutes.',
+  SwapHistoryCheck.waitingForService =>
+    "The swap recovery service hasn't caught up with this wallet yet. "
+        'Try again in a few minutes.',
   SwapHistoryCheck.updateRequired => kSwapRecoveryUpdateMessage,
 };
 
-/// Shown when the receiver service needs a newer app.
+/// Shown when the receiver service needs a newer app. Matches the swap quote's
+/// update message.
 const kSwapRecoveryUpdateMessage =
-    'Update Vizor to keep checking swap addresses. Your saved progress is kept.';
+    'Update Vizor to keep checking private swap addresses. '
+    'Your saved progress is kept.';
 
 /// Why the check exists, under the button.
 const kSwapHistoryCheckExplanation =
