@@ -29,6 +29,20 @@ const _account = 'account-1';
 /// How many times a poll read the chain tip.
 var _tipReads = 0;
 
+/// A round that reached a compatible service and found nothing new.
+const _quiet = rust_swap.SwapRecoveryRound(
+  active: true,
+  changed: false,
+  checked: true,
+);
+
+/// A round that found no recovery work and contacted no service.
+const _idle = rust_swap.SwapRecoveryRound(
+  active: false,
+  changed: false,
+  checked: false,
+);
+
 /// Rust as the settings toggle and the scheduler see it: ordinary sync streams
 /// the test feeds, recovery rounds the test completes, and Rust's NEAR swap
 /// privacy switch. Every call is logged in [events].
@@ -40,7 +54,7 @@ class _Api extends RustLibApi {
   /// while the feature is on.
   bool checking = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
-  final rounds = <Completer<bool>>[];
+  final rounds = <Completer<rust_swap.SwapRecoveryRound>>[];
   final manual = <Completer<void>>[];
   final events = <String>[];
 
@@ -105,12 +119,12 @@ class _Api extends RustLibApi {
 
   /// Starts a round that stays open until the test or a cancellation ends it.
   @override
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<rust_swap.SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
     events.add('round');
-    final round = Completer<bool>();
+    final round = Completer<rust_swap.SwapRecoveryRound>();
     rounds.add(round);
     open++;
     if (open > mostOpen) mostOpen = open;
@@ -187,6 +201,20 @@ class _Api extends RustLibApi {
       total: zero,
     );
   }
+
+  /// Reports no private query work, so a poll starts no sync for it.
+  @override
+  Future<rust_sync.EnhanceRecoveryStatus> crateApiSyncGetEnhanceRecoveryStatus({
+    required String dbPath,
+    required String network,
+  }) async => const rust_sync.EnhanceRecoveryStatus(
+    queries: 0,
+    rediscovery: 0,
+    suspended: 0,
+    status: 0,
+    transparentRetryDue: false,
+    serviceState: '',
+  );
 
   @override
   Future<List<rust_sync.TransactionInfo>> crateApiSyncGetTransactionHistory({
@@ -306,21 +334,23 @@ class _Sync extends SyncNotifier {
   );
 }
 
-/// One sync batch that scanned through `height`.
-rust_sync.ApiSyncProgressEvent _scanned(int height) =>
-    rust_sync.ApiSyncProgressEvent(
-      kind: rust_sync.ApiSyncEventKind.progress,
-      scannedHeight: BigInt.from(height),
-      chainTipHeight: BigInt.from(height),
-      percentage: 1,
-      displayTargetPercentage: 1,
-      displayTargetBlocks: BigInt.zero,
-      isSyncing: true,
-      hasNewTx: false,
-      phaseCompletedUnits: BigInt.zero,
-      phaseTotalUnits: BigInt.zero,
-      phase: '',
-    );
+/// One sync batch that scanned through `height`, of kind `kind`.
+rust_sync.ApiSyncProgressEvent _scanned(
+  int height, {
+  rust_sync.ApiSyncEventKind kind = rust_sync.ApiSyncEventKind.progress,
+}) => rust_sync.ApiSyncProgressEvent(
+  kind: kind,
+  scannedHeight: BigInt.from(height),
+  chainTipHeight: BigInt.from(height),
+  percentage: 1,
+  displayTargetPercentage: 1,
+  displayTargetBlocks: BigInt.zero,
+  isSyncing: kind == rust_sync.ApiSyncEventKind.progress,
+  hasNewTx: false,
+  phaseCompletedUnits: BigInt.zero,
+  phaseTotalUnits: BigInt.zero,
+  phase: '',
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -454,9 +484,27 @@ void main() {
     return api.rounds.length;
   }
 
-  /// Ends the newest round, reporting whether the wallet had work.
-  Future<void> finish({bool work = true}) async {
-    api.rounds.last.complete(work);
+  /// Completes the newest sync at `height` and returns how many rounds have
+  /// started.
+  Future<int> complete(_Sync sync, int height) async {
+    api.syncs.last.add(
+      _scanned(height, kind: rust_sync.ApiSyncEventKind.completed),
+    );
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    return api.rounds.length;
+  }
+
+  /// Runs one idle poll and returns how many rounds have started.
+  Future<int> poll(_Sync sync) async {
+    await sync.checkTipForTesting();
+    sync.stopTipChecksForTesting();
+    return api.rounds.length;
+  }
+
+  /// Ends the newest round, reporting what it did.
+  Future<void> finish(rust_swap.SwapRecoveryRound round) async {
+    api.rounds.last.complete(round);
     await pumpEventQueue();
   }
 
@@ -480,14 +528,16 @@ void main() {
   }
 
   /// Off to on with work pending: an idle wallet with the setting off starts no
-  /// round per batch. Turning it on saves the setting, applies it to Rust, then
-  /// reconciles the wallet, and the next batch starts a round with no manual
-  /// step. Rounds then follow every batch.
-  test('turning on resumes rounds on the next batch', () async {
+  /// round per poll. Turning it on saves the setting, applies it to Rust, then
+  /// reconciles the wallet, and the restarted sync's completion starts a round
+  /// with no manual step. Rounds then follow every poll. Batches before a sync
+  /// completes start none.
+  test('turning on resumes rounds once the sync completes', () async {
     final (container, sync, store) = await app(false);
-    expect(await batch(sync, 101), 1, reason: 'the first batch asks Rust');
-    await finish(work: false);
-    expect(await batch(sync, 102), 1, reason: 'off and idle');
+    expect(await batch(sync, 101), 0, reason: 'a batch before completion');
+    expect(await complete(sync, 101), 1, reason: 'completion asks Rust');
+    await finish(_idle);
+    expect(await poll(sync), 1, reason: 'off and idle');
 
     await container.read(nearSwapPrivacyProvider.notifier).set(true);
     await pumpEventQueue();
@@ -501,71 +551,83 @@ void main() {
     );
     expect(container.read(enhancePirTransitionProvider), isNull);
     final before = api.rounds.length;
-    expect(await batch(sync, 103), before + 1, reason: 'on: the batch asks');
-    await finish();
-    expect(await batch(sync, 104), before + 2, reason: 'and the next one');
-    await finish(work: false);
+    expect(await batch(sync, 102), before, reason: 'on: a batch still waits');
+    expect(
+      await complete(sync, 103),
+      before + 1,
+      reason: 'on: the completion asks',
+    );
+    await finish(_quiet);
+    expect(await poll(sync), before + 2, reason: 'and the next poll');
+    await finish(_quiet);
     await settle(sync);
   });
 
   /// On to off mid-round: the toggle cancels the open round and waits for it to
   /// end before it saves or applies anything. Afterwards the setting is off in
   /// the store, in Rust and in the wallet, and once Rust reports no work no
-  /// batch or poll starts a round.
-  test('turning off mid-round drains it first, then the wallet idles', () async {
-    final (container, sync, store) = await app(true);
-    expect(await batch(sync, 101), 1);
-    api.drainOnCancel = false;
-    final off = container.read(nearSwapPrivacyProvider.notifier).set(false);
-    await pumpEventQueue();
-    expect(api.events, contains('cancel'));
-    expect(store.writes, isEmpty, reason: 'waits for the round to end');
-    expect(api.swapPrivacy, isTrue);
+  /// poll starts a round.
+  test(
+    'turning off mid-round drains it first, then the wallet idles',
+    () async {
+      final (container, sync, store) = await app(true);
+      expect(await complete(sync, 101), 1);
+      api.drainOnCancel = false;
+      final off = container.read(nearSwapPrivacyProvider.notifier).set(false);
+      await pumpEventQueue();
+      expect(api.events, contains('cancel'));
+      expect(store.writes, isEmpty, reason: 'waits for the round to end');
+      expect(api.swapPrivacy, isTrue);
 
-    api.rounds.last.completeError(
-      const rust_swap.ReceiveError(
-        message: 'Swap recovery was cancelled.',
-        kind: rust_swap.ReceiveErrorKind.other,
-      ),
-    );
-    await off;
-    await pumpEventQueue();
-    sync.stopTipChecksForTesting();
-    expect(store.value, isFalse);
-    expect(container.read(nearSwapPrivacyProvider), isFalse);
-    final order = api.events
-        .where(
-          (e) =>
-              e == 'cancel' ||
-              e.startsWith('swap:') ||
-              e.startsWith('reconcile'),
-        )
-        .toList();
-    expect(order, ['cancel', 'swap:false', 'reconcile:false']);
+      api.rounds.last.completeError(
+        const rust_swap.ReceiveError(
+          message: 'Swap recovery was cancelled.',
+          kind: rust_swap.ReceiveErrorKind.other,
+        ),
+      );
+      await off;
+      await pumpEventQueue();
+      sync.stopTipChecksForTesting();
+      expect(store.value, isFalse);
+      expect(container.read(nearSwapPrivacyProvider), isFalse);
+      final order = api.events
+          .where(
+            (e) =>
+                e == 'cancel' ||
+                e.startsWith('swap:') ||
+                e.startsWith('reconcile'),
+          )
+          .toList();
+      expect(order, ['cancel', 'swap:false', 'reconcile:false']);
 
-    // The toggle restarted sync. Its first batch asks Rust once, which reports
-    // no work, and then nothing more starts.
-    final asked = await batch(sync, 102);
-    await finish(work: false);
-    for (final height in [103, 104, 105]) {
-      expect(await batch(sync, height), asked, reason: 'inert at $height');
-    }
-    // With that sync finished, an idle poll reads the tip and starts nothing.
-    api.running = false;
-    await api.syncs.last.close();
-    await pumpEventQueue();
-    sync.stopTipChecksForTesting();
-    final rounds = api.rounds.length;
-    final reads = _tipReads;
-    await sync.checkTipForTesting();
-    sync.stopTipChecksForTesting();
-    expect(_tipReads, reads + 1, reason: 'the poll ran');
-    expect(api.rounds.length, rounds, reason: 'an idle poll starts nothing');
-    await settle(sync);
-  });
+      // The toggle restarted sync. Its batches ask nothing, its completion asks
+      // Rust once, which reports no work, and then nothing more starts.
+      final rounds = api.rounds.length;
+      expect(
+        await batch(sync, 102),
+        rounds,
+        reason: 'a batch before completion',
+      );
+      final asked = await complete(sync, 103);
+      expect(asked, rounds + 1);
+      await finish(_idle);
+      // With that sync finished, idle polls read the tip and start nothing.
+      api.running = false;
+      await api.syncs.last.close();
+      await pumpEventQueue();
+      sync.stopTipChecksForTesting();
+      for (var i = 0; i < 3; i++) {
+        final reads = _tipReads;
+        expect(await poll(sync), asked, reason: 'an idle poll starts nothing');
+        expect(_tipReads, reads + 1, reason: 'the poll ran');
+      }
+      await settle(sync);
+    },
+  );
 
   /// On, off, on: each change goes to the store, then Rust, then the wallet,
-  /// and rounds stop and resume with it.
+  /// and rounds stop and resume with it. Each restarted sync's completion asks
+  /// Rust, and afterwards only the setting on keeps polls asking.
   test('on, off and on again apply each setting in order', () async {
     final (container, sync, store) = await app(true);
     final notifier = container.read(nearSwapPrivacyProvider.notifier);
@@ -580,14 +642,14 @@ void main() {
         api.events.lastWhere((e) => e.startsWith('reconcile')),
         'reconcile:$on',
       );
-      final asked = await batch(sync, 100 + api.syncs.length);
+      final before = api.rounds.length;
+      final asked = await complete(sync, 100 + api.syncs.length);
+      expect(asked, before + 1, reason: 'on $on: the completion asks Rust');
+      await finish(on ? _quiet : _idle);
+      final next = await poll(sync);
+      expect(next > asked, on, reason: 'on $on: rounds follow polls');
       if (api.rounds.isNotEmpty && !api.rounds.last.isCompleted) {
-        await finish(work: false);
-      }
-      final next = await batch(sync, 200 + api.syncs.length);
-      expect(next > asked, on, reason: 'on $on: rounds follow batches');
-      if (api.rounds.isNotEmpty && !api.rounds.last.isCompleted) {
-        await finish(work: false);
+        await finish(on ? _quiet : _idle);
       }
     }
     expect(store.writes, [false, true, false, true]);
@@ -598,9 +660,9 @@ void main() {
   /// The setting survives a restart in both directions. Each launch reads the
   /// saved value from its production store and applies it to a fresh Rust
   /// through the production startup policy, and reconciles nothing until a
-  /// round does. With the setting off, the first batch after the restart still
-  /// asks Rust once, since the wallet may still say on or hold repair work, and
-  /// an idle answer then stops the rounds.
+  /// round does. With the setting off, the first completed sync after the
+  /// restart still asks Rust once, since the wallet may still say on or hold
+  /// repair work, and an idle answer then stops the rounds.
   test('a restart keeps the saved setting either way', () async {
     SharedPreferences.setMockInitialValues({});
     await const SharedPreferencesEnhancePirStore(
@@ -617,9 +679,9 @@ void main() {
     expect(container.read(nearSwapPrivacyProvider), isFalse);
     expect(api.swapPrivacy, isFalse);
     expect(api.events.where((e) => e.startsWith('reconcile')), isEmpty);
-    expect(await batch(sync, 101), 1, reason: 'the first round reconciles');
-    await finish(work: false);
-    expect(await batch(sync, 102), 1, reason: 'then the wallet idles');
+    expect(await complete(sync, 101), 1, reason: 'the first round reconciles');
+    await finish(_idle);
+    expect(await poll(sync), 1, reason: 'then the wallet idles');
     await container.read(nearSwapPrivacyProvider.notifier).set(true);
     await settle(sync);
     container.dispose();
@@ -628,10 +690,10 @@ void main() {
     (container, sync, _) = await app(true, launch: true);
     expect(container.read(nearSwapPrivacyProvider), isTrue);
     expect(api.swapPrivacy, isTrue, reason: 'startup applied the saved on');
-    expect(await batch(sync, 101), 1);
-    await finish(work: false);
-    expect(await batch(sync, 102), 2, reason: 'on: rounds follow batches');
-    await finish(work: false);
+    expect(await complete(sync, 101), 1);
+    await finish(_quiet);
+    expect(await poll(sync), 2, reason: 'on: rounds follow polls');
+    await finish(_quiet);
     await settle(sync);
   });
 
@@ -645,7 +707,7 @@ void main() {
     () async {
       final (container, sync, store) = await app(false);
       final notifier = container.read(nearSwapPrivacyProvider.notifier);
-      expect(await batch(sync, 101), 1);
+      expect(await complete(sync, 101), 1);
       final first = notifier.set(true);
       final second = notifier.set(false);
       final third = notifier.set(true);
@@ -659,7 +721,15 @@ void main() {
 
       for (var i = 0; i < 6; i++) {
         await notifier.toggle();
-        await batch(sync, 110 + i);
+        // Let the toggle's restarted sync start, so its completion is not fed
+        // to the stream the toggle stopped.
+        await pumpEventQueue();
+        final rounds = api.rounds.length;
+        expect(
+          await complete(sync, 110 + i),
+          rounds + 1,
+          reason: 'each completed sync asks Rust while the last toggle drains',
+        );
       }
       await pumpEventQueue();
       sync.stopTipChecksForTesting();
@@ -674,7 +744,7 @@ void main() {
       expect(container.read(enhancePirTransitionProvider), isNull);
       expect(api.mostOpen, 1, reason: 'rounds never overlap');
       for (final round in api.rounds.where((r) => !r.isCompleted)) {
-        round.complete(false);
+        round.complete(_idle);
       }
       await settle(sync);
     },
@@ -691,7 +761,9 @@ void main() {
     );
     held = Completer<String>();
     sync.clearCachedWalletDbPath();
-    api.syncs.last.add(_scanned(101));
+    api.syncs.last.add(
+      _scanned(101, kind: rust_sync.ApiSyncEventKind.completed),
+    );
     await pumpEventQueue();
     sync.stopTipChecksForTesting();
     expect(api.rounds, isEmpty, reason: 'the round is resolving its path');
@@ -706,8 +778,12 @@ void main() {
     sync.stopTipChecksForTesting();
     expect(api.rounds, isEmpty, reason: 'the stale round never ran');
     expect(api.events, containsAllInOrder(['cancel', 'swap:false']));
-    expect(await batch(sync, 102), 1, reason: 'a later batch asks Rust');
-    await finish(work: false);
+    expect(
+      await complete(sync, 102),
+      1,
+      reason: 'a later completed sync asks Rust',
+    );
+    await finish(_idle);
     await settle(sync);
   });
 
@@ -748,7 +824,7 @@ void main() {
     );
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     for (final round in api.rounds.where((r) => !r.isCompleted)) {
-      round.complete(false);
+      round.complete(_idle);
     }
     await settle(sync);
   });
@@ -792,7 +868,7 @@ void main() {
     );
     expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
     for (final round in api.rounds.where((r) => !r.isCompleted)) {
-      round.complete(false);
+      round.complete(_idle);
     }
     await settle(sync);
   });

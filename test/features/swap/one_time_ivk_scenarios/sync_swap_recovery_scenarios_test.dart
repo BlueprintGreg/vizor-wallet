@@ -19,12 +19,29 @@ import 'package:zcash_wallet/src/rust/frb_generated.dart';
 
 const _account = 'account-1';
 
+/// The time the notifier's swap recovery backoff reads.
+var _clock = DateTime(2026);
+
+/// A round that reached a compatible service and found nothing new.
+const _quiet = rust_swap.SwapRecoveryRound(
+  active: true,
+  changed: false,
+  checked: true,
+);
+
+/// A round that found no recovery work and contacted no service.
+const _idle = rust_swap.SwapRecoveryRound(
+  active: false,
+  changed: false,
+  checked: false,
+);
+
 /// Rust as the scheduler sees it: a sync stream the test feeds batch by batch
 /// and recovery rounds the test holds and then completes.
 class _Api extends RustLibApi {
   bool running = false;
   final syncs = <StreamController<rust_sync.ApiSyncProgressEvent>>[];
-  final rounds = <Completer<bool>>[];
+  final rounds = <Completer<rust_swap.SwapRecoveryRound>>[];
   final balanceReads = <String>[];
 
   /// Whether the fake's sync holds the Rust guard.
@@ -79,11 +96,11 @@ class _Api extends RustLibApi {
 
   /// Starts a held recovery round.
   @override
-  Future<bool> crateApiOneTimeIvkRunSwapRecovery({
+  Future<rust_swap.SwapRecoveryRound> crateApiOneTimeIvkRunSwapRecovery({
     required String dbPath,
     required String networkName,
   }) {
-    final round = Completer<bool>();
+    final round = Completer<rust_swap.SwapRecoveryRound>();
     rounds.add(round);
     return round.future;
   }
@@ -201,6 +218,7 @@ class _Sync extends SyncNotifier {
     : super(
         walletDbPathResolver: () async => 'wallet.db',
         excludeCompanionsFromBackup: (_) async {},
+        now: () => _clock,
       );
 
   /// A completed sync at height 100.
@@ -214,21 +232,23 @@ class _Sync extends SyncNotifier {
   );
 }
 
-/// One sync batch that scanned through `height`.
-rust_sync.ApiSyncProgressEvent _scanned(int height) =>
-    rust_sync.ApiSyncProgressEvent(
-      kind: rust_sync.ApiSyncEventKind.progress,
-      scannedHeight: BigInt.from(height),
-      chainTipHeight: BigInt.from(height),
-      percentage: 1,
-      displayTargetPercentage: 1,
-      displayTargetBlocks: BigInt.zero,
-      isSyncing: true,
-      hasNewTx: false,
-      phaseCompletedUnits: BigInt.zero,
-      phaseTotalUnits: BigInt.zero,
-      phase: '',
-    );
+/// One sync batch that scanned through `height`, of kind `kind`.
+rust_sync.ApiSyncProgressEvent _scanned(
+  int height, {
+  rust_sync.ApiSyncEventKind kind = rust_sync.ApiSyncEventKind.progress,
+}) => rust_sync.ApiSyncProgressEvent(
+  kind: kind,
+  scannedHeight: BigInt.from(height),
+  chainTipHeight: BigInt.from(height),
+  percentage: 1,
+  displayTargetPercentage: 1,
+  displayTargetBlocks: BigInt.zero,
+  isSyncing: kind == rust_sync.ApiSyncEventKind.progress,
+  hasNewTx: false,
+  phaseCompletedUnits: BigInt.zero,
+  phaseTotalUnits: BigInt.zero,
+  phase: '',
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -243,12 +263,14 @@ void main() {
     api.syncs.clear();
     api.rounds.clear();
     api.balanceReads.clear();
+    _clock = DateTime(2026);
   });
 
   late ProviderContainer container;
   late _Sync sync;
 
-  /// Starts a sync whose first batch, block 101, starts a held round.
+  /// Runs a sync to block 101. Its batch starts no round, and its completion
+  /// starts a held round. The sync then ends, so idle polls run.
   Future<void> recovering() async {
     sync = _Sync();
     container = ProviderContainer(
@@ -273,13 +295,19 @@ void main() {
     await pumpEventQueue();
     api.syncs[0].add(_scanned(101));
     await pumpEventQueue();
+    expect(api.rounds, isEmpty, reason: 'a batch before completion');
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
     expect(api.rounds, hasLength(1));
+    api.running = false;
+    await api.syncs[0].close();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
   }
 
-  /// Feeds one more batch through `height` and returns the round count.
-  Future<int> batch(int height) async {
-    api.syncs[0].add(_scanned(height));
-    await pumpEventQueue();
+  /// Runs one idle poll and returns the round count.
+  Future<int> poll() async {
+    await sync.checkTipForTesting();
     sync.stopTipChecksForTesting();
     return api.rounds.length;
   }
@@ -293,71 +321,101 @@ void main() {
   }
 
   /// A round that reports the service needs a newer app raises the update
-  /// request, refreshes nothing, and a later successful round clears it.
-  test(
-    'an outdated service asks for an update until a round succeeds',
-    () async {
-      await recovering();
-      final followups = container.read(syncFollowupProvider);
-      api.rounds.last.completeError(
-        const rust_swap.ReceiveError(
-          message:
-              'Update Vizor to keep checking private swap addresses. '
-              'Your saved progress is kept.',
-          kind: rust_swap.ReceiveErrorKind.upgradeRequired,
-        ),
-      );
-      await pumpEventQueue();
-      expect(container.read(swapRecoveryUpdateRequiredProvider), isTrue);
-      expect(container.read(syncFollowupProvider), followups);
+  /// request and refreshes nothing. The retry waits out the first backoff
+  /// step. A successful round that never reached the receiver keeps the
+  /// request, and only one that checked a supported receiver clears it.
+  test('an outdated service asks for an update until a round checks the '
+      'receiver', () async {
+    await recovering();
+    final followups = container.read(syncFollowupProvider);
+    api.rounds.last.completeError(
+      const rust_swap.ReceiveError(
+        message:
+            'Update Vizor to keep checking private swap addresses. '
+            'Your saved progress is kept.',
+        kind: rust_swap.ReceiveErrorKind.upgradeRequired,
+      ),
+    );
+    await pumpEventQueue();
+    expect(container.read(swapRecoveryUpdateRequiredProvider), isTrue);
+    expect(container.read(syncFollowupProvider), followups);
 
-      expect(await batch(102), 2, reason: 'a failed round is not idle');
-      api.rounds.last.complete(false);
-      await pumpEventQueue();
-      expect(container.read(swapRecoveryUpdateRequiredProvider), isFalse);
-      await settle();
-    },
-  );
+    expect(await poll(), 1, reason: 'within the 10 second backoff');
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await poll(), 2, reason: 'a failed round is not idle');
+    api.rounds.last.complete(
+      const rust_swap.SwapRecoveryRound(
+        active: true,
+        changed: false,
+        checked: false,
+      ),
+    );
+    await pumpEventQueue();
+    expect(
+      container.read(swapRecoveryUpdateRequiredProvider),
+      isTrue,
+      reason: 'the round never reached the receiver',
+    );
+
+    expect(await poll(), 3, reason: 'a successful round ends the backoff');
+    api.rounds.last.complete(_quiet);
+    await pumpEventQueue();
+    expect(container.read(swapRecoveryUpdateRequiredProvider), isFalse);
+    expect(container.read(syncFollowupProvider), followups);
+    await settle();
+  });
 
   /// Turning NEAR swap privacy on while the wallet is idle resumes rounds on
-  /// the next batch, and turning it back off lets an idle wallet skip them.
+  /// the next poll, and turning it back off lets the wallet skip them once
+  /// Rust reports no work.
   test('rounds follow NEAR swap privacy changes while idle', () async {
     await recovering();
-    api.rounds.last.complete(false);
+    api.rounds.last.complete(_idle);
     await pumpEventQueue();
-    expect(await batch(102), 1, reason: 'idle and off');
+    expect(await poll(), 1, reason: 'idle and off');
 
     final privacy =
         container.read(nearSwapPrivacyProvider.notifier) as _Privacy;
     privacy.turn(true);
-    expect(await batch(103), 2, reason: 'on: every batch asks Rust');
-    api.rounds.last.complete(false);
+    expect(await poll(), 2, reason: 'on: every poll asks Rust');
+    api.rounds.last.complete(_quiet);
     await pumpEventQueue();
-    expect(await batch(104), 3);
-    api.rounds.last.complete(false);
+    expect(await poll(), 3);
+    api.rounds.last.complete(_quiet);
     await pumpEventQueue();
 
     privacy.turn(false);
-    expect(await batch(105), 3, reason: 'off and the last round was idle');
+    expect(await poll(), 4, reason: 'off, but the last round had work');
+    api.rounds.last.complete(_idle);
+    await pumpEventQueue();
+    expect(await poll(), 4, reason: 'off and the last round was idle');
     await settle();
   });
 
   /// With NEAR swap privacy off, a round that fails leaves the wallet's work
-  /// unknown, so the next batch asks Rust again rather than going idle.
-  /// Documents current behavior: a persistently failing feature-off round
-  /// costs one Rust call per batch and idle poll, with no follow-up refresh.
-  test('a failed round with the feature off is retried per batch', () async {
-    await recovering();
-    final reads = api.balanceReads.length;
-    for (var height = 102; height <= 104; height++) {
-      api.rounds.last.completeError(StateError('database is locked'));
+  /// unknown, so a poll asks Rust again rather than going idle, but only once
+  /// a growing backoff passes. A persistently failing feature-off round costs
+  /// one Rust call after 10 seconds, then 30, then 60, with no follow-up
+  /// refresh.
+  test(
+    'a failed round with the feature off is retried after a growing backoff',
+    () async {
+      await recovering();
+      final reads = api.balanceReads.length;
+      for (final wait in [10, 30, 60]) {
+        final rounds = api.rounds.length;
+        api.rounds.last.completeError(StateError('database is locked'));
+        await pumpEventQueue();
+        _clock = _clock.add(Duration(seconds: wait - 1));
+        expect(await poll(), rounds, reason: 'within $wait seconds');
+        _clock = _clock.add(const Duration(seconds: 1));
+        expect(await poll(), rounds + 1, reason: 'after $wait seconds');
+      }
+      expect(api.balanceReads.length, reads, reason: 'no follow-up refresh');
+      api.rounds.last.complete(_idle);
       await pumpEventQueue();
-      expect(await batch(height), height - 100);
-    }
-    expect(api.balanceReads.length, reads, reason: 'no follow-up refresh');
-    api.rounds.last.complete(false);
-    await pumpEventQueue();
-    expect(await batch(105), 4, reason: 'an idle answer stops the retries');
-    await settle();
-  });
+      expect(await poll(), 4, reason: 'an idle answer stops the retries');
+      await settle();
+    },
+  );
 }
