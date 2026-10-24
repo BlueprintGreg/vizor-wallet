@@ -745,12 +745,35 @@ impl DirectBlockRoute {
     }
 }
 
+/// How long a batch that ends far below the chain tip goes without the tip
+/// check after each batch. That check is a round trip over the session's
+/// route, Tor when it is on, which the loop waits for after the scan: a
+/// restore runs thousands of history batches, and on an iPhone restore five
+/// of those checks timed out, three after the full 20 seconds. Batches within
+/// [`HISTORY_TIP_CHECK_DISTANCE`] of the tip still check after every batch,
+/// so tip promotion, resubmission and the completion check near the tip are
+/// unchanged. The schedule depends only on time and the batch's height, so
+/// the requests still carry no wallet state.
+const HISTORY_TIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+const HISTORY_TIP_CHECK_DISTANCE: u64 = 10_000;
+
+/// Whether the batch ending at `batch_end` checks the chain tip after it scans.
+fn post_batch_tip_check_due(
+    batch_end: u64,
+    tip: u64,
+    since_last_check: std::time::Duration,
+) -> bool {
+    batch_end.saturating_add(HISTORY_TIP_CHECK_DISTANCE) >= tip
+        || since_last_check >= HISTORY_TIP_CHECK_EVERY
+}
+
 /// How often a sync session logs where its time went.
 const SYNC_TIMING_SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The batches of a session since its last timing summary, so a log shows
 /// whether a slow sync waits on downloads or on the scan: time waiting for a
-/// batch's blocks counts as download, time in the scan and the write as scan.
+/// batch's blocks counts as download, time waiting for the tip check after a
+/// batch as tip checks, and time in the scan and the write as scan.
 #[derive(Debug, Default)]
 struct SyncTimingSummary {
     batches: u32,
@@ -759,6 +782,7 @@ struct SyncTimingSummary {
     bytes: u64,
     waited: std::time::Duration,
     scanned: std::time::Duration,
+    tip_waited: std::time::Duration,
 }
 
 impl SyncTimingSummary {
@@ -784,7 +808,8 @@ impl SyncTimingSummary {
         let megabytes = self.bytes as f64 / 1_000_000.0;
         format!(
             "last {:.0}s: {} batches ({} direct), {} blocks, {:.1} MB ({:.2} MB/s), \
-             waited {:.1}s for downloads, scanned {:.1}s at {power:?} power",
+             waited {:.1}s for downloads and {:.1}s for tip checks, scanned {:.1}s at \
+             {power:?} power",
             period.as_secs_f64(),
             self.batches,
             self.direct_batches,
@@ -792,6 +817,7 @@ impl SyncTimingSummary {
             megabytes,
             megabytes / seconds,
             self.waited.as_secs_f64(),
+            self.tip_waited.as_secs_f64(),
             self.scanned.as_secs_f64(),
         )
     }
@@ -4124,6 +4150,7 @@ async fn run_sync_impl(
     let mut last_scan_power = None;
     let mut timing = SyncTimingSummary::default();
     let mut timing_since = std::time::Instant::now();
+    let mut last_post_batch_tip_check = std::time::Instant::now();
     log::info!(
         "[{}] sync: {} blocks to scan; progress job {} {:?} at {:.1}% ({:.0} of {:.0} work units left)",
         elapsed(),
@@ -4871,8 +4898,16 @@ async fn run_sync_impl(
                 );
             }
         }
-        let tip_prefetch =
-            (!should_exit()).then(|| TipPrefetch::spawn(client.clone(), lightwalletd_url, network));
+        let tip_check_due = post_batch_tip_check_due(
+            u64::from(u32::from(end)),
+            current_tip_height,
+            last_post_batch_tip_check.elapsed(),
+        );
+        if tip_check_due {
+            last_post_batch_tip_check = std::time::Instant::now();
+        }
+        let tip_prefetch = (tip_check_due && !should_exit())
+            .then(|| TipPrefetch::spawn(client.clone(), lightwalletd_url, network));
 
         // Scan from memory. There are three reorg-adjacent signals from
         // librustzcash that all need to land on `SyncError::Continuity`
@@ -5283,8 +5318,17 @@ async fn run_sync_impl(
             log::info!("[{}] sync: exiting during enhancement", elapsed());
             return Ok(());
         }
-        let ready = enhancement.take_ready_resubmission();
         enhancement_after_scan = true;
+        // A history batch between tip checks skips its own; the schedule never
+        // depends on what the wallet holds. Recovered status work stays
+        // durable and completes after a later check, at the latest near the
+        // tip, where every batch checks.
+        let check_tip = tip_check_due;
+        let ready = if check_tip {
+            enhancement.take_ready_resubmission()
+        } else {
+            HashSet::new()
+        };
 
         // Post-batch tip reconciliation and auto-resubmit. The resubmit calls
         // match zcash-android-wallet-sdk's lines 593/701 call sites (end of a
@@ -5324,155 +5368,164 @@ async fn run_sync_impl(
             );
             return Ok(());
         }
-        // Started before the scan; usually complete by now. A tip proved
-        // unchanged counts as validated when it was requested, so the final
-        // tip check before completion stays as strict as a fetch made here.
-        let tip_requested_at = tip_prefetch
-            .as_ref()
-            .map_or_else(std::time::Instant::now, |prefetch| prefetch.requested_at);
-        let fresh_tip_result = match tip_prefetch {
-            Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
-            None => Some(get_latest_block_recorded(&mut client, lightwalletd_url, network).await),
-        };
-        let Some(fresh_tip_result) = fresh_tip_result
-            .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
-        else {
-            log::info!("[{}] sync: exiting after post-batch tip fetch", elapsed());
-            return Ok(());
-        };
-        match fresh_tip_result {
-            Ok(fresh_tip) => {
-                let fresh_tip_height =
-                    block_height_from_u64(fresh_tip.height, "post-batch lightwalletd chain tip")?;
-
-                let stored_hash =
-                    stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                let relation = classify_refreshed_tip_with_fallback(
-                    &mut client,
-                    current_tip_height,
-                    stored_hash,
-                    fresh_tip.height,
-                    &fresh_tip.hash,
-                )
-                .await;
-                let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
-                    log::info!(
-                        "[{}] sync: exiting after post-batch tip validation",
-                        elapsed()
-                    );
-                    return Ok(());
-                };
-                let relation = relation?;
-                match relation {
-                    RefreshedTipRelation::Unchanged => {
-                        last_completion_tip_validation = tip_requested_at;
-                        completion_tip_validation_required = false;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                    }
-                    RefreshedTipRelation::UnchangedUnverified => {
-                        completion_tip_validation_required = true;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                    }
-                    RefreshedTipRelation::Advanced => {
-                        match with_wallet_db_write_lock(
-                            "sync_engine.update_chain_tip.post_batch",
-                            || db.update_chain_tip(fresh_tip_height),
-                        ) {
-                            Ok(_) => {
-                                current_tip_height = fresh_tip.height;
-                                enhancement::content_failures::at_tip(
-                                    db_data_path,
-                                    current_tip_height,
-                                );
-                                completion_tip_validation_required = true;
-                                last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                            }
-                            Err(e) => {
-                                completion_tip_validation_required = true;
-                                log::warn!(
-                                    "[{}] sync: post-batch update_chain_tip({}) \
-                                         failed, keeping tip at {current_tip_height}: {e}",
-                                    elapsed(),
-                                    fresh_tip.height,
-                                );
-                            }
-                        }
-                    }
-                    RefreshedTipRelation::ServerBehind => {
-                        return Err(lagging_lightwalletd_tip(
-                            current_tip_height,
-                            fresh_tip.height,
-                        ));
-                    }
-                    RefreshedTipRelation::Reorg => {
-                        if main_rewinds_this_run >= MAX_REWINDS_PER_RUN {
-                            return Err(SyncError::continuity(
-                                fresh_tip.height,
-                                "post-batch tip reorg rewind budget exhausted",
-                            ));
-                        }
-                        main_rewinds_this_run += 1;
-                        prefetch.clear();
-                        let (actual_height, repair_ranges, pending_blocks) =
-                            rewind_for_confirmed_tip_reorg(
-                                db_data_path,
-                                &mut db,
-                                fresh_tip.height,
-                            )?;
-                        log::warn!(
-                            "[{}] sync: post-batch tip proved a reorg; rewound to {} \
-                                 and queued {} block(s) toward tip {}",
-                            elapsed(),
-                            actual_height,
-                            pending_blocks,
-                            fresh_tip.height,
-                        );
-                        current_tip_height = fresh_tip.height;
-                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
-                        initial_total = pending_blocks;
-                        prev_remaining = pending_blocks;
-                        if checking_cycle > 0 && pending_blocks > 0 {
-                            progress_fn(begin_checking(
-                                &mut checking_cycle,
-                                pending_blocks,
-                                current_tip_height,
-                                &job,
-                            ));
-                        }
-                        queued_ranges = Some(repair_ranges);
-                        completion_tip_validation_required = true;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                        continue;
-                    }
+        if check_tip {
+            // Started before the scan; usually complete by now. A tip proved
+            // unchanged counts as validated when it was requested, so the final
+            // tip check before completion stays as strict as a fetch made here.
+            let tip_requested_at = tip_prefetch
+                .as_ref()
+                .map_or_else(std::time::Instant::now, |prefetch| prefetch.requested_at);
+            let tip_check_started = std::time::Instant::now();
+            let fresh_tip_result = match tip_prefetch {
+                Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
+                None => {
+                    Some(get_latest_block_recorded(&mut client, lightwalletd_url, network).await)
                 }
+            };
+            timing.tip_waited += tip_check_started.elapsed();
+            let Some(fresh_tip_result) = fresh_tip_result
+                .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+            else {
+                log::info!("[{}] sync: exiting after post-batch tip fetch", elapsed());
+                return Ok(());
+            };
+            match fresh_tip_result {
+                Ok(fresh_tip) => {
+                    let fresh_tip_height = block_height_from_u64(
+                        fresh_tip.height,
+                        "post-batch lightwalletd chain tip",
+                    )?;
 
-                // Use the just-observed network height for the expiry
-                // filter. The authoritative progress tip was promoted
-                // above only when its DB update succeeded; lower or
-                // divergent responses cannot reach this broadcast path.
-                if allow_resubmit {
-                    complete_verified_recovery_statuses(db_data_path, &ready, relation)?;
-                    let _ = crate::wallet::sync::resubmit_pending_transactions(
-                        db_data_path,
-                        lightwalletd_url,
+                    let stored_hash =
+                        stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
+                    let relation = classify_refreshed_tip_with_fallback(
                         &mut client,
-                        u32::from(fresh_tip_height),
-                        &resubmit_exclusions,
-                        || {
-                            cancel.load(Ordering::Relaxed)
-                                || desired_mode.load(Ordering::SeqCst) != running_mode
-                        },
+                        current_tip_height,
+                        stored_hash,
+                        fresh_tip.height,
+                        &fresh_tip.hash,
                     )
                     .await;
+                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    else {
+                        log::info!(
+                            "[{}] sync: exiting after post-batch tip validation",
+                            elapsed()
+                        );
+                        return Ok(());
+                    };
+                    let relation = relation?;
+                    match relation {
+                        RefreshedTipRelation::Unchanged => {
+                            last_completion_tip_validation = tip_requested_at;
+                            completion_tip_validation_required = false;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                        }
+                        RefreshedTipRelation::UnchangedUnverified => {
+                            completion_tip_validation_required = true;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                        }
+                        RefreshedTipRelation::Advanced => {
+                            match with_wallet_db_write_lock(
+                                "sync_engine.update_chain_tip.post_batch",
+                                || db.update_chain_tip(fresh_tip_height),
+                            ) {
+                                Ok(_) => {
+                                    current_tip_height = fresh_tip.height;
+                                    enhancement::content_failures::at_tip(
+                                        db_data_path,
+                                        current_tip_height,
+                                    );
+                                    completion_tip_validation_required = true;
+                                    last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                                }
+                                Err(e) => {
+                                    completion_tip_validation_required = true;
+                                    log::warn!(
+                                        "[{}] sync: post-batch update_chain_tip({}) \
+                                             failed, keeping tip at {current_tip_height}: {e}",
+                                        elapsed(),
+                                        fresh_tip.height,
+                                    );
+                                }
+                            }
+                        }
+                        RefreshedTipRelation::ServerBehind => {
+                            return Err(lagging_lightwalletd_tip(
+                                current_tip_height,
+                                fresh_tip.height,
+                            ));
+                        }
+                        RefreshedTipRelation::Reorg => {
+                            if main_rewinds_this_run >= MAX_REWINDS_PER_RUN {
+                                return Err(SyncError::continuity(
+                                    fresh_tip.height,
+                                    "post-batch tip reorg rewind budget exhausted",
+                                ));
+                            }
+                            main_rewinds_this_run += 1;
+                            prefetch.clear();
+                            let (actual_height, repair_ranges, pending_blocks) =
+                                rewind_for_confirmed_tip_reorg(
+                                    db_data_path,
+                                    &mut db,
+                                    fresh_tip.height,
+                                )?;
+                            log::warn!(
+                                "[{}] sync: post-batch tip proved a reorg; rewound to {} \
+                                     and queued {} block(s) toward tip {}",
+                                elapsed(),
+                                actual_height,
+                                pending_blocks,
+                                fresh_tip.height,
+                            );
+                            current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
+                            initial_total = pending_blocks;
+                            prev_remaining = pending_blocks;
+                            if checking_cycle > 0 && pending_blocks > 0 {
+                                progress_fn(begin_checking(
+                                    &mut checking_cycle,
+                                    pending_blocks,
+                                    current_tip_height,
+                                    &job,
+                                ));
+                            }
+                            queued_ranges = Some(repair_ranges);
+                            completion_tip_validation_required = true;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                            continue;
+                        }
+                    }
+
+                    // Use the just-observed network height for the expiry
+                    // filter. The authoritative progress tip was promoted
+                    // above only when its DB update succeeded; lower or
+                    // divergent responses cannot reach this broadcast path.
+                    if allow_resubmit {
+                        complete_verified_recovery_statuses(db_data_path, &ready, relation)?;
+                        let _ = crate::wallet::sync::resubmit_pending_transactions(
+                            db_data_path,
+                            lightwalletd_url,
+                            &mut client,
+                            u32::from(fresh_tip_height),
+                            &resubmit_exclusions,
+                            || {
+                                cancel.load(Ordering::Relaxed)
+                                    || desired_mode.load(Ordering::SeqCst) != running_mode
+                            },
+                        )
+                        .await;
+                    }
                 }
-            }
-            Err(e) => {
-                completion_tip_validation_required = true;
-                log::warn!(
-                    "[{}] sync: post-batch tip refresh failed; skipping \
-                     tip promotion and resubmit pass: {e}",
-                    elapsed(),
-                );
+                Err(e) => {
+                    completion_tip_validation_required = true;
+                    log::warn!(
+                        "[{}] sync: post-batch tip refresh failed; skipping \
+                         tip promotion and resubmit pass: {e}",
+                        elapsed(),
+                    );
+                }
             }
         }
         if should_exit() {
@@ -6227,14 +6280,41 @@ mod tests {
         let second = std::time::Duration::from_secs(1);
         timing.record(true, 100, 11_000_000, 3 * second, second);
         timing.record(false, 1000, 4_000_000, second, 2 * second);
+        timing.tip_waited += 5 * second;
         assert_eq!(
             timing.line(
                 std::time::Duration::from_secs(60),
                 scan_power::ScanPower::Efficient
             ),
             "last 60s: 2 batches (1 direct), 1100 blocks, 15.0 MB (0.25 MB/s), \
-             waited 4.0s for downloads, scanned 3.0s at Efficient power"
+             waited 4.0s for downloads and 5.0s for tip checks, scanned 3.0s at \
+             Efficient power"
         );
+    }
+
+    #[test]
+    fn history_batches_far_below_the_tip_check_it_once_a_minute() {
+        let tip = 3_500_000;
+        let second = std::time::Duration::from_secs(1);
+        // Far below the tip: only once the interval has passed.
+        assert!(!post_batch_tip_check_due(2_000_000, tip, second));
+        assert!(post_batch_tip_check_due(
+            2_000_000,
+            tip,
+            HISTORY_TIP_CHECK_EVERY
+        ));
+        // Near the tip: after every batch.
+        assert!(post_batch_tip_check_due(
+            tip - HISTORY_TIP_CHECK_DISTANCE,
+            tip,
+            second
+        ));
+        assert!(post_batch_tip_check_due(tip, tip, second));
+        assert!(!post_batch_tip_check_due(
+            tip - HISTORY_TIP_CHECK_DISTANCE - 1,
+            tip,
+            second
+        ));
     }
 
     #[test]
