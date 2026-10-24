@@ -340,7 +340,8 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
             // A sealed shard, so the round screens its lookups with the shard's filter.
             let publication = world.publication(0, false, class == "shard-filter", false, 0);
             let service = world.service(publication);
-            let held = service.hold(class, service.count(class));
+            let nth = service.count(class);
+            let held = service.hold(class, nth);
             let worker = world.devices[0]
                 .wallet
                 .spawn(&service, None, Duration::from_secs(45));
@@ -355,6 +356,12 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
             let credited_before = credited(&world, 0, 0);
             held.release();
             let result = worker.join().unwrap();
+            // A filter the round stopped waiting for is never answered, which would let
+            // this pass without delivering the answer it means to reject.
+            assert!(
+                service.requests_of(class)[nth].1 > 0,
+                "{class} cancel {cancel}: the held answer was delivered to the round"
+            );
             if cancel {
                 assert!(
                     result
