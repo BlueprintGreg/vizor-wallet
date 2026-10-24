@@ -265,20 +265,26 @@ class SwapActivityTracker {
   /// Records that `intentId` on `accountUuid` started once the wallet locked
   /// its reservation, then saves its account's swaps with nothing else
   /// changed, which clears its pending start (see [_finishedStarts]). If that
-  /// save fails, loads still read it started, so polling picks it up, and the
-  /// account's next save stores it.
+  /// save fails, loads and the records Home and Activity read still show it
+  /// started, so polling picks it up, and the account's next save stores it.
   Future<void> finishStart({
     required String accountUuid,
     required String intentId,
-  }) {
+  }) async {
     final scopedAccountUuid = normalizeAccountUuid(accountUuid);
     if (scopedAccountUuid != null) {
       _finishedStarts.add((scopedAccountUuid, intentId));
     }
-    return updateIntents(
-      accountUuid: scopedAccountUuid,
-      transform: (saved) => saved,
-    );
+    try {
+      await updateIntents(
+        accountUuid: scopedAccountUuid,
+        transform: (saved) => saved,
+      );
+    } catch (_) {
+      // A successful save tells readers itself.
+      _onRecordsChanged?.call();
+      rethrow;
+    }
   }
 
   /// `intents` of `accountUuid` with the pending start cleared on each whose
@@ -295,6 +301,23 @@ class SwapActivityTracker {
     return [
       for (final intent in intents)
         finished(intent) ? intent.copyWith(startPending: false) : intent,
+    ];
+  }
+
+  /// [withFinishedStarts] for `accountUuid`'s saved `records`, which Home and
+  /// Activity read without loading intents.
+  List<SwapIntentRecord> recordsWithFinishedStarts(
+    String accountUuid,
+    List<SwapIntentRecord> records,
+  ) {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    bool finished(SwapIntentRecord record) =>
+        record.startPending &&
+        _finishedStarts.contains((scopedAccountUuid, record.id));
+    if (!records.any(finished)) return records;
+    return [
+      for (final record in records)
+        finished(record) ? record.copyWith(startPending: false) : record,
     ];
   }
 

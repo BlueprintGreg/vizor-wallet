@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
@@ -10,6 +11,7 @@ import 'package:zcash_wallet/src/providers/app_security_provider.dart';
 import 'package:zcash_wallet/src/providers/chain_upgrade_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/rpc_endpoint_failover_provider.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart' as rust_swap;
 import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
@@ -167,6 +169,9 @@ class _Api extends RustLibApi {
   /// When set, the durable pause stays pending until the test completes it.
   Completer<void>? heldCancel;
 
+  /// When set, the durable pause write fails with this error.
+  Object? cancelFailure;
+
   /// Records that the durable manual job was paused.
   @override
   Future<void> crateApiOneTimeIvkCancelSwapHistory({
@@ -175,6 +180,8 @@ class _Api extends RustLibApi {
   }) async {
     events.add('cancel manual');
     await heldCancel?.future;
+    final failure = cancelFailure;
+    if (failure != null) throw failure;
   }
 
   /// Records which account's balance was read and returns a fixed balance.
@@ -353,6 +360,7 @@ void main() {
     api.manual.clear();
     api.statusReads.clear();
     api.heldCancel = null;
+    api.cancelFailure = null;
     api.events.clear();
     api.balanceReads.clear();
     api.cancels = 0;
@@ -364,8 +372,11 @@ void main() {
 
   /// A notifier whose idle poll started a receiver round the test holds, and
   /// whose first ordinary sync has then scanned block 101. NEAR swap privacy is
-  /// off unless `privacy`.
-  Future<_Sync> recovering({bool privacy = false}) async {
+  /// off unless `privacy`. `overrides` add to the container's.
+  Future<_Sync> recovering({
+    bool privacy = false,
+    List<Override> overrides = const [],
+  }) async {
     final sync = _Sync();
     container = ProviderContainer(
       overrides: [
@@ -377,6 +388,7 @@ void main() {
         enhancePirProvider.overrideWith(_NoPrivateQueries.new),
         if (privacy) nearSwapPrivacyProvider.overrideWith(_PrivacyOn.new),
         syncProvider.overrideWith(() => sync),
+        ...overrides,
       ],
     );
     addTearDown(container.dispose);
@@ -532,6 +544,12 @@ void main() {
     await pumpEventQueue();
     expect(api.recoveries, hasLength(rounds + 1));
     await releaseRound(_idle);
+
+    // So does a watched history check.
+    sync.pollSwapRecovery();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(rounds + 2));
+    await releaseRound(_idle);
     await settle(sync);
   });
 
@@ -604,6 +622,46 @@ void main() {
     await settle(sync);
   });
 
+  test('a failed round reloads Activity and the balance, since it may have '
+      'committed results first, and still delays the next round', () async {
+    final sync = await recovering(privacy: true);
+    final reads = api.balanceReads.length;
+    final followups = container.read(syncFollowupProvider);
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups + 1);
+    expect(api.balanceReads.length, greaterThan(reads));
+
+    // The completed sync's round waits out the backoff.
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(1));
+    await settle(sync);
+  });
+
+  test('a cancelled round does not delay the next one', () async {
+    final sync = await recovering(privacy: true);
+    final restarting = sync.restartSyncAfterTransportChange(
+      () async {},
+      failIfNotQuiescent: false,
+    );
+    await pumpEventQueue();
+    expect(api.cancels, 1);
+    api.round.completeError(_outage);
+    await restarting;
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+
+    expect(api.syncs, hasLength(2));
+    api.syncs[1].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
   test('a forced start ignores the backoff and starts it over', () async {
     final sync = await recovering(privacy: true);
     await finishSyncAndRound(sync, null);
@@ -618,6 +676,89 @@ void main() {
     // The forced round's failure waits the first step again, not the second.
     _clock = _clock.add(const Duration(seconds: 10));
     expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('a watched history check keeps polling rounds within the backoff '
+      'instead of starting it over', () async {
+    final reads = <Completer<rust_swap.SwapRecoveryStatus>>[];
+    const checking = rust_swap.SwapRecoveryStatus(
+      checkingHistory: true,
+      manualCheckActive: true,
+      upgradeRequired: false,
+    );
+    final sync = await recovering(
+      privacy: true,
+      overrides: [
+        swapHistoryApiProvider.overrideWithValue(
+          SwapHistoryApi(
+            begin: () async {},
+            cancel: () async {},
+            status: () {
+              final read = Completer<rust_swap.SwapRecoveryStatus>();
+              reads.add(read);
+              return read.future;
+            },
+            pollInterval: Duration.zero,
+          ),
+        ),
+      ],
+    );
+    await finishSyncAndRound(sync, null);
+
+    final history = container.read(swapHistoryCheckProvider.notifier);
+    final watching = history.check();
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(1), reason: 'within 10 seconds');
+
+    _clock = _clock.add(const Duration(seconds: 10));
+    reads.last.complete(checking);
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2));
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+
+    _clock = _clock.add(const Duration(seconds: 10));
+    reads.last.complete(checking);
+    await pumpEventQueue();
+    expect(api.recoveries, hasLength(2), reason: 'within 30 seconds');
+
+    reads.last.complete(
+      const rust_swap.SwapRecoveryStatus(
+        checkingHistory: false,
+        manualCheckActive: false,
+        upgradeRequired: false,
+      ),
+    );
+    await watching;
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    await settle(sync);
+  });
+
+  test('switching accounts starts the backoff over', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+    expect(await pollStartsRound(sync), isFalse);
+
+    final accounts = container.read(accountProvider.notifier) as _Account;
+    accounts.activate(_second);
+    sync.handleAccountSwitchForTesting(_second);
+    await pumpEventQueue();
+    expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('returning to the app starts the backoff over', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+    expect(await pollStartsRound(sync), isFalse);
+
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2), reason: 'the resume poll started it');
     await releaseRound(_quiet);
     await settle(sync);
   });
@@ -883,6 +1024,40 @@ void main() {
     sync.stopTipChecksForTesting();
   });
 
+  test('a failed manual check reloads Activity and the balance before it '
+      'reports the failure', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1));
+
+    final followups = container.read(syncFollowupProvider);
+    api.manual.single.completeError(_outage);
+    await expectLater(checking, throwsA(same(_outage)));
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('pausing a check reloads Activity and the balance for the round it '
+      'stopped', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+
+    final followups = container.read(syncFollowupProvider);
+    final pausing = sync.cancelSwapHistory();
+    await pumpEventQueue();
+    api.manual.single.completeError('Swap recovery was cancelled.');
+    await expectLater(checking, throwsStateError);
+    await pausing;
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
   test('a manual check cancelled under it reports the cancellation, not the '
       'round error', () async {
     final sync = await recovering();
@@ -903,6 +1078,87 @@ void main() {
       ),
     );
     await expectLater(checking, throwsA(isA<StateError>()));
+    await settle(sync);
+  });
+  test('a round cancelled after it reached the wallet leaves its refresh to '
+      'the next round, even a quiet one', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    final restarting = sync.restartSyncAfterTransportChange(
+      () async {},
+      failIfNotQuiescent: false,
+    );
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await restarting;
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups);
+
+    api.syncs[1].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(_quiet);
+    expect(container.read(syncFollowupProvider), followups + 1);
+
+    // The refresh was paid, so the next quiet round reloads nothing.
+    sync.continueSwapRecovery();
+    await pumpEventQueue();
+    await releaseRound(_quiet);
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('returning to the app reloads Activity for a round backgrounding '
+      'cancelled', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    sync.handleAppHideForTesting();
+    expect(api.cancels, 1);
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups);
+
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  }, tags: ['mobile']);
+
+  test('pausing reloads Activity for the stopped round even when saving the '
+      'pause fails, and still reports the failure', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    api.cancelFailure = _outage;
+    final pausing = sync.cancelSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await expectLater(pausing, throwsA(same(_outage)));
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('a round cancelled by locking refreshes nothing while locked, and '
+      'unlocking pays the refresh it owes', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    final security = container.read(appSecurityProvider.notifier) as _Security;
+    security.setUnlocked(false);
+    final locking = sync.clearSensitiveStateForLock();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await locking;
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups);
+
+    security.setUnlocked(true);
+    await sync.refreshAfterUnlock();
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups + 1);
     await settle(sync);
   });
 }
