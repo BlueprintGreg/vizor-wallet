@@ -325,6 +325,8 @@ fn on_to_off_mid_round_rejects_held_answers_and_stays_inert() {
     if isolated("toggles::on_to_off_mid_round_rejects_held_answers_and_stays_inert") {
         return;
     }
+    // A held filter must reach the round however long this thread takes to release it.
+    super::super::super::UNBOUNDED_FILTER_WAITS.store(true, AtomicOrdering::SeqCst);
     for class in ["filters", "shard-filter", "query", "witness"] {
         for cancel in [false, true] {
             let mut world = world();
