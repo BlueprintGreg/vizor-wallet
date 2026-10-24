@@ -51,6 +51,14 @@ const LIGHTWALLETD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const LIGHTWALLETD_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_START_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// HTTP/2 pings on a sync session's direct block connection while it has
+/// streams open. A connection that stops answering then closes after the
+/// interval and the timeout, and the channel reconnects for the next request,
+/// instead of every request queued on it waiting out its own deadline. The
+/// timeout leaves room for an acknowledgement queued behind batch data on a
+/// slow link.
+const DIRECT_BLOCK_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const DIRECT_BLOCK_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The shortest timeout above. A request that fails sooner did not time out.
 pub(super) const SHORTEST_LIGHTWALLETD_TIMEOUT: Duration = LIGHTWALLETD_CONNECT_TIMEOUT;
@@ -262,7 +270,7 @@ pub(crate) async fn open_background_direct_lwd_channel(
 pub(crate) async fn open_background_direct_lwd_transport(
     lightwalletd_url: &str,
 ) -> Result<Channel, SyncError> {
-    open_unleased_direct_transport(lightwalletd_url).await
+    open_unleased_direct_transport(lightwalletd_url, false).await
 }
 
 /// Opens the direct transport a sync session downloads its compact blocks on
@@ -286,7 +294,7 @@ pub(crate) async fn open_block_download_lwd_transport(
             "an onion lightwalletd is reachable only over Tor",
         ));
     }
-    open_unleased_direct_transport(lightwalletd_url).await
+    open_unleased_direct_transport(lightwalletd_url, true).await
 }
 
 /// Whether a sync session may download its blocks from `lightwalletd_url`
@@ -303,7 +311,10 @@ pub(crate) fn block_download_can_go_direct(lightwalletd_url: &str) -> bool {
     })
 }
 
-async fn open_unleased_direct_transport(lightwalletd_url: &str) -> Result<Channel, SyncError> {
+async fn open_unleased_direct_transport(
+    lightwalletd_url: &str,
+    keep_alive: bool,
+) -> Result<Channel, SyncError> {
     static RUSTLS_INIT: std::sync::Once = std::sync::Once::new();
     RUSTLS_INIT.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -312,6 +323,14 @@ async fn open_unleased_direct_transport(lightwalletd_url: &str) -> Result<Channe
     let endpoint = Endpoint::from_shared(lightwalletd_url.to_string())
         .map_err(|e| SyncError::net(format!("invalid URL: {e}")))?
         .connect_timeout(LIGHTWALLETD_CONNECT_TIMEOUT);
+    let endpoint = if keep_alive {
+        endpoint
+            .http2_keep_alive_interval(DIRECT_BLOCK_KEEP_ALIVE_INTERVAL)
+            .keep_alive_timeout(DIRECT_BLOCK_KEEP_ALIVE_TIMEOUT)
+            .keep_alive_while_idle(false)
+    } else {
+        endpoint
+    };
     let endpoint = if lightwalletd_url.starts_with("https://") {
         endpoint
             .tls_config(ClientTlsConfig::new().with_webpki_roots())
