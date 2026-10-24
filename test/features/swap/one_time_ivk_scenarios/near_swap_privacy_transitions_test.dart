@@ -8,6 +8,8 @@ import 'dart:async';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zcash_wallet/app.dart' show applyEnhancePirPolicy;
 import 'package:zcash_wallet/src/app_bootstrap.dart';
 import 'package:zcash_wallet/src/core/config/rpc_endpoint_config.dart';
 import 'package:zcash_wallet/src/core/storage/enhance_pir_preference_store.dart';
@@ -215,6 +217,25 @@ class _Store implements EnhancePirPreferenceStore {
   }
 }
 
+/// The private queries opt-out marker, never pending in these launches.
+class _OptOut implements TransparentOptOutStore {
+  @override
+  Future<bool> readPending() async => false;
+
+  @override
+  Future<void> writePending(bool pending) async {}
+}
+
+/// Reconciles the transparent policy as the setting asks, without a wallet.
+Future<rust_sync.ApiAppliedTransparentPolicy?> _reconcile(
+  bool privateQueries,
+) async => rust_sync.ApiAppliedTransparentPolicy(
+  mode: privateQueries
+      ? rust_sync.ApiTransparentLedgerMode.privateRequired
+      : rust_sync.ApiTransparentLedgerMode.public,
+  generation: BigInt.one,
+);
+
 class _Accounts extends AccountNotifier {
   /// One active software account.
   @override
@@ -331,38 +352,43 @@ void main() {
     bool saved, {
     Future<String> Function()? path,
     _Store? store,
+    bool launch = false,
   }) async {
     final sync = _Sync(path ?? () async => 'wallet.db');
     final preference = store ?? _Store(saved);
+    // A launch reads the saved setting from its production store, as startup
+    // does, and starts from a process that has not applied it yet.
+    if (launch) api.swapPrivacy = false;
+    final savedSwapPrivacy = launch
+        ? await readNearSwapPrivacyPreference()
+        : preference.value ?? false;
+    final bootstrap = AppBootstrapState(
+      initialLocation: '/settings',
+      initialAccountState: const AccountState(
+        accounts: [AccountInfo(uuid: _account, name: 'Account 1', order: 0)],
+        activeAccountUuid: _account,
+      ),
+      initialSyncSnapshot: AppSyncSnapshot.empty,
+      network: 'main',
+      rpcEndpointConfig: defaultRpcEndpointConfig('main'),
+      themeMode: ThemeMode.system,
+      privacyModeEnabled: false,
+      isPasswordConfigured: true,
+      isUnlocked: true,
+      passwordRotationRecoveryFailed: false,
+      enhancePirEnabled: true,
+      nearSwapPrivacyEnabled: savedSwapPrivacy,
+    );
     final container = ProviderContainer(
       overrides: [
-        appBootstrapProvider.overrideWithValue(
-          AppBootstrapState(
-            initialLocation: '/settings',
-            initialAccountState: const AccountState(
-              accounts: [
-                AccountInfo(uuid: _account, name: 'Account 1', order: 0),
-              ],
-              activeAccountUuid: _account,
-            ),
-            initialSyncSnapshot: AppSyncSnapshot.empty,
-            network: 'main',
-            rpcEndpointConfig: defaultRpcEndpointConfig('main'),
-            themeMode: ThemeMode.system,
-            privacyModeEnabled: false,
-            isPasswordConfigured: true,
-            isUnlocked: true,
-            passwordRotationRecoveryFailed: false,
-            enhancePirEnabled: true,
-            nearSwapPrivacyEnabled: preference.value ?? false,
-          ),
-        ),
+        appBootstrapProvider.overrideWithValue(bootstrap),
         accountProvider.overrideWith(_Accounts.new),
         appSecurityProvider.overrideWith(_Security.new),
         rpcEndpointFailoverProvider.overrideWith(_Tip.new),
         chainUpgradeStatusProvider.overrideWith(_Upgrade.new),
         enhancePirProvider.overrideWith(_PrivateQueriesOn.new),
-        nearSwapPrivacyPreferenceStoreProvider.overrideWithValue(preference),
+        if (!launch)
+          nearSwapPrivacyPreferenceStoreProvider.overrideWithValue(preference),
         swapRecoveryReconcilerProvider.overrideWithValue(() async {
           api.events.add('reconcile:${api.swapPrivacy}');
         }),
@@ -394,9 +420,23 @@ void main() {
     container.listen(swapHistoryCheckProvider, (_, _) {});
     container.listen(syncProvider, (_, _) {});
     container.listen(nearSwapPrivacyProvider, (_, _) {});
-    rust_sync.setNearSwapPrivacyEnabled(
-      enabled: container.read(nearSwapPrivacyProvider),
-    );
+    if (launch) {
+      // The production startup policy, which applies the saved setting to Rust.
+      await applyEnhancePirPolicy(
+        bootstrap,
+        setRustEnabled: (_) {},
+        setPreferenceConfirmed: (_) {},
+        reconcileTransparentPolicy: _reconcile,
+        readTransparentPolicy: () async => null,
+        optOutStore: _OptOut(),
+        setNativePrivateRecovery: (_) async {},
+        prepareCompanions: () async {},
+      );
+    } else {
+      rust_sync.setNearSwapPrivacyEnabled(
+        enabled: container.read(nearSwapPrivacyProvider),
+      );
+    }
     await container.read(syncProvider.future);
     sync.stopTipChecksForTesting();
     sync.startSync();
@@ -544,19 +584,25 @@ void main() {
     await settle(sync);
   });
 
-  /// The setting survives a restart in both directions. A new app reads the
-  /// saved value, applies it to Rust at startup and reconciles nothing until a
+  /// The setting survives a restart in both directions. Each launch reads the
+  /// saved value from its production store and applies it to a fresh Rust
+  /// through the production startup policy, and reconciles nothing until a
   /// round does. With the setting off, the first batch after the restart still
   /// asks Rust once, since the wallet may still say on or hold repair work, and
   /// an idle answer then stops the rounds.
   test('a restart keeps the saved setting either way', () async {
-    final store = _Store(true);
-    var (container, sync, _) = await app(true, store: store);
+    SharedPreferences.setMockInitialValues({});
+    await const SharedPreferencesEnhancePirStore(
+      key: kNearSwapPrivacyPreferenceKey,
+    ).writeEnabled(true);
+    var (container, sync, _) = await app(true, launch: true);
+    expect(container.read(nearSwapPrivacyProvider), isTrue);
+    expect(api.swapPrivacy, isTrue, reason: 'startup applied the saved on');
     await container.read(nearSwapPrivacyProvider.notifier).set(false);
     await settle(sync);
     container.dispose();
 
-    (container, sync, _) = await app(false, store: store);
+    (container, sync, _) = await app(false, launch: true);
     expect(container.read(nearSwapPrivacyProvider), isFalse);
     expect(api.swapPrivacy, isFalse);
     expect(api.events.where((e) => e.startsWith('reconcile')), isEmpty);
@@ -568,9 +614,9 @@ void main() {
     container.dispose();
 
     api.rounds.clear();
-    (container, sync, _) = await app(true, store: store);
+    (container, sync, _) = await app(true, launch: true);
     expect(container.read(nearSwapPrivacyProvider), isTrue);
-    expect(api.swapPrivacy, isTrue);
+    expect(api.swapPrivacy, isTrue, reason: 'startup applied the saved on');
     expect(await batch(sync, 101), 1);
     await finish(work: false);
     expect(await batch(sync, 102), 2, reason: 'on: rounds follow batches');
