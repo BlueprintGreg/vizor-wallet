@@ -745,6 +745,58 @@ impl DirectBlockRoute {
     }
 }
 
+/// How often a sync session logs where its time went.
+const SYNC_TIMING_SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The batches of a session since its last timing summary, so a log shows
+/// whether a slow sync waits on downloads or on the scan: time waiting for a
+/// batch's blocks counts as download, time in the scan and the write as scan.
+#[derive(Debug, Default)]
+struct SyncTimingSummary {
+    batches: u32,
+    direct_batches: u32,
+    blocks: u64,
+    bytes: u64,
+    waited: std::time::Duration,
+    scanned: std::time::Duration,
+}
+
+impl SyncTimingSummary {
+    fn record(
+        &mut self,
+        direct: bool,
+        blocks: u64,
+        bytes: u64,
+        waited: std::time::Duration,
+        scanned: std::time::Duration,
+    ) {
+        self.batches += 1;
+        self.direct_batches += u32::from(direct);
+        self.blocks += blocks;
+        self.bytes += bytes;
+        self.waited += waited;
+        self.scanned += scanned;
+    }
+
+    /// The summary of `period`, at the scan power in effect.
+    fn line(&self, period: std::time::Duration, power: scan_power::ScanPower) -> String {
+        let seconds = period.as_secs_f64().max(f64::EPSILON);
+        let megabytes = self.bytes as f64 / 1_000_000.0;
+        format!(
+            "last {:.0}s: {} batches ({} direct), {} blocks, {:.1} MB ({:.2} MB/s), \
+             waited {:.1}s for downloads, scanned {:.1}s at {power:?} power",
+            period.as_secs_f64(),
+            self.batches,
+            self.direct_batches,
+            self.blocks,
+            megabytes,
+            megabytes / seconds,
+            self.waited.as_secs_f64(),
+            self.scanned.as_secs_f64(),
+        )
+    }
+}
+
 /// The connection a fresh scan batch download goes over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BlockRoute {
@@ -4070,6 +4122,8 @@ async fn run_sync_impl(
     let mut queued_tip_refreshed_for: Option<u32> = None;
     // Logged when a batch scans at a different power level than the last.
     let mut last_scan_power = None;
+    let mut timing = SyncTimingSummary::default();
+    let mut timing_since = std::time::Instant::now();
     log::info!(
         "[{}] sync: {} blocks to scan; progress job {} {:?} at {:.1}% ({:.0} of {:.0} work units left)",
         elapsed(),
@@ -4711,6 +4765,7 @@ async fn run_sync_impl(
         // A queued batch reaches the fresh download only when it failed.
         let queued_direct_failed = batch_is_direct && queued.is_some();
         let mut direct_failed = false;
+        let download_started = std::time::Instant::now();
         let batch = resolve_prefetched_or_download(queued, start, end, &should_exit, || {
             let (block_client, client, direct_failed) =
                 (&block_client, &client, &mut direct_failed);
@@ -4759,6 +4814,8 @@ async fn run_sync_impl(
         // derived from it. Neither half is useful without the other.
         validate_scan_batch(&block_source, &from_state, start, end)?;
 
+        let batch_waited = download_started.elapsed();
+        let batch_bytes = block_source.encoded_bytes() as u64;
         let incoming_orchard_checkpoint_heights =
             migration_anchor_retention_required.then(|| block_source.orchard_checkpoint_heights());
 
@@ -4837,6 +4894,7 @@ async fn run_sync_impl(
         // becomes `SyncError::Db` (Fatal). Everything else (non-scan,
         // non-wallet — e.g. block-source errors, unrecognised scan
         // variants) becomes `SyncError::Other` (retry-with-backoff).
+        let scan_started = std::time::Instant::now();
         let scan_result = with_wallet_db_write_lock("sync_engine.retain_and_scan_blocks", || {
             // Persist before scanning advances scan_queue: cancellation or a crash
             // after the scan must not lose this account's recovery work.
@@ -4983,6 +5041,22 @@ async fn run_sync_impl(
         // `MAX_REWINDS_PER_RUN`. A verify range that keeps flapping won't
         // exhaust the budget the main scan needs to handle an unrelated
         // later reorg.
+        timing.record(
+            batch_is_direct,
+            u64::from(u32::from(end) - u32::from(start)),
+            batch_bytes,
+            batch_waited,
+            scan_started.elapsed(),
+        );
+        if timing_since.elapsed() >= SYNC_TIMING_SUMMARY_EVERY {
+            log::info!(
+                "[{}] sync: {}",
+                elapsed(),
+                timing.line(timing_since.elapsed(), scan_power::current())
+            );
+            timing = SyncTimingSummary::default();
+            timing_since = std::time::Instant::now();
+        }
         let scan_summary = match scan_result {
             Ok(s) => s,
             Err(sync_err) => match sync_err.recovery_strategy() {
@@ -6145,6 +6219,22 @@ mod tests {
             [false, false, false, false, false]
         );
         assert_eq!(runs(&[true, true, true]), [false, false, true]);
+    }
+
+    #[test]
+    fn the_timing_summary_splits_download_waits_from_scan_time() {
+        let mut timing = SyncTimingSummary::default();
+        let second = std::time::Duration::from_secs(1);
+        timing.record(true, 100, 11_000_000, 3 * second, second);
+        timing.record(false, 1000, 4_000_000, second, 2 * second);
+        assert_eq!(
+            timing.line(
+                std::time::Duration::from_secs(60),
+                scan_power::ScanPower::Efficient
+            ),
+            "last 60s: 2 batches (1 direct), 1100 blocks, 15.0 MB (0.25 MB/s), \
+             waited 4.0s for downloads, scanned 3.0s at Efficient power"
+        );
     }
 
     #[test]
