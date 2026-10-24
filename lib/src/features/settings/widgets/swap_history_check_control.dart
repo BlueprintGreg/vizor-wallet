@@ -28,9 +28,11 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.updateRequired => kSwapRecoveryUpdateMessage,
 };
 
-/// Shown when the receiver service needs a newer app.
+/// Shown when the receiver service needs a newer app. Matches the swap quote's
+/// update message.
 const kSwapRecoveryUpdateMessage =
-    'Update Vizor to keep checking swap addresses. Your saved progress is kept.';
+    'Update Vizor to keep checking private swap addresses. '
+    'Your saved progress is kept.';
 
 /// Why the check exists, under the button.
 const kSwapHistoryCheckExplanation =

@@ -201,6 +201,20 @@ void main() {
     );
   });
 
+  testWidgets('an update request uses the quote wording', (tester) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.updateRequired),
+    );
+    await tester.pump();
+    expect(
+      find.text(
+        'Update Vizor to keep checking private swap addresses. '
+        'Your saved progress is kept.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('a finished check says so plainly', (tester) async {
     await tester.pumpWidget(_control(AppThemeData.dark, SwapHistoryCheck.done));
     await tester.pump();
