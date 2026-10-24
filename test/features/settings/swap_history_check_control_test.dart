@@ -215,6 +215,20 @@ void main() {
     );
   });
 
+  testWidgets('a long check promises progress only while Vizor is open', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _control(AppThemeData.dark, SwapHistoryCheck.continuing, saved: true),
+    );
+    await tester.pump();
+    expect(
+      find.text('The check will keep going while Vizor is open.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('background'), findsNothing);
+  });
+
   testWidgets('a finished check says so plainly', (tester) async {
     await tester.pumpWidget(_control(AppThemeData.dark, SwapHistoryCheck.done));
     await tester.pump();

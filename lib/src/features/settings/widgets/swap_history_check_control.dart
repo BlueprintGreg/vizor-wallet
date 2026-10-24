@@ -14,7 +14,9 @@ String swapHistoryCheckStatus(SwapHistoryCheck check) => switch (check) {
   SwapHistoryCheck.idle => 'Check older addresses for repeat payments.',
   SwapHistoryCheck.checking => 'Checking swap history…',
   SwapHistoryCheck.done => 'Swap history check complete.',
-  SwapHistoryCheck.continuing => 'The check will continue in the background.',
+  // Mobile runs no rounds in the background (see canRunAppProcessWork).
+  SwapHistoryCheck.continuing =>
+    'The check will keep going while Vizor is open.',
   SwapHistoryCheck.paused => 'Paused. Check again to resume.',
   SwapHistoryCheck.failed =>
     "Swap history can't be checked right now. Try again later.",
