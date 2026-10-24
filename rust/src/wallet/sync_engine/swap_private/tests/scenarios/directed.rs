@@ -262,11 +262,13 @@ fn a_started_quote_without_any_status_releases_its_slot_a_day_later() {
 }
 
 /// With the feature off, a receipt a reorg displaced still gets repair lookups, so the
-/// round makes receiver requests. This is intended. Once the repair is done, rounds
-/// make no request.
+/// round makes receiver requests. This is intended. Here the provider pays again in a
+/// new transaction, which a paused account does not admit: the history read finishes,
+/// the old receipt stays unmined and nothing new is credited until the feature is back
+/// on. Once the read is done, rounds make no request.
 #[test]
-fn a_feature_off_round_repairs_a_displaced_receipt() {
-    if isolated("directed::a_feature_off_round_repairs_a_displaced_receipt") {
+fn a_feature_off_round_reads_a_replaced_receipts_history() {
+    if isolated("directed::a_feature_off_round_reads_a_replaced_receipts_history") {
         return;
     }
     let mut world = World::ready();
@@ -324,11 +326,151 @@ fn a_feature_off_round_repairs_a_displaced_receipt() {
         }
         world.check_step().unwrap();
     }
-    assert!(repaired, "the repair finished");
+    assert!(repaired, "the history read finished");
     assert!(
         world.devices[0].wallet.state(&account).lookups.is_empty(),
         "no repair is left"
     );
+    let notes = notes(&world.devices[0].wallet, &account.id);
+    assert_eq!(
+        notes.len(),
+        1,
+        "the replacement is not admitted while off: {notes:?}"
+    );
+    assert!(!notes[0].mined, "the replaced receipt stays unmined");
+}
+
+/// With the feature off, a receipt a reorg moved is repaired. The same payment
+/// transaction mined again a block later, after an unrelated output that shifts its tree
+/// position, is placed again with its new height and position, keeps its single credit
+/// and is spendable again, all without turning the feature back on.
+#[test]
+fn a_feature_off_round_restores_a_receipt_a_reorg_moved() {
+    if isolated("directed::a_feature_off_round_restores_a_receipt_a_reorg_moved") {
+        return;
+    }
+    let mut world = World::ready();
+    // A real payment to I0 from another seed, so a reorg can mine the same transaction.
+    let mut payer = Wallet::new(SECOND, activation());
+    payer.sync(&world.chain).unwrap();
+    let fvk = world.key(MAIN, true, 0);
+    let receiver = fvk.address_at(0u32, orchard::keys::Scope::External);
+    let address = zcash_keys::address::Address::Unified(
+        zcash_keys::address::UnifiedAddress::from_receivers(Some(receiver), None, None).unwrap(),
+    )
+    .to_zcash_address(&NETWORK)
+    .to_string();
+    let proposal = crate::wallet::sync::propose_send(
+        &payer.path,
+        NETWORK,
+        &payer.account().uuid,
+        "pay",
+        &address,
+        500_000,
+        None,
+    )
+    .unwrap();
+    super::super::execute(
+        &payer,
+        payer.account(),
+        proposal.proposal_id,
+        "pay",
+        world.chain.tip(),
+    );
+    let (tx, _) = payer.last_built();
+    let (height, txid) = world.chain.mine_indexed_tx(&tx, &fvk);
+    world.changed();
+    world.pays.push(Pay {
+        seed: MAIN,
+        receive: true,
+        index: 0,
+        value: 500_000,
+        height,
+        txid,
+        orphaned: false,
+    });
+    world.mine(12);
+    world.sync(0, false);
+    settle(&mut world, 0);
+    let account = world.devices[0].accts[0].account.clone();
+    let placed = |world: &World| -> Vec<(Option<u32>, Option<i64>)> {
+        rusqlite::Connection::open(&world.devices[0].wallet.path)
+            .unwrap()
+            .prepare(
+                "SELECT t.mined_height, n.commitment_tree_position FROM ironwood_received_notes n
+                 JOIN transactions t ON t.id_tx = n.transaction_id
+                 WHERE n.one_time_key_id IS NOT NULL AND t.txid = ?1",
+            )
+            .unwrap()
+            .query_map([txid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let spendable = |world: &World| {
+        let wallet = &world.devices[0].wallet;
+        crate::api::sync::get_balance(wallet.path.clone(), "main".into(), account.uuid.clone())
+            .unwrap()
+            .spendable
+    };
+    let before = placed(&world);
+    assert_eq!(before.len(), 1, "the payment is credited once");
+    assert_eq!(before[0].0, Some(height));
+    let funded = spendable(&world);
+
+    // Off. A reorg mines the same transaction a block later, behind another output.
+    world.devices[0].feature = false;
+    world.toggled(0);
+    let tip = world.chain.tip();
+    let stranger = world.key(SECOND, true, 7);
+    world.chain.rewind(height - 1);
+    world.chain.pay(&stranger, 100_000, false);
+    let (moved, again) = world.chain.mine_indexed_tx(&tx, &fvk);
+    assert_eq!(again, txid, "the same transaction");
+    world.pays.last_mut().unwrap().height = moved;
+    while world.chain.tip() <= tip + 12 {
+        world.chain.mine(1);
+    }
+    world.changed();
+    world.sync(0, true);
+    assert!(
+        repair_owed(&world.devices[0].wallet, &account.id),
+        "the receipt was displaced"
+    );
+    assert!(
+        spendable(&world) < funded,
+        "a displaced receipt is not spendable"
+    );
+
+    for round in 0..4 {
+        let publication = world.current();
+        let service = world.service(publication);
+        let result = run_worker(
+            &world.devices[0].wallet.path,
+            &*service,
+            None,
+            Duration::from_secs(45),
+        );
+        assert!(
+            result.is_ok(),
+            "round {round}: {:?}",
+            result.map(|r| r.active).map_err(|e| e.to_string())
+        );
+        world.check_step().unwrap();
+    }
+    assert!(!world.devices[0].discovery(), "the feature stayed off");
+    let after = placed(&world);
+    assert_eq!(after.len(), 1, "still credited once: {after:?}");
+    assert_eq!(after[0].0, Some(moved), "placed at the new height");
+    assert!(
+        after[0].1.is_some() && after[0].1 != before[0].1,
+        "placed at its new tree position: {before:?} then {after:?}"
+    );
+    assert!(
+        !repair_owed(&world.devices[0].wallet, &account.id),
+        "nothing is left to repair"
+    );
+    assert_eq!(spendable(&world), funded, "spendable again");
 }
 
 /// Control for the reorg test: an ordinary payment whose block a reorg drops, and which

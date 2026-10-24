@@ -187,6 +187,22 @@ impl Chain {
         self.advance()
     }
 
+    /// Mines a block holding only `tx`, an app-built payment to `fvk`, and lists that
+    /// payment in the receiver directory as NEAR's payouts are. Returns its height and
+    /// the transaction ID in internal byte order. Mining the same `tx` again after a
+    /// rewind moves the same receipt to a new block.
+    pub(super) fn mine_indexed_tx(
+        &mut self,
+        tx: &Transaction,
+        fvk: &FullViewingKey,
+    ) -> (u32, [u8; 32]) {
+        let height = self.mine_tx(tx);
+        let record = self.record(height, fvk);
+        let txid = record.payment.txid;
+        self.records.push(record);
+        (height, txid)
+    }
+
     /// The cached compact block at `height`.
     fn block(&self, height: u32) -> CompactBlock {
         let mut found = None;
