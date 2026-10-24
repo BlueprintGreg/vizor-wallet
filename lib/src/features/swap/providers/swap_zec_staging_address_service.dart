@@ -71,6 +71,10 @@ class SwapZecStagingAddress {
   /// The incoming draft reservation's index. Set only for incoming addresses.
   final BigInt? reservationIndex;
 
+  /// Whether this is a private swap address, holding a reserved key, rather
+  /// than an ordinary one.
+  bool get isPrivate => refundIndex != null || reservationIndex != null;
+
   SwapAddressPlan toAddressPlan({
     required SwapDirection direction,
     required SwapAsset externalAsset,

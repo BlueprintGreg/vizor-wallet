@@ -89,11 +89,6 @@ impl From<ReservationPolicy> for ReceiveError {
     /// The wording Vizor shows for each reason issuance or an operation must wait.
     fn from(policy: ReservationPolicy) -> Self {
         let (message, kind) = match policy {
-            ReservationPolicy::Gap => (
-                "Restored swap addresses are still being checked. \
-                 Try again after the wallet finishes syncing.",
-                ReceiveErrorKind::Other,
-            ),
             ReservationPolicy::Limit => (
                 "No swap address is free. Wait for a swap in progress to finish.",
                 ReceiveErrorKind::Limit,
@@ -102,7 +97,10 @@ impl From<ReservationPolicy> for ReceiveError {
                 "Preparing a private swap address. Try again in a moment.",
                 ReceiveErrorKind::ReceiveHistory,
             ),
-            ReservationPolicy::Stale => (
+            // A reorg that drops the payment which widened the receive window
+            // leaves a cached reservation above it for good, so only a new
+            // address helps.
+            ReservationPolicy::Stale | ReservationPolicy::Gap => (
                 "This swap address is no longer available. Request a new quote.",
                 ReceiveErrorKind::Stale,
             ),
@@ -456,4 +454,19 @@ pub fn get_swap_recovery_status(
         manual_check_active: flags.manual,
         upgrade_required: flags.upgrade,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reservation_outside_the_window_asks_for_a_new_address() {
+        let error = ReceiveError::from(ReservationPolicy::Gap);
+        assert_eq!(error.kind, ReceiveErrorKind::Stale);
+        assert_eq!(
+            error.message,
+            ReceiveError::from(ReservationPolicy::Stale).message
+        );
+    }
 }

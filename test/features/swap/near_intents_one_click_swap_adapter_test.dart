@@ -134,7 +134,7 @@ void main() {
     },
   );
 
-  test('timestamps without a zone designator are read as UTC', () async {
+  test('zone-less timestamps are read as device-local time', () async {
     final transport = _FakeOneClickTransport([
       _FakeResponse.get('/v0/tokens', _tokensWithPrices('72.5')),
       _FakeResponse.get(
@@ -155,7 +155,10 @@ void main() {
 
     final status = await provider.getStatus('t1deposit');
 
-    expect(status.depositInstruction.deadline, DateTime.utc(2026, 5, 7, 12));
+    expect(
+      status.depositInstruction.deadline,
+      DateTime(2026, 5, 7, 12).toUtc(),
+    );
   });
 
   test('quote captures USDC token price from token response', () async {
