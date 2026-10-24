@@ -182,45 +182,49 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
       );
 
   /// Started private swaps by account and swap id, which every write for that
-  /// account keeps until a replacement save already contains them (see
-  /// [registerStartedPrivate]).
+  /// account keeps (see [registerStartedPrivate]).
   final Map<String, Map<String, SwapIntentRecord>> _startedPrivate = {};
 
   /// Records that `record`, a private swap that just started for
-  /// `accountUuid`, must survive every later write for that account. A
-  /// replacement save built from a list that never saw it, such as the screen
-  /// of another account, keeps it anyway, so no ordering of saves can drop it.
-  /// It is let go once a replacement save contains it, after which the swap is
-  /// on screen and removing it works as usual. Call it before the swap's first
-  /// save starts.
+  /// `accountUuid`, must survive every later write for that account this
+  /// session. A replacement save built from a list that lacks it, such as the
+  /// screen of another account or a screen whose swaps have not loaded yet,
+  /// keeps it anyway, so no ordering of saves can drop it. Each write that
+  /// contains it refreshes the kept copy. Call it before the swap's first save
+  /// starts. Removing the swap on purpose goes through [forgetStartedPrivate].
   void registerStartedPrivate(String accountUuid, SwapIntentRecord record) {
     if (_deleted.contains(accountUuid)) return;
     (_startedPrivate[accountUuid] ??= {})[record.id] = record;
   }
 
+  /// Stops keeping the started private swap `id` of `accountUuid`, so a later
+  /// save can remove it.
+  void forgetStartedPrivate(String accountUuid, String id) {
+    final started = _startedPrivate[accountUuid];
+    started?.remove(id);
+    if (started != null && started.isEmpty) {
+      _startedPrivate.remove(accountUuid);
+    }
+  }
+
   /// `records` with every started private swap of `accountUuid` they lack put
-  /// in front. A replacement (`replacing`) that contains one lets it go, and a
-  /// merge refreshes the kept copy with the version it saves.
+  /// in front, refreshing the kept copy of each they contain.
   List<SwapIntentRecord> _keepStartedPrivate(
     String accountUuid,
-    List<SwapIntentRecord> records, {
-    required bool replacing,
-  }) {
+    List<SwapIntentRecord> records,
+  ) {
     final started = _startedPrivate[accountUuid];
     if (started == null || started.isEmpty) return records;
-    final missing = <SwapIntentRecord>[];
     final present = {for (final record in records) record.id: record};
+    final missing = <SwapIntentRecord>[];
     for (final entry in started.entries.toList()) {
       final saved = present[entry.key];
       if (saved == null) {
         missing.add(entry.value);
-      } else if (replacing) {
-        started.remove(entry.key);
       } else {
         started[entry.key] = saved;
       }
     }
-    if (started.isEmpty) _startedPrivate.remove(accountUuid);
     return missing.isEmpty ? records : [...missing, ...records];
   }
 
@@ -235,7 +239,7 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
     if (_deleted.contains(accountUuid)) return;
     await _inner.saveRecords(
       accountUuid: accountUuid,
-      records: _keepStartedPrivate(accountUuid, records, replacing: true),
+      records: _keepStartedPrivate(accountUuid, records),
     );
   });
 
@@ -253,11 +257,7 @@ class DeletionSafeSwapActivityStore implements SwapActivityStore {
     final saved = await _inner.loadRecords(accountUuid: accountUuid);
     await _inner.saveRecords(
       accountUuid: accountUuid,
-      records: _keepStartedPrivate(
-        accountUuid,
-        transform(saved),
-        replacing: false,
-      ),
+      records: _keepStartedPrivate(accountUuid, transform(saved)),
     );
   });
 

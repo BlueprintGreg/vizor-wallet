@@ -272,6 +272,14 @@ class SwapActivityTracker {
     );
   }
 
+  /// Lets a later save remove `intentId`, a private swap of `accountUuid` kept
+  /// by [registerStartedPrivate], when the user removes it.
+  void forgetStartedPrivate(String accountUuid, String intentId) {
+    final scopedAccountUuid = normalizeAccountUuid(accountUuid);
+    if (scopedAccountUuid == null) return;
+    _activityStore.forgetStartedPrivate(scopedAccountUuid, intentId);
+  }
+
   /// Replaces `accountUuid`'s saved swaps with what `transform` makes of them,
   /// as one atomic step of the store (see
   /// [DeletionSafeSwapActivityStore.update]), so a concurrent writer's swaps

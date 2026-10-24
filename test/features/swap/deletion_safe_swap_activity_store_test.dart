@@ -165,11 +165,21 @@ void main() {
       expect(inner.records['a']!.map((r) => r.id), ['started', 'swap']);
     });
 
-    test('once a replacement contains it, removing it works', () async {
+    test('a list that once had it cannot drop it later', () async {
       final inner = _MemoryStore();
       final store = DeletionSafeSwapActivityStore(inner);
       store.registerStartedPrivate('a', started);
       await store.saveRecords(accountUuid: 'a', records: [started, _record]);
+      // A screen whose swaps have not loaded yet saves without it.
+      await store.saveRecords(accountUuid: 'a', records: [_record]);
+      expect(inner.records['a']!.map((r) => r.id), ['started', 'swap']);
+    });
+
+    test('forgetting it lets a later save remove it', () async {
+      final inner = _MemoryStore();
+      final store = DeletionSafeSwapActivityStore(inner);
+      store.registerStartedPrivate('a', started);
+      store.forgetStartedPrivate('a', 'started');
       await store.saveRecords(accountUuid: 'a', records: [_record]);
       expect(inner.records['a']!.map((r) => r.id), ['swap']);
     });

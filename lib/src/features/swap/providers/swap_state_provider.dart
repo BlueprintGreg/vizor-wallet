@@ -1365,6 +1365,12 @@ class SwapNotifier extends Notifier<SwapState> {
         if (intent.id != intentId) intent,
     ];
     if (remaining.length == state.intents.length) return;
+    final activeAccountUuid = _activeAccountUuidOrNull;
+    if (activeAccountUuid != null) {
+      ref
+          .read(swapActivityTrackerProvider)
+          .forgetStartedPrivate(activeAccountUuid, intentId);
+    }
 
     final removedSelected =
         state.selectedIntentId == intentId ||
