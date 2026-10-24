@@ -61,7 +61,7 @@ impl From<RecoveryError> for ReceiveError {
     fn from(error: RecoveryError) -> Self {
         match error {
             RecoveryError::UpgradeRequired => Self {
-                message: "Update Vizor to keep checking private swap addresses.".into(),
+                message: "Update Vizor to keep checking private swap addresses. Your saved progress is kept.".into(),
                 kind: ReceiveErrorKind::UpgradeRequired,
             },
             RecoveryError::NotCaughtUp => Self {
@@ -92,7 +92,7 @@ impl From<ReservationPolicy> for ReceiveError {
                 ReceiveErrorKind::Limit,
             ),
             ReservationPolicy::ReceiveHistory => (
-                "Checking older swap addresses. Try again in a moment.",
+                "Preparing a private swap address. Try again in a moment.",
                 ReceiveErrorKind::ReceiveHistory,
             ),
             ReservationPolicy::Stale => (
