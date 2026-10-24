@@ -604,6 +604,46 @@ void main() {
     await settle(sync);
   });
 
+  test('a failed round reloads Activity and the balance, since it may have '
+      'committed results first, and still delays the next round', () async {
+    final sync = await recovering(privacy: true);
+    final reads = api.balanceReads.length;
+    final followups = container.read(syncFollowupProvider);
+    api.round.completeError(_outage);
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups + 1);
+    expect(api.balanceReads.length, greaterThan(reads));
+
+    // The completed sync's round waits out the backoff.
+    api.syncs[0].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(1));
+    await settle(sync);
+  });
+
+  test('a cancelled round does not delay the next one', () async {
+    final sync = await recovering(privacy: true);
+    final restarting = sync.restartSyncAfterTransportChange(
+      () async {},
+      failIfNotQuiescent: false,
+    );
+    await pumpEventQueue();
+    expect(api.cancels, 1);
+    api.round.completeError(_outage);
+    await restarting;
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+
+    expect(api.syncs, hasLength(2));
+    api.syncs[1].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
   test('a forced start ignores the backoff and starts it over', () async {
     final sync = await recovering(privacy: true);
     await finishSyncAndRound(sync, null);
@@ -881,6 +921,40 @@ void main() {
     await pausing;
     expect(api.events.last, 'cancel manual');
     sync.stopTipChecksForTesting();
+  });
+
+  test('a failed manual check reloads Activity and the balance before it '
+      'reports the failure', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(api.manual, hasLength(1));
+
+    final followups = container.read(syncFollowupProvider);
+    api.manual.single.completeError(_outage);
+    await expectLater(checking, throwsA(same(_outage)));
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('pausing a check reloads Activity and the balance for the round it '
+      'stopped', () async {
+    final sync = await recovering();
+    final checking = sync.checkSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+
+    final followups = container.read(syncFollowupProvider);
+    final pausing = sync.cancelSwapHistory();
+    await pumpEventQueue();
+    api.manual.single.completeError('Swap recovery was cancelled.');
+    await expectLater(checking, throwsStateError);
+    await pausing;
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
   });
 
   test('a manual check cancelled under it reports the cancellation, not the '

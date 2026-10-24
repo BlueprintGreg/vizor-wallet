@@ -1230,25 +1230,24 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           if (generation != _swapRecoveryGeneration) {
             throw StateError('Swap history check was cancelled.');
           }
-          rethrow;
+        } else {
+          log('Swap recovery remains pending: $error');
+          if (generation != _swapRecoveryGeneration) return null;
+          final delay =
+              _swapRecoveryBackoff[math.min(
+                _swapRecoveryFailures,
+                _swapRecoveryBackoff.length - 1,
+              )];
+          _swapRecoveryFailures++;
+          _swapRecoveryRetryAt = _now().add(delay);
         }
-        log('Swap recovery remains pending: $error');
-        if (generation != _swapRecoveryGeneration) return null;
-        final delay =
-            _swapRecoveryBackoff[math.min(
-              _swapRecoveryFailures,
-              _swapRecoveryBackoff.length - 1,
-            )];
-        _swapRecoveryFailures++;
-        _swapRecoveryRetryAt = _now().add(delay);
+        // A round can commit results and then fail (see
+        // `SwapRecoveryRound.changed`).
+        await _refreshAfterSwapRecovery();
+        if (manual) rethrow;
         return error;
       }
-      if (round.changed &&
-          ref.mounted &&
-          !_requiresUnlock &&
-          _walletMutationPauseCount == 0) {
-        await _onSyncFollowupUpdated();
-      }
+      if (round.changed) await _refreshAfterSwapRecovery();
     } catch (error) {
       if (manual) rethrow;
       log('Swap recovery remains pending: $error');
@@ -1258,6 +1257,14 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       if (ref.mounted) ref.read(swapRecoveryRoundsProvider.notifier).ended();
     }
     return null;
+  }
+
+  /// Reloads Activity and the balance after a receiver round, unless the
+  /// wallet is locked or being changed.
+  Future<void> _refreshAfterSwapRecovery() async {
+    if (ref.mounted && !_requiresUnlock && _walletMutationPauseCount == 0) {
+      await _onSyncFollowupUpdated();
+    }
   }
 
   /// Continues durable receiver work without starting or waiting for a block sync.
@@ -1324,6 +1331,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   Future<void> cancelSwapHistory() async {
     _swapRecoveryTransitions++;
     try {
+      final stopped = _swapRecovery != null;
       await _stopSwapRecovery();
       await _trackedWalletCall(
         _getDbPath,
@@ -1332,6 +1340,9 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           networkName: _endpointConfig.networkName,
         ),
       );
+      // The cancelled round may have committed results, and no later round
+      // reports them.
+      if (stopped) await _refreshAfterSwapRecovery();
     } finally {
       _swapRecoveryTransitions--;
     }
