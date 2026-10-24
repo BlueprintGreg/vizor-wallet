@@ -8904,6 +8904,64 @@ void main() {
     );
   });
 
+  testWidgets('a private start that finishes while its account reloads is '
+      'never shown or saved as starting again', (tester) async {
+    final store = _HeldStartReservationStore();
+    final sessionStore = _DelayedLoadSwapPersistenceStore(
+      delayedAccounts: <String>{},
+    );
+    // Status refreshes stay held, so none replaces the reloaded copy.
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _PendingExternalDepositSwapProvider(
+        statusGate: Completer<void>(),
+      ),
+      sessionStore: sessionStore,
+      reservationStore: store,
+      reserveSwapAddress: _CountingReservations('u1incoming').reserve,
+      bootstrap: _twoAccountBootstrap,
+      accountNotifier: () =>
+          _FakeSwapAccountNotifier(_twoAccountBootstrap.initialAccountState),
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+
+    // Account-1's reload reads the swap while it is still starting, and lands
+    // after the start finished.
+    final start = notifier.startIntent();
+    await tester.pump();
+    final accounts = container.read(accountProvider.notifier);
+    await accounts.switchAccount('account-2');
+    await tester.pumpAndSettle();
+    sessionStore.delayedAccounts.add('account-1');
+    await accounts.switchAccount('account-1');
+    await tester.pump();
+    store.release();
+    await tester.pumpAndSettle();
+    sessionStore.completeLoad('account-1');
+    await start;
+    await tester.pumpAndSettle();
+
+    final shown = container
+        .read(swapStateProvider)
+        .intents
+        .swapIntentById('0xlive-deposit');
+    expect(shown?.startPending, isFalse, reason: 'its instructions show');
+    // Leaving account-1 saves its screen over its storage.
+    await accounts.switchAccount('account-2');
+    await tester.pumpAndSettle();
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(
+      saved.single.startPending,
+      isFalse,
+      reason: 'a later launch would mark it failed',
+    );
+  });
+
   testWidgets('a private start whose save fails never starts its '
       'reservation', (tester) async {
     final reservations = _CountingReservations('u1incoming');

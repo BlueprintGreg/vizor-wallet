@@ -493,9 +493,8 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
   if (ops.pending.isNotEmpty || starting != null) {
     broken.add('did not settle: ${ops.pending.map((op) => op.label)}');
   }
-  final screen = {
-    for (final intent in container.read(swapStateProvider).intents) intent.id,
-  };
+  final shown = container.read(swapStateProvider).intents;
+  final screen = {for (final intent in shown) intent.id};
   for (final swap in started) {
     if (deleted.contains(swap.account)) continue;
     final stored = inner.storedIds(swap.account);
@@ -517,6 +516,9 @@ Future<List<String>> _runInterleaving(WidgetTester tester, int seed) async {
     }
     if (isPrivate && swap.account == active() && !screen.contains(swap.id)) {
       broken.add('private ${swap.id} missing from the screen $screen');
+    }
+    if (shown.any((intent) => intent.id == swap.id && intent.startPending)) {
+      broken.add('started ${swap.id} is still shown as starting');
     }
     // A failed save can leave its flip unsaved, which a later launch handles.
     if (isPrivate && failure == 0) {

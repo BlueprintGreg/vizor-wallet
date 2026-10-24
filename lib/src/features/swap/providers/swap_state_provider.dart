@@ -2033,13 +2033,14 @@ class SwapNotifier extends Notifier<SwapState> {
     }
     final accountScopeGeneration = _accountScopeGeneration;
     try {
-      final persisted = await ref
-          .read(swapActivityTrackerProvider)
-          .loadIntents(accountUuid: scopedAccountUuid);
+      final tracker = ref.read(swapActivityTrackerProvider);
+      final loaded = await tracker.loadIntents(accountUuid: scopedAccountUuid);
       if (accountScopeGeneration != _accountScopeGeneration ||
           !_isAccountActive(scopedAccountUuid)) {
         return;
       }
+      // The load may have read a swap before its start finished.
+      final persisted = tracker.withFinishedStarts(scopedAccountUuid, loaded);
       if (persisted.isEmpty && !replaceExisting) return;
       state = state.copyWith(
         intents: persisted,
@@ -2259,7 +2260,7 @@ class SwapNotifier extends Notifier<SwapState> {
           .read(swapActivityTrackerProvider)
           .finishStart(accountUuid: accountUuid, intentId: intent.id);
     } catch (e) {
-      // The screen's next save stores it started. Until then a later launch
+      // The account's next save stores it started. Until then a later launch
       // finds it starting and marks it failed, hiding its instructions.
       log(
         'Swap: started swap not saved as started '
