@@ -32,6 +32,8 @@ import 'package:zcash_wallet/src/features/address_book/models/address_book_conta
 import 'package:zcash_wallet/src/features/address_book/providers/address_book_provider.dart';
 import 'package:zcash_wallet/src/features/address_book/widgets/address_book_network_icon.dart';
 import 'package:zcash_wallet/src/features/swap/integrations/near_intents/near_intents_one_click_swap_adapter.dart';
+import 'package:zcash_wallet/src/features/swap/models/swap_activity_status_mapper.dart'
+    show SwapActivityDepositInstruction;
 import 'package:zcash_wallet/src/features/swap/models/swap_activity_navigation.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_detail_tooltips.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_deposit_broadcast_result.dart';
@@ -8976,6 +8978,117 @@ void main() {
     final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
     expect(saved.single.status, SwapIntentStatus.processing);
     expect(saved.single.depositClaimedAt, claimedAt);
+    expect(saved.single.startPending, isFalse);
+  });
+
+  group('a private swap whose wallet start is pending', () {
+    /// Quotes an incoming private swap on the desktop screen and starts it,
+    /// leaving the wallet start held by `store`.
+    Future<(ProviderContainer, Future<SwapStartResult?>)> startHeld(
+      WidgetTester tester,
+      _HeldStartReservationStore store,
+      _FakeSwapPersistenceStore sessionStore,
+    ) async {
+      final container = await _pumpSwapScreen(
+        tester,
+        swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+        sessionStore: sessionStore,
+        reservationStore: store,
+        reserveSwapAddress: _CountingReservations('u1incoming').reserve,
+      );
+      final notifier = container.read(swapStateProvider.notifier);
+      notifier.selectDirection(SwapDirection.externalToZec);
+      notifier.updateAmount('25');
+      notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+      await notifier.showReview();
+      await tester.pumpAndSettle();
+      final start = notifier.startIntent();
+      await tester.pump();
+      return (container, start);
+    }
+
+    /// Opens the swap's Activity row and detail, checking that neither shows
+    /// a way to fund it.
+    Future<void> expectNoInstructions(WidgetTester tester) async {
+      await _openActivitySurface(tester);
+      expect(find.text(swapStartingText), findsWidgets);
+      await _openActivityDetail(tester, '0xlive-deposit');
+      expect(
+        find.byKey(const ValueKey('swap_activity_start_pending')),
+        findsOneWidget,
+      );
+      expect(find.byType(SwapDepositTokensPageContent), findsNothing);
+    }
+
+    testWidgets('shows no deposit instructions, then a refusal removes it', (
+      tester,
+    ) async {
+      final store = _HeldStartReservationStore(
+        refusal: const ReceiveError(
+          message: 'This swap address is no longer available.',
+          kind: ReceiveErrorKind.stale,
+        ),
+      );
+      final sessionStore = _FakeSwapPersistenceStore();
+      final (container, start) = await startHeld(tester, store, sessionStore);
+      final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+      expect(saved.single.startPending, isTrue);
+      await expectNoInstructions(tester);
+
+      store.release();
+      expect(await start, isNull);
+      await tester.pumpAndSettle();
+      expect(find.byType(SwapDepositTokensPageContent), findsNothing);
+      expect(container.read(swapStateProvider).intents, isEmpty);
+      expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
+    });
+
+    testWidgets('shows its deposit instructions once the start succeeds', (
+      tester,
+    ) async {
+      final store = _HeldStartReservationStore();
+      final sessionStore = _FakeSwapPersistenceStore();
+      final (_, start) = await startHeld(tester, store, sessionStore);
+      await expectNoInstructions(tester);
+
+      store.release();
+      expect(await start, isA<SwapStartedActivity>());
+      await tester.pumpAndSettle();
+      await _openActivityDetail(tester, '0xlive-deposit');
+      expect(find.byType(SwapDepositTokensPageContent), findsOneWidget);
+      final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+      expect(saved.single.startPending, isFalse);
+    });
+  });
+
+  testWidgets('a private swap left starting by an earlier launch is marked '
+      'failed and never shows its instructions', (tester) async {
+    final leftStarting =
+        _persistedExternalToZecIntent(
+          id: 'left-starting',
+          stagingAddress: 'u1left',
+        ).copyWith(
+          accountUuid: 'account-1',
+          privateAddress: true,
+          startPending: true,
+          createdAt: DateTime.utc(2020),
+        );
+    final sessionStore = _FakeSwapPersistenceStore(
+      initialIntents: [leftStarting],
+    );
+    await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+    );
+
+    final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
+    expect(saved.single.status, SwapIntentStatus.failed);
+    expect(saved.single.startPending, isTrue, reason: 'still hidden');
+    await _openActivitySurface(tester);
+    await _openActivityDetail(tester, 'left-starting');
+    expect(find.text(swapStartFailedText), findsOneWidget);
+    expect(find.byType(SwapDepositTokensPageContent), findsNothing);
   });
 
   testWidgets('an ordinary start still starts after an account switch during '
