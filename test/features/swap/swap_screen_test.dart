@@ -8938,7 +8938,9 @@ void main() {
       contains('0xlive-deposit'),
     );
     expect(failures, 0);
-    // The screen's save stored it once storage answered again.
+    // The screen's save stored it once storage answered again, and the
+    // background retry of the merge finds it there.
+    await tester.pump(const Duration(seconds: 30));
     final saved = await sessionStore.loadRecords(accountUuid: 'account-1');
     expect(saved.map((record) => record.id), contains('0xlive-deposit'));
   });
