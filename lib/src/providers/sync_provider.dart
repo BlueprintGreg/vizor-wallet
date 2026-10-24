@@ -1682,6 +1682,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   void _clearAccountScopedStateFor(String? accountUuid) {
     ++_balanceReadVersion;
     _authoritativeBalanceRecovery = null;
+    // The incoming account's swaps should not wait out an earlier outage.
+    _resetSwapRecoveryBackoff();
     final prev = state.value;
     if (prev == null) return;
 
@@ -2886,8 +2888,10 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (_isShuttingDown) return;
     _isInForeground = true;
     ref.read(pendingActivityEvidenceProvider.notifier).setForeground(true);
-    // A resume is public: the recovery restart schedule starts over.
+    // A resume is public: the recovery restart schedule and the swap
+    // recovery backoff start over.
     _recoveryRestartGate.reset();
+    _resetSwapRecoveryBackoff();
     unawaited(_refreshBalanceAfterResume());
     // Coalesce repeated focus/resume events. An old mobile check spanning
     // backgrounding cannot certify foreground freshness; follow it immediately.

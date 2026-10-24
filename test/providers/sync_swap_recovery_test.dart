@@ -730,6 +730,33 @@ void main() {
     await settle(sync);
   });
 
+  test('switching accounts starts the backoff over', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+    expect(await pollStartsRound(sync), isFalse);
+
+    final accounts = container.read(accountProvider.notifier) as _Account;
+    accounts.activate(_second);
+    sync.handleAccountSwitchForTesting(_second);
+    await pumpEventQueue();
+    expect(await pollStartsRound(sync), isTrue);
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
+  test('returning to the app starts the backoff over', () async {
+    final sync = await recovering(privacy: true);
+    await finishSyncAndRound(sync, null);
+    expect(await pollStartsRound(sync), isFalse);
+
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2), reason: 'the resume poll started it');
+    await releaseRound(_quiet);
+    await settle(sync);
+  });
+
   test('only a round that reached a compatible service clears the update '
       'request', () async {
     final sync = await recovering(privacy: true);
