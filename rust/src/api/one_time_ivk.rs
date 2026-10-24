@@ -351,7 +351,9 @@ pub struct SwapRecoveryRound {
     /// needed until the wallet changes.
     pub active: bool,
     /// The round committed receiver results that can change the balance, activity or
-    /// address reservations.
+    /// address reservations. Only a successful round reports this. A round that fails,
+    /// including `check_swap_history`, may already have committed results, so callers
+    /// refresh after a failure too.
     pub changed: bool,
     /// The round accepted a receiver inventory, so the service speaks a format this app
     /// supports.
