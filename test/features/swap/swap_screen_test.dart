@@ -9290,6 +9290,44 @@ void main() {
     expect(reservations.count, 2);
   });
 
+  testWidgets('a start refused because its address went stale asks for a '
+      'new quote', (tester) async {
+    final reservations = _CountingReservations('u1incoming');
+    final sessionStore = _FakeSwapPersistenceStore();
+    final container = await _pumpSwapScreen(
+      tester,
+      swapProvider: _FakeSwapProvider(zecDepositMemo: null),
+      sessionStore: sessionStore,
+      reservationStore: _HeldStartReservationStore(
+        refusal: const ReceiveError(
+          message:
+              'This swap address is no longer available. Request a new quote.',
+          kind: ReceiveErrorKind.stale,
+        ),
+      )..release(),
+      reserveSwapAddress: reservations.reserve,
+    );
+    final notifier = container.read(swapStateProvider.notifier);
+    notifier.selectDirection(SwapDirection.externalToZec);
+    notifier.updateAmount('25');
+    notifier.updateDestination('0x52908400098527886e0f7030069857d2e4169ee7');
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(await notifier.startIntent(), isNull);
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(swapStateProvider).statusError,
+      'This swap address is no longer available. Request a new quote.',
+    );
+    expect(container.read(swapStateProvider).intents, isEmpty);
+    expect(await sessionStore.loadRecords(accountUuid: 'account-1'), isEmpty);
+    // The next quote prepares a new address.
+    await notifier.showReview();
+    await tester.pumpAndSettle();
+    expect(reservations.count, 2);
+  });
+
   testWidgets('toggling NEAR swap privacy drops the cached review address', (
     tester,
   ) async {

@@ -2332,7 +2332,8 @@ class SwapNotifier extends Notifier<SwapState> {
   }
 
   /// Shows why the start of `quote` failed with `error`, and lets a wallet
-  /// reservation that cannot start again go.
+  /// reservation that cannot start again go. A refusal that needs a wait or
+  /// a new quote shows the wallet's wording, which says so.
   void _showStartFailure(String accountUuid, SwapQuote quote, Object error) {
     log(
       'Swap: start failed quote=${_shortSwapValue(quote.providerQuoteId)} '
@@ -2341,11 +2342,12 @@ class SwapNotifier extends Notifier<SwapState> {
     final receiveError = _receiveError(error);
     final historyPending =
         receiveError?.kind == ReceiveErrorKind.receiveHistory;
+    final stale = receiveError?.kind == ReceiveErrorKind.stale;
     // A reservation another request started, or whose deposit deadline
     // passed, cannot be quoted again. One whose history needs checking again
     // may have been paid elsewhere, so the next quote prepares an address
     // after a recovery round.
-    if (historyPending || receiveError?.kind == ReceiveErrorKind.stale) {
+    if (historyPending || stale) {
       _dropReviewAddress(accountUuid, quote.direction);
     }
     if (historyPending) {
@@ -2354,7 +2356,7 @@ class SwapNotifier extends Notifier<SwapState> {
     state = state.copyWith(
       startSubmitting: false,
       quoteLoading: false,
-      statusError: historyPending
+      statusError: historyPending || stale
           ? receiveError!.message
           : _providerFailureMessage(SwapFailureOperation.start, error),
     );
