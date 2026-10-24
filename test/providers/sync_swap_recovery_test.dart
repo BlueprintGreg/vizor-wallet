@@ -169,6 +169,9 @@ class _Api extends RustLibApi {
   /// When set, the durable pause stays pending until the test completes it.
   Completer<void>? heldCancel;
 
+  /// When set, the durable pause write fails with this error.
+  Object? cancelFailure;
+
   /// Records that the durable manual job was paused.
   @override
   Future<void> crateApiOneTimeIvkCancelSwapHistory({
@@ -177,6 +180,8 @@ class _Api extends RustLibApi {
   }) async {
     events.add('cancel manual');
     await heldCancel?.future;
+    final failure = cancelFailure;
+    if (failure != null) throw failure;
   }
 
   /// Records which account's balance was read and returns a fixed balance.
@@ -355,6 +360,7 @@ void main() {
     api.manual.clear();
     api.statusReads.clear();
     api.heldCancel = null;
+    api.cancelFailure = null;
     api.events.clear();
     api.balanceReads.clear();
     api.cancels = 0;
@@ -1072,6 +1078,87 @@ void main() {
       ),
     );
     await expectLater(checking, throwsA(isA<StateError>()));
+    await settle(sync);
+  });
+  test('a round cancelled after it reached the wallet leaves its refresh to '
+      'the next round, even a quiet one', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    final restarting = sync.restartSyncAfterTransportChange(
+      () async {},
+      failIfNotQuiescent: false,
+    );
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await restarting;
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups);
+
+    api.syncs[1].add(_scanned(101, kind: rust_sync.ApiSyncEventKind.completed));
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(api.recoveries, hasLength(2));
+    await releaseRound(_quiet);
+    expect(container.read(syncFollowupProvider), followups + 1);
+
+    // The refresh was paid, so the next quiet round reloads nothing.
+    sync.continueSwapRecovery();
+    await pumpEventQueue();
+    await releaseRound(_quiet);
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('returning to the app reloads Activity for a round backgrounding '
+      'cancelled', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    sync.handleAppHideForTesting();
+    expect(api.cancels, 1);
+    api.round.completeError('Swap recovery was cancelled.');
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups);
+
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  }, tags: ['mobile']);
+
+  test('pausing reloads Activity for the stopped round even when saving the '
+      'pause fails, and still reports the failure', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    api.cancelFailure = _outage;
+    final pausing = sync.cancelSwapHistory();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await expectLater(pausing, throwsA(same(_outage)));
+    expect(container.read(syncFollowupProvider), followups + 1);
+    await settle(sync);
+  });
+
+  test('a round cancelled by locking refreshes nothing while locked, and '
+      'unlocking pays the refresh it owes', () async {
+    final sync = await recovering(privacy: true);
+    final followups = container.read(syncFollowupProvider);
+    final security = container.read(appSecurityProvider.notifier) as _Security;
+    security.setUnlocked(false);
+    final locking = sync.clearSensitiveStateForLock();
+    await pumpEventQueue();
+    api.round.completeError('Swap recovery was cancelled.');
+    await locking;
+    sync.handleAppResumeForTesting();
+    await pumpEventQueue();
+    sync.stopTipChecksForTesting();
+    expect(container.read(syncFollowupProvider), followups);
+
+    security.setUnlocked(true);
+    await sync.refreshAfterUnlock();
+    await pumpEventQueue();
+    expect(container.read(syncFollowupProvider), followups + 1);
     await settle(sync);
   });
 }
