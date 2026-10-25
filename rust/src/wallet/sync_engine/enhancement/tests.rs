@@ -1488,6 +1488,79 @@ mod tests {
         );
     }
 
+    /// A scanned batch that does not check the chain tip asks no status; the
+    /// next batch that checks it does.
+    #[tokio::test]
+    async fn status_waits_for_a_batch_that_checks_the_tip() {
+        use super::super::content_failures;
+        use crate::wallet::sync_engine::test_lwd::CapturingLwd;
+        use zakura_pir_client::status::policy::StatusObservation;
+        use zcash_client_backend::data_api::transparent_ledger::TransparentLedgerMode;
+
+        let (_dir, path, _) =
+            crate::wallet::sync::private_shielding_tests::wallet_with_a_private_memo_query();
+        let network = WalletNetwork::Regtest;
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let txid: Vec<u8> = conn
+            .query_row(
+                "SELECT txid FROM tx_retrieval_queue WHERE query_type = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute("DELETE FROM tx_retrieval_queue WHERE query_type = 1", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE transactions SET mined_height = NULL WHERE txid = ?1",
+            [&txid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tx_retrieval_queue (txid, query_type) VALUES (?1, 0)",
+            [&txid],
+        )
+        .unwrap();
+        let policy = super::super::EnhancementPolicy::current(network)
+            .with_private_queries()
+            .with_transparent_mode(TransparentLedgerMode::PrivateRequired);
+        let mut session = super::EnhancementSession::with_policy(network, &path, policy);
+        session.payload.set_endpoint("https://example.test");
+        let mut db = crate::wallet::db::open_wallet_db_with_timeout(
+            &path,
+            network,
+            crate::wallet::db::SYNC_DB_BUSY_TIMEOUT,
+        )
+        .unwrap();
+        let mut lwd = CapturingLwd::start(Vec::new()).await;
+        let enhance = RefusingEnhance::default();
+        content_failures::at_tip(&path, 1_000);
+
+        let between = status_source(Ok(StatusObservation::NotFound));
+        let asked_between = between.requests.clone();
+        session.status_due = false;
+        session
+            .checkpoint_with(&mut db, &mut lwd.client, None, between, &enhance, &|| false)
+            .await
+            .unwrap();
+        assert!(
+            asked_between.lock().unwrap().is_empty(),
+            "no status between tip checks"
+        );
+
+        let checked = status_source(Ok(StatusObservation::NotFound));
+        let asked_checked = checked.requests.clone();
+        session.status_due = true;
+        session
+            .checkpoint_with(&mut db, &mut lwd.client, None, checked, &enhance, &|| false)
+            .await
+            .unwrap();
+        assert_eq!(
+            asked_checked.lock().unwrap().len(),
+            1,
+            "the batch that checks the tip asks it"
+        );
+    }
+
     /// Newly queued payload work is eligible without an artificial first-query delay.
     #[test]
     fn a_new_enhance_position_is_eligible_without_a_first_query_delay() {

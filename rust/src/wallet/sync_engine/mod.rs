@@ -5316,8 +5316,16 @@ async fn run_sync_impl(
 
         // Status and transparent history run before the routed payload snapshot,
         // so transactions discovered by history are enhanced in this checkpoint.
+        // Status lookups run only on a batch that checks the tip, so a status
+        // recovered here is completed by this batch's check.
         if enhancement
-            .run_checkpoint(&mut db, &mut client, Some(&block_source), &should_exit)
+            .run_batch_checkpoint(
+                &mut db,
+                &mut client,
+                &block_source,
+                tip_check_due,
+                &should_exit,
+            )
             .await?
         {
             log::info!("[{}] sync: exiting during enhancement", elapsed());
@@ -5325,15 +5333,9 @@ async fn run_sync_impl(
         }
         enhancement_after_scan = true;
         // A history batch between tip checks skips its own; the schedule never
-        // depends on what the wallet holds. Recovered status work stays
-        // durable and completes after a later check, at the latest near the
-        // tip, where every batch checks.
+        // depends on what the wallet holds.
         let check_tip = tip_check_due;
-        let ready = if check_tip {
-            enhancement.take_ready_resubmission()
-        } else {
-            HashSet::new()
-        };
+        let ready = enhancement.take_ready_resubmission();
 
         // Post-batch tip reconciliation and auto-resubmit. The resubmit calls
         // match zcash-android-wallet-sdk's lines 593/701 call sites (end of a
