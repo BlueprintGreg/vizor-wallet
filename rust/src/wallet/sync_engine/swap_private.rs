@@ -37,9 +37,10 @@ use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicU64 = AtomicU64::new(0);
-/// Accounts whose last drain failed while witnesses went first. Their next drain runs
-/// lookups first instead, so a stalled witness or a slow lookup can hold the other back
-/// for at most one round, and each still gets a whole account slice in turn.
+/// Accounts whose last witness-first drain left a due lookup unread, whether a witness
+/// stalled, the account's time ran out or the step limit ended it. Their next drain runs
+/// lookups first instead, so witnesses and lookups each get a whole account slice at
+/// least every other round.
 static LOOKUPS_FIRST: Mutex<Vec<AccountUuid>> = Mutex::new(Vec::new());
 
 /// Cancels the current bounded worker without deleting its durable queue.
@@ -789,8 +790,19 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     );
     // Every account's due lookups share one traversal of each sealed shard's filter.
     zakura_pir_client::receiver::screen(&client, &due).await;
-    let account_count = ready.len();
-    for (index, account) in ready.iter().enumerate() {
+    let end = zakura_pir_client::receiver::publication(client.inventory())
+        .end
+        .height;
+    // Only accounts with runnable work share the round's time, so idle ones don't shorten
+    // a slow lookup's slice. An unreadable state counts as work, and drain reports it.
+    let busy: Vec<_> = ready
+        .iter()
+        .filter(|account| {
+            runnable(path, network, generation, **account, end).is_none_or(|(w, l)| w || l)
+        })
+        .collect();
+    let account_count = busy.len();
+    for (index, account) in busy.into_iter().enumerate() {
         // Include a spare slice for commit/loop overhead. A slow earlier account
         // cannot spend the time reserved for later accounts.
         let account_budget = deadline
@@ -809,7 +821,9 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         )
         .await
         .unwrap_or_else(|_| Err("Swap account recovery remains pending.".into()));
-        if result.is_err() && !lookups_first {
+        if !lookups_first
+            && runnable(path, network, generation, *account, end).is_some_and(|(_, l)| l)
+        {
             LOOKUPS_FIRST
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -830,6 +844,28 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     }
     round.filter_traversals = client.filter_traversals();
     failure.map_or(Ok(round), Err)
+}
+
+/// Whether `account` has a witness to read and whether it has a due lookup that the
+/// inventory ending at `end` can answer, or `None` if its state can't be read.
+fn runnable(
+    path: &str,
+    network: WalletNetwork,
+    generation: u64,
+    account: AccountUuid,
+    end: BlockHeight,
+) -> Option<(bool, bool)> {
+    wallet(path, network, generation, |db| {
+        db.one_time_recovery(account, one_time_ivk::now()?)
+            .map_err(|e| e.to_string())
+    })
+    .ok()
+    .map(|state| {
+        (
+            !state.witnesses.is_empty(),
+            state.lookups.iter().any(|work| work.through <= end),
+        )
+    })
 }
 
 /// Settles a bounded number of `account`'s witness reads and due lookups against the
