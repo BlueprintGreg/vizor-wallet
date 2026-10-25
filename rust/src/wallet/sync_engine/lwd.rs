@@ -52,13 +52,19 @@ const LIGHTWALLETD_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_START_TIMEOUT: Duration = Duration::from_secs(20);
 const LIGHTWALLETD_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// HTTP/2 pings on a sync session's direct block connection while it has
-/// streams open. A connection that stops answering then closes after the
-/// interval and the timeout, and the channel reconnects for the next request,
-/// instead of every request queued on it waiting out its own deadline. The
-/// timeout leaves room for an acknowledgement queued behind batch data on a
-/// slow link.
+/// streams open. A connection that stops answering closes about the interval
+/// plus the timeout after its last frame, and the channel reconnects for the
+/// next request. Requests already in flight still end at their own deadlines;
+/// the pings spare the ones sent after that, which would otherwise each wait
+/// out a deadline on the dead connection. The timeout leaves room for an
+/// acknowledgement queued behind batch data on a slow link.
 const DIRECT_BLOCK_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DIRECT_BLOCK_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest a direct block connection may take to open. The connect
+/// timeout covers only TCP: name resolution comes before it and the TLS
+/// handshake after it, so a network that accepts the connection and drops the
+/// handshake would otherwise hold the sync loop for as long as the OS retries.
+const DIRECT_BLOCK_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The shortest timeout above. A request that fails sooner did not time out.
 pub(super) const SHORTEST_LIGHTWALLETD_TIMEOUT: Duration = LIGHTWALLETD_CONNECT_TIMEOUT;
@@ -294,7 +300,17 @@ pub(crate) async fn open_block_download_lwd_transport(
             "an onion lightwalletd is reachable only over Tor",
         ));
     }
-    open_unleased_direct_transport(lightwalletd_url, true).await
+    tokio::time::timeout(
+        DIRECT_BLOCK_OPEN_TIMEOUT,
+        open_unleased_direct_transport(lightwalletd_url, true),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(SyncError::net(format!(
+            "direct block connection did not open in {}s",
+            DIRECT_BLOCK_OPEN_TIMEOUT.as_secs()
+        )))
+    })
 }
 
 /// Whether a sync session may download its blocks from `lightwalletd_url`

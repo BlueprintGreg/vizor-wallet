@@ -4747,12 +4747,17 @@ async fn run_sync_impl(
         );
 
         // A demoted direct route opens a fresh connection once its wait is
-        // over. The queue then holds batches fetched over Tor, so it starts
-        // again from this batch.
-        if let Some(route) = direct_route
-            .as_mut()
-            .filter(|route| route.retry_due(std::time::Instant::now()))
-        {
+        // over and a batch that downloads directly comes up. The queue then
+        // holds batches fetched over Tor, so it starts again from this batch.
+        if let Some(route) = direct_route.as_mut().filter(|route| {
+            route.retry_due(std::time::Instant::now())
+                && batch_uses_direct_connection(
+                    checking_cycle,
+                    range.priority(),
+                    start,
+                    scanned_before_session,
+                )
+        }) {
             let opened = tokio::select! {
                 biased;
                 _ = watch_for_exit(&should_exit) => {
