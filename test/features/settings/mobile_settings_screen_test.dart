@@ -22,6 +22,7 @@ import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/near_swap_privacy_info.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/private_queries_turn_off.dart';
+import 'package:zcash_wallet/src/features/settings/widgets/swap_history_check_control.dart';
 import 'package:zcash_wallet/src/core/widgets/app_profile_picture.dart';
 import 'package:zcash_wallet/src/core/widgets/mobile/mobile_list_row.dart';
 import 'package:zcash_wallet/src/core/widgets/mobile/mobile_surface_card.dart';
@@ -32,9 +33,12 @@ import 'package:zcash_wallet/src/providers/account_provider.dart';
 import 'package:zcash_wallet/src/providers/biometric_unlock_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/network_privacy_provider.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_keep_awake_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/providers/theme_mode_provider.dart';
+import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart'
+    show SwapRecoveryStatus;
 import 'package:zcash_wallet/src/services/biometric_unlock.dart';
 
 import '../../fakes/fake_sync_notifier.dart';
@@ -152,6 +156,40 @@ class _FakeSyncKeepAwakeNotifier extends SyncKeepAwakeNotifier {
       promptSeen: markPromptSeen ? true : null,
     );
   }
+}
+
+/// A wallet with no history check left to run.
+const _idleRecovery = SwapRecoveryStatus(
+  checkingHistory: false,
+  manualCheckActive: false,
+  upgradeRequired: false,
+);
+
+/// Finds the troubleshooting section of the NEAR swap privacy explanation.
+final _troubleshooting = find.byKey(
+  const ValueKey('near_swap_privacy_troubleshooting'),
+);
+
+/// Opens the NEAR swap privacy explanation from its info button in Settings
+/// and finds the sheet.
+Future<Finder> _openNearSwapPrivacyInfo(WidgetTester tester) async {
+  final info = find.byKey(
+    const ValueKey('mobile_settings_near_swap_privacy_info'),
+  );
+  await tester.scrollUntilVisible(info, 200);
+  await tester.ensureVisible(info);
+  await tester.pumpAndSettle();
+  await tester.tap(info);
+  await tester.pumpAndSettle();
+  return find.byKey(const ValueKey('near_swap_privacy_info_sheet'));
+}
+
+/// Closes the NEAR swap privacy explanation the way its close button does.
+Future<void> _closeNearSwapPrivacyInfo(WidgetTester tester) async {
+  final sheet = find.byKey(const ValueKey('near_swap_privacy_info_sheet'));
+  tester.widget<MobileModalScaffold>(sheet).onClose!();
+  await tester.pumpAndSettle();
+  expect(sheet, findsNothing);
 }
 
 Widget _app({
@@ -638,6 +676,10 @@ void main() {
     expect(tester.widget<Text>(description).data, kNearSwapPrivacyOffCopy);
     expect(find.text(kNearSwapPrivacyOnCopy), findsNothing);
     // Checking swap history needs NEAR swap privacy itself.
+    final sheet = await _openNearSwapPrivacyInfo(tester);
+    expect(sheet, findsOneWidget);
+    expect(find.text(kNearSwapPrivacyInfoParagraphs.last), findsOneWidget);
+    expect(_troubleshooting, findsNothing);
     expect(
       find.byKey(const ValueKey('settings_check_swap_history')),
       findsNothing,
@@ -689,35 +731,151 @@ void main() {
     });
   }
 
-  testWidgets('Check swap history shows under NEAR swap privacy', (
+  testWidgets('Check swap history ends the NEAR swap privacy explanation', (
     tester,
   ) async {
+    // Real glyph widths, on a small phone where the section sits below the
+    // first screen.
+    await loadFigmaCompareFonts();
+    tester.view.physicalSize = const Size(320, 568);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(
-      _app(
-        enhancePirEnabled: true,
-        nearSwapPrivacyEnabled: true,
-        // The shell's scaffold gives the bound field its Material ancestor.
-        withTabBar: true,
-      ),
+      _app(enhancePirEnabled: true, nearSwapPrivacyEnabled: true),
     );
     await tester.pumpAndSettle();
     final description = find.byKey(
       const ValueKey('mobile_settings_near_swap_privacy_description'),
     );
-    // The bound field has a scrollable of its own.
-    await tester.scrollUntilVisible(
-      description,
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
+    await tester.scrollUntilVisible(description, 200);
+    // Settings keeps only the toggle and its info button.
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    for (final key in [
+      'settings_swap_history_explanation',
+      'settings_check_swap_history',
+      'settings_cancel_swap_history',
+      'settings_check_swap_history_status',
+    ]) {
+      expect(find.byKey(ValueKey(key)), findsNothing, reason: key);
+    }
+
+    final sheet = await _openNearSwapPrivacyInfo(tester);
+    final section = find.descendant(of: sheet, matching: _troubleshooting);
+    expect(section, findsOneWidget);
+    // In the scrolling body, so a small phone can still reach it.
     expect(
       find.descendant(
-        of: find.byKey(
-          const ValueKey('mobile_settings_near_swap_privacy_sub_option'),
+        of: find.descendant(
+          of: sheet,
+          matching: find.byType(SingleChildScrollView),
         ),
-        matching: find.byKey(const ValueKey('settings_check_swap_history')),
+        matching: section,
       ),
       findsOneWidget,
+    );
+    for (final text in [
+      kNearSwapPrivacyTroubleshootingTitle,
+      kNearSwapPrivacyTroubleshootingCopy,
+      kSwapHistoryCheckExplanation,
+    ]) {
+      expect(
+        find.descendant(of: section, matching: find.text(text)),
+        findsOneWidget,
+      );
+    }
+    for (final key in [
+      'settings_swap_history_explanation',
+      'settings_check_swap_history',
+      'settings_check_swap_history_status',
+    ]) {
+      expect(
+        find.descendant(of: section, matching: find.byKey(ValueKey(key))),
+        findsOneWidget,
+        reason: key,
+      );
+    }
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    expect(tester.getTopLeft(start).dy, greaterThan(568));
+    await tester.ensureVisible(start);
+    await tester.pumpAndSettle();
+    expect(tester.getBottomLeft(start).dy, lessThanOrEqualTo(568));
+    expect(
+      tester.getTopLeft(section).dy,
+      greaterThan(
+        tester.getBottomLeft(find.text(kNearSwapPrivacyInfoParagraphs.last)).dy,
+      ),
+      reason: 'after the explanation',
+    );
+  });
+
+  testWidgets('a running history check survives closing the explanation', (
+    tester,
+  ) async {
+    var begun = 0;
+    final polls = <Completer<SwapRecoveryStatus>>[];
+    await tester.pumpWidget(
+      _app(
+        enhancePirEnabled: true,
+        nearSwapPrivacyEnabled: true,
+        extraOverrides: [
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async => begun++,
+              cancel: () async {},
+              status: () {
+                final poll = Completer<SwapRecoveryStatus>();
+                polls.add(poll);
+                return poll.future;
+              },
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openNearSwapPrivacyInfo(tester);
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    await tester.ensureVisible(start);
+    await tester.pumpAndSettle();
+    await tester.tap(start);
+    await tester.pump();
+    expect(begun, 1);
+    await _closeNearSwapPrivacyInfo(tester);
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MobileSettingsScreen)),
+    );
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
+
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    await _openNearSwapPrivacyInfo(tester);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsOneWidget,
+    );
+    await _closeNearSwapPrivacyInfo(tester);
+
+    // The check finishes while the explanation is closed.
+    for (final poll in polls) {
+      poll.complete(_idleRecovery);
+    }
+    await tester.pumpAndSettle();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    expect(begun, 1);
+    await _openNearSwapPrivacyInfo(tester);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
     );
   });
 
