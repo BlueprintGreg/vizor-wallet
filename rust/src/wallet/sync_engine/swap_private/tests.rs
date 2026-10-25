@@ -1287,6 +1287,54 @@ fn a_failed_witness_read_leaves_the_lookups_to_run() {
     assert_eq!(wallet.one_time_unspent(&account), 1_200_000);
 }
 
+/// A witness read that never answers gives up halfway through the account's time, so the
+/// due lookups still run, in this round and in the next one that meets the same stall.
+#[test]
+fn a_stalled_witness_read_leaves_the_lookups_time_to_run() {
+    isolated!(a_stalled_witness_read_leaves_the_lookups_time_to_run);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&receive(1), 500_000, true);
+    chain.pay(&receive(2), 700_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    let _held = service.hold("witness", 0);
+    let error = wallet
+        .recover_with(&service, None, Duration::from_secs(8))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("witness reads remain pending"), "{error}");
+    assert_eq!(service.queries(), 2, "I2 is read while I1's witness stalls");
+    assert!(wallet.queued(&account).is_empty());
+
+    // I1's witness still goes first next round, and I3's new lookup still runs.
+    chain.pay(&receive(3), 300_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    let _held = service.hold("witness", 0);
+    let error = wallet
+        .recover_with(&service, None, Duration::from_secs(8))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("witness reads remain pending"), "{error}");
+    assert_eq!(service.count("witness"), 1);
+    assert!(service.queries() > 0);
+    assert!(wallet.queued(&account).is_empty(), "I3 was read");
+    assert_eq!(wallet.one_time_unspent(&account), 0);
+
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
+}
+
 /// History before the recent tier lives in sealed shards with receiver filters. For a
 /// restore's handful of addresses the filters cost less than reading each shard blind,
 /// so only the address the filter matches reads the sealed shard, and the payment in it
