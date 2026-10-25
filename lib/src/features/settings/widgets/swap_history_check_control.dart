@@ -43,9 +43,9 @@ const kSwapRecoveryUpdateMessage =
 const kSwapHistoryCheckExplanation =
     'Only needed if a swap payment or refund is missing.';
 
-/// The "Check swap history" button and its progress, under NEAR swap privacy
-/// in desktop and mobile Settings. The check always covers every address the
-/// wallet has enrolled.
+/// The "Check swap history" button and its progress, at the bottom of the
+/// NEAR swap privacy explanation on desktop and mobile. The check always
+/// covers every address the wallet has enrolled.
 class SwapHistoryCheckControl extends ConsumerWidget {
   const SwapHistoryCheckControl({super.key});
 
@@ -61,54 +61,51 @@ class SwapHistoryCheckControl extends ConsumerWidget {
         : watched;
     final running = check == SwapHistoryCheck.checking;
     final notifier = ref.read(swapHistoryCheckProvider.notifier);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxs),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            kSwapHistoryCheckExplanation,
-            key: const ValueKey('settings_swap_history_explanation'),
-            style: AppTypography.labelMedium.copyWith(
-              color: colors.text.secondary,
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          kSwapHistoryCheckExplanation,
+          key: const ValueKey('settings_swap_history_explanation'),
+          style: AppTypography.labelMedium.copyWith(
+            color: colors.text.secondary,
           ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.xs,
+          runSpacing: AppSpacing.xs,
+          children: [
+            AppButton(
+              key: const ValueKey('settings_check_swap_history'),
+              onPressed: running || check == SwapHistoryCheck.updateRequired
+                  ? null
+                  : () => unawaited(notifier.check()),
+              size: AppButtonSize.medium,
+              child: const Text('Check swap history'),
+            ),
+            // Only a call in flight or a job the wallet still has can be
+            // paused.
+            if (running || ref.watch(swapHistoryJobSavedProvider))
               AppButton(
-                key: const ValueKey('settings_check_swap_history'),
-                onPressed: running || check == SwapHistoryCheck.updateRequired
-                    ? null
-                    : () => unawaited(notifier.check()),
+                key: const ValueKey('settings_cancel_swap_history'),
+                onPressed: () => unawaited(notifier.cancel()),
+                variant: AppButtonVariant.ghost,
                 size: AppButtonSize.medium,
-                child: const Text('Check swap history'),
+                child: const Text('Pause check'),
               ),
-              // Only a call in flight or a job the wallet still has can be
-              // paused.
-              if (running || ref.watch(swapHistoryJobSavedProvider))
-                AppButton(
-                  key: const ValueKey('settings_cancel_swap_history'),
-                  onPressed: () => unawaited(notifier.cancel()),
-                  variant: AppButtonVariant.ghost,
-                  size: AppButtonSize.medium,
-                  child: const Text('Pause check'),
-                ),
-            ],
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          swapHistoryCheckStatus(check),
+          key: const ValueKey('settings_check_swap_history_status'),
+          style: AppTypography.bodyMedium.copyWith(
+            color: colors.text.secondary,
           ),
-          const SizedBox(height: AppSpacing.xs),
-          Text(
-            swapHistoryCheckStatus(check),
-            key: const ValueKey('settings_check_swap_history_status'),
-            style: AppTypography.bodyMedium.copyWith(
-              color: colors.text.secondary,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

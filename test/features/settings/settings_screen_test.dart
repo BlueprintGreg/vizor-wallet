@@ -738,7 +738,158 @@ void main() {
       find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
       findsOneWidget,
     );
+    final dialog = await _openNearSwapPrivacyInfo(tester);
+    expect(dialog, findsOneWidget);
+    expect(find.text(kNearSwapPrivacyInfoParagraphs.last), findsOneWidget);
+    expect(_troubleshooting, findsNothing);
     expect(find.byType(SwapHistoryCheckControl), findsNothing);
+  });
+
+  testWidgets('Settings leaves Check swap history to the explanation', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_settingsHarness(nearSwapPrivacyEnabled: true));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('settings_near_swap_privacy_toggle')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('settings_near_swap_privacy_info')),
+      findsOneWidget,
+    );
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    for (final key in [
+      'settings_swap_history_explanation',
+      'settings_check_swap_history',
+      'settings_cancel_swap_history',
+      'settings_check_swap_history_status',
+    ]) {
+      expect(find.byKey(ValueKey(key)), findsNothing, reason: key);
+    }
+  });
+
+  testWidgets('the NEAR swap privacy explanation ends with troubleshooting', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_settingsHarness(nearSwapPrivacyEnabled: true));
+    await tester.pump();
+    final dialog = await _openNearSwapPrivacyInfo(tester);
+    final section = find.descendant(of: dialog, matching: _troubleshooting);
+    expect(section, findsOneWidget);
+    // In the scrolling body, so a short window can still reach it.
+    expect(
+      find.descendant(
+        of: find.descendant(
+          of: dialog,
+          matching: find.byType(SingleChildScrollView),
+        ),
+        matching: section,
+      ),
+      findsOneWidget,
+    );
+    for (final text in [
+      kNearSwapPrivacyTroubleshootingTitle,
+      kNearSwapPrivacyTroubleshootingCopy,
+      kSwapHistoryCheckExplanation,
+    ]) {
+      expect(
+        find.descendant(of: section, matching: find.text(text)),
+        findsOneWidget,
+      );
+    }
+    for (final key in [
+      'settings_swap_history_explanation',
+      'settings_check_swap_history',
+      'settings_check_swap_history_status',
+    ]) {
+      expect(
+        find.descendant(of: section, matching: find.byKey(ValueKey(key))),
+        findsOneWidget,
+        reason: key,
+      );
+    }
+    await tester.ensureVisible(section);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(section).dy,
+      greaterThan(
+        tester.getBottomLeft(find.text(kNearSwapPrivacyInfoParagraphs.last)).dy,
+      ),
+      reason: 'after the explanation',
+    );
+  });
+
+  testWidgets('a running history check survives closing the explanation', (
+    tester,
+  ) async {
+    var begun = 0;
+    final polls = <Completer<SwapRecoveryStatus>>[];
+    await tester.pumpWidget(
+      _settingsHarness(
+        nearSwapPrivacyEnabled: true,
+        extraOverrides: [
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async => begun++,
+              cancel: () async {},
+              status: () {
+                final poll = Completer<SwapRecoveryStatus>();
+                polls.add(poll);
+                return poll.future;
+              },
+              pollInterval: Duration.zero,
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await _openNearSwapPrivacyInfo(tester);
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    await tester.ensureVisible(start);
+    await tester.tap(start);
+    await tester.pump();
+    expect(begun, 1);
+    await _closeNearSwapPrivacyInfo(tester);
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    final container = ProviderScope.containerOf(
+      tester.element(
+        find.byKey(const ValueKey('settings_near_swap_privacy_sub_option')),
+      ),
+    );
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.checking);
+
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    await _openNearSwapPrivacyInfo(tester);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsOneWidget,
+    );
+    await _closeNearSwapPrivacyInfo(tester);
+
+    // The check finishes while the explanation is closed.
+    for (final poll in polls) {
+      poll.complete(_idleRecovery);
+    }
+    await tester.pumpAndSettle();
+    expect(container.read(swapHistoryCheckProvider), SwapHistoryCheck.done);
+    expect(begun, 1);
+    await _openNearSwapPrivacyInfo(tester);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsNothing,
+    );
   });
 
   testWidgets('NEAR swap privacy is hidden while swaps are disabled', (
@@ -776,6 +927,7 @@ void main() {
       ),
     );
     await tester.pump();
+    await _openNearSwapPrivacyInfo(tester);
     final container = ProviderScope.containerOf(
       tester.element(find.byType(SwapHistoryCheckControl)),
     );
@@ -820,6 +972,7 @@ void main() {
         ],
       ),
     );
+    await _openNearSwapPrivacyInfo(tester);
     final start = find.byKey(const ValueKey('settings_check_swap_history'));
     await tester.ensureVisible(start);
     await tester.tap(start);
@@ -864,6 +1017,7 @@ void main() {
       ),
     );
     await tester.pump();
+    await _openNearSwapPrivacyInfo(tester);
     // No address count to choose: one explanation line and the button.
     expect(
       find.descendant(
@@ -1491,6 +1645,32 @@ void _overridePlatform(TargetPlatform platform) {
 
 void _resetPlatformOverride() {
   debugDefaultTargetPlatformOverride = null;
+}
+
+/// Finds the troubleshooting section of the NEAR swap privacy explanation.
+final _troubleshooting = find.byKey(
+  const ValueKey('near_swap_privacy_troubleshooting'),
+);
+
+/// Opens the NEAR swap privacy explanation from its info button in Settings
+/// and finds the dialog.
+Future<Finder> _openNearSwapPrivacyInfo(WidgetTester tester) async {
+  final info = find.byKey(const ValueKey('settings_near_swap_privacy_info'));
+  await tester.ensureVisible(info);
+  await tester.pumpAndSettle();
+  await tester.tap(info);
+  await tester.pumpAndSettle();
+  return find.byKey(const ValueKey('near_swap_privacy_info_dialog'));
+}
+
+/// Closes the NEAR swap privacy explanation with its Close button.
+Future<void> _closeNearSwapPrivacyInfo(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('near_swap_privacy_info_close')));
+  await tester.pumpAndSettle();
+  expect(
+    find.byKey(const ValueKey('near_swap_privacy_info_dialog')),
+    findsNothing,
+  );
 }
 
 Widget _settingsHarness({

@@ -10,7 +10,6 @@ import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
 import '../settings_sub_option.dart';
-import '../swap_history_check_control.dart';
 import 'mobile_tor_control.dart';
 import 'mobile_private_queries_control.dart';
 export 'mobile_tor_control.dart' show MobilePrivacyToggle;
@@ -104,10 +103,6 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  if (nearSwapPrivacy.showHistoryCheck) ...[
-                    const SizedBox(height: AppSpacing.sm),
-                    const SwapHistoryCheckControl(),
-                  ],
                 ],
               ),
             ),
