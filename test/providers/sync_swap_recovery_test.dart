@@ -594,21 +594,40 @@ void main() {
     await settle(sync);
   });
 
-  test('a failed round delays unforced rounds by a growing backoff, and a '
+  test('a failed round delays unforced rounds by a backoff that retries the '
+      'first two failures soon and then grows to five minutes, and a '
       'successful one ends it', () async {
     final sync = await recovering(privacy: true);
     await finishSyncAndRound(sync, null);
 
-    expect(await pollStartsRound(sync), isFalse, reason: 'within 10 seconds');
-    _clock = _clock.add(const Duration(seconds: 10));
-    expect(await pollStartsRound(sync), isTrue);
-    api.round.completeError(_outage);
-    await pumpEventQueue();
-
-    _clock = _clock.add(const Duration(seconds: 10));
-    expect(await pollStartsRound(sync), isFalse, reason: 'within 30 seconds');
-    _clock = _clock.add(const Duration(seconds: 20));
-    expect(await pollStartsRound(sync), isTrue);
+    const steps = [
+      Duration(seconds: 10),
+      Duration(seconds: 10),
+      Duration(seconds: 30),
+      Duration(minutes: 1),
+      Duration(minutes: 2),
+      Duration(minutes: 5),
+      Duration(minutes: 5),
+    ];
+    for (var failures = 1; failures <= steps.length; failures++) {
+      final step = steps[failures - 1];
+      _clock = _clock.add(step - const Duration(seconds: 1));
+      expect(
+        await pollStartsRound(sync),
+        isFalse,
+        reason: 'within $step of $failures failures',
+      );
+      _clock = _clock.add(const Duration(seconds: 1));
+      expect(
+        await pollStartsRound(sync),
+        isTrue,
+        reason: '$step after $failures failures',
+      );
+      if (failures < steps.length) {
+        api.round.completeError(_outage);
+        await pumpEventQueue();
+      }
+    }
     await releaseRound(_quiet);
 
     expect(await pollStartsRound(sync), isTrue, reason: 'no backoff remains');
@@ -665,6 +684,10 @@ void main() {
   test('a forced start ignores the backoff and starts it over', () async {
     final sync = await recovering(privacy: true);
     await finishSyncAndRound(sync, null);
+    _clock = _clock.add(const Duration(seconds: 10));
+    expect(await pollStartsRound(sync), isTrue);
+    api.round.completeError(_outage);
+    await pumpEventQueue();
     expect(await pollStartsRound(sync), isFalse);
 
     sync.continueSwapRecovery();
@@ -673,7 +696,7 @@ void main() {
     api.round.completeError(_outage);
     await pumpEventQueue();
 
-    // The forced round's failure waits the first step again, not the second.
+    // The forced round's failure waits the first step again, not the third.
     _clock = _clock.add(const Duration(seconds: 10));
     expect(await pollStartsRound(sync), isTrue);
     await releaseRound(_quiet);
@@ -719,10 +742,10 @@ void main() {
     api.round.completeError(_outage);
     await pumpEventQueue();
 
-    _clock = _clock.add(const Duration(seconds: 10));
+    _clock = _clock.add(const Duration(seconds: 5));
     reads.last.complete(checking);
     await pumpEventQueue();
-    expect(api.recoveries, hasLength(2), reason: 'within 30 seconds');
+    expect(api.recoveries, hasLength(2), reason: 'within the second step');
 
     reads.last.complete(
       const rust_swap.SwapRecoveryStatus(
