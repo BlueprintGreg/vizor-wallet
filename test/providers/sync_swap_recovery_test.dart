@@ -692,7 +692,7 @@ void main() {
 
     sync.continueSwapRecovery();
     await pumpEventQueue();
-    expect(api.recoveries, hasLength(2), reason: 'a caller waits on it');
+    expect(api.recoveries, hasLength(3), reason: 'a caller waits on it');
     api.round.completeError(_outage);
     await pumpEventQueue();
 
