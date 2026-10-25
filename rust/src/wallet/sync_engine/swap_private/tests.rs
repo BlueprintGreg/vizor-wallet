@@ -1247,21 +1247,19 @@ fn a_found_payment_is_credited_before_further_lookups() {
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
     assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
 
+    // The first payout's witness fails twice, and the second payout's lookup still runs.
     chain.pay(&receive(1), 500_000, true);
+    chain.pay(&receive(2), 700_000, true);
     chain.mine(1);
     wallet.scan(&chain);
     let service = Service::at_tip(&chain);
     service.fail("witness", 0, tor_failure);
     service.fail("witness", 1, tor_failure);
     assert!(wallet.recover(&service).is_err());
-    assert_eq!(
-        service.queries(),
-        2,
-        "I1, then I5, which its payment exposed, while I4 backs off"
-    );
+    assert_eq!(service.queries(), 2, "I1 and I2, while I4 backs off");
     assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
-    assert_eq!(wallet.state(&account).witnesses.len(), 1);
+    assert_eq!(wallet.state(&account).witnesses.len(), 2);
 }
 
 /// History before the recent tier lives in sealed shards with receiver filters. For a
