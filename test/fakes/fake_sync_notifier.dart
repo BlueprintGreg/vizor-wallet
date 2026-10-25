@@ -32,6 +32,14 @@ class FakeSyncNotifier extends SyncNotifier {
     startSyncs++;
   }
 
+  /// Widget tests observe recovery scheduling without starting native network work.
+  @override
+  void continueSwapRecovery() {}
+
+  /// Widget tests observe history check polling without native network work.
+  @override
+  void pollSwapRecovery() {}
+
   @override
   Future<void> refreshAfterSend() async {
     balanceRefreshes++;

@@ -1129,7 +1129,8 @@ void main() {
         appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
         syncProvider.overrideWith(
           () => notifier = _LifecycleTestSyncNotifier(() async {
-            resolverStarted.complete();
+            // Ordinary sync and independent recovery can ask for the same path.
+            if (!resolverStarted.isCompleted) resolverStarted.complete();
             return dbPath.future;
           }),
         ),
@@ -1404,7 +1405,8 @@ void main() {
         accountProvider.overrideWith(_ExistingAccountNotifier.new),
         syncProvider.overrideWith(
           () => notifier = _LifecycleTestSyncNotifier(() async {
-            resolverStarted.complete();
+            // Ordinary sync and independent recovery can ask for the same path.
+            if (!resolverStarted.isCompleted) resolverStarted.complete();
             return dbPath.future;
           }),
         ),
