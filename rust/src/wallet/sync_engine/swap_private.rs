@@ -37,6 +37,10 @@ use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicU64 = AtomicU64::new(0);
+/// Accounts whose last drain failed while witnesses went first. Their next drain runs
+/// lookups first instead, so a stalled witness or a slow lookup can hold the other back
+/// for at most one round, and each still gets a whole account slice in turn.
+static LOOKUPS_FIRST: Mutex<Vec<AccountUuid>> = Mutex::new(Vec::new());
 
 /// Cancels the current bounded worker without deleting its durable queue.
 pub(crate) fn cancel_recovery() {
@@ -792,12 +796,25 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
         let account_budget = deadline
             .saturating_duration_since(tokio::time::Instant::now())
             .div_f64((account_count - index + 1) as f64);
+        let lookups_first = {
+            let mut accounts = LOOKUPS_FIRST
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let queued = accounts.iter().position(|queued| queued == account);
+            queued.map(|i| accounts.swap_remove(i)).is_some()
+        };
         let result = tokio::time::timeout(
             account_budget,
-            drain(path, network, generation, &client, *account, account_budget),
+            drain(path, network, generation, &client, *account, lookups_first),
         )
         .await
         .unwrap_or_else(|_| Err("Swap account recovery remains pending.".into()));
+        if result.is_err() && !lookups_first {
+            LOOKUPS_FIRST
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(*account);
+        }
         match result {
             Ok(changed) => round.changed |= changed,
             Err(RecoveryError::UpgradeRequired) => {
@@ -817,24 +834,22 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
 
 /// Settles a bounded number of `account`'s witness reads and due lookups against the
 /// captured inventory. Witnesses go first, so a payment a lookup already found is credited
-/// without waiting behind unrelated lookups. A failed lookup is deferred, never recorded
-/// as empty, and ends the call. A failed witness read has no backoff, so it only ends
-/// witness reads rather than holding back lookups in every round, and its error is
-/// returned once the lookups are done. While a lookup is due, witness reads may use only
-/// the first half of `budget`, so a stalled one fails in time for the lookups to run.
-/// Returns whether the library accepted any lookup page or witness (see [`Round::changed`]).
+/// without waiting behind unrelated lookups, unless `lookups_first` (see [`LOOKUPS_FIRST`]).
+/// A failed lookup is deferred, never recorded as empty, and ends the call. A failed
+/// witness read has no backoff, so it only ends witness reads for this call, and its error
+/// is returned once the lookups are done. Returns whether the library accepted any lookup
+/// page or witness (see [`Round::changed`]).
 async fn drain<T: Transport>(
     path: &str,
     network: WalletNetwork,
     generation: u64,
     client: &InventoryClient<T>,
     account: AccountUuid,
-    budget: Duration,
+    lookups_first: bool,
 ) -> Result<bool, RecoveryError> {
     let end = zakura_pir_client::receiver::publication(client.inventory())
         .end
         .height;
-    let witness_deadline = tokio::time::Instant::now() + budget / 2;
     let mut changed = false;
     let mut witness_failure = None;
     for _ in 0..16 {
@@ -842,26 +857,14 @@ async fn drain<T: Transport>(
             db.one_time_recovery(account, one_time_ivk::now()?)
                 .map_err(|e| e.to_string())
         })?;
+        // A hit above this inventory's end waits for a later publication.
+        let due = state.lookups.iter().find(|work| work.through <= end);
         let request = state
             .witnesses
             .first()
-            .filter(|_| witness_failure.is_none());
-        // A hit above this inventory's end waits for a later publication.
-        let due = state.lookups.iter().find(|work| work.through <= end);
+            .filter(|_| witness_failure.is_none() && !(lookups_first && due.is_some()));
         if let Some(request) = request {
-            let attempt = retried(generation, || witness(client, request));
-            let answer = if due.is_some() {
-                tokio::time::timeout_at(witness_deadline, attempt)
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(session::Error::Transport(
-                            "Swap witness reads remain pending.".into(),
-                        ))
-                    })
-            } else {
-                attempt.await
-            };
-            let read = match answer {
+            let read = match retried(generation, || witness(client, request)).await {
                 Ok(answer) => wallet(path, network, generation, |db| {
                     db.record_one_time_witness(
                         account,
