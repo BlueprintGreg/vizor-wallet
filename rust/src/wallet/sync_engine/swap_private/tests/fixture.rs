@@ -35,7 +35,9 @@ use zcash_client_sqlite::testing::{
     BlockCache,
 };
 use zcash_primitives::transaction::Transaction;
-use zcash_protocol::{consensus::BlockHeight, local_consensus::LocalNetwork, value::Zatoshis};
+use zcash_protocol::{
+    consensus::BlockHeight, local_consensus::LocalNetwork, memo::MemoBytes, value::Zatoshis,
+};
 
 pub(super) const NETWORK: WalletNetwork = WalletNetwork::Main;
 pub(super) const ORIGIN: &str = "https://receiver.test";
@@ -1146,6 +1148,64 @@ impl Wallet {
         )
         .map(|v| v as u64)
         .unwrap()
+    }
+
+    /// Values of `account`'s mined, unspent Ironwood notes outside one-time keys, smallest
+    /// first.
+    pub(super) fn notes(&self, account: &Account) -> Vec<u64> {
+        let conn = rusqlite::Connection::open(&self.path).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT n.value FROM ironwood_received_notes n
+                 JOIN transactions r ON r.id_tx = n.transaction_id
+                 JOIN accounts a ON a.id = n.account_id
+                 WHERE a.uuid = ?1 AND n.one_time_key_id IS NULL AND r.mined_height IS NOT NULL
+                   AND NOT EXISTS(SELECT 1 FROM ironwood_received_note_spends s
+                       JOIN transactions t ON t.id_tx = s.transaction_id
+                       WHERE s.ironwood_received_note_id = n.id
+                         AND (t.mined_height IS NOT NULL OR t.expiry_height = 0
+                              OR t.expiry_height > (SELECT MAX(height) FROM blocks)))
+                 ORDER BY n.value",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([account.id.expose_uuid().as_bytes()], |r| {
+                r.get::<_, i64>(0).map(|v| v as u64)
+            })
+            .unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    }
+
+    /// How many of `account`'s Ironwood notes store `memo`.
+    pub(super) fn notes_with_memo(&self, account: &Account, memo: &MemoBytes) -> usize {
+        let conn = rusqlite::Connection::open(&self.path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM ironwood_received_notes n
+             JOIN accounts a ON a.id = n.account_id
+             WHERE a.uuid = ?1 AND n.memo = ?2",
+            rusqlite::params![account.id.expose_uuid().as_bytes(), memo.as_slice()],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n as usize)
+        .unwrap()
+    }
+
+    /// Each refund key `account` has registered, as its index and recorded funding height.
+    pub(super) fn refund_keys(&self, account: &Account) -> Vec<(u64, Option<u32>)> {
+        let conn = rusqlite::Connection::open(&self.path).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT k.key_index, k.funding_height FROM ironwood_one_time_keys k
+                 JOIN accounts a ON a.id = k.account_id
+                 WHERE a.uuid = ?1 AND k.purpose = 0 ORDER BY k.key_index",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([account.id.expose_uuid().as_bytes()], |r| {
+                Ok((u64::from_be_bytes(r.get::<_, [u8; 8]>(0)?), r.get(1)?))
+            })
+            .unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
     }
 
     /// Each refund-key receipt of `account` as its nullifier and whether a mined

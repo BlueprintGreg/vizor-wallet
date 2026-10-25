@@ -4294,7 +4294,9 @@ fn propose_send_with_reserved_notes(
         .ok_or("Account not found")?;
     let is_ledger = crate::wallet::keys::hardware_signer_kind(account.source())
         == Some(crate::wallet::keys::HardwareSignerKind::Ledger);
-    // Only swap funding sets a change memo.
+    // Only swap funding sets a change memo. Its change splits as an ordinary send's
+    // does, which stops optional consolidation from merging two notes into one on
+    // every deposit. The library copies the memo onto each change output.
     let swap_funding = change_memo.is_some();
     let (change_strategy, input_selector) = if swap_funding {
         (
@@ -4303,7 +4305,7 @@ fn propose_send_with_reserved_notes(
                 change_memo,
                 ShieldedPool::Ironwood,
                 DustOutputPolicy::default(),
-                SplitPolicy::single_output(),
+                change_split_policy(is_ledger),
             ),
             GreedyInputSelector::new(),
         )
@@ -7246,9 +7248,8 @@ fn order_resubmittable_transactions(
 }
 
 /// ZIP-317 change-strategy / input-selector factory used by both
-/// `propose_send` and `estimate_fee`. Keeps the configuration
-/// (single change output for Ledger, minimum 0.1 ZEC output split otherwise) in one
-/// place so the two entry points can't drift.
+/// `propose_send` and `estimate_fee`. Keeps the configuration in one place so
+/// the two entry points can't drift (see [`change_split_policy`] for the split).
 fn zip317_helper<DbT: InputSource>(
     change_memo: Option<MemoBytes>,
     is_ledger: bool,
@@ -7261,17 +7262,25 @@ fn zip317_helper<DbT: InputSource>(
         change_memo,
         ShieldedPool::Orchard,
         DustOutputPolicy::default(),
-        if is_ledger {
-            // The Ledger app rejects a second shielded change output during PCZT validation.
-            SplitPolicy::single_output()
-        } else {
-            SplitPolicy::with_min_output_value(
-                NonZeroUsize::new(4).unwrap(),
-                Zatoshis::const_from_u64(1000_0000),
-            )
-        },
+        change_split_policy(is_ledger),
     );
     (change_strategy, GreedyInputSelector::new())
+}
+
+/// The change split of every send. A Ledger account gets one change output. Other
+/// accounts get up to four outputs of at least 0.1 ZEC each, so the account keeps
+/// about four spendable notes. Swap funding shares this, and only software accounts
+/// fund swaps.
+fn change_split_policy(is_ledger: bool) -> SplitPolicy {
+    if is_ledger {
+        // The Ledger app rejects a second shielded change output during PCZT validation.
+        SplitPolicy::single_output()
+    } else {
+        SplitPolicy::with_min_output_value(
+            NonZeroUsize::new(4).unwrap(),
+            Zatoshis::const_from_u64(1000_0000),
+        )
+    }
 }
 
 // ======================== No-op Sapling Provers ========================
