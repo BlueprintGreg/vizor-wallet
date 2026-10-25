@@ -33,9 +33,12 @@ import 'package:zcash_wallet/src/providers/account_provider.dart';
 import 'package:zcash_wallet/src/providers/biometric_unlock_provider.dart';
 import 'package:zcash_wallet/src/providers/enhance_pir_provider.dart';
 import 'package:zcash_wallet/src/providers/network_privacy_provider.dart';
+import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_keep_awake_provider.dart';
 import 'package:zcash_wallet/src/providers/sync_provider.dart';
 import 'package:zcash_wallet/src/providers/theme_mode_provider.dart';
+import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart'
+    show SwapRecoveryStatus;
 import 'package:zcash_wallet/src/services/biometric_unlock.dart';
 
 import '../../fakes/fake_sync_notifier.dart';
@@ -172,6 +175,14 @@ Future<Finder> _openNearSwapPrivacyInfo(WidgetTester tester) async {
   await tester.tap(info);
   await tester.pumpAndSettle();
   return find.byKey(const ValueKey('near_swap_privacy_info_sheet'));
+}
+
+/// Closes the NEAR swap privacy sheet and waits for it to leave.
+Future<void> _closeNearSwapPrivacyInfo(WidgetTester tester) async {
+  final sheet = find.byKey(const ValueKey('near_swap_privacy_info_sheet'));
+  tester.widget<MobileModalScaffold>(sheet).onClose!();
+  await tester.pumpAndSettle();
+  expect(sheet, findsNothing);
 }
 
 Widget _app({
@@ -816,6 +827,103 @@ void main() {
       );
     });
   }
+
+  /// The same transitions as on desktop: turning NEAR swap privacy off drops
+  /// Check swap history from the explanation and ends a running check paused,
+  /// and turning it back on watches the saved job again until the wallet
+  /// reports it done.
+  testWidgets('NEAR swap privacy toggles gate a running history check', (
+    tester,
+  ) async {
+    final privacy = _SwapPrivacyToggle(true);
+    var finished = false;
+    var begins = 0;
+    // The wallet saves the user's job once a check begins.
+    var saved = false;
+    await tester.pumpWidget(
+      _app(
+        enhancePirEnabled: true,
+        nearSwapPrivacyEnabled: true,
+        extraOverrides: [
+          nearSwapPrivacyProvider.overrideWith(() => privacy),
+          // The wallet's saved state, which the check reads to follow the job.
+          swapRecoveryStatusReaderProvider.overrideWithValue(
+            () async => SwapRecoveryStatus(
+              checkingHistory: privacy.on && saved && !finished,
+              manualCheckActive: privacy.on && saved && !finished,
+              upgradeRequired: false,
+            ),
+          ),
+          swapHistoryApiProvider.overrideWithValue(
+            SwapHistoryApi(
+              begin: () async {
+                begins++;
+                saved = true;
+              },
+              cancel: () async {},
+              // The wallet reports a check only while the feature is on.
+              status: () async => SwapRecoveryStatus(
+                checkingHistory: privacy.on && saved && !finished,
+                manualCheckActive: privacy.on && saved && !finished,
+                upgradeRequired: false,
+              ),
+              pollInterval: const Duration(seconds: 1),
+            ),
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    final row = find.byKey(
+      const ValueKey('mobile_settings_near_swap_privacy_row'),
+    );
+    final start = find.byKey(const ValueKey('settings_check_swap_history'));
+    final status = find.byKey(
+      const ValueKey('settings_check_swap_history_status'),
+    );
+    await _openNearSwapPrivacyInfo(tester);
+    await tester.ensureVisible(start);
+    await tester.pumpAndSettle();
+    await tester.tap(start);
+    await tester.pump();
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+    );
+    // The toggle lives on Settings, under the explanation.
+    await _closeNearSwapPrivacyInfo(tester);
+
+    // The row's own tap handler, which turns the setting over.
+    void toggle() => tester.widget<GestureDetector>(row).onTap!();
+    toggle();
+    await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
+    expect(_troubleshooting, findsNothing);
+    expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    await _closeNearSwapPrivacyInfo(tester);
+
+    toggle();
+    await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
+    expect(find.byType(SwapHistoryCheckControl), findsOneWidget);
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.checking),
+      reason: 'the saved job is watched again',
+    );
+    expect(
+      find.byKey(const ValueKey('settings_cancel_swap_history')),
+      findsOneWidget,
+    );
+
+    finished = true;
+    await tester.pump(const Duration(seconds: 2));
+    expect(begins, 1, reason: 'no new check was needed');
+    expect(
+      tester.widget<Text>(status).data,
+      swapHistoryCheckStatus(SwapHistoryCheck.done),
+    );
+  });
 
   testWidgets('the Tor toggle matches the keep-awake toggle', (tester) async {
     await tester.pumpWidget(
@@ -1988,6 +2096,25 @@ double _leadingIconOpacityIn(WidgetTester tester, ValueKey<String> rowKey) {
 final _turnOffSheet = find.byKey(
   const ValueKey('private_queries_turn_off_sheet'),
 );
+
+/// NEAR swap privacy that flips when the settings toggle asks, as the real
+/// setting does once its change is applied, without storage or native calls.
+class _SwapPrivacyToggle extends NearSwapPrivacyNotifier {
+  _SwapPrivacyToggle(this.on);
+
+  /// The current setting, readable by fakes that follow it.
+  bool on;
+
+  @override
+  bool build() => on;
+
+  @override
+  Future<void> set(bool enabled) async {
+    if (enabled && !ref.read(enhancePirProvider)) return;
+    on = enabled;
+    state = enabled;
+  }
+}
 
 class _RecordingToggle extends EnhancePirNotifier {
   _RecordingToggle(this.enabled);
