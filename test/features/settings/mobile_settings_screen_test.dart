@@ -21,10 +21,6 @@ import 'package:zcash_wallet/src/core/profile_pictures.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/near_swap_privacy_info.dart';
-import 'package:zcash_wallet/src/features/settings/widgets/swap_history_check_control.dart';
-import 'package:zcash_wallet/src/providers/swap_history_check_provider.dart';
-import 'package:zcash_wallet/src/rust/api/one_time_ivk.dart'
-    show SwapRecoveryStatus;
 import 'package:zcash_wallet/src/features/settings/widgets/private_queries_turn_off.dart';
 import 'package:zcash_wallet/src/features/settings/widgets/swap_history_check_control.dart';
 import 'package:zcash_wallet/src/core/widgets/app_profile_picture.dart';
@@ -911,9 +907,10 @@ void main() {
     });
   }
 
-  /// The same transitions as on desktop: turning NEAR swap privacy off hides
-  /// Check swap history and ends a running check paused, and turning it back
-  /// on watches the saved job again until the wallet reports it done.
+  /// The same transitions as on desktop: turning NEAR swap privacy off drops
+  /// Check swap history from the explanation and ends a running check paused,
+  /// and turning it back on watches the saved job again until the wallet
+  /// reports it done.
   testWidgets('NEAR swap privacy toggles gate a running history check', (
     tester,
   ) async {
@@ -926,8 +923,6 @@ void main() {
       _app(
         enhancePirEnabled: true,
         nearSwapPrivacyEnabled: true,
-        // The shell's scaffold gives the bound field its Material ancestor.
-        withTabBar: true,
         extraOverrides: [
           nearSwapPrivacyProvider.overrideWith(() => privacy),
           // The wallet's saved state, which the check reads to follow the job.
@@ -965,11 +960,8 @@ void main() {
     final status = find.byKey(
       const ValueKey('settings_check_swap_history_status'),
     );
-    // The bound field has a scrollable of its own, and the floating tab bar
-    // covers the bottom of the page.
-    final page = find.byType(Scrollable).first;
-    await tester.scrollUntilVisible(status, 200, scrollable: page);
-    await tester.drag(page, const Offset(0, -300));
+    await _openNearSwapPrivacyInfo(tester);
+    await tester.ensureVisible(start);
     await tester.pumpAndSettle();
     await tester.tap(start);
     await tester.pump();
@@ -977,15 +969,21 @@ void main() {
       tester.widget<Text>(status).data,
       swapHistoryCheckStatus(SwapHistoryCheck.checking),
     );
+    // The toggle lives on Settings, under the explanation.
+    await _closeNearSwapPrivacyInfo(tester);
 
-    // The row's own tap handler, which the floating tab bar can cover.
+    // The row's own tap handler, which turns the setting over.
     void toggle() => tester.widget<GestureDetector>(row).onTap!();
     toggle();
     await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
+    expect(_troubleshooting, findsNothing);
     expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    await _closeNearSwapPrivacyInfo(tester);
 
     toggle();
     await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
     expect(find.byType(SwapHistoryCheckControl), findsOneWidget);
     expect(
       tester.widget<Text>(status).data,

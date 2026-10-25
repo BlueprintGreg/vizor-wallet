@@ -1102,9 +1102,10 @@ void main() {
     );
   });
 
-  /// Turning NEAR swap privacy off hides Check swap history and ends a running
-  /// check paused. Turning it back on shows the check again and watches the
-  /// saved job until the wallet reports it done.
+  /// Turning NEAR swap privacy off drops Check swap history from the
+  /// explanation and ends a running check paused. Turning it back on shows the
+  /// check there again and watches the saved job until the wallet reports it
+  /// done.
   testWidgets('NEAR swap privacy toggles gate a running history check', (
     tester,
   ) async {
@@ -1155,6 +1156,7 @@ void main() {
     final status = find.byKey(
       const ValueKey('settings_check_swap_history_status'),
     );
+    await _openNearSwapPrivacyInfo(tester);
     await tester.ensureVisible(start);
     await tester.tap(start);
     await tester.pump();
@@ -1162,14 +1164,21 @@ void main() {
       tester.widget<Text>(status).data,
       swapHistoryCheckStatus(SwapHistoryCheck.checking),
     );
+    // The toggle lives on Settings, under the explanation.
+    await _closeNearSwapPrivacyInfo(tester);
 
     await tester.ensureVisible(toggle);
     await tester.tap(toggle);
     await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
+    expect(_troubleshooting, findsNothing);
     expect(find.byType(SwapHistoryCheckControl), findsNothing);
+    await _closeNearSwapPrivacyInfo(tester);
 
+    await tester.ensureVisible(toggle);
     await tester.tap(toggle);
     await tester.pump(const Duration(seconds: 2));
+    await _openNearSwapPrivacyInfo(tester);
     expect(find.byType(SwapHistoryCheckControl), findsOneWidget);
     expect(
       tester.widget<Text>(status).data,
