@@ -1115,6 +1115,177 @@ fn unsupported_service_requires_an_upgrade_and_keeps_pending_work() {
     assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
 }
 
+/// The error a broken Tor circuit gives a receiver request.
+fn tor_failure() -> session::Error {
+    session::Error::Transport(
+        "network: private-service Tor request failed: tor: remote hostname lookup failure".into(),
+    )
+}
+
+/// A receiver request that fails in transit gets a second attempt within the round, so
+/// one bad circuit costs a request rather than the round. A request that fails twice
+/// still fails the round and leaves its lookup pending.
+#[test]
+fn a_request_that_fails_in_transit_is_retried_once_within_the_round() {
+    isolated!(a_request_that_fails_in_transit_is_retried_once_within_the_round);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&receive(0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("inventory", 0, tor_failure);
+    service.fail("query", 0, tor_failure);
+    service.fail("witness", 0, tor_failure);
+    assert!(wallet.recover(&service).unwrap().changed);
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    assert!(wallet.queued(&account).is_empty());
+    assert_eq!(service.count("inventory"), 2);
+    assert_eq!(service.count("witness"), 2);
+    assert_eq!(
+        service.queries(),
+        3,
+        "I0 twice, then I4, which its payment exposed"
+    );
+
+    chain.pay(&receive(1), 500_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("query", 0, tor_failure);
+    service.fail("query", 1, tor_failure);
+    let error = wallet.recover(&service).unwrap_err().to_string();
+    assert!(error.contains("remote hostname lookup failure"), "{error}");
+    assert_eq!(service.queries(), 2, "one retry, then the round fails");
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 1)]));
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+}
+
+/// An HTTP status answer or an unsupported format is the service's answer, which a
+/// second attempt would not change, so neither is retried.
+#[test]
+fn status_answers_and_unsupported_formats_are_not_retried() {
+    isolated!(status_answers_and_unsupported_formats_are_not_retried);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    chain.mine(2);
+    wallet.scan(&chain);
+
+    let refusing = Service::at_tip(&chain);
+    refusing.fail("inventory", 0, || {
+        session::Error::Transport("HTTP 503".into())
+    });
+    assert!(wallet.recover(&refusing).is_err());
+    assert_eq!(refusing.count("inventory"), 1);
+
+    let refusing = Service::at_tip(&chain);
+    refusing.fail("query", 0, || session::Error::Transport("HTTP 404".into()));
+    assert!(wallet.recover(&refusing).is_err());
+    assert_eq!(refusing.queries(), 1);
+
+    let newer = Service::at_tip(&chain);
+    newer.fail("query", 0, || session::Error::Unsupported);
+    let error = wallet.recover(&newer).unwrap_err();
+    assert!(matches!(error, RecoveryError::UpgradeRequired), "{error}");
+    assert_eq!(newer.queries(), 1);
+}
+
+/// A request that fails in transit after its round was cancelled is not retried.
+#[test]
+fn a_cancelled_round_does_not_retry_a_failed_request() {
+    isolated!(a_cancelled_round_does_not_retry_a_failed_request);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    chain.mine(2);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    let held = service.hold("query", 0);
+    service.fail("query", 0, tor_failure);
+    let worker = wallet.spawn(&service, None, Duration::from_secs(45));
+    held.wait();
+    cancel_recovery();
+    held.release();
+    let error = worker.join().unwrap().unwrap_err().to_string();
+    assert!(error.contains("cancelled"), "{error}");
+    assert_eq!(service.queries(), 1);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert!(wallet.state(&account).restore_complete);
+}
+
+/// A payout a lookup found is credited before the round reads further lookups, so a
+/// failing lookup for another address cannot hold back its witness.
+#[test]
+fn a_found_payment_is_credited_before_further_lookups() {
+    isolated!(a_found_payment_is_credited_before_further_lookups);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&receive(1), 500_000, true);
+    chain.pay(&receive(2), 700_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("query", 1, || session::Error::Transport("HTTP 503".into()));
+    assert!(wallet.recover(&service).is_err());
+    assert_eq!(service.queries(), 2, "I1, then I2, which was refused");
+    assert_eq!(service.count("witness"), 1);
+    assert_eq!(wallet.one_time_unspent(&account), 500_000);
+    assert!(wallet.queued(&account).contains(&(RECEIVE, 2)));
+}
+
+/// A witness read that keeps failing leaves the round's due lookups to run, since a
+/// witness, unlike a lookup, has no backoff of its own.
+#[test]
+fn a_failed_witness_read_leaves_the_lookups_to_run() {
+    isolated!(a_failed_witness_read_leaves_the_lookups_to_run);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&receive(1), 500_000, true);
+    chain.pay(&receive(2), 700_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("witness", 0, tor_failure);
+    service.fail("witness", 1, tor_failure);
+    let error = wallet.recover(&service).unwrap_err().to_string();
+    assert!(error.contains("remote hostname lookup failure"), "{error}");
+    assert_eq!(service.queries(), 2, "I2 is read after I1's witness failed");
+    assert_eq!(
+        service.count("witness"),
+        2,
+        "one retry, then no more this round"
+    );
+    assert!(wallet.queued(&account).is_empty());
+    assert_eq!(wallet.state(&account).witnesses.len(), 2);
+    assert_eq!(wallet.one_time_unspent(&account), 0);
+
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_200_000);
+}
+
 /// History before the recent tier lives in sealed shards with receiver filters. For a
 /// restore's handful of addresses the filters cost less than reading each shard blind,
 /// so only the address the filter matches reads the sealed shard, and the payment in it

@@ -248,6 +248,13 @@ fn route_class(route: &str, witness: bool) -> &'static str {
     }
 }
 
+/// A request that fails with `error` instead of being answered.
+struct Failure {
+    class: &'static str,
+    nth: usize,
+    error: fn() -> session::Error,
+}
+
 /// A request the service holds until the test releases it.
 struct Hold {
     class: &'static str,
@@ -288,6 +295,7 @@ pub(super) struct Service {
     filters: Vec<BlockFilter>,
     requests: Mutex<Vec<(&'static str, String, usize, usize)>>,
     holds: Mutex<Vec<Hold>>,
+    failures: Mutex<Vec<Failure>>,
     /// How long each request of a class takes to answer.
     delays: Mutex<BTreeMap<&'static str, Duration>>,
     trace: Mutex<Trace>,
@@ -480,6 +488,7 @@ impl Service {
             filters,
             requests: Mutex::new(Vec::new()),
             holds: Mutex::new(Vec::new()),
+            failures: Mutex::new(Vec::new()),
             delays: Mutex::new(BTreeMap::new()),
             trace: Mutex::new(Trace::default()),
             protocol: Mutex::new(None),
@@ -510,6 +519,15 @@ impl Service {
             arrived: waiting,
             release,
         }
+    }
+
+    /// Fails the `nth` (zero-based) request of `class` with `error` once any hold on it is
+    /// released, as a broken route or a refusing service would.
+    pub(super) fn fail(&self, class: &'static str, nth: usize, error: fn() -> session::Error) {
+        self.failures
+            .lock()
+            .unwrap()
+            .push(Failure { class, nth, error });
     }
 
     /// Answers every later request of `class` only after `delay`, as a slow route would.
@@ -656,7 +674,7 @@ impl Service {
         if class == "query" {
             self.record_query();
         }
-        let gate = {
+        let (seen, gate) = {
             let seen = self
                 .requests
                 .lock()
@@ -670,13 +688,14 @@ impl Service {
                 .unwrap()
                 .push((class, route.clone(), body.len(), 0));
             let holds = self.holds.lock().unwrap();
-            holds
+            let gate = holds
                 .iter()
                 .find(|h| h.class == class && h.nth == seen)
                 .map(|h| {
                     let _ = h.arrived.send(());
                     h.release.clone()
-                })
+                });
+            (seen, gate)
         };
         if let Some(gate) = gate {
             gate.acquire().await.unwrap().forget();
@@ -684,6 +703,16 @@ impl Service {
         let delay = self.delays.lock().unwrap().get(class).copied();
         if let Some(delay) = delay {
             tokio::time::sleep(delay).await;
+        }
+        let failure = self
+            .failures
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f.class == class && f.nth == seen)
+            .map(|f| f.error);
+        if let Some(error) = failure {
+            return Err(error());
         }
         let response = self.answer(class, &route, body)?;
         if response.len() > limit {
