@@ -1343,10 +1343,17 @@ fn idle_accounts_leave_their_time_to_the_busy_one() {
     enable_feature();
     let mut chain = Chain::new();
     let mut wallet = Wallet::new(4, activation());
-    let first = wallet.account().clone();
+    let mut accounts = vec![wallet.account().clone()];
     for seed in 5..8 {
-        wallet.add_account(seed, activation());
+        accounts.push(wallet.add_account(seed, activation()));
     }
+    // The worker visits the first account in this order first, where the old even split
+    // left it the least time.
+    let order = one_time_ivk::software_accounts(&wallet.db()).unwrap();
+    let first = accounts
+        .into_iter()
+        .find(|account| account.id == order[0])
+        .unwrap();
     chain.mine(2);
     wallet.scan(&chain);
     wallet.recover(&Service::at_tip(&chain)).unwrap();
