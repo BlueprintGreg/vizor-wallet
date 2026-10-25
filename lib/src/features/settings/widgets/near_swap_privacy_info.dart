@@ -9,6 +9,7 @@ import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_shape.dart';
 import '../../../providers/account_provider.dart';
 import '../../../providers/enhance_pir_provider.dart';
+import 'swap_history_check_control.dart';
 
 /// NEAR swap privacy subtitle while it is on.
 const kNearSwapPrivacyOnCopy = 'Swaps use one-time Zcash addresses.';
@@ -99,6 +100,18 @@ const kNearSwapPrivacyInfoParagraphs = [
       'on again.',
 ];
 
+/// Heading of the troubleshooting section that ends the explanation while
+/// the swap history check is offered.
+const kNearSwapPrivacyTroubleshootingTitle = 'Troubleshooting';
+
+/// What the swap history check does, above its button.
+const kNearSwapPrivacyTroubleshootingCopy =
+    'Vizor finds swap payments and refunds automatically. If one is missing '
+    'after a swap finished, this check looks at every private swap address '
+    'and refund key this wallet has used. It starts from the beginning of '
+    'Ironwood history and runs over Private queries. It can take a few '
+    'minutes.';
+
 /// Shows the NEAR swap privacy explanation for this binary's form factor: a
 /// sheet on mobile, a dialog on desktop.
 Future<void> showNearSwapPrivacyInfo(BuildContext context) =>
@@ -113,11 +126,11 @@ Future<void> showNearSwapPrivacyInfo(BuildContext context) =>
       );
 
 /// Desktop NEAR swap privacy explanation.
-class NearSwapPrivacyInfoDialog extends StatelessWidget {
+class NearSwapPrivacyInfoDialog extends ConsumerWidget {
   const NearSwapPrivacyInfoDialog({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
     return Dialog(
       key: const ValueKey('near_swap_privacy_info_dialog'),
@@ -140,7 +153,10 @@ class NearSwapPrivacyInfoDialog extends StatelessWidget {
               const SizedBox(height: AppSpacing.sm),
               Flexible(
                 child: SingleChildScrollView(
-                  child: _Paragraphs(color: colors.text.secondary),
+                  child: _Body(
+                    color: colors.text.secondary,
+                    showHistoryCheck: _showHistoryCheck(ref),
+                  ),
                 ),
               ),
               const SizedBox(height: AppSpacing.md),
@@ -160,11 +176,11 @@ class NearSwapPrivacyInfoDialog extends StatelessWidget {
 }
 
 /// Mobile NEAR swap privacy explanation.
-class NearSwapPrivacyInfoSheet extends StatelessWidget {
+class NearSwapPrivacyInfoSheet extends ConsumerWidget {
   const NearSwapPrivacyInfoSheet({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = context.colors;
     return MobileModalScaffold(
       key: const ValueKey('near_swap_privacy_info_sheet'),
@@ -173,20 +189,31 @@ class NearSwapPrivacyInfoSheet extends StatelessWidget {
       leading: AppIcon(AppIcons.eye, size: 20, color: colors.icon.accent),
       constrainBody: true,
       child: SingleChildScrollView(
-        child: _Paragraphs(color: colors.text.accent),
+        child: _Body(
+          color: colors.text.accent,
+          showHistoryCheck: _showHistoryCheck(ref),
+        ),
       ),
     );
   }
 }
 
-/// [kNearSwapPrivacyInfoParagraphs] in [color].
-class _Paragraphs extends StatelessWidget {
-  const _Paragraphs({required this.color});
+/// Whether the explanation ends with the swap history check, which a
+/// software account gets while NEAR swap privacy is on.
+bool _showHistoryCheck(WidgetRef ref) =>
+    ref.watch(nearSwapPrivacySettingProvider)?.showHistoryCheck ?? false;
+
+/// [kNearSwapPrivacyInfoParagraphs] in [color], then the troubleshooting
+/// section with the swap history check when [showHistoryCheck].
+class _Body extends StatelessWidget {
+  const _Body({required this.color, required this.showHistoryCheck});
 
   final Color color;
+  final bool showHistoryCheck;
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -197,6 +224,31 @@ class _Paragraphs extends StatelessWidget {
           Text(
             paragraph,
             style: AppTypography.bodyMedium.copyWith(color: color),
+          ),
+        ],
+        if (showHistoryCheck) ...[
+          const SizedBox(height: AppSpacing.md),
+          Column(
+            key: const ValueKey('near_swap_privacy_troubleshooting'),
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                kNearSwapPrivacyTroubleshootingTitle,
+                style: AppTypography.bodyMediumStrong.copyWith(
+                  color: colors.text.accent,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                kNearSwapPrivacyTroubleshootingCopy,
+                style: AppTypography.bodyMedium.copyWith(color: color),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              // The provider owns the check, so closing the explanation
+              // leaves a running or saved one going.
+              const SwapHistoryCheckControl(),
+            ],
           ),
         ],
       ],
