@@ -5,6 +5,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use zakura_one_time_ivk::Purpose;
+use zcash_protocol::memo::MemoBytes;
 
 /// Reruns the calling test alone in a child process and returns from it in this one (see
 /// [`crate::wallet::db::isolated_test`]).
@@ -277,6 +278,102 @@ fn execute(wallet: &Wallet, account: &fixture::Account, proposal: u64, flow: &st
     assert_eq!(lwd.count("/SendTransaction"), 1);
 }
 
+/// A swap deposit the app funded and the chain mined.
+struct Funding {
+    tx: zcash_primitives::transaction::Transaction,
+    raw: Vec<u8>,
+    height: u32,
+    refund: u64,
+    fee: u64,
+}
+
+/// Funds a NEAR swap of `amount` to a transparent deposit address made from `deposit`,
+/// as the app does. It estimates the fee, reserves a refund key, records the quote,
+/// proposes with the refund memo, then builds, broadcasts and mines the transaction.
+/// The estimate must equal the fee the proposal pays.
+fn fund(
+    wallet: &Wallet,
+    account: &fixture::Account,
+    chain: &mut Chain,
+    deposit: u8,
+    amount: u64,
+) -> Funding {
+    let deposit = zcash_keys::address::Address::Transparent(
+        transparent::address::TransparentAddress::PublicKeyHash([deposit; 20]),
+    )
+    .encode(&NETWORK);
+    let estimate = crate::wallet::sync::estimate_fee_with_swap_refund(
+        &wallet.path,
+        NETWORK,
+        &account.uuid,
+        &deposit,
+        amount,
+    )
+    .unwrap();
+    let reserved = crate::api::one_time_ivk::reserve_swap_address(
+        wallet.path.clone(),
+        "main".into(),
+        account.uuid.clone(),
+        false,
+        chain.tip().into(),
+    )
+    .unwrap();
+    let refund = reserved.refund_index.unwrap();
+    crate::api::one_time_ivk::record_swap_refund_quote(
+        wallet.path.clone(),
+        "main".into(),
+        account.uuid.clone(),
+        refund,
+        deposit.clone(),
+        now() + 3_600,
+    )
+    .unwrap();
+    let flow = format!("fund-{deposit}");
+    let proposal = crate::wallet::sync::propose_send_with_swap_refund(
+        &wallet.path,
+        NETWORK,
+        &account.uuid,
+        &flow,
+        &deposit,
+        amount,
+        refund,
+    )
+    .unwrap();
+    assert_eq!(
+        estimate, proposal.fee_zatoshi,
+        "the estimate is the fee paid"
+    );
+    execute(wallet, account, proposal.proposal_id, &flow, chain.tip());
+    let (tx, raw) = wallet.last_built();
+    let height = chain.mine_tx(&tx);
+    Funding {
+        tx,
+        raw,
+        height,
+        refund,
+        fee: proposal.fee_zatoshi,
+    }
+}
+
+/// The value and memo of each change output of `funding` that `wallet` decrypts with its
+/// internal keys, read from the mined transaction itself.
+fn change_outputs(wallet: &Wallet, funding: &Funding) -> Vec<(u64, MemoBytes)> {
+    use zcash_client_backend::data_api::WalletRead as _;
+    let ufvks = wallet.db().get_unified_full_viewing_keys().unwrap();
+    zcash_client_backend::decrypt_transaction(
+        &NETWORK,
+        Some(funding.height.into()),
+        None,
+        &funding.tx,
+        &ufvks,
+    )
+    .ironwood_outputs()
+    .iter()
+    .filter(|output| output.transfer_type() == zcash_client_backend::TransferType::AccountInternal)
+    .map(|output| (output.note().0.value().inner(), output.memo().clone()))
+    .collect()
+}
+
 /// A NEAR payout with two pages, a second receive and a small refund to a key learned
 /// from the app's own funding memo are credited through the worker after page, proof
 /// and spend checks, and the app's send path spends them. A second device restored from
@@ -298,41 +395,8 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
 
     // The phone reserves a refund key, records the quote and funds the swap with the
     // refund memo through the app's FFI and send path.
-    let reserved = crate::api::one_time_ivk::reserve_swap_address(
-        phone.path.clone(),
-        "main".into(),
-        account.uuid.clone(),
-        false,
-        chain.tip().into(),
-    )
-    .unwrap();
-    let refund = reserved.refund_index.unwrap();
-    let deposit = zcash_keys::address::Address::Transparent(
-        transparent::address::TransparentAddress::PublicKeyHash([23; 20]),
-    )
-    .encode(&NETWORK);
-    crate::api::one_time_ivk::record_swap_refund_quote(
-        phone.path.clone(),
-        "main".into(),
-        account.uuid.clone(),
-        refund,
-        deposit.clone(),
-        now() + 3_600,
-    )
-    .unwrap();
-    let funding = crate::wallet::sync::propose_send_with_swap_refund(
-        &phone.path,
-        NETWORK,
-        &account.uuid,
-        "fund",
-        &deposit,
-        20_000_000,
-        refund,
-    )
-    .unwrap();
-    execute(&phone, &account, funding.proposal_id, "fund", chain.tip());
-    let (funding_tx, funding_raw) = phone.last_built();
-    let funded_at = chain.mine_tx(&funding_tx);
+    let funding = fund(&phone, &account, &mut chain, 23, 20_000_000);
+    let refund = funding.refund;
 
     // NEAR pays receive I0 twice, receive I1 once and a small refund to the refund key.
     chain.pay(&account.key(Purpose::Receive, 0), 1_000_000, true);
@@ -443,7 +507,13 @@ fn paid_receipts_are_credited_spent_and_not_resurrected_on_another_device() {
     let other = desktop.account().clone();
     desktop.scan(&chain);
     assert_eq!(desktop.one_time_received(&other), 0);
-    let enhanced = enhance_publicly(&desktop, funding_tx.txid(), &funding_raw, funded_at, &chain);
+    let enhanced = enhance_publicly(
+        &desktop,
+        funding.tx.txid(),
+        &funding.raw,
+        funding.height,
+        &chain,
+    );
     let final_service = Service::at_tip(&chain);
     desktop.recover(&final_service).unwrap();
     let state = desktop.state(&other);
@@ -502,6 +572,117 @@ fn enhance_publicly(
         .unwrap();
     assert!(lwd.count("/GetTransaction") >= 1);
     raw.len()
+}
+
+/// Private swap funding manages change like an ordinary send. A wallet with the four
+/// Ironwood notes a real wallet had funds three small deposits, each from one note with
+/// one change output, and keeps four notes. Single output change instead merged two
+/// notes on every deposit and left one.
+#[test]
+fn private_funding_keeps_the_note_count_of_an_ordinary_send() {
+    isolated!(private_funding_keeps_the_note_count_of_an_ordinary_send);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut phone = Wallet::new(4, activation());
+    let account = phone.account().clone();
+    for value in [128_520_000, 128_480_000, 128_450_000, 78_491_250] {
+        chain.pay(&account.parent(), value, false);
+    }
+    chain.mine(12);
+    phone.scan(&chain);
+    phone.recover(&Service::at_tip(&chain)).unwrap();
+
+    for deposit in 0..3 {
+        let before = phone.notes(&account);
+        let funding = fund(&phone, &account, &mut chain, 30 + deposit, 800_000);
+        chain.mine(12);
+        phone.scan(&chain);
+        let after = phone.notes(&account);
+        let change = change_outputs(&phone, &funding);
+        let spent = before.len() + change.len() - after.len();
+        assert_eq!(
+            (spent, change.len(), after.len()),
+            (1, 1, 4),
+            "deposit {deposit}: one input, one change, four notes left; {before:?} -> {after:?}"
+        );
+        assert_eq!(funding.fee, 15_000);
+        assert_eq!(
+            before.iter().sum::<u64>() - after.iter().sum::<u64>(),
+            800_000 + funding.fee
+        );
+    }
+}
+
+/// A deposit from a wallet with one note splits its change toward four notes, as an
+/// ordinary send does, and every change output carries the refund memo. Values and the
+/// higher fee of four outputs balance, and the estimate matches. The phone and a second
+/// device restored from the seed each register the refund key once and credit a refund
+/// paid to it once.
+#[test]
+fn split_private_funding_repeats_the_refund_memo_and_recovers_it_once() {
+    isolated!(split_private_funding_repeats_the_refund_memo_and_recovers_it_once);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut phone = Wallet::new(4, activation());
+    let account = phone.account().clone();
+    chain.pay(&account.parent(), 128_500_000, false);
+    chain.mine(12);
+    phone.scan(&chain);
+    phone.recover(&Service::at_tip(&chain)).unwrap();
+
+    // `fund` checks the estimate against the proposal, and the proposal succeeds only
+    // after `verify_refund_funding_proposal` accepts it.
+    let funding = fund(&phone, &account, &mut chain, 40, 800_000);
+    let memo =
+        MemoBytes::from_bytes(&zakura_one_time_ivk::swap::RefundMemo::new(funding.refund).encode())
+            .unwrap();
+    let change = change_outputs(&phone, &funding);
+    assert_eq!(change.len(), 4, "{change:?}");
+    assert!(change
+        .iter()
+        .all(|(value, m)| *m == memo && *value >= 10_000_000));
+    // One spend and four outputs pad to four Ironwood actions, plus the deposit.
+    assert_eq!(funding.fee, 25_000);
+    assert_eq!(
+        change.iter().map(|(value, _)| value).sum::<u64>() + 800_000 + funding.fee,
+        128_500_000
+    );
+    chain.mine(12);
+    phone.scan(&chain);
+    assert_eq!(phone.notes(&account).len(), 4);
+
+    chain.pay(&account.key(Purpose::Refund, funding.refund), 300_000, true);
+    chain.mine(12);
+    phone.scan(&chain);
+    phone.recover(&Service::at_tip(&chain)).unwrap();
+    assert_eq!(
+        phone.refund_keys(&account),
+        [(funding.refund, Some(funding.height))]
+    );
+    assert_eq!(phone.refund_receipts(&account).len(), 1);
+    assert_eq!(phone.one_time_unspent(&account), 300_000);
+
+    let mut desktop = Wallet::new(4, activation());
+    let other = desktop.account().clone();
+    desktop.scan(&chain);
+    enhance_publicly(
+        &desktop,
+        funding.tx.txid(),
+        &funding.raw,
+        funding.height,
+        &chain,
+    );
+    assert_eq!(desktop.notes_with_memo(&other, &memo), 4);
+    desktop.recover(&Service::at_tip(&chain)).unwrap();
+    let state = desktop.state(&other);
+    assert!(state.restore_complete && state.lookups.is_empty() && state.witnesses.is_empty());
+    assert_eq!(
+        desktop.refund_keys(&other),
+        [(funding.refund, Some(funding.height))]
+    );
+    assert_eq!(desktop.refund_receipts(&other).len(), 1);
+    assert_eq!(desktop.one_time_received(&other), 300_000);
+    assert_eq!(desktop.balance(&other), phone.balance(&account));
 }
 
 /// Turning the feature off while a lookup is in flight, or cancelling the worker as lock,
