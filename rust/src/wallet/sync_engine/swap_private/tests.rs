@@ -1223,8 +1223,7 @@ fn a_cancelled_round_does_not_retry_a_failed_request() {
 }
 
 /// A payout a lookup found is credited before the round reads further lookups, so a
-/// failing lookup, here for the address the payout exposed, cannot hold back its witness.
-/// A failing witness read in turn leaves the lookups to run.
+/// failing lookup for another address cannot hold back its witness.
 #[test]
 fn a_found_payment_is_credited_before_further_lookups() {
     isolated!(a_found_payment_is_credited_before_further_lookups);
@@ -1237,17 +1236,33 @@ fn a_found_payment_is_credited_before_further_lookups() {
     wallet.scan(&chain);
     wallet.recover(&Service::at_tip(&chain)).unwrap();
 
-    chain.pay(&receive(0), 1_000_000, true);
+    chain.pay(&receive(1), 500_000, true);
+    chain.pay(&receive(2), 700_000, true);
     chain.mine(1);
     wallet.scan(&chain);
     let service = Service::at_tip(&chain);
     service.fail("query", 1, || session::Error::Transport("HTTP 503".into()));
     assert!(wallet.recover(&service).is_err());
+    assert_eq!(service.queries(), 2, "I1, then I2, which was refused");
     assert_eq!(service.count("witness"), 1);
-    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
-    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
+    assert_eq!(wallet.one_time_unspent(&account), 500_000);
+    assert!(wallet.queued(&account).contains(&(RECEIVE, 2)));
+}
 
-    // The first payout's witness fails twice, and the second payout's lookup still runs.
+/// A witness read that keeps failing leaves the round's due lookups to run, since a
+/// witness, unlike a lookup, has no backoff of its own.
+#[test]
+fn a_failed_witness_read_leaves_the_lookups_to_run() {
+    isolated!(a_failed_witness_read_leaves_the_lookups_to_run);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
     chain.pay(&receive(1), 500_000, true);
     chain.pay(&receive(2), 700_000, true);
     chain.mine(1);
@@ -1255,11 +1270,20 @@ fn a_found_payment_is_credited_before_further_lookups() {
     let service = Service::at_tip(&chain);
     service.fail("witness", 0, tor_failure);
     service.fail("witness", 1, tor_failure);
-    assert!(wallet.recover(&service).is_err());
-    assert_eq!(service.queries(), 2, "I1 and I2, while I4 backs off");
-    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
-    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    let error = wallet.recover(&service).unwrap_err().to_string();
+    assert!(error.contains("remote hostname lookup failure"), "{error}");
+    assert_eq!(service.queries(), 2, "I2 is read after I1's witness failed");
+    assert_eq!(
+        service.count("witness"),
+        2,
+        "one retry, then no more this round"
+    );
+    assert!(wallet.queued(&account).is_empty());
     assert_eq!(wallet.state(&account).witnesses.len(), 2);
+    assert_eq!(wallet.one_time_unspent(&account), 0);
+
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_200_000);
 }
 
 /// History before the recent tier lives in sealed shards with receiver filters. For a
