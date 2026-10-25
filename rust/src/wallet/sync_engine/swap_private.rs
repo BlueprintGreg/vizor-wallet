@@ -142,6 +142,7 @@ impl<'a, F> SwapTransport<'a, F> {
 }
 /// Maps a receiver directory failure: a session conflict means its publication changed,
 /// and anything else, including overload (HTTP 429), is a retryable transport failure.
+/// Only a failure in transit is retried within the round (see [`in_transit`]).
 fn receiver_error(error: RoutedHttpError) -> session::Error {
     match error {
         error if error.is_session_conflict() => session::Error::Revision,
@@ -169,6 +170,31 @@ impl<F: Fn() -> bool> Transport for SwapTransport<'_, F> {
             .bytes(http::Method::POST, url, body, limit)
             .await
             .map_err(receiver_error)
+    }
+}
+
+/// Whether `error` is a receiver request that failed in transit, such as a broken Tor
+/// circuit, a failed connection or a timeout, which a second attempt may avoid. An
+/// HTTP status answer or a cancellation, as [`receiver_error`] words them, is not.
+fn in_transit(error: &session::Error) -> bool {
+    matches!(error, session::Error::Transport(message)
+        if !message.starts_with("HTTP ") && message != "Cancelled")
+}
+
+/// Runs the receiver step `step`, and runs it once more if it failed in transit (see
+/// [`in_transit`]) while the round started at `generation` is still current. Each run
+/// builds its own requests, so a repeated PIR query is a fresh encryption rather than the
+/// same bytes on a new circuit. The caller's deadline bounds both runs.
+async fn retried<R, F: std::future::Future<Output = Result<R, session::Error>>>(
+    generation: u64,
+    step: impl Fn() -> F,
+) -> Result<R, session::Error> {
+    match step().await {
+        Err(error) if in_transit(&error) && CANCEL.load(Ordering::SeqCst) == generation => {
+            log::debug!("Retrying a receiver request that failed in transit: {error}");
+            step().await
+        }
+        result => result,
     }
 }
 
@@ -502,7 +528,10 @@ async fn capture<T: Transport, S: DescriptorStore>(
     transport: &T,
     store: &S,
 ) -> Result<Result<Inventory, RecoveryError>, session::Error> {
-    let head = Inventories::head(origin, transport, &MAINNET_GENESIS).await?;
+    let head = retried(generation, || {
+        Inventories::head(origin, transport, &MAINNET_GENESIS)
+    })
+    .await?;
     let end = BlockHeight::from(head.end_height);
     let (local, birthday) = wallet(path, network, generation, |db| {
         Ok((
@@ -525,7 +554,10 @@ async fn capture<T: Transport, S: DescriptorStore>(
         }
         None => return Ok(Err(RecoveryError::NotCaughtUp)),
     };
-    let inventory = Inventories::capture_cached(origin, transport, head, store).await?;
+    let inventory = retried(generation, || {
+        Inventories::capture_cached(origin, transport, head.clone(), store)
+    })
+    .await?;
     let required_start = network
         .activation_height(NetworkUpgrade::Nu6_3)
         .ok_or(session::Error::Malformed)?;
@@ -795,7 +827,7 @@ async fn drain<T: Transport>(
         })?;
         // A hit above this inventory's end waits for a later publication.
         if let Some(work) = state.lookups.iter().find(|work| work.through <= end) {
-            match lookup(client, work).await {
+            match retried(generation, || lookup(client, work)).await {
                 Ok(page) => {
                     changed |= wallet(path, network, generation, |db| {
                         db.record_one_time_lookup(account, work, &page, one_time_ivk::now()?)
@@ -812,7 +844,7 @@ async fn drain<T: Transport>(
                 }
             }
         } else if let Some(request) = state.witnesses.first() {
-            match witness(client, request).await {
+            match retried(generation, || witness(client, request)).await {
                 Ok(answer) => {
                     changed |= wallet(path, network, generation, |db| {
                         db.record_one_time_witness(
