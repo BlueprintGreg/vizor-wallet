@@ -599,22 +599,29 @@ pub(crate) async fn resubmit_released_transactions(
     if ready.is_empty() || !allow_resubmit || should_exit() {
         return Ok(ReleasedResubmission::Skipped);
     }
-    let fresh_tip = get_latest_block(client).await;
-    let Some(fresh_tip) = tip_rpc_result_unless_exiting(fresh_tip, should_exit()) else {
+    let fresh_tip = unless_exiting(&should_exit, get_latest_block(client)).await;
+    let Some(fresh_tip) =
+        fresh_tip.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         return Ok(ReleasedResubmission::Skipped);
     };
     let fresh_tip = fresh_tip?;
     let tip = block_height_from_u64(fresh_tip.height, "released resubmission tip")?;
     let stored_hash = stored_hash_for_refreshed_tip(db, tip_height, fresh_tip.height)?;
-    let relation = classify_refreshed_tip_with_fallback(
-        client,
-        tip_height,
-        stored_hash,
-        fresh_tip.height,
-        &fresh_tip.hash,
+    let relation = unless_exiting(
+        &should_exit,
+        classify_refreshed_tip_with_fallback(
+            client,
+            tip_height,
+            stored_hash,
+            fresh_tip.height,
+            &fresh_tip.hash,
+        ),
     )
     .await;
-    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
+    let Some(relation) =
+        relation.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         return Ok(ReleasedResubmission::Skipped);
     };
     match relation? {
@@ -2506,6 +2513,20 @@ pub(crate) async fn watch_for_exit(should_exit: &impl Fn() -> bool) {
     }
 }
 
+/// `request`'s output, or `None` once cancellation or a mode handoff wins. A
+/// request still waiting on a slow server would otherwise hold the session
+/// until its own deadline.
+async fn unless_exiting<T>(
+    should_exit: &impl Fn() -> bool,
+    request: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = watch_for_exit(should_exit) => None,
+        output = request => Some(output),
+    }
+}
+
 fn needs_completion_enhancement_pass(enhancement_after_scan: bool) -> bool {
     !enhancement_after_scan
 }
@@ -3750,8 +3771,14 @@ async fn run_sync_impl(
     // authoritative: `WalletDb::update_chain_tip` deliberately ignores a
     // height below the maximum scanned block, so assigning the server height
     // first could later report completion above a lagging endpoint.
-    let tip_result = get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-    let Some(tip_result) = tip_rpc_result_unless_exiting(tip_result, should_exit()) else {
+    let tip_result = unless_exiting(
+        &should_exit,
+        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+    )
+    .await;
+    let Some(tip_result) =
+        tip_result.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         log::info!("[{}] sync: exiting after initial tip fetch", elapsed());
         return Ok(());
     };
@@ -3764,15 +3791,20 @@ async fn run_sync_impl(
         .map(|(_, db_tip)| db_tip);
     let initial_tip_relation = if let Some(db_tip) = db_tip_height {
         let stored_hash = stored_hash_for_refreshed_tip(&db, db_tip, tip.height)?;
-        let relation = classify_refreshed_tip_with_fallback(
-            &mut client,
-            db_tip,
-            stored_hash,
-            tip.height,
-            &tip.hash,
+        let relation = unless_exiting(
+            &should_exit,
+            classify_refreshed_tip_with_fallback(
+                &mut client,
+                db_tip,
+                stored_hash,
+                tip.height,
+                &tip.hash,
+            ),
         )
         .await;
-        let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
+        let Some(relation) =
+            relation.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+        else {
             log::info!("[{}] sync: exiting after initial tip validation", elapsed());
             return Ok(());
         };
@@ -3996,7 +4028,16 @@ async fn run_sync_impl(
     }
 
     // 3. Download subtree roots (incremental)
-    download_subtree_roots(&mut client, &mut db, network, tip_height).await?;
+    let Some(subtree_roots) = unless_exiting(
+        &should_exit,
+        download_subtree_roots(&mut client, &mut db, network, tip_height),
+    )
+    .await
+    else {
+        log::info!("[{}] sync: exiting during subtree root download", elapsed());
+        return Ok(());
+    };
+    subtree_roots?;
 
     if migration_anchor_retention_required {
         with_wallet_db_write_lock(
@@ -4262,10 +4303,13 @@ async fn run_sync_impl(
         {
             force_tip_refresh = false;
             last_periodic_tip_refresh_attempt = std::time::Instant::now();
-            let fresh_tip_result =
-                get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-            let Some(fresh_tip_result) =
-                tip_rpc_result_unless_exiting(fresh_tip_result, should_exit())
+            let fresh_tip_result = unless_exiting(
+                &should_exit,
+                get_latest_block_recorded(&mut client, lightwalletd_url, network),
+            )
+            .await;
+            let Some(fresh_tip_result) = fresh_tip_result
+                .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
             else {
                 log::info!("[{}] sync: exiting after periodic tip fetch", elapsed());
                 return Ok(());
@@ -4277,15 +4321,19 @@ async fn run_sync_impl(
 
                     let stored_hash =
                         stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                    let relation = classify_refreshed_tip_with_fallback(
-                        &mut client,
-                        current_tip_height,
-                        stored_hash,
-                        fresh_tip.height,
-                        &fresh_tip.hash,
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
-                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!(
                             "[{}] sync: exiting after periodic tip validation",
@@ -4405,10 +4453,13 @@ async fn run_sync_impl(
                     completion_tip_validation_required,
                     last_completion_tip_validation.elapsed(),
                 ) {
-                    let fresh_tip_result =
-                        get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-                    let Some(fresh_tip_result) =
-                        tip_rpc_result_unless_exiting(fresh_tip_result, should_exit())
+                    let fresh_tip_result = unless_exiting(
+                        &should_exit,
+                        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+                    )
+                    .await;
+                    let Some(fresh_tip_result) = fresh_tip_result
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!("[{}] sync: exiting after final tip fetch", elapsed());
                         return Ok(());
@@ -4420,15 +4471,19 @@ async fn run_sync_impl(
 
                     let stored_hash =
                         stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                    let relation = classify_refreshed_tip_with_fallback(
-                        &mut client,
-                        current_tip_height,
-                        stored_hash,
-                        fresh_tip.height,
-                        &fresh_tip.hash,
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
-                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!("[{}] sync: exiting after final tip validation", elapsed());
                         return Ok(());
@@ -5391,7 +5446,11 @@ async fn run_sync_impl(
             let fresh_tip_result = match tip_prefetch {
                 Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
                 None => {
-                    Some(get_latest_block_recorded(&mut client, lightwalletd_url, network).await)
+                    unless_exiting(
+                        &should_exit,
+                        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+                    )
+                    .await
                 }
             };
             timing.tip_waited += tip_check_started.elapsed();
@@ -5410,15 +5469,19 @@ async fn run_sync_impl(
 
                     let stored_hash =
                         stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                    let relation = classify_refreshed_tip_with_fallback(
-                        &mut client,
-                        current_tip_height,
-                        stored_hash,
-                        fresh_tip.height,
-                        &fresh_tip.hash,
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
-                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!(
                             "[{}] sync: exiting after post-batch tip validation",
@@ -6611,6 +6674,33 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), prefetch.resolve(&|| true)).await;
 
         assert!(matches!(resolved, Ok(None)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tip_request_yields_to_an_exit_that_arrives_while_the_server_holds_it() {
+        let lwd = test_lwd::CapturingLwd::start_with(Vec::new(), 3_516_998, |_| {}).await;
+        let _held = lwd.hold_responses("/GetLatestBlock");
+        let mut client = lwd.client.clone();
+        let exit = Arc::new(AtomicBool::new(false));
+        let flip = exit.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            flip.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(5),
+            unless_exiting(
+                &|| exit.load(Ordering::SeqCst),
+                get_latest_block(&mut client),
+            ),
+        )
+        .await;
+
+        assert!(matches!(resolved, Ok(None)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(lwd.count("/GetLatestBlock"), 1);
     }
 
     #[test]
