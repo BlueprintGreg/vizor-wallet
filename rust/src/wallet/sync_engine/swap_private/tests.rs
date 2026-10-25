@@ -1287,7 +1287,7 @@ fn a_failed_witness_read_leaves_the_lookups_to_run() {
 }
 
 /// A witness read that never answers costs the due lookups one round at most: the round
-/// after a failed one runs lookups first, then witnesses go first again.
+/// after one that left a lookup unread runs lookups first, then witnesses go first again.
 #[test]
 fn a_stalled_witness_read_holds_back_lookups_for_one_round_at_most() {
     isolated!(a_stalled_witness_read_holds_back_lookups_for_one_round_at_most);
@@ -1302,25 +1302,66 @@ fn a_stalled_witness_read_holds_back_lookups_for_one_round_at_most() {
 
     chain.pay(&receive(1), 500_000, true);
     chain.pay(&receive(2), 700_000, true);
+    chain.pay(&receive(3), 300_000, true);
     chain.mine(1);
     wallet.scan(&chain);
     let round = Duration::from_secs(6);
-    let stalled = Service::at_tip(&chain);
-    let _held: Vec<_> = (0..4).map(|n| stalled.hold("witness", n)).collect();
-    let error = wallet.recover_with(&stalled, None, round).unwrap_err();
-    assert!(error.to_string().contains("remains pending"), "{error}");
-    assert_eq!(stalled.queries(), 1, "I1, then its witness stalls");
-    assert!(wallet.queued(&account).contains(&(RECEIVE, 2)));
+    let service = Service::at_tip(&chain);
+    let witnesses: Vec<_> = (0..4).map(|n| service.hold("witness", n)).collect();
+    // I3's lookup never answers, in either round that sends it.
+    let _lookups: Vec<_> = (3..5).map(|n| service.hold("query", n)).collect();
 
-    // The same stall next round: I2 is read before the witness stalls again.
-    assert!(wallet.recover_with(&stalled, None, round).is_err());
-    assert_eq!(stalled.queries(), 2, "I2");
-    assert!(wallet.queued(&account).is_empty());
+    // I0 and I1 are read, then I1's witness stalls.
+    assert!(wallet.recover_with(&service, None, round).is_err());
+    assert_eq!(service.queries(), 2, "I0 and I1");
+
+    // Lookups go first: I2 is read, then I3 stalls before any witness is sent.
+    assert!(wallet.recover_with(&service, None, round).is_err());
+    assert_eq!(service.queries(), 4, "I2, then I3");
+    assert_eq!(service.count("witness"), 1);
     assert_eq!(wallet.one_time_unspent(&account), 0);
 
-    // Witnesses go first again, and both payouts are credited.
-    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    // Witnesses go first again, so I1 and I2 are credited before I3 stalls again.
+    for held in &witnesses {
+        held.release();
+    }
+    assert!(wallet.recover_with(&service, None, round).is_err());
+    assert_eq!(service.queries(), 5, "I3 again");
     assert_eq!(wallet.one_time_unspent(&account), 1_200_000);
+    assert!(wallet.queued(&account).contains(&(RECEIVE, 3)));
+
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+    assert_eq!(wallet.one_time_unspent(&account), 1_500_000);
+}
+
+/// Enabled accounts with nothing to read don't share the round's time, so the one account
+/// with work gets enough of it for slow lookups.
+#[test]
+fn idle_accounts_leave_their_time_to_the_busy_one() {
+    isolated!(idle_accounts_leave_their_time_to_the_busy_one);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let first = wallet.account().clone();
+    for seed in 5..8 {
+        wallet.add_account(seed, activation());
+    }
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&first.key(Purpose::Receive, 1), 500_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.delay("query", Duration::from_millis(1200));
+    // Three slow queries need about 3.6 seconds: more than a fifth of this round, but less
+    // than the half the only busy account now gets.
+    wallet
+        .recover_with(&service, None, Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(service.queries(), 3);
+    assert_eq!(wallet.one_time_unspent(&first), 500_000);
 }
 
 /// History before the recent tier lives in sealed shards with receiver filters. For a
