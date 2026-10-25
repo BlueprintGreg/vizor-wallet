@@ -400,15 +400,16 @@ void main() {
   /// With NEAR swap privacy off, a round that fails leaves the wallet's work
   /// unknown, so a poll asks Rust again rather than going idle, but only once
   /// a growing backoff passes. A persistently failing feature-off round costs
-  /// one Rust call after 10 seconds, then 30, then 60, and one follow-up
-  /// refresh each, since a failed round may have committed results first.
+  /// one Rust call after 10 seconds, another after 10, then 30, then 60, and
+  /// one follow-up refresh each, since a failed round may have committed
+  /// results first.
   test(
     'a failed round with the feature off is retried after a growing backoff',
     () async {
       await recovering();
       // The completed sync's own balance read lands first.
       await pumpEventQueue();
-      for (final wait in [10, 30, 60]) {
+      for (final wait in [10, 10, 30, 60]) {
         final rounds = api.rounds.length;
         final reads = api.balanceReads.length;
         final followups = container.read(syncFollowupProvider);
@@ -431,7 +432,7 @@ void main() {
         reads,
         reason: 'an idle round refreshes nothing',
       );
-      expect(await poll(), 4, reason: 'an idle answer stops the retries');
+      expect(await poll(), 5, reason: 'an idle answer stops the retries');
       await settle();
     },
   );
