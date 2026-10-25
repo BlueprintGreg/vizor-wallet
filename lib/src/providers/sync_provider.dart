@@ -1118,9 +1118,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   /// wallet or setting change ask Rust again.
   bool _swapRecoveryIdle = false;
 
-  /// How long unforced rounds wait after one, two, three, four, and five or
-  /// more consecutive failed automatic rounds.
+  /// How long unforced rounds wait after one, two, three, four, five, and six
+  /// or more consecutive failed automatic rounds. A single bad Tor circuit
+  /// often fails one round in isolation, so the first two retry soon, and only
+  /// a longer outage backs off to the cap.
   static const _swapRecoveryBackoff = <Duration>[
+    Duration(seconds: 10),
     Duration(seconds: 10),
     Duration(seconds: 30),
     Duration(minutes: 1),
