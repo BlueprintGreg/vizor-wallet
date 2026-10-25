@@ -806,9 +806,12 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
     failure.map_or(Ok(round), Err)
 }
 
-/// Settles a bounded number of `account`'s due lookups and witness reads against the
-/// captured inventory. A failed lookup is deferred, never recorded as empty. Returns
-/// whether the library accepted any lookup page or witness (see [`Round::changed`]).
+/// Settles a bounded number of `account`'s witness reads and due lookups against the
+/// captured inventory. Witnesses go first, so a payment a lookup already found is credited
+/// without waiting behind unrelated lookups. A failed lookup is deferred, never recorded
+/// as empty, and ends the call. A failed witness read has no backoff, so it only ends
+/// witness reads rather than holding back lookups in every round, and its error is
+/// returned once the lookups are done. Returns whether the library accepted any lookup page or witness (see [`Round::changed`]).
 async fn drain<T: Transport>(
     path: &str,
     network: WalletNetwork,
@@ -820,13 +823,44 @@ async fn drain<T: Transport>(
         .end
         .height;
     let mut changed = false;
+    let mut witness_failure = None;
     for _ in 0..16 {
         let state = wallet(path, network, generation, |db| {
             db.one_time_recovery(account, one_time_ivk::now()?)
                 .map_err(|e| e.to_string())
         })?;
+        let request = state
+            .witnesses
+            .first()
+            .filter(|_| witness_failure.is_none());
         // A hit above this inventory's end waits for a later publication.
-        if let Some(work) = state.lookups.iter().find(|work| work.through <= end) {
+        let due = state.lookups.iter().find(|work| work.through <= end);
+        if let Some(request) = request {
+            let read = match retried(generation, || witness(client, request)).await {
+                Ok(answer) => wallet(path, network, generation, |db| {
+                    db.record_one_time_witness(
+                        account,
+                        state.token,
+                        *request,
+                        &answer,
+                        one_time_ivk::now()?,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .map(|recorded| changed |= recorded),
+                // The payment's session was replaced, so its ordinal no longer applies.
+                Err(session::Error::Revision) => wallet(path, network, generation, |db| {
+                    db.refresh_one_time_witness(account, state.token, *request)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                }),
+                Err(session::Error::Unsupported) => return Err(RecoveryError::UpgradeRequired),
+                Err(error) => Err(error.to_string()),
+            };
+            if let Err(error) = read {
+                witness_failure = Some(error);
+            }
+        } else if let Some(work) = due {
             match retried(generation, || lookup(client, work)).await {
                 Ok(page) => {
                     changed |= wallet(path, network, generation, |db| {
@@ -843,36 +877,11 @@ async fn drain<T: Transport>(
                     return Err(error.to_string().into());
                 }
             }
-        } else if let Some(request) = state.witnesses.first() {
-            match retried(generation, || witness(client, request)).await {
-                Ok(answer) => {
-                    changed |= wallet(path, network, generation, |db| {
-                        db.record_one_time_witness(
-                            account,
-                            state.token,
-                            *request,
-                            &answer,
-                            one_time_ivk::now()?,
-                        )
-                        .map_err(|e| e.to_string())
-                    })?;
-                }
-                // The payment's session was replaced, so its ordinal no longer applies.
-                Err(session::Error::Revision) => {
-                    wallet(path, network, generation, |db| {
-                        db.refresh_one_time_witness(account, state.token, *request)
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    })?;
-                }
-                Err(session::Error::Unsupported) => return Err(RecoveryError::UpgradeRequired),
-                Err(error) => return Err(error.to_string().into()),
-            }
         } else {
             break;
         }
     }
-    Ok(changed)
+    witness_failure.map_or(Ok(changed), |error| Err(error.into()))
 }
 
 /// Commits all matched keys with their contiguous canonical blocks, including old paid keys.

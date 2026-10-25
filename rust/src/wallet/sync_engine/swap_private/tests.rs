@@ -1222,6 +1222,48 @@ fn a_cancelled_round_does_not_retry_a_failed_request() {
     assert!(wallet.state(&account).restore_complete);
 }
 
+/// A payout a lookup found is credited before the round reads further lookups, so a
+/// failing lookup, here for the address the payout exposed, cannot hold back its witness.
+/// A failing witness read in turn leaves the lookups to run.
+#[test]
+fn a_found_payment_is_credited_before_further_lookups() {
+    isolated!(a_found_payment_is_credited_before_further_lookups);
+    enable_feature();
+    let mut chain = Chain::new();
+    let mut wallet = Wallet::new(4, activation());
+    let account = wallet.account().clone();
+    let receive = |index| account.key(Purpose::Receive, index);
+    chain.mine(2);
+    wallet.scan(&chain);
+    wallet.recover(&Service::at_tip(&chain)).unwrap();
+
+    chain.pay(&receive(0), 1_000_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("query", 1, || session::Error::Transport("HTTP 503".into()));
+    assert!(wallet.recover(&service).is_err());
+    assert_eq!(service.count("witness"), 1);
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
+
+    chain.pay(&receive(1), 500_000, true);
+    chain.mine(1);
+    wallet.scan(&chain);
+    let service = Service::at_tip(&chain);
+    service.fail("witness", 0, tor_failure);
+    service.fail("witness", 1, tor_failure);
+    assert!(wallet.recover(&service).is_err());
+    assert_eq!(
+        service.queries(),
+        2,
+        "I1, then I5, which its payment exposed, while I4 backs off"
+    );
+    assert_eq!(wallet.queued(&account), BTreeSet::from([(RECEIVE, 4)]));
+    assert_eq!(wallet.one_time_unspent(&account), 1_000_000);
+    assert_eq!(wallet.state(&account).witnesses.len(), 1);
+}
+
 /// History before the recent tier lives in sealed shards with receiver filters. For a
 /// restore's handful of addresses the filters cost less than reading each shard blind,
 /// so only the address the filter matches reads the sealed shard, and the payment in it
