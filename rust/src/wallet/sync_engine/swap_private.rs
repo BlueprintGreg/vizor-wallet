@@ -785,7 +785,7 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
             .div_f64((account_count - index + 1) as f64);
         let result = tokio::time::timeout(
             account_budget,
-            drain(path, network, generation, &client, *account),
+            drain(path, network, generation, &client, *account, account_budget),
         )
         .await
         .unwrap_or_else(|_| Err("Swap account recovery remains pending.".into()));
@@ -811,17 +811,21 @@ async fn recover_with_transport<T: Transport, S: DescriptorStore>(
 /// without waiting behind unrelated lookups. A failed lookup is deferred, never recorded
 /// as empty, and ends the call. A failed witness read has no backoff, so it only ends
 /// witness reads rather than holding back lookups in every round, and its error is
-/// returned once the lookups are done. Returns whether the library accepted any lookup page or witness (see [`Round::changed`]).
+/// returned once the lookups are done. While a lookup is due, witness reads may use only
+/// the first half of `budget`, so a stalled one fails in time for the lookups to run.
+/// Returns whether the library accepted any lookup page or witness (see [`Round::changed`]).
 async fn drain<T: Transport>(
     path: &str,
     network: WalletNetwork,
     generation: u64,
     client: &InventoryClient<T>,
     account: AccountUuid,
+    budget: Duration,
 ) -> Result<bool, RecoveryError> {
     let end = zakura_pir_client::receiver::publication(client.inventory())
         .end
         .height;
+    let witness_deadline = tokio::time::Instant::now() + budget / 2;
     let mut changed = false;
     let mut witness_failure = None;
     for _ in 0..16 {
@@ -836,7 +840,19 @@ async fn drain<T: Transport>(
         // A hit above this inventory's end waits for a later publication.
         let due = state.lookups.iter().find(|work| work.through <= end);
         if let Some(request) = request {
-            let read = match retried(generation, || witness(client, request)).await {
+            let attempt = retried(generation, || witness(client, request));
+            let answer = if due.is_some() {
+                tokio::time::timeout_at(witness_deadline, attempt)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(session::Error::Transport(
+                            "Swap witness reads remain pending.".into(),
+                        ))
+                    })
+            } else {
+                attempt.await
+            };
+            let read = match answer {
                 Ok(answer) => wallet(path, network, generation, |db| {
                     db.record_one_time_witness(
                         account,
