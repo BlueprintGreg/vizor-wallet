@@ -96,8 +96,7 @@ void main() {
       expect(syncing.spendableBalance, BigInt.zero);
       expect(syncing.displaySpendableBalance, BigInt.from(75));
       expect(syncing.isUsingCompletedSpendableSnapshot, isTrue);
-      // Saving accepted live reads remains independent of display protection.
-      expect(cache.saved.single.spendable, BigInt.zero);
+      expect(cache.saved, isEmpty);
 
       var operations = 0;
       final send = notifier.runWithAuthoritativeSpendable(
@@ -129,6 +128,7 @@ void main() {
       final completed = container.read(syncProvider).requireValue;
       expect(completed.displaySpendableBalance, BigInt.from(100));
       expect(completed.hasSettledSpendableBalance, isTrue);
+      expect(cache.saved.single.spendable, BigInt.from(100));
       expect(history.isCompleted, isFalse);
       history.complete([]);
       await tester.pump();
@@ -144,6 +144,7 @@ void main() {
               DateTime.utc(2026),
             ),
           );
+      final cache = _TestBalanceCacheStore();
       final notifier = _BalanceRefreshTestSyncNotifier(
         () async => 'wallet.db',
         initialState: cached,
@@ -153,9 +154,7 @@ void main() {
           appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
           accountProvider.overrideWith(_ExistingAccountNotifier.new),
           syncProvider.overrideWith(() => notifier),
-          walletBalanceCacheProvider.overrideWithValue(
-            _TestBalanceCacheStore(),
-          ),
+          walletBalanceCacheProvider.overrideWithValue(cache),
         ],
       );
       addTearDown(container.dispose);
@@ -173,8 +172,157 @@ void main() {
       expect(current.spendableBalance, BigInt.from(25));
       expect(current.displaySpendableBalance, BigInt.from(25));
       expect(current.isUsingCompletedSpendableSnapshot, isFalse);
+      expect(cache.saved.single.spendable, BigInt.from(25));
     });
   }
+
+  testWidgets('interrupted refresh restores the previous disk snapshot', (
+    tester,
+  ) async {
+    final savedBalance = _availableBalance(
+      BigInt.from(75),
+      orchardPending: BigInt.from(20),
+    );
+    final cache = _TestBalanceCacheStore()
+      ..cached = CachedWalletBalance(savedBalance, DateTime.utc(2026));
+    final notifier = _BalanceRefreshTestSyncNotifier(
+      () async => 'wallet.db',
+      initialState: SyncState(accountUuid: _accountUuid, isSyncing: true),
+    )..balance = _availableBalance(BigInt.zero);
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+        accountProvider.overrideWith(_ExistingAccountNotifier.new),
+        syncProvider.overrideWith(() => notifier),
+        walletBalanceCacheProvider.overrideWithValue(cache),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(accountProvider.future);
+    await container.read(syncProvider.future);
+    await notifier.refreshAfterUnlock();
+    notifier.refreshHomeInBackground();
+    await tester.pump();
+    expect(container.read(syncProvider).requireValue.totalBalance, BigInt.zero);
+    expect(cache.saved, isEmpty);
+
+    // Drop all in-memory balances, as lock/restart does, then restore from disk.
+    notifier.replaceState(SyncState(accountUuid: _accountUuid));
+    await notifier.refreshAfterUnlock();
+    final restored = container.read(syncProvider).requireValue;
+    expect(restored.displaySpendableBalance, BigInt.from(75));
+    expect(restored.displayOrchardPendingBalance, BigInt.from(20));
+    expect(restored.displayShieldedBalance, BigInt.from(95));
+    expect(restored.displayTotalBalance, BigInt.from(95));
+    expect(restored.hasBalanceData, isFalse);
+  });
+
+  for (final superseded in [false, true]) {
+    for (final complete in [false, true]) {
+      test(
+        'progress cache write follows current completion (complete=$complete, superseded=$superseded)',
+        () async {
+          final cache = _TestBalanceCacheStore();
+          final notifier = _BalanceRefreshTestSyncNotifier(
+            () async => 'wallet.db',
+            initialState:
+                SyncState(
+                  accountUuid: _accountUuid,
+                  isSyncing: true,
+                  scannedHeight: 50,
+                  chainTipHeight: 100,
+                ).withCachedBalance(
+                  CachedWalletBalance(
+                    _availableBalance(BigInt.from(75)),
+                    DateTime.utc(2026),
+                  ),
+                ),
+          )..balance = _availableBalance(BigInt.zero);
+          final container = ProviderContainer(
+            overrides: [
+              appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+              accountProvider.overrideWith(_ExistingAccountNotifier.new),
+              syncProvider.overrideWith(() => notifier),
+              walletBalanceCacheProvider.overrideWithValue(cache),
+            ],
+          );
+          addTearDown(container.dispose);
+          addTearDown(notifier.stopTipChecksForTesting);
+          await container.read(accountProvider.future);
+          await container.read(syncProvider.future);
+          if (superseded) notifier.gateFirstBalanceRead();
+          final handling = notifier.handleSyncProgressForTesting(
+            SyncProgressEvent(
+              scannedHeight: complete ? 100 : 60,
+              chainTipHeight: 100,
+              percentage: complete ? 1 : 0.6,
+              displayTargetPercentage: complete ? 1 : 0.6,
+              displayTargetBlocks: 100,
+              isSyncing: !complete,
+              isComplete: complete,
+              hasNewTx: true,
+            ),
+          );
+          if (superseded) {
+            await notifier.firstBalanceReadStarted;
+            // A newer scan event wins over the older handler's metadata.
+            await notifier.handleSyncProgressForTesting(
+              const SyncProgressEvent(
+                scannedHeight: 70,
+                chainTipHeight: 110,
+                percentage: 0.7,
+                displayTargetPercentage: 0.7,
+                displayTargetBlocks: 110,
+                isSyncing: true,
+                isComplete: false,
+                hasNewTx: false,
+              ),
+            );
+            notifier.releaseFirstBalanceRead();
+          }
+          await handling;
+          final current = container.read(syncProvider).requireValue;
+          expect(current.spendableBalance, BigInt.zero);
+          if (complete && !superseded) {
+            // A completed balance of zero is real and must replace the cache.
+            expect(current.displaySpendableBalance, BigInt.zero);
+            expect(cache.saved.single.spendable, BigInt.zero);
+          } else {
+            expect(current.displaySpendableBalance, BigInt.from(75));
+            expect(cache.saved, isEmpty);
+          }
+        },
+      );
+    }
+  }
+
+  testWidgets('initial scan does not persist intermediate balances', (
+    tester,
+  ) async {
+    final cache = _TestBalanceCacheStore();
+    final notifier = _BalanceRefreshTestSyncNotifier(
+      () async => 'wallet.db',
+      initialState: SyncState(accountUuid: _accountUuid, isSyncing: true),
+    )..balance = _availableBalance(BigInt.from(25));
+    final container = ProviderContainer(
+      overrides: [
+        appBootstrapProvider.overrideWithValue(AppBootstrapState.empty),
+        accountProvider.overrideWith(_ExistingAccountNotifier.new),
+        syncProvider.overrideWith(() => notifier),
+        walletBalanceCacheProvider.overrideWithValue(cache),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(accountProvider.future);
+    await container.read(syncProvider.future);
+    notifier.refreshHomeInBackground();
+    await tester.pump();
+    expect(
+      container.read(syncProvider).requireValue.displaySpendableBalance,
+      BigInt.from(25),
+    );
+    expect(cache.saved, isEmpty);
+  });
 
   for (final unavailable in [false, true]) {
     test(
@@ -1607,30 +1755,32 @@ class _ExistingAccountNotifier extends AccountNotifier {
   );
 }
 
-rust_sync.WalletBalance _availableBalance(BigInt amount) =>
-    rust_sync.WalletBalance(
-      availability: rust_sync.WalletBalanceAvailability.available,
-      transparentAuthority: rust_sync.TransparentBalanceAuthority.current,
-      transparentPrivate: false,
-      transparent: BigInt.zero,
-      sapling: BigInt.zero,
-      orchard: amount,
-      ironwood: BigInt.zero,
-      transparentLocked: BigInt.zero,
-      saplingLocked: BigInt.zero,
-      orchardLocked: BigInt.zero,
-      ironwoodLocked: BigInt.zero,
-      transparentPending: BigInt.zero,
-      saplingPending: BigInt.zero,
-      orchardPending: BigInt.zero,
-      ironwoodPending: BigInt.zero,
-      changePendingConfirmation: BigInt.zero,
-      valuePendingSpendability: BigInt.zero,
-      uneconomicValue: BigInt.zero,
-      spendable: amount,
-      locked: BigInt.zero,
-      total: amount,
-    );
+rust_sync.WalletBalance _availableBalance(
+  BigInt amount, {
+  BigInt? orchardPending,
+}) => rust_sync.WalletBalance(
+  availability: rust_sync.WalletBalanceAvailability.available,
+  transparentAuthority: rust_sync.TransparentBalanceAuthority.current,
+  transparentPrivate: false,
+  transparent: BigInt.zero,
+  sapling: BigInt.zero,
+  orchard: amount,
+  ironwood: BigInt.zero,
+  transparentLocked: BigInt.zero,
+  saplingLocked: BigInt.zero,
+  orchardLocked: BigInt.zero,
+  ironwoodLocked: BigInt.zero,
+  transparentPending: BigInt.zero,
+  saplingPending: BigInt.zero,
+  orchardPending: orchardPending ?? BigInt.zero,
+  ironwoodPending: BigInt.zero,
+  changePendingConfirmation: BigInt.zero,
+  valuePendingSpendability: BigInt.zero,
+  uneconomicValue: BigInt.zero,
+  spendable: amount,
+  locked: BigInt.zero,
+  total: amount + (orchardPending ?? BigInt.zero),
+);
 
 final _unavailableBalance = rust_sync.WalletBalance(
   availability: rust_sync.WalletBalanceAvailability.summaryUnavailable,
@@ -1751,6 +1901,9 @@ class _TestBalanceCacheStore extends WalletBalanceCacheStore {
     required rust_sync.WalletBalance balance,
   }) {
     saved.add(balance);
+    cached = CachedWalletBalance.decode(
+      CachedWalletBalance(balance, DateTime.utc(2026)).encode(),
+    );
   }
 }
 

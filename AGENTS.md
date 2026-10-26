@@ -1068,8 +1068,9 @@ Seed-relevance rule:
   or account-switch refresh. Intermediate reads preserve spendable, pending, and
   holdings displays. `hasRecentTransactionsData` and `hasRecentTransactionsError`
   own the activity loading state.
-- Accepted live balance reads enqueue display-only snapshots through
-  `walletBalanceCacheProvider`; deletion/reset suspend and drain its writes.
+- Only completed-sync or explicit-release balance reads enqueue display-only
+  snapshots through `walletBalanceCacheProvider`; intermediate reads leave the
+  saved snapshot intact. Deletion/reset suspend and drain its writes.
   `ext_vizor_balance_cache` is in the wallet DB and removed with its account;
   writes open existing DB files only and do not invalidate the wallet-summary cache.
 - All balance/history queries pass `activeAccountUuid` from `AccountProvider`

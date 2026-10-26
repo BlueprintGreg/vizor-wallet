@@ -3025,7 +3025,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (event.hasNewTx || event.isComplete) {
       balanceReadVersion = ++_balanceReadVersion;
       try {
-        final balance = await rust_sync.getBalance(
+        final balance = await readWalletBalance(
           dbPath: dbPath,
           network: network,
           accountUuid: accountUuid,
@@ -3059,7 +3059,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       }
       if (!ref.mounted) return;
       try {
-        recentTxs = await rust_sync.getTransactionHistory(
+        recentTxs = await readTransactionHistory(
           dbPath: dbPath,
           network: network,
           limit: 10,
@@ -3134,7 +3134,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     }
     if (useFetchedBalance) {
       ++_authoritativeBalanceVersion;
-      _persistAcceptedBalance(dbPath, network, accountUuid, fetchedBalance!);
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        accountUuid,
+        fetchedBalance!,
+        syncComplete: event.isComplete,
+      );
     }
     final stateScopedPrev = _previousScopedState(
       currentState,
@@ -3351,11 +3357,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     final current = _previousScopedState(state.value, accountUuid);
     if (current == null) return;
 
+    final syncComplete = current.isSyncedToTip;
     if (balance != null) {
       ++_authoritativeBalanceVersion;
-      _persistAcceptedBalance(dbPath, network, accountUuid, balance);
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        accountUuid,
+        balance,
+        syncComplete: syncComplete,
+      );
     }
-    final syncComplete = current.isSyncedToTip;
     state = AsyncData(
       current.withFetchedAccountData(
         balance: balance,
@@ -3432,12 +3444,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
 
   void refreshHomeInBackground() => unawaited(_refreshBalanceAfterResume());
 
-  void _persistAcceptedBalance(
+  void _persistBalanceSnapshot(
     String dbPath,
     String network,
     String uuid,
-    rust_sync.WalletBalance balance,
-  ) {
+    rust_sync.WalletBalance balance, {
+    required bool syncComplete,
+    bool releaseSnapshotOnAuthoritativeBalance = false,
+  }) {
+    // A successful live read can still contain an intermediate scan balance.
+    // Leave the disk snapshot intact until the display may also be replaced.
+    if (!syncComplete && !releaseSnapshotOnAuthoritativeBalance) return;
     ref
         .read(walletBalanceCacheProvider)
         .accept(
@@ -3760,19 +3777,28 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       _logSpendableDropBreakdown(balance, current);
       ++_authoritativeBalanceVersion;
     }
+    final syncComplete = current.isSyncedToTip;
     state = AsyncData(
       current.withFetchedAccountData(
         balance: balance,
         canShieldTransparentBalance: balance == null ? null : false,
         shieldTransparentFee: balance == null ? null : BigInt.zero,
         shieldTransparentAmount: balance == null ? null : BigInt.zero,
-        syncComplete: current.isSyncedToTip,
+        syncComplete: syncComplete,
         releaseSnapshotOnAuthoritativeBalance:
             releaseSnapshotOnAuthoritativeBalance,
       ),
     );
     if (balance != null) {
-      _persistAcceptedBalance(dbPath, network, uuid, balance);
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        uuid,
+        balance,
+        syncComplete: syncComplete,
+        releaseSnapshotOnAuthoritativeBalance:
+            releaseSnapshotOnAuthoritativeBalance,
+      );
     }
 
     // Send/release callers can await the whole refresh, while Home sees the
