@@ -1147,6 +1147,87 @@ Widget buildDesktopHomeSetupUseCase(BuildContext context) =>
 Widget buildDesktopHomeSetupImportingUseCase(BuildContext context) =>
     _buildDesktopSetupHomeUseCase(importing: true);
 
+Widget buildDesktopHomeCachedBalanceUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true);
+
+Widget buildDesktopHomeActivitySkeletonUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: false, loading: true);
+
+Widget buildDesktopHomeFiveActivitiesUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: false, loading: false);
+
+Widget buildMobileHomeActivitySkeletonUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: true, loading: true);
+
+Widget buildMobileHomeFiveActivitiesUseCase(BuildContext context) =>
+    _buildHomeActivityComparison(mobile: true, loading: false);
+
+/// Identical account, balance, banners and viewport; only Activity changes.
+Widget _buildHomeActivityComparison({
+  required bool mobile,
+  required bool loading,
+}) {
+  final sync = _homeSyncedState(
+    orchardBalance: BigInt.from(250000000),
+    recentTransactions: loading
+        ? const []
+        : [for (var i = 1; i <= 5; i++) _homeTx(i)],
+  ).copyWith(hasRecentTransactionsData: !loading);
+  return mobile
+      ? _buildMobileHomeUseCase(
+          accountState: _accountsDesignState,
+          syncState: sync,
+          votingVisible: false,
+          constrainToPreviewFrame: false,
+        )
+      : _buildDesktopHomeUseCase(
+          accountState: _accountsDesignState,
+          syncState: sync,
+          migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+          zecUsdPrice: 70,
+        );
+}
+
+Widget buildDesktopHomeUnknownBalanceUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase();
+
+Widget buildDesktopHomeInitialScanUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(initialScan: true);
+
+Widget buildDesktopHomeActivityErrorUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true, historyError: true);
+
+Widget buildDesktopHomeEmptyActivityUseCase(BuildContext context) =>
+    _buildDesktopHomeStartupUseCase(cached: true, historyLoaded: true);
+
+Widget _buildDesktopHomeStartupUseCase({
+  bool cached = false,
+  bool initialScan = false,
+  bool historyError = false,
+  bool historyLoaded = false,
+}) {
+  final balance = cached ? BigInt.from(250000000) : BigInt.zero;
+  return _buildDesktopHomeUseCase(
+    accountState: _accountsDesignState,
+    syncState: SyncState(
+      accountUuid: _accountsDesignState.activeAccountUuid,
+      hasCachedBalance: cached,
+      hasBalanceData: false,
+      hasRecentTransactionsData: historyLoaded,
+      hasRecentTransactionsError: historyError,
+      isSyncing: true,
+      percentage: cached || initialScan ? .32 : 0,
+      remainingScanBlocks: cached || initialScan ? 100 : null,
+      displaySpendableBalance: balance,
+      displayOrchardBalance: balance,
+      displayShieldedBalance: balance,
+      displayTotalBalance: balance,
+    ),
+    migrationCta: const IronwoodHomeMigrationCtaState.hidden(),
+    zecUsdPrice: 70,
+  );
+}
+
 Widget buildDesktopZcashEducationIntroUseCase(BuildContext context) =>
     _buildDesktopSetupHomeUseCase(initialLocation: '/setup/education/intro');
 
@@ -1175,6 +1256,7 @@ Widget _buildDesktopSetupHomeUseCase({
     syncState: SyncState(
       accountUuid: accounts.activeAccountUuid,
       hasAccountScopedData: !importing,
+      remainingScanBlocks: importing ? 70 : null,
       percentage: importing ? .3 : 1,
       totalBalance: BigInt.zero,
     ),
@@ -2436,6 +2518,7 @@ Widget buildMobileHomeImportingUseCase(BuildContext context) {
       accountUuid: _accountsDesignState.activeAccountUuid,
       isSyncing: true,
       percentage: 0.34,
+      remainingScanBlocks: 66,
     ),
   );
 }
@@ -2447,6 +2530,7 @@ Widget buildMobileHomeImportingResponsiveUseCase(BuildContext context) {
       accountUuid: _accountsDesignState.activeAccountUuid,
       isSyncing: true,
       percentage: 0.34,
+      remainingScanBlocks: 66,
     ),
     constrainToPreviewFrame: false,
   );
@@ -3798,6 +3882,7 @@ Widget _buildIronwoodMigrationUseCase({
             hasAccountScopedData: true,
             isSyncing: true,
             percentage: 0.34,
+            remainingScanBlocks: 66,
             displayTargetPercentage: 0.34,
             scannedHeight: 3_000_000,
             chainTipHeight: 3_000_000,
@@ -6605,6 +6690,7 @@ class _PreviewSyncNotifier extends SyncNotifier {
         hasAccountScopedData: activeAccountUuid != null,
         isSyncing: true,
         percentage: 0.34,
+        remainingScanBlocks: 66,
         totalBalance: BigInt.from(14223000000),
       );
 

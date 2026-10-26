@@ -455,7 +455,12 @@ void main() {
       findsNothing,
     );
     expect(
-      tester.getTopLeft(find.byKey(const ValueKey('mobile_activity_feed'))).dy,
+      MatrixUtils.transformPoint(
+        tester
+            .renderObject(find.byKey(const ValueKey('mobile_activity_feed')))
+            .getTransformTo(null),
+        Offset.zero,
+      ).dy,
       moreOrLessEquals(kMobileTopNavHeight + AppSpacing.s),
     );
     expect(find.text('This week'), findsOneWidget);
@@ -548,7 +553,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      tester.getTopLeft(find.byKey(const ValueKey('mobile_activity_feed'))).dy,
+      MatrixUtils.transformPoint(
+        tester
+            .renderObject(find.byKey(const ValueKey('mobile_activity_feed')))
+            .getTransformTo(null),
+        Offset.zero,
+      ).dy,
       moreOrLessEquals(kMobileTopNavHeight + AppSpacing.s),
     );
     expect(find.text('No activity yet'), findsOneWidget);

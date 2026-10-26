@@ -24,6 +24,13 @@ Future<String> getLightwalletdChainName({required String lightwalletdUrl}) =>
       lightwalletdUrl: lightwalletdUrl,
     );
 
+/// Time connection establishment and the chain-info RPC on the selected route.
+Future<LightwalletdEndpointProbe> probeLightwalletdEndpoint({
+  required String lightwalletdUrl,
+}) => RustLib.instance.api.crateApiWalletProbeLightwalletdEndpoint(
+  lightwalletdUrl: lightwalletdUrl,
+);
+
 /// Get the connected chain upgrade state used to decide whether Ironwood is active.
 Future<ChainUpgradeStatus> getChainUpgradeStatus({
   required String lightwalletdUrl,
@@ -502,7 +509,6 @@ class AccountExportMetadata {
 class AccountInfo {
   final String uuid;
   final String name;
-  final String unifiedAddress;
   final int birthdayHeight;
   final int? zip32AccountIndex;
   final bool isSeedAnchor;
@@ -512,7 +518,6 @@ class AccountInfo {
   const AccountInfo({
     required this.uuid,
     required this.name,
-    required this.unifiedAddress,
     required this.birthdayHeight,
     this.zip32AccountIndex,
     required this.isSeedAnchor,
@@ -524,7 +529,6 @@ class AccountInfo {
   int get hashCode =>
       uuid.hashCode ^
       name.hashCode ^
-      unifiedAddress.hashCode ^
       birthdayHeight.hashCode ^
       zip32AccountIndex.hashCode ^
       isSeedAnchor.hashCode ^
@@ -538,7 +542,6 @@ class AccountInfo {
           runtimeType == other.runtimeType &&
           uuid == other.uuid &&
           name == other.name &&
-          unifiedAddress == other.unifiedAddress &&
           birthdayHeight == other.birthdayHeight &&
           zip32AccountIndex == other.zip32AccountIndex &&
           isSeedAnchor == other.isSeedAnchor &&
@@ -700,6 +703,28 @@ class LegacyHardwareAccount {
           runtimeType == other.runtimeType &&
           accountUuid == other.accountUuid &&
           hardwareSignerKind == other.hardwareSignerKind;
+}
+
+/// A chain-info response timed inside Rust, excluding bridge execution queues.
+class LightwalletdEndpointProbe {
+  final String chainName;
+  final int latencyMs;
+
+  const LightwalletdEndpointProbe({
+    required this.chainName,
+    required this.latencyMs,
+  });
+
+  @override
+  int get hashCode => chainName.hashCode ^ latencyMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LightwalletdEndpointProbe &&
+          runtimeType == other.runtimeType &&
+          chainName == other.chainName &&
+          latencyMs == other.latencyMs;
 }
 
 /// A higher ZIP32 software account that can be imported by user choice.

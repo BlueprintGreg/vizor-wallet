@@ -911,6 +911,38 @@ void main() {
     expect(container.read(accountProvider).value!.accounts, isEmpty);
   });
 
+  test(
+    'a created account keeps its recovery outcome when its address is unavailable',
+    () async {
+      _rust
+        ..importError = StateError('interrupted')
+        ..createDbBeforeImportError = true
+        ..failAddress = true
+        ..listedAccounts = [_listed('uuid-1')];
+      await expectLater(
+        accounts().createGiftClaimAccount(
+          name: _name,
+          profilePictureId: _profile,
+          link: incomingLink,
+        ),
+        throwsA(
+          isA<GiftClaimAccountCreatedException>().having(
+            (error) => error.accountUuid,
+            'accountUuid',
+            'uuid-1',
+          ),
+        ),
+      );
+      expect(
+        await store.readSecretStringWithOptions(
+          kPendingAccountMnemonicStorageKey,
+          requireUnlockedSession: true,
+        ),
+        isNotNull,
+      );
+    },
+  );
+
   test('a create whose outcome is unknown keeps the password', () async {
     _rust
       ..importError = StateError('interrupted')
@@ -1525,7 +1557,6 @@ void main() {
 rust_wallet.AccountInfo _listed(String uuid) => rust_wallet.AccountInfo(
   uuid: uuid,
   name: 'Account 1',
-  unifiedAddress: 'u1$uuid',
   birthdayHeight: 3000000,
   isSeedAnchor: true,
   isHardware: false,
@@ -1579,6 +1610,7 @@ class _GiftAccountRustApi implements RustLibApi {
   Object? importError;
   Object? listError;
   bool createDbBeforeImportError = false;
+  bool failAddress = false;
   bool lockAfterImport = false;
   bool walletExists = false;
   List<rust_wallet.AccountInfo> listedAccounts = const [];
@@ -1597,6 +1629,7 @@ class _GiftAccountRustApi implements RustLibApi {
     importError = null;
     listError = null;
     createDbBeforeImportError = false;
+    failAddress = false;
     lockAfterImport = false;
     walletExists = false;
     listedAccounts = const [];
@@ -1677,7 +1710,6 @@ class _GiftAccountRustApi implements RustLibApi {
       rust_wallet.AccountInfo(
         uuid: 'hardware',
         name: _name,
-        unifiedAddress: 'u1hardware',
         birthdayHeight: 3000000,
         isSeedAnchor: false,
         isHardware: true,
@@ -1813,7 +1845,10 @@ class _GiftAccountRustApi implements RustLibApi {
     required String dbPath,
     required String network,
     String? accountUuid,
-  }) async => 'u1$accountUuid';
+  }) async {
+    if (failAddress) throw StateError('address unavailable');
+    return 'u1$accountUuid';
+  }
 
   @override
   Future<String?> crateApiWalletFindSoftwareAccountForMnemonic({

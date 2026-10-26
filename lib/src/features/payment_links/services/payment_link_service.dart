@@ -31,6 +31,7 @@ import 'payment_link_recovery_reconciler.dart';
 import 'payment_link_recovery_store.dart';
 import 'payment_link_sharing.dart';
 import 'payment_link_transaction_matching.dart';
+import 'payment_link_transaction_lookup.dart';
 
 part 'payment_link_claim_receipt.dart';
 part 'payment_link_claim_math.dart';
@@ -134,7 +135,13 @@ abstract interface class PaymentLinkOperations {
     required String fundingTxids,
   });
 
+  /// Reads persisted cards without cleanup, chain queries, or recovery.
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks();
+
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries();
+
+  /// Deferred management recovery, owned by the lock/reset preparation lifecycle.
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks();
 
   Future<PaymentLinkRecoveryRecord> markCreatedLinkShared(
     VizorPaymentLink link,
@@ -634,6 +641,7 @@ class PaymentLinkService
   final Ref _ref;
   final Set<String> _activeClaims = {};
   Future<void> _claimInspectionTail = Future<void>.value();
+  Future<List<PaymentLinkRecoveryRecord>>? _createdRecoveryInFlight;
   final PaymentLinkRecoveryStore _recoveryStore;
   final PaymentLinkReceivedStore _receivedStore;
   final PaymentLinkRecoveryReconciler _recoveryReconciler;
@@ -1119,8 +1127,52 @@ class PaymentLinkService
   }
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() =>
+      _recoveryStore.load();
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() =>
       _recoveryReconciler.load();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() {
+    final existing = _createdRecoveryInFlight;
+    if (existing != null) return existing;
+    final coordinator = _ref.read(paymentLinkClaimCoordinatorProvider);
+    late final Future<List<PaymentLinkRecoveryRecord>> tracked;
+    tracked = coordinator
+        .trackPreparation(() async {
+          final generation = coordinator.beginPreparation();
+          void ensureActive() => coordinator.requirePreparation(generation);
+          final unregister = coordinator.registerCheckCancellation(
+            _claimWallet.cancelAllSyncs,
+          );
+          try {
+            await _recoveryReconciler.load(
+              ensureActive: ensureActive,
+              loadLinkFundingHistory: (link) => _claimWallet.loadFundingHistory(
+                link,
+                ensureActive: ensureActive,
+              ),
+            );
+            ensureActive();
+            // A user can create/share cards while deferred chain checks run.
+            // Publish the persisted result, never the pass's initial snapshot.
+            final records = await _recoveryStore.load();
+            ensureActive();
+            return records;
+          } finally {
+            unregister();
+          }
+        })
+        .whenComplete(() {
+          if (identical(_createdRecoveryInFlight, tracked)) {
+            _createdRecoveryInFlight = null;
+          }
+        });
+    _createdRecoveryInFlight = tracked;
+    return tracked;
+  }
 
   @override
   Future<PaymentLinkRecoveryRecord> markCreatedLinkShared(
@@ -1148,17 +1200,23 @@ class PaymentLinkService
     }
     final endpoint = _ref.read(rpcEndpointFailoverProvider).current;
     final dbPath = await getWalletDbPath();
-    final transactionsByAccount = <String, List<rust_sync.TransactionInfo>>{};
-    for (final accountUuid
-        in needsHistory.map((record) => record.sourceAccountUuid).toSet()) {
-      transactionsByAccount[accountUuid] = await rust_sync
-          .getTransactionHistory(
-            dbPath: dbPath,
-            network: endpoint.networkName,
-            accountUuid: accountUuid,
-            limit: null,
-          );
+    final requested = <String, Set<String>>{};
+    for (final record in needsHistory) {
+      addPaymentLinkTransactionIds(
+        requested,
+        record.sourceAccountUuid,
+        record.fundingTxids,
+      );
     }
+    final rowsByAccount = await loadPaymentLinkTransactionRows(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      txidsByAccount: requested,
+    );
+    final transactionsByAccount = {
+      for (final entry in rowsByAccount.entries)
+        entry.key: PaymentLinkTransactionIndex(entry.value),
+    };
     final cachedTip = _ref.read(syncProvider).value?.chainTipHeight ?? 0;
     final chainTipHeight = cachedTip > 0
         ? BigInt.from(cachedTip)
@@ -1172,7 +1230,10 @@ class PaymentLinkService
           !paymentLinkFundingExpired(
             fundingTxids: fundingTxids,
             transactions:
-                transactionsByAccount[record.sourceAccountUuid] ?? const [],
+                transactionsByAccount[record.sourceAccountUuid]?.matching(
+                  record.fundingTxids,
+                ) ??
+                const [],
           )) {
         continue;
       }
@@ -1192,7 +1253,9 @@ class PaymentLinkService
               : _fundingProgressForRecord(
                   record: record,
                   transactions:
-                      transactionsByAccount[record.sourceAccountUuid] ??
+                      transactionsByAccount[record.sourceAccountUuid]?.matching(
+                        record.fundingTxids,
+                      ) ??
                       const [],
                   chainTipHeight: chainTipHeight,
                 ),
@@ -1441,19 +1504,23 @@ class PaymentLinkService
     }
     if (legacyAwaitingReceipt.isEmpty) return _receivedStore.load();
 
-    final transactionsByAccount = <String, List<rust_sync.TransactionInfo>>{};
-    for (final accountUuid
-        in legacyAwaitingReceipt
-            .map((record) => record.destinationAccountUuid!)
-            .toSet()) {
-      transactionsByAccount[accountUuid] = await rust_sync
-          .getTransactionHistory(
-            dbPath: dbPath,
-            network: endpoint.networkName,
-            accountUuid: accountUuid,
-            limit: null,
-          );
+    final requested = <String, Set<String>>{};
+    for (final record in legacyAwaitingReceipt) {
+      addPaymentLinkTransactionIds(
+        requested,
+        record.destinationAccountUuid!,
+        record.claimTxids,
+      );
     }
+    final rowsByAccount = await loadPaymentLinkTransactionRows(
+      dbPath: dbPath,
+      network: endpoint.networkName,
+      txidsByAccount: requested,
+    );
+    final transactionsByAccount = {
+      for (final entry in rowsByAccount.entries)
+        entry.key: PaymentLinkTransactionIndex(entry.value),
+    };
     final syncState = _ref.read(syncProvider).value;
     // A polled tip can advance before the main wallet DB has scanned it. In
     // particular, after a reorg the DB can still expose a transaction's old
@@ -1469,7 +1536,10 @@ class PaymentLinkService
       await reconcilePaymentLinkClaimReceipt(
         record: record,
         transactions:
-            transactionsByAccount[record.destinationAccountUuid!] ?? const [],
+            transactionsByAccount[record.destinationAccountUuid!]?.matching(
+              record.claimTxids,
+            ) ??
+            const [],
         verifiedHeight: chainTipHeight,
         store: _receivedStore,
         deleteRetainedWallet: _claimWallet.deleteRetained,
@@ -1798,7 +1868,11 @@ class PaymentLinkService
         }
         requirePreparation();
         if (accounts == null ||
-            !await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+            !await _claimWallet.matchesLink(
+              link: link,
+              accounts: accounts,
+              dbPath: tempWallet.dbPath,
+            )) {
           requirePreparation();
           if (accounts != null) {
             log(
@@ -1818,7 +1892,11 @@ class PaymentLinkService
           importedAddress = imported.address;
           importedAccountUuid = imported.accountUuid;
         } else {
-          importedAddress = accounts.single.unifiedAddress;
+          importedAddress = await rust_wallet.getUnifiedAddress(
+            dbPath: tempWallet.dbPath,
+            network: endpoint.networkName,
+            accountUuid: accounts.single.uuid,
+          );
           importedAccountUuid = accounts.single.uuid;
         }
       } else {
@@ -2508,7 +2586,11 @@ class PaymentLinkService
       dbPath: tempWallet.dbPath,
       network: network,
     );
-    if (!await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+    if (!await _claimWallet.matchesLink(
+      link: link,
+      accounts: accounts,
+      dbPath: tempWallet.dbPath,
+    )) {
       return;
     }
     final evidence = await rust_sync.getPaymentLinkSpendEvidence(
@@ -2662,7 +2744,11 @@ class PaymentLinkService
         dbPath: tempWallet.dbPath,
         network: network,
       );
-      if (!await _claimWallet.matchesLink(link: link, accounts: accounts)) {
+      if (!await _claimWallet.matchesLink(
+        link: link,
+        accounts: accounts,
+        dbPath: tempWallet.dbPath,
+      )) {
         return null;
       }
       final claimAccount = accounts.single;

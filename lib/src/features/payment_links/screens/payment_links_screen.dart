@@ -16,11 +16,13 @@ import '../../../core/layout/app_layout.dart';
 import '../../../core/layout/app_main_sidebar.dart';
 import '../../../core/layout/mobile/app_mobile_sheet.dart';
 import '../../../core/privacy/privacy_mask.dart';
+import '../../../core/storage/app_secure_store.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_toast.dart';
 import '../../../providers/account_provider.dart';
+import '../../../providers/app_security_provider.dart';
 import '../../../providers/privacy_mode_provider.dart';
 import '../../../providers/rpc_endpoint_provider.dart';
 import '../../../providers/sync_provider.dart';
@@ -227,6 +229,10 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   bool _claimConfirmationRefreshInProgress = false;
   bool _pendingIntakeScheduled = false;
   bool _initialCardsLoaded = false;
+  Future<void>? _createdRecoveryInFlight;
+  Set<String> _checkingCreatedDrafts = const {};
+  bool _createdRecoveryNeedsResume = false;
+  int _cardReadEpoch = 0;
   // Whether funding progress has been read once. Until then a batch's
   // readiness is unknown, not pending.
   bool _fundingProgressChecked = false;
@@ -532,6 +538,13 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
               !identical(_receivedLink, request.link))) {
         _clearDeferredPreparation();
       }
+      if (_claimCoordinator.canStartPreparation &&
+          _initialCardsLoaded &&
+          _createdRecoveryNeedsResume &&
+          _createdRecoveryInFlight == null) {
+        _createdRecoveryNeedsResume = false;
+        unawaited(_loadRecoveries(showError: false));
+      }
       if (!_claimCoordinator.canStartPreparation || _operationInProgress) {
         return;
       }
@@ -617,15 +630,17 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   ) async {
     if (initialCards == null) {
       await Future.wait<void>([
-        _loadRecoveries(),
-        _loadReceivedCardsWithRetry(),
+        _loadLocalCreatedCards(),
+        _loadLocalReceivedCards(),
       ]);
       if (!mounted) return;
       _initialCardsLoaded = true;
-    } else {
-      unawaited(_refreshFundingProgress(records: initialCards.created));
-      unawaited(_refreshReceivedClaims(records: initialCards.received));
     }
+    // The first frame uses only persisted cards. Recovery can query the chain
+    // or scan an isolated wallet, and must never hold up route entry/intake.
+    unawaited(_loadRecoveries(showError: false));
+    unawaited(_refreshFundingProgress());
+    unawaited(_refreshReceivedClaims(force: initialCards == null));
     final address = widget.initialReceivedCardAddress;
     if (address != null) {
       final card = _receivedCards
@@ -657,22 +672,96 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     _showError('This group wasn’t funded. Create it again.');
   }
 
-  @override
-  Future<void> _loadRecoveries({bool showError = true}) async {
+  bool _acceptsCardRead(int epoch, int storageGeneration) =>
+      mounted &&
+      epoch == _cardReadEpoch &&
+      !ref.read(appSecurityProvider).requiresUnlock &&
+      storageGeneration == AppSecureStore.instance.sessionGeneration;
+
+  Future<void> _loadLocalCreatedCards() async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
     try {
-      final records = await ref
-          .read(paymentLinkOperationsProvider)
-          .loadCreatedLinkRecoveries();
-      if (!mounted) return;
+      final records = await _paymentLinkOperations.loadCreatedLinks();
+      if (!_acceptsCardRead(epoch, generation)) return;
+      setState(() {
+        _recoveries = records.toList()..sort(compareCreatedPaymentLinks);
+      });
+    } catch (_) {
+      if (_acceptsCardRead(epoch, generation)) {
+        _showError('Gift cards could not be loaded.');
+      }
+    }
+  }
+
+  Future<void> _loadLocalReceivedCards() async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final records = await _paymentLinkOperations
+            .loadReceivedLinkRecoveries();
+        if (!_acceptsCardRead(epoch, generation)) return;
+        final sorted = records.toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        setState(() => _applyReceivedCards(sorted));
+        return;
+      } catch (error) {
+        log(
+          'PaymentLinkCards: local received load failed '
+          'attempt=$attempt type=${error.runtimeType}',
+        );
+        if (!_acceptsCardRead(epoch, generation)) return;
+        if (attempt == 2) {
+          _showError('Received gift cards could not be loaded.');
+        }
+      }
+    }
+  }
+
+  @override
+  Future<void> _loadRecoveries({bool showError = true}) {
+    return _createdRecoveryInFlight ??=
+        _recoverCreatedCards(showError: showError).whenComplete(() {
+          _createdRecoveryInFlight = null;
+          if (mounted &&
+              _createdRecoveryNeedsResume &&
+              _claimCoordinator.canStartPreparation) {
+            _schedulePreparationResume();
+          }
+        });
+  }
+
+  Future<void> _recoverCreatedCards({required bool showError}) async {
+    final epoch = _cardReadEpoch;
+    final generation = AppSecureStore.instance.sessionGeneration;
+    bool acceptsResult() => _acceptsCardRead(epoch, generation);
+    if (mounted) {
+      setState(() {
+        _checkingCreatedDrafts = {
+          for (final record in _recoveries)
+            if (record.state == PaymentLinkRecoveryState.draft)
+              record.link.address,
+        };
+      });
+    }
+    try {
+      final records = await _paymentLinkOperations.recoverCreatedLinks();
+      if (!acceptsResult()) return;
       final visible = records.toList()..sort(compareCreatedPaymentLinks);
       final hadOpenBatch = _openBatchLoaded;
       setState(() => _recoveries = visible);
       if (hadOpenBatch) _leaveVanishedBatch();
       unawaited(_refreshFundingProgress(records: visible));
+    } on GiftCardPreparationInterrupted {
+      _createdRecoveryNeedsResume = true;
+      // Keep the persisted list while locked, backgrounded, or changing wallets.
     } catch (_) {
-      if (mounted && showError) {
+      if (acceptsResult() && showError) {
         _showError('Gift cards could not be loaded.');
       }
+    } finally {
+      if (mounted) setState(() => _checkingCreatedDrafts = const {});
     }
   }
 
@@ -744,47 +833,15 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     }
   }
 
-  Future<void> _loadReceivedCardsWithRetry() async {
-    final loaded = await _loadReceivedCards(showError: false, attempt: 1);
-    if (!loaded && mounted) {
-      await _loadReceivedCards(attempt: 2);
-    }
-  }
-
-  Future<bool> _loadReceivedCards({
-    bool showError = true,
-    required int attempt,
-  }) async {
-    try {
-      final records = await ref
-          .read(paymentLinkClaimCoordinatorProvider)
-          .refresh();
-      if (!mounted) return true;
-      final sorted = List<PaymentLinkReceivedRecord>.of(records)
-        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      setState(() => _applyReceivedCards(sorted));
-      unawaited(_refreshReceivedClaims(records: sorted));
-      return true;
-    } catch (error) {
-      log(
-        'PaymentLinkCards: received load failed '
-        'attempt=$attempt type=${error.runtimeType}',
-      );
-      if (mounted && showError) {
-        _showError('Received gift cards could not be loaded.');
-      }
-      return false;
-    }
-  }
-
   Future<void> _refreshReceivedClaims({
     List<PaymentLinkReceivedRecord>? records,
+    bool force = false,
   }) async {
     final receivedCards = records ?? _receivedCards;
     final needsRecovery = receivedCards.any(
       (record) => record.needsClaimRecovery,
     );
-    if (!needsRecovery || _receivedRefreshInProgress) {
+    if ((!needsRecovery && !force) || _receivedRefreshInProgress) {
       return;
     }
     _receivedRefreshInProgress = true;
@@ -2679,6 +2736,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       GiftCardTrackingScope(child: _buildContent(context));
 
   Widget _buildContent(BuildContext context) {
+    ref.listen(appSecurityProvider, (_, next) {
+      if (next.requiresUnlock) _cardReadEpoch++;
+    });
     ref.listen<String?>(
       accountProvider.select((state) => state.value?.activeAccountUuid),
       _handleActiveAccountChanged,
@@ -3016,30 +3076,32 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       final pendingCards = <Widget>[];
       final unusedCards = <Widget>[];
       final usedCards = <Widget>[];
+      final visibleRecoveries = _visibleRecoveries;
+      final membersByBatch = <String, List<PaymentLinkRecoveryRecord>>{};
+      if (kAppFormFactor == AppFormFactor.desktop) {
+        for (final record in visibleRecoveries) {
+          if (record.batchId case final batchId?) {
+            (membersByBatch[batchId] ??= []).add(record);
+          }
+        }
+        for (final members in membersByBatch.values) {
+          members.sort(
+            (a, b) => (a.batchIndex ?? 0).compareTo(b.batchIndex ?? 0),
+          );
+        }
+      }
       final seenBatchIds = <String>{};
-      for (final record in _visibleRecoveries) {
+      for (final record in visibleRecoveries) {
         if (kAppFormFactor == AppFormFactor.desktop && record.batchId != null) {
           if (!seenBatchIds.add(record.batchId!)) continue;
-          final members =
-              _visibleRecoveries
-                  .where((candidate) => candidate.batchId == record.batchId)
-                  .toList()
-                ..sort(
-                  (a, b) => (a.batchIndex ?? 0).compareTo(b.batchIndex ?? 0),
-                );
+          final members = membersByBatch[record.batchId]!;
           batches.add(_buildBatchRow(members));
           continue;
         }
-        final fundingReady =
-            _fundingProgressByAddress[record.link.address]?.isReady ?? false;
-        final usage = ref
-            .watch(giftCardUsageProvider(record.link.address))
-            .value;
-        final status = usage?.status ?? record.usage.status;
-        final cards = switch ((fundingReady, status)) {
-          (true, GiftCardUsageStatus.unused) => unusedCards,
-          (true, GiftCardUsageStatus.spendDetected) => usedCards,
-          (true, GiftCardUsageStatus.used) => usedCards,
+        final cards = switch (_usageOf(record).status) {
+          GiftCardUsageStatus.unused => unusedCards,
+          GiftCardUsageStatus.spendDetected => usedCards,
+          GiftCardUsageStatus.used => usedCards,
           _ => pendingCards,
         };
         cards.add(recoveryRow(record));
@@ -3105,19 +3167,25 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   /// Whether a created Card's link can be shared yet, plus the status the row
   /// shows while it cannot. Shared by the desktop and mobile rows.
   ({bool canUseLink, String statusText, bool showLoader}) _recoveryRowState(
-    PaymentLinkRecoveryRecord record,
-  ) {
+    PaymentLinkRecoveryRecord record, {
+    GiftCardUsage? usage,
+  }) {
     final fundingReady =
         _fundingProgressByAddress[record.link.address]?.isReady ?? false;
     final canUseLink =
         fundingReady &&
         (record.state == PaymentLinkRecoveryState.funded ||
             record.state == PaymentLinkRecoveryState.shared);
+    final checkingDraft =
+        record.state == PaymentLinkRecoveryState.draft &&
+        _checkingCreatedDrafts.contains(record.link.address);
     return (
       canUseLink: canUseLink,
-      statusText: record.state == PaymentLinkRecoveryState.draft
+      statusText: checkingDraft
+          ? kPaymentLinkCheckingLabel
+          : record.state == PaymentLinkRecoveryState.draft
           ? kPaymentLinkFundingIncompleteStatus
-          : kPaymentLinkPreparingStatus,
+          : (usage ?? record.usage).label,
       showLoader: !canUseLink && record.state != PaymentLinkRecoveryState.draft,
     );
   }
@@ -3194,7 +3262,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   }
 
   Widget _buildRecoveryRow(PaymentLinkRecoveryRecord record) {
-    final state = _recoveryRowState(record);
+    final state = _recoveryRowState(record, usage: _usageOf(record));
     final actionsEnabled = state.canUseLink && !_operationInProgress;
     final copyEnabled =
         actionsEnabled && !_copyingLinkAddresses.contains(record.link.address);
@@ -3215,6 +3283,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       usageStatus: state.canUseLink
           ? GiftCardUsageStatusView(
               address: record.link.address,
+              savedUsage: record.usage,
               inline: true,
               hideStableLabel: true,
             )
@@ -3235,16 +3304,37 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       status == GiftCardUsageStatus.used ||
       status == GiftCardUsageStatus.spendDetected;
 
+  GiftCardUsage _usageOf(PaymentLinkRecoveryRecord record) =>
+      record.usage.withLatestObservation(
+        ref.watch(giftCardUsageProvider(record.link.address)).value,
+      );
+
   Widget _buildBatchRow(List<PaymentLinkRecoveryRecord> members) {
     final first = members.first;
     final count = first.batchCount ?? members.length;
     final ready = _batchMembersReady(members);
-    final statuses = [
-      for (final record in members)
-        ref.watch(giftCardUsageProvider(record.link.address)).value?.status ??
-            record.usage.status,
-    ];
+    final statuses = [for (final record in members) _usageOf(record).status];
     final usedCount = statuses.where(_isUsedStatus).length;
+    final unusedCount = statuses
+        .where((status) => status == GiftCardUsageStatus.unused)
+        .length;
+    final usageSummary = usedCount > 0
+        ? usedCount == count
+              ? 'All used'
+              : '$usedCount of $count used'
+        : unusedCount > 0
+        ? unusedCount == count
+              ? kPaymentLinkUnusedSectionLabel
+              : '$unusedCount of $count unused'
+        : null;
+    final checkingFunding =
+        !_fundingProgressChecked ||
+        members.any(
+          (record) => _checkingCreatedDrafts.contains(record.link.address),
+        );
+    final checkingUsage =
+        ref.watch(giftCardTrackingStateProvider).checking &&
+        members.any((record) => !_usageOf(record).cleaned);
     final secondArtworkId = members.length > 1
         ? members[1].link.presentation?.artworkId
         : null;
@@ -3261,23 +3351,22 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
         privacyModeEnabled: ref.watch(privacyModeProvider),
       ),
       dateText: _formatCardDate(first.link.createdAt),
-      // Before funding is read once, a batch is unknown rather than pending,
-      // so the row does not flash a pending status on entry.
-      statusText: !ready && !_fundingProgressChecked
-          ? ''
-          : ready
-          ? switch (usedCount) {
-              0 => 'Ready to share',
-              _ when usedCount == count => 'All used',
-              _ => '$usedCount of $count used',
-            }
-          : switch (_batchPendingKind(members)) {
-              PaymentLinkBatchPendingKind.incomplete =>
-                'Some cards aren’t ready',
-              PaymentLinkBatchPendingKind.unconfirmedBroadcast =>
-                'Payment status pending',
-              PaymentLinkBatchPendingKind.confirming => 'Confirming payment',
-            },
+      showLoader: usageSummary != null && (checkingFunding || checkingUsage),
+      // An initial funding read or draft recovery has no result yet.
+      statusText:
+          usageSummary ??
+          (!ready && checkingFunding
+              ? kPaymentLinkCheckingLabel
+              : ready
+              ? 'Ready to share'
+              : switch (_batchPendingKind(members)) {
+                  PaymentLinkBatchPendingKind.incomplete =>
+                    'Some cards aren’t ready',
+                  PaymentLinkBatchPendingKind.unconfirmedBroadcast =>
+                    'Payment status pending',
+                  PaymentLinkBatchPendingKind.confirming =>
+                    'Confirming payment',
+                }),
       onOpen: () => _openBatchDetail(first.batchId!),
     );
   }
@@ -3339,12 +3428,9 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     final first = members.first;
     final ready = _batchMembersReady(members);
     final privacyMode = ref.watch(privacyModeProvider);
-    GiftCardUsage usageOf(PaymentLinkRecoveryRecord record) =>
-        ref.watch(giftCardUsageProvider(record.link.address)).value ??
-        record.usage;
     final tracking = ref.watch(giftCardTrackingStateProvider);
     final lastChecked = members
-        .map((record) => usageOf(record).checkedAt)
+        .map((record) => _usageOf(record).checkedAt)
         .whereType<DateTime>()
         .fold<DateTime?>(
           null,
@@ -3357,7 +3443,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
     final unusedCards = <Widget>[];
     final usedCards = <Widget>[];
     for (final record in members) {
-      final usage = usageOf(record);
+      final usage = _usageOf(record);
       final used = _isUsedStatus(usage.status);
       final pending = usage.status == GiftCardUsageStatus.unknown;
       (used
@@ -3383,10 +3469,15 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
                   !usage.cleaned &&
                   !tracking.checking &&
                   tracking.failedFor(record.link.address),
-              onCopyLink: !_copyingLinkAddresses.contains(record.link.address)
+              onCopyLink:
+                  ready &&
+                      !_operationInProgress &&
+                      !_copyingLinkAddresses.contains(record.link.address)
                   ? () => _copyPaymentLink(record.link)
                   : null,
-              onShowQr: () => _openShareQr(record),
+              onShowQr: ready && !_operationInProgress
+                  ? () => _openShareQr(record)
+                  : null,
             ),
           );
     }
@@ -3425,7 +3516,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
             members.any((record) => tracking.failedFor(record.link.address)),
         checkedText: lastChecked == null ? null : _checkedAgoText(lastChecked),
       ),
-      // Only shown once every card is ready to share.
+      // Saved classifications are visible before sharing becomes available.
       sections: [
         PaymentLinkCardsSection(
           label: kPaymentLinkPendingSectionLabel,
@@ -3489,7 +3580,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
   }
 
   Widget _buildMobileRecoveryRow(PaymentLinkRecoveryRecord record) {
-    final state = _recoveryRowState(record);
+    final state = _recoveryRowState(record, usage: _usageOf(record));
     final actionsEnabled = state.canUseLink && !_operationInProgress;
     final copyEnabled =
         actionsEnabled && !_copyingLinkAddresses.contains(record.link.address);
@@ -3509,6 +3600,7 @@ class _PaymentLinksScreenState extends ConsumerState<PaymentLinksScreen>
       metadata: state.canUseLink
           ? GiftCardUsageStatusView(
               address: record.link.address,
+              savedUsage: record.usage,
               inline: true,
               dateText: _formatCardDate(record.link.createdAt),
               hideStableLabel: true,

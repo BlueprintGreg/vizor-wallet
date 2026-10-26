@@ -94,6 +94,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
         // register the HTTPS deeplink, so `/payment-links` is only ever
         // reached from inside the app.
         context.go('/home');
+        syncNotifier.refreshHomeInBackground();
         final pendingPrefill = claimed.prefill;
         final notice = claimed.notice;
         if (pendingPrefill != null) {

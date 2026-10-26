@@ -1,3 +1,4 @@
+import 'activity_pagination_capture.dart';
 import 'mobile_shield_capture.dart';
 import 'mobile_passcode_capture.dart';
 import 'mobile_receive_capture.dart';
@@ -364,6 +365,62 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'desktop-home-setup',
     description: 'Desktop Home backup and education reminders',
     builder: buildDesktopHomeSetupUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-cached-balance',
+    description: 'Home and sidebar show cached balance before history loads',
+    builder: buildDesktopHomeCachedBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-activity-skeleton',
+    description: 'Home Activity skeleton with five rows',
+    builder: buildDesktopHomeActivitySkeletonUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-five-activities',
+    description: 'Same Home layout with five loaded Activity rows',
+    builder: buildDesktopHomeFiveActivitiesUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-activity-skeleton',
+    description: 'Mobile Home Activity skeleton with five rows',
+    builder: buildMobileHomeActivitySkeletonUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-five-activities',
+    description: 'Same mobile Home layout with five loaded Activity rows',
+    builder: buildMobileHomeFiveActivitiesUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-unknown-balance',
+    description: 'Home and sidebar do not turn an unknown balance into zero',
+    builder: buildDesktopHomeUnknownBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-initial-scan',
+    description: 'Home and sidebar keep the actual initial scan presentation',
+    builder: buildDesktopHomeInitialScanUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-activity-error',
+    description: 'Activity error message centered below the desktop balance',
+    builder: buildDesktopHomeActivityErrorUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-empty-activity',
+    description: 'Existing illustrated empty activity state on desktop Home',
+    builder: buildDesktopHomeEmptyActivityUseCase,
     platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
@@ -1808,6 +1865,48 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'pay-completed',
     description: 'Pay activity completed state',
     builder: buildPayCompletedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-skeleton',
+    description: 'Activity list skeleton, desktop',
+    builder: activitySkeletonCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-loaded',
+    description: 'Activity list loaded, desktop',
+    builder: activityLoadedCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-append',
+    description: 'Activity list append, desktop',
+    builder: activityAppendCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-skeleton',
+    description: 'Activity list skeleton, mobile',
+    builder: activitySkeletonCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-loaded',
+    description: 'Activity list loaded, mobile',
+    builder: activityLoadedCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-append',
+    description: 'Activity list append, mobile',
+    builder: activityAppendCapture,
+    desktop: false,
+    mobile: true,
   ),
   FigmaCompareScenario(
     id: 'activity-gift-cards',

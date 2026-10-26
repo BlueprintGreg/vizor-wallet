@@ -11,6 +11,7 @@ import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_tooltip.dart';
 import '../payment_link_action.dart';
 import '../payment_link_card_motion.dart';
+import '../payment_link_list_diff.dart';
 import '../payment_link_cards_layout.dart';
 import '../payment_link_copy.dart';
 import '../payment_link_claim_checking_content.dart';
@@ -553,7 +554,7 @@ class _AnimatedPaymentLinkCardsList extends StatefulWidget {
 class _AnimatedPaymentLinkCardsListState
     extends State<_AnimatedPaymentLinkCardsList> {
   static const _duration = Duration(milliseconds: 280);
-  final _listKey = GlobalKey<AnimatedListState>();
+  var _listKey = GlobalKey<SliverAnimatedListState>();
   late List<_MobileCardsListEntry> _entries;
 
   @override
@@ -614,6 +615,14 @@ class _AnimatedPaymentLinkCardsListState
   }
 
   void _synchronize(List<_MobileCardsListEntry> desired) {
+    // Status observations usually replace content without moving any row.
+    if (_entries.length == desired.length &&
+        Iterable<int>.generate(
+          desired.length,
+        ).every((index) => _entries[index].id == desired[index].id)) {
+      _entries = desired;
+      return;
+    }
     final list = _listKey.currentState;
     if (list == null) {
       _entries = desired;
@@ -628,7 +637,17 @@ class _AnimatedPaymentLinkCardsListState
     final newIndexes = {
       for (final (index, entry) in desired.indexed) entry.id: index,
     };
-    final retained = _longestCommonEntryIds(_entries, desired);
+    final retained = retainedPaymentLinkEntryIds(
+      _entries.map((entry) => entry.id).toList(),
+      desired.map((entry) => entry.id).toList(),
+    );
+    // Bound both animation work and List.insert/remove shifts for a bulk
+    // reclassification. Ordinary single-card movements retain their animation.
+    if (_entries.length + desired.length - 2 * retained.length > 64) {
+      _entries = desired;
+      _listKey = GlobalKey<SliverAnimatedListState>();
+      return;
+    }
 
     for (var index = _entries.length - 1; index >= 0; index--) {
       final entry = _entries[index];
@@ -664,43 +683,6 @@ class _AnimatedPaymentLinkCardsListState
     }
   }
 
-  Set<_MobileCardsListEntryId> _longestCommonEntryIds(
-    List<_MobileCardsListEntry> before,
-    List<_MobileCardsListEntry> after,
-  ) {
-    final lengths = List.generate(
-      before.length + 1,
-      (_) => List<int>.filled(after.length + 1, 0),
-    );
-    for (var beforeIndex = before.length - 1; beforeIndex >= 0; beforeIndex--) {
-      for (var afterIndex = after.length - 1; afterIndex >= 0; afterIndex--) {
-        lengths[beforeIndex][afterIndex] =
-            before[beforeIndex].id == after[afterIndex].id
-            ? lengths[beforeIndex + 1][afterIndex + 1] + 1
-            : math.max(
-                lengths[beforeIndex + 1][afterIndex],
-                lengths[beforeIndex][afterIndex + 1],
-              );
-      }
-    }
-    final retained = <_MobileCardsListEntryId>{};
-    var beforeIndex = 0;
-    var afterIndex = 0;
-    while (beforeIndex < before.length && afterIndex < after.length) {
-      if (before[beforeIndex].id == after[afterIndex].id) {
-        retained.add(before[beforeIndex].id);
-        beforeIndex++;
-        afterIndex++;
-      } else if (lengths[beforeIndex + 1][afterIndex] >=
-          lengths[beforeIndex][afterIndex + 1]) {
-        beforeIndex++;
-      } else {
-        afterIndex++;
-      }
-    }
-    return retained;
-  }
-
   Widget _entryTransition(
     _MobileCardsListEntry entry,
     Animation<double> animation,
@@ -729,12 +711,20 @@ class _AnimatedPaymentLinkCardsListState
   @override
   Widget build(BuildContext context) => KeyedSubtree(
     key: const ValueKey('payment_links_mobile_cards_list'),
-    child: AnimatedList(
-      key: _listKey,
-      padding: const EdgeInsets.only(bottom: _cardsFloatingActionsClearance),
-      initialItemCount: _entries.length,
-      itemBuilder: (context, index, animation) =>
-          _entryTransition(_entries[index], animation),
+    child: CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.only(
+            bottom: _cardsFloatingActionsClearance,
+          ),
+          sliver: SliverAnimatedList(
+            key: _listKey,
+            initialItemCount: _entries.length,
+            itemBuilder: (context, index, animation) =>
+                _entryTransition(_entries[index], animation),
+          ),
+        ),
+      ],
     ),
   );
 }

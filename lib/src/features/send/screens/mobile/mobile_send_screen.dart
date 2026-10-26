@@ -1487,7 +1487,7 @@ class _MobileSendScreenState extends ConsumerState<MobileSendScreen> {
 
   String get _amountCtaLabel {
     if (_isResolvingMax) return 'Calculating max amount';
-    if (_amountReady) return 'Finish & review';
+    if (_amountReady) return 'Review & finish';
 
     final error = _amountError;
     if (error != null && error.isNotEmpty) {

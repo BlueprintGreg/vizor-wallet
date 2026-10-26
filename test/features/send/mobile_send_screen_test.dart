@@ -1217,7 +1217,7 @@ void main() {
       find.byKey(const ValueKey('mobile_send_amount_input')),
     );
     expect(amountInput.controller?.text, '1.5');
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets('the pushed amount page hands its edit back to the recipient', (
@@ -1379,7 +1379,7 @@ void main() {
             find.bySemanticsLabel(RegExp('Enter amount in USD')),
             findsOneWidget,
           );
-          expect(find.text('Finish & review'), findsNothing);
+          expect(find.text('Review & finish'), findsNothing);
         } finally {
           semantics.dispose();
         }
@@ -1564,7 +1564,7 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Back'));
       await tester.pumpAndSettle();
       expect(find.text('Enter Amount'), findsOneWidget);
-      expect(find.text('Finish & review'), findsOneWidget);
+      expect(find.text('Review & finish'), findsOneWidget);
 
       // Cancelling the amount step discards the memo as well as the amount.
       await tester.tap(find.bySemanticsLabel('Back'));
@@ -3562,7 +3562,7 @@ void main() {
 
     await _enterAmount(tester, '1.5');
     expect(find.text('Not enough ZEC'), findsNothing);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   // Rust reports this as "Propose failed: Insufficient balance (have …, need …
@@ -3645,7 +3645,7 @@ void main() {
       find.byKey(const ValueKey('mobile_send_amount_input')),
     );
     expect(amountInput.controller?.text, '4.9999');
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets('Max estimate failure is shown through the disabled CTA', (
@@ -3719,7 +3719,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('1.5 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('mobile_send_review_button')));
     await tester.pumpAndSettle();
@@ -3750,7 +3750,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('1.5 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
 
     final container = ProviderScope.containerOf(
       tester.element(find.byType(MobileSendScreen)),
@@ -3764,7 +3764,7 @@ void main() {
     );
     expect(amountInput.controller?.text, '105');
     expect(find.text('0 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsNothing);
+    expect(find.text('Review & finish'), findsNothing);
     expect(find.text('Enter amount to continue'), findsOneWidget);
     expect(
       tester
@@ -3780,7 +3780,7 @@ void main() {
 
     expect(amountInput.controller?.text, '105');
     expect(find.text('0.5 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets('USD mode clears ZEC amounts that round to zero cents', (
@@ -3791,7 +3791,7 @@ void main() {
     await _toAmountStep(tester, _shieldedAddress);
 
     await _enterAmount(tester, '0.00000001');
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey('mobile_send_amount_mode_toggle')),
@@ -3803,7 +3803,7 @@ void main() {
     );
     expect(amountInput.controller?.text, isEmpty);
     expect(find.text('0 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsNothing);
+    expect(find.text('Review & finish'), findsNothing);
     expect(find.text('Enter amount to continue'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('mobile_send_review_button')));
@@ -3861,7 +3861,7 @@ void main() {
     expect(amountInput.decoration?.hintText, '0');
     expect(amountInput.controller?.text, '349.99');
     expect(find.text('4.9999 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets('Max in USD mode does not leave a hidden sub-cent amount', (
@@ -3891,7 +3891,7 @@ void main() {
     );
     expect(amountInput.controller?.text, isEmpty);
     expect(find.text('0 ZEC'), findsOneWidget);
-    expect(find.text('Finish & review'), findsNothing);
+    expect(find.text('Review & finish'), findsNothing);
     expect(find.text('Enter amount to continue'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('mobile_send_review_button')));
@@ -3936,7 +3936,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('mobile_send_max_button')));
     await tester.pumpAndSettle();
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
 
     feeCompleter.complete(BigInt.from(12345));
     await tester.pumpAndSettle();
@@ -3945,7 +3945,7 @@ void main() {
       find.byKey(const ValueKey('mobile_send_amount_input')),
     );
     expect(amountInput.controller?.text, '4.9999');
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets(
@@ -3961,7 +3961,7 @@ void main() {
       expect(_estimateSendMaxCalls, 1);
       expect(_lastEstimateSendMaxToAddress, _transparentAddress);
       expect(_lastEstimateSendMaxMemo, isNull);
-      expect(find.text('Finish & review'), findsOneWidget);
+      expect(find.text('Review & finish'), findsOneWidget);
     },
   );
 
@@ -4042,7 +4042,7 @@ void main() {
 
     // Once the re-validation settles, 1.5 ZEC is spendable again.
     await tester.pumpAndSettle();
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
   });
 
   testWidgets('prefilled amount waits for recipient validation before review', (

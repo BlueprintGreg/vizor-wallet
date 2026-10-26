@@ -156,8 +156,8 @@ void main() {
                   artwork: PaymentLinkCardArtwork.ruby,
                   statusLabel: 'Unused',
                   used: false,
-                  onCopyLink: () {},
-                  onShowQr: () {},
+                  onCopyLink: ready ? () {} : null,
+                  onShowQr: ready ? () {} : null,
                 ),
               ],
             ),
@@ -174,10 +174,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(primary);
       expect(primaryPressed, isTrue);
-      expect(
-        find.byType(PaymentLinkBatchMemberRow),
-        ready ? findsOneWidget : findsNothing,
-      );
+      expect(find.byType(PaymentLinkBatchMemberRow), findsOneWidget);
       expect(
         find.textContaining('hasn’t confirmed that the payment was sent'),
         ready ? findsNothing : findsOneWidget,
@@ -916,7 +913,7 @@ void main() {
       expect(
         tester
             .widget<AppButton>(
-              find.widgetWithText(AppButton, 'Confirm & review'),
+              find.widgetWithText(AppButton, 'Review & confirm'),
             )
             .onPressed,
         isNotNull,
@@ -939,7 +936,7 @@ void main() {
       expect(
         tester
             .widget<AppButton>(
-              find.widgetWithText(AppButton, 'Confirm & review'),
+              find.widgetWithText(AppButton, 'Review & confirm'),
             )
             .onPressed,
         isNull,
