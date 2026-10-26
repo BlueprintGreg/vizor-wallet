@@ -20,6 +20,15 @@ void main() {
     expect(mask('1.5'), '******');
   });
 
+  test('swap amount masks fail closed on unrecognized text with a number', () {
+    String mask(String text) =>
+        swapAmountTextForPrivacy(text, privacyModeEnabled: true);
+
+    expect(mask('≈ 1.2 USDC'), '******');
+    expect(mask(r'1.2 USDC (≈ $1.20)'), '******');
+    expect(mask('1.2 USDC refunded'), '******');
+  });
+
   test('swap amount masks leave fixed copy and placeholders visible', () {
     for (final text in [
       'Included in shown rate',
