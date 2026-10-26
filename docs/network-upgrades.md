@@ -93,6 +93,26 @@ span at activation:
 If the schedule cannot be read, Dart falls back to 75-second spacing, which
 only affects estimates.
 
+## Endpoints
+
+A node that misses an upgrade stops one block before activation.
+`rpc_endpoint_failover_provider.dart` compares the current endpoint's tip with
+its node's `estimated_height` every 60 seconds, from launch. It treats either
+of two signs as a stall:
+
+- a lag over 12 blocks;
+- without an estimate, a tip one block before the next upgrade.
+
+It then asks one fallback from another operator and switches if it is ahead.
+A fallback at the same height counts as a false alarm and pauses the check for
+30 minutes. Custom endpoints still never fail over.
+
+An estimate that is not ahead of the tip counts as none: zcashd reports its
+own height once it has synced, and zcashd cannot activate NU7.
+
+A lightwalletd that does not know the new branch rejects every block after
+activation. `sync_failure.dart` reports that as "Endpoint outdated".
+
 ## When the next upgrade is scheduled
 
 The expiry cap, the send refusal and their copy follow from Common's activation
