@@ -112,3 +112,12 @@ String _reverseHexBytes(String value) {
   }
   return reversed.toString();
 }
+
+/// A lookup key accepting the two byte orientations supported at this boundary.
+String paymentLinkTransactionKey(String txid) {
+  final normalized = normalizePaymentLinkTxid(txid);
+  final reversed = paymentLinkTxidInOtherByteOrder(normalized);
+  return reversed != null && reversed.compareTo(normalized) < 0
+      ? reversed
+      : normalized;
+}

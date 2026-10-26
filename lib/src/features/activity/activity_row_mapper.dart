@@ -84,9 +84,7 @@ ActivityRowData buildTransactionActivityRow({
       isPending && (isInbound || isSent || isMigration || isShielded);
 
   return ActivityRowData(
-    stableId:
-        giftCardStableId ??
-        'tx:${transaction.txidHex}:${_stableTransactionRole(kind)}',
+    stableId: giftCardStableId ?? activityStableTransactionId(transaction),
     title: giftCardKind != null
         ? giftCardActivityTitle(
             giftCardKind,
@@ -218,6 +216,9 @@ String transactionActivityPool(rust_sync.TransactionInfo transaction) {
 
 String normalizeActivityPool(String pool) =>
     pool == 'ironwood' ? 'shielded' : pool;
+
+String activityStableTransactionId(rust_sync.TransactionInfo transaction) =>
+    'tx:${transaction.txidHex}:${_stableTransactionRole(transaction.txKind)}';
 
 String _stableTransactionRole(String kind) {
   return switch (kind) {

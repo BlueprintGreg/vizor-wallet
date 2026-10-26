@@ -590,6 +590,15 @@ void main() {
     expect(await GiftClaimImportStore().load(), isNull);
   });
 
+  // Home can keep animating while live data or a claim is pending. These
+  // route tests wait for navigation, rather than for background work to settle.
+  Future<void> pumpGiftTransition(WidgetTester tester) async {
+    for (var frame = 0; frame < 8; frame++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    if (location(tester) != '/home') await tester.pumpAndSettle();
+  }
+
   Future<void> submitPersonaOrRetry(WidgetTester tester) async {
     if (keyed('mobile_passcode_retry_setup').evaluate().isNotEmpty) {
       await tester.tap(keyed('mobile_passcode_retry_setup'));
@@ -598,7 +607,7 @@ void main() {
         'mobile_customise_account_continue',
       ).hitTestable().evaluate().isNotEmpty) {
         await tester.tap(keyed('mobile_customise_account_continue'));
-        await tester.pumpAndSettle();
+        await pumpGiftTransition(tester);
       }
       if (find.text('Create Passcode').hitTestable().evaluate().isNotEmpty) {
         for (var round = 0; round < 2; round++) {
@@ -611,7 +620,7 @@ void main() {
         }
       }
     }
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
   }
 
   testWidgets('repeated create-wallet taps open only one passcode page', (
@@ -670,13 +679,13 @@ void main() {
     container
         .read(paymentLinkIntakeProvider.notifier)
         .receive(paymentLinkNavigationLink.toUri().toString());
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
 
     await tester.tap(keyed('gift_claim_create_a_wallet_to_claim'));
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
     expect(location(tester), '/gift/customise');
 
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
 
     expect(container.read(accountProvider).value?.hasAccounts, isFalse);
     expect(container.read(appSecurityProvider).isPasswordConfigured, isFalse);
@@ -693,7 +702,7 @@ void main() {
       'My gift wallet',
     );
     await submitPersonaOrRetry(tester);
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
     expect(location(tester), '/home');
     expect(operations.bindDestinations, ['new-account']);
     expect(operations.claimedDestinations, ['new-account']);
@@ -728,11 +737,11 @@ void main() {
     container
         .read(paymentLinkIntakeProvider.notifier)
         .receive(paymentLinkNavigationLink.toUri().toString());
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
     await tester.tap(keyed('gift_claim_create_a_wallet_to_claim'));
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
 
-    await tester.pumpAndSettle();
+    await pumpGiftTransition(tester);
     return container;
   }
 
@@ -991,17 +1000,17 @@ void main() {
       container
           .read(paymentLinkIntakeProvider.notifier)
           .receive(paymentLinkNavigationLink.toUri().toString());
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       await tester.tap(keyed('gift_claim_create_a_wallet_to_claim'));
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
 
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       await tester.enterText(
         keyed('mobile_customise_account_name_field'),
         'My gift wallet',
       );
       await submitPersonaOrRetry(tester);
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
 
       expect(location(tester), '/onboarding/biometrics');
       expect(find.byType(MobileBiometricsScreen), findsOneWidget);
@@ -1019,7 +1028,7 @@ void main() {
           enable ? 'mobile_biometrics_enable' : 'mobile_biometrics_not_now',
         ),
       );
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(location(tester), '/home');
       expect(biometric.enabledPasscode, enable ? '135790' : null);
     });
@@ -1301,9 +1310,9 @@ void main() {
       );
       final router = GoRouter.of(tester.element(find.byType(Navigator).last));
       router.push('/add-account');
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       await tester.tap(keyed('mobile_welcome_redeem_card'));
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(
         find.text('Create account by redeeming Vizor Gift Card'),
         findsOneWidget,
@@ -1317,7 +1326,7 @@ void main() {
         findsNothing,
       );
       await tester.tap(find.text('Paste card link'));
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(
         find.text('Create an account or use one you have to claim it.'),
         findsOneWidget,
@@ -1325,16 +1334,16 @@ void main() {
       expect(keyed('gift_claim_create_an_account_to_claim'), findsOneWidget);
       expect(keyed('gift_claim_claim_with_an_existing_wallet'), findsOneWidget);
       await tester.tap(keyed('gift_claim_claim_with_an_existing_wallet'));
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(location(tester), '/onboarding/method');
       router.pop();
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       await tester.tap(keyed('gift_claim_create_an_account_to_claim'));
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(find.byType(MobileCustomiseAccountScreen), findsOneWidget);
       expect(find.byType(MobilePasscodeScreen), findsNothing);
       await submitPersonaOrRetry(tester);
-      await tester.pumpAndSettle();
+      await pumpGiftTransition(tester);
       expect(location(tester), '/home');
       expect(
         (container.read(appSecurityProvider.notifier) as _Security)

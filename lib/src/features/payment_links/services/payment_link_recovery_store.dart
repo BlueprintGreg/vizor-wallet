@@ -8,6 +8,7 @@ import '../models/vizor_payment_link.dart';
 import '../models/gift_card_usage.dart';
 import 'payment_link_lifecycle_revision.dart';
 import 'payment_link_batch_limits.dart';
+import 'payment_link_store_codec.dart';
 
 const _storageVersion = 1;
 // Envelope flag: every draft in this payload was written by a build that marks
@@ -822,29 +823,11 @@ class PaymentLinkRecoveryStore {
     List<({PaymentLinkRecoveryRecord expected, GiftCardUsage usage})> updates,
   ) => _runExclusive(() async {
     if (updates.isEmpty) return const <String>{};
-    var records = await _loadUnlocked();
-    final saved = <String>{};
-    for (final (:expected, :usage) in updates) {
-      final current = _findByAddress(records, expected.link.address);
-      if (current == null ||
-          !current.link.hasSameCanonicalPayload(expected.link) ||
-          current.fundingTxids != expected.fundingTxids ||
-          jsonEncode(current.usage.toJson()) !=
-              jsonEncode(expected.usage.toJson())) {
-        continue;
-      }
-      // Apply the same validation to writes and reads.
-      GiftCardUsage.fromJson(usage.toJson());
-      records = _replaceByAddress(
-        records,
-        current.copyWith(
-          state: current.state,
-          updatedAt: current.updatedAt,
-          usage: usage,
-        ),
-      );
-      saved.add(expected.link.address);
-    }
+    final result = await runPaymentLinkStoreCodec(_applyRecoveryUsageUpdates, (
+      records: await _loadUnlocked(),
+      updates: updates,
+    ), inBackground: updates.length >= paymentLinkCodecBackgroundRecords);
+    final (:records, :saved) = result;
     if (saved.isNotEmpty) await _writeRecords(records);
     return saved;
   });
@@ -852,30 +835,18 @@ class PaymentLinkRecoveryStore {
   Future<List<PaymentLinkRecoveryRecord>> _loadUnlocked() async {
     final raw = await _storage.read();
     if (raw == null || raw.trim().isEmpty) return const [];
-
+    final decoded = await runPaymentLinkStoreCodec(
+      _decodeRecoveryPayload,
+      raw,
+      inBackground: raw.length >= paymentLinkCodecBackgroundBytes,
+    );
     try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) {
-        throw const PaymentLinkRecoveryStoreFormatException(
-          'Recovery payload must be a JSON object.',
-        );
-      }
-      if (decoded['version'] != _storageVersion) {
-        throw const PaymentLinkRecoveryStoreFormatException(
-          'Recovery payload version is not supported.',
-        );
-      }
-      final items = decoded['records'];
-      if (items is! List) {
-        throw const PaymentLinkRecoveryStoreFormatException(
-          'Recovery payload records are missing.',
-        );
-      }
-      final records = [for (final item in items) _recordFromJson(item)];
-      if (decoded[_submissionMarkersKey] == true) return records;
-      return [
-        for (final record in records) _withLegacySubmissionMarker(record),
-      ];
+      return await finishPaymentLinkStoreDecode<PaymentLinkRecoveryRecord>(
+        decoded.records,
+        (item) => decoded.marked
+            ? _recordFromJson(item)
+            : _withLegacySubmissionMarker(_recordFromJson(item)),
+      );
     } on PaymentLinkRecoveryStoreFormatException {
       rethrow;
     } catch (error) {
@@ -891,13 +862,12 @@ class PaymentLinkRecoveryStore {
       _onRecordsChanged?.call();
       return;
     }
-    await _storage.write(
-      jsonEncode({
-        'version': _storageVersion,
-        _submissionMarkersKey: true,
-        'records': [for (final record in records) _recordToJson(record)],
-      }),
+    final encoded = await runPaymentLinkStoreCodec(
+      _encodeRecoveryPayload,
+      records,
+      inBackground: records.length >= paymentLinkCodecBackgroundRecords,
     );
+    await _storage.write(encoded);
     _onRecordsChanged?.call();
   }
 
@@ -1329,4 +1299,93 @@ int countUnsharedFundedPaymentLinks(
             record.mayHoldUnsharedFunds,
       )
       .length;
+}
+
+({bool marked, List<Object?> records}) _decodeRecoveryPayload(String raw) {
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) {
+      throw const PaymentLinkRecoveryStoreFormatException(
+        'Recovery payload must be a JSON object.',
+      );
+    }
+    if (decoded['version'] != _storageVersion) {
+      throw const PaymentLinkRecoveryStoreFormatException(
+        'Recovery payload version is not supported.',
+      );
+    }
+    final items = decoded['records'];
+    if (items is! List) {
+      throw const PaymentLinkRecoveryStoreFormatException(
+        'Recovery payload records are missing.',
+      );
+    }
+    final marked = decoded[_submissionMarkersKey] == true;
+    return (
+      marked: marked,
+      records: <Object?>[
+        for (final item in items)
+          if (paymentLinkRecordNeedsNativeCodec(item, 'link'))
+            item
+          else if (marked)
+            _recordFromJson(item)
+          else
+            _withLegacySubmissionMarker(_recordFromJson(item)),
+      ],
+    );
+  } on PaymentLinkRecoveryStoreFormatException {
+    rethrow;
+  } catch (error) {
+    throw PaymentLinkRecoveryStoreFormatException(
+      'Recovery payload could not be decoded: $error',
+    );
+  }
+}
+
+String _encodeRecoveryPayload(List<PaymentLinkRecoveryRecord> records) =>
+    jsonEncode({
+      'version': _storageVersion,
+      _submissionMarkersKey: true,
+      'records': [for (final record in records) _recordToJson(record)],
+    });
+
+typedef _RecoveryUsageUpdate = ({
+  PaymentLinkRecoveryRecord expected,
+  GiftCardUsage usage,
+});
+
+({List<PaymentLinkRecoveryRecord> records, Set<String> saved})
+_applyRecoveryUsageUpdates(
+  ({
+    List<PaymentLinkRecoveryRecord> records,
+    List<_RecoveryUsageUpdate> updates,
+  })
+  input,
+) {
+  final records = input.records.toList();
+  final updates = input.updates;
+  final indexesByAddress = {
+    for (final (index, record) in records.indexed) record.link.address: index,
+  };
+  final saved = <String>{};
+  for (final (:expected, :usage) in updates) {
+    final index = indexesByAddress[expected.link.address];
+    if (index == null) continue;
+    final current = records[index];
+    if (!current.link.hasSameCanonicalPayload(expected.link) ||
+        current.fundingTxids != expected.fundingTxids ||
+        jsonEncode(current.usage.toJson()) !=
+            jsonEncode(expected.usage.toJson())) {
+      continue;
+    }
+    // Apply the same validation to writes and reads.
+    GiftCardUsage.fromJson(usage.toJson());
+    records[index] = current.copyWith(
+      state: current.state,
+      updatedAt: current.updatedAt,
+      usage: usage,
+    );
+    saved.add(expected.link.address);
+  }
+  return (records: records, saved: saved);
 }

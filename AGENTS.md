@@ -419,28 +419,25 @@ transparent addresses had activity.
 
 ### Mobile Screen Privacy
 
-Mobile app-switcher privacy belongs to the native app lifecycle: iOS
-`SceneDelegate` / `AppPrivacyOverlay` and Android `AppPrivacyProtection`.
-Ordinary screens use a strong blur; the five existing secret-screen scopes
-(create/import/review seed, settings seed, viewing key) use a solid cover,
-including their access gates and hidden-secret states. `AppPrivacyHost` and
-`SensitiveCaptureGuard` send background policy separately from capture policy.
-Solid takes priority through transitions and translucent overlays; lowering it
-to blur waits for an ordinary frame's raster timing. Native covers never
-weaken from solid while inactive. Unknown policy or unavailable blur stays solid.
+Mobile screen privacy applies only while secret material is visible. Keep
+`SensitivePrivacyOverlay` on seed creation/import/review, settings seed, and
+viewing-key screens. It covers exposed secrets when the app loses foreground
+interaction and uses `NativeSensitiveContentBridge` for selective native capture
+exclusion (Android `FLAG_SECURE`, iOS `SecureScreenshotShield`). Ordinary screens
+and access gates with no exposed secret must remain uncovered in the app
+switcher; do not add app-wide native lifecycle covers.
 
-Ordinary foreground screens allow screenshots and recording. Secret material
-still requests native capture exclusion only while visible. Android protects
-at focus loss as well as pause: live recents may retain a resumed Activity.
-For ordinary blur it hides the source content subtree and keeps FLAG_SECURE
-until the opaque preview frame commits; only that cover may enter recents.
-Preview images are memory-only and never generated for solid secret screens.
-Some Android launchers (verified on API 30) retain the initial secure/theme
-snapshot even after a blur cover commits. Keep that opaque OS fallback rather
-than permitting an original-content snapshot to force a blur preview.
-Do not add screen-local background blur controllers. Keep `RouteCoverageAware`
-on import screens so capture exclusion survives transitions and releases after
-full coverage. Desktop continues to use `SensitivePrivacyOverlay`.
+Keep `RouteCoverageAware` on import screens so capture exclusion survives route
+transitions and releases only after full coverage. Keep biometric prompt
+suppression around sensitive access gates, and exclude shielded content from
+screen-reader semantics without unmounting it. Desktop continues to use
+`SensitivePrivacyOverlay`.
+
+The mobile keep-awake lock owns system Back before payment cards and routes.
+Back may return from passcode entry to the lock status screen, but never acts
+on the covered app or interrupts authentication. Its idle deadline counts
+pointer, keyboard and deliberate platform semantics actions; automatic focus
+notifications do not extend it. Remove global input listeners on disposal.
 
 ### Dart Provider Structure
 
@@ -484,8 +481,9 @@ SyncProvider (sync_provider.dart)
   ├── Sync itself is account-agnostic (covers all accounts)
   ├── Polling pauses on app background (onHide), resumes on foreground (onResume)
   ├── refreshAfterSend() called after account switch for immediate update
-  └── refreshAfterUnlock() refreshes balances/history and restores the stored
-      sync job's fraction before foreground sync recovery
+  ├── refreshAfterUnlock() restores the stored sync status, then the selected account's
+  │   persisted display balance; it reads no wallet summary or history
+  └── refreshHomeInBackground() refreshes live balance/history after sync starts; each publishes independently
 
 SyncDisplayPercentageProvider (sync_display_progress_provider.dart)
   ├── Owns the 20 ms UI-only interpolation timer between Rust progress events
@@ -503,9 +501,10 @@ until sync callback arrives" flash.
 
 - `loadAppBootstrap()` reads:
   - secure storage (`zcash_accounts`, `zcash_active_account`, `zcash_wallet_network`)
-  - Rust wallet DB via `list_accounts`
-  - active-account DB data via `get_sync_status`, `get_balance`,
-    `get_transaction_history(limit: 10)`
+  - Rust wallet DB metadata via `list_accounts` (one projection; no viewing-key
+    decoding or address reads)
+  - the selected account's receive address and persisted display balance, only
+    when unlocked; no live balance summary or transaction history before `runApp`
 - If the wallet is locked, bootstrap does **not** hydrate active address or
   initial balance/history; it routes straight to `/unlock` and lets the unlock
   flow repopulate that state.
@@ -516,7 +515,7 @@ until sync callback arrives" flash.
 - `SyncProvider` starts from `bootstrap.initialSyncSnapshot` (balances, recent
   txs, scanned/tip heights) and then kicks off the normal live sync flow.
 - Bootstrap is best-effort: route/account bootstrap can still succeed even if
-  initial balance/history hydration fails, in which case sync state falls back
+  initial address/cache hydration fails, in which case sync state falls back
   to empty and the live sync repopulates it.
 
 ### Sync

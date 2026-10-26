@@ -15,7 +15,6 @@ import io.flutter.plugin.common.EventChannel
 
 // FlutterFragmentActivity: BiometricPrompt requires a FragmentActivity host.
 class MainActivity : FlutterFragmentActivity() {
-    private val appPrivacyProtection by lazy { AppPrivacyProtection(this, capturePreview = { flutterEngine?.renderer?.bitmap }) }
     private lateinit var deviceOwnerAuthHandler: DeviceOwnerAuthHandler
     private lateinit var sensitiveClipboardHandler: SensitiveClipboardHandler
     private var incomingUriChannel: MethodChannel? = null
@@ -68,7 +67,6 @@ class MainActivity : FlutterFragmentActivity() {
             pendingIncomingUris.addAll(it.filter(::isSecretFreeIncomingUri))
         }
         super.onCreate(savedInstanceState)
-        appPrivacyProtection.onCreate()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -116,17 +114,6 @@ class MainActivity : FlutterFragmentActivity() {
                 "sendSuccess" -> result.success(performSendSuccessHaptic())
                 "sendFailure" -> result.success(performSendFailureHaptic())
                 else -> result.notImplemented()
-            }
-        }
-
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
-            "com.zcash.wallet/app_privacy").setMethodCallHandler { call, result ->
-            if (call.method != "setSolidBackground") {
-                result.notImplemented()
-            } else {
-                val solid = (call.arguments as? Map<*, *>)?.get("solid") as? Boolean
-                if (solid == null) result.error("bad_args", "Expected solid argument.", null)
-                else { appPrivacyProtection.setSolidBackground(solid); result.success(null) }
             }
         }
 
@@ -202,7 +189,7 @@ class MainActivity : FlutterFragmentActivity() {
                     if (visible == null) {
                         result.error("bad_args", "Expected visible argument.", null)
                     } else {
-                        appPrivacyProtection.setSensitiveContentVisible(visible)
+                        setSensitiveContentVisible(visible)
                         result.success(null)
                     }
                 }
@@ -306,19 +293,12 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        appPrivacyProtection.onResume()
         if (::sensitiveClipboardHandler.isInitialized) {
             sensitiveClipboardHandler.retryExpiredClear()
         }
     }
 
-    override fun onPause() {
-        appPrivacyProtection.onPause()
-        super.onPause()
-    }
-
     override fun onWindowFocusChanged(hasFocus: Boolean) {
-        appPrivacyProtection.onWindowFocusChanged(hasFocus)
         super.onWindowFocusChanged(hasFocus)
         // Android 10+ only lets the focused app read the clipboard, and
         // `onResume` runs before focus is granted. Without this hook the
@@ -358,7 +338,6 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
-        appPrivacyProtection.close()
         if (::ledgerMobileHandler.isInitialized) ledgerMobileHandler.close()
         devicePowerHandler?.onCancel(null)
         devicePowerHandler = null
@@ -375,6 +354,17 @@ class MainActivity : FlutterFragmentActivity() {
             true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun setSensitiveContentVisible(visible: Boolean) {
+        if (visible) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE
+            )
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
     }
 

@@ -17,9 +17,14 @@ import '../src/core/widgets/app_button.dart';
 import '../src/features/ledger/ledger_capability.dart';
 import '../src/features/ledger/services/ledger_app_readiness_service.dart';
 import '../src/features/ledger/services/ledger_mobile_ble_service.dart';
+import '../src/features/ledger/services/ledger_bluetooth_access.dart';
 import '../src/features/ledger/widgets/ledger_device_app_prompt.dart';
 import '../src/features/ledger/widgets/ledger_signing_modal.dart';
 import '../src/features/ledger/widgets/mobile_ledger_signing_surface.dart';
+import '../src/features/ledger/widgets/mobile/mobile_ledger_connection_help.dart';
+import '../src/features/ledger/widgets/mobile/mobile_ledger_help_navigation.dart';
+import '../src/features/ledger/widgets/mobile/mobile_ledger_sheet_content.dart';
+import '../src/features/home/widgets/mobile/shield/mobile_shield_scene.dart';
 import '../src/features/onboarding/mobile/mobile_ledger_device_sheet.dart';
 import '../src/features/voting/screens/voting_status_screen.dart';
 import '../src/providers/account_provider.dart';
@@ -71,6 +76,14 @@ WidgetbookFolder buildLedgerWidgetbookFolder() {
               WidgetbookUseCase(
                 name: 'Empty',
                 builder: buildLedgerDevicePickerEmptyUseCase,
+              ),
+              WidgetbookUseCase(
+                name: 'Connection help',
+                builder: buildLedgerMobileConnectionHelpUseCase,
+              ),
+              WidgetbookUseCase(
+                name: 'Connection help in shielding',
+                builder: buildLedgerInlineConnectionHelpUseCase,
               ),
               WidgetbookUseCase(
                 name: 'Permission denied',
@@ -178,6 +191,7 @@ Widget buildLedgerSigningPreview({
   int roundNumber = 1,
   int roundCount = 1,
   bool mobile = false,
+  TargetPlatform? platform,
   LedgerSigningFailurePresentation? failureOverride,
   String mobileTitle = 'Ledger',
   LedgerMobileBleService? bluetoothService,
@@ -226,7 +240,7 @@ Widget buildLedgerSigningPreview({
         ),
       ),
       ledgerTargetPlatformProvider.overrideWithValue(
-        mobile ? TargetPlatform.iOS : TargetPlatform.macOS,
+        platform ?? (mobile ? TargetPlatform.iOS : TargetPlatform.macOS),
       ),
       ledgerAppReadinessStateProvider.overrideWith(
         () => _LedgerPreviewReadinessController(_readinessState(readiness)),
@@ -527,6 +541,45 @@ Widget buildLedgerDevicePickerEmptyUseCase(BuildContext context) {
   );
 }
 
+/// Production sheet + deterministic empty discovery, including all help steps.
+Widget buildLedgerMobileConnectionHelpUseCase(BuildContext context) =>
+    MobileLedgerSigningSurface(
+      canLeave: true,
+      onBack: () {},
+      child: MobileLedgerDeviceSheet(
+        service: _ScriptedLedgerMobileBleService(
+          updates: const [LedgerDiscoveryEnded()],
+        ),
+        onSelected: (_) {},
+        onClose: () {},
+      ),
+    );
+
+Widget buildLedgerInlineConnectionHelpUseCase(BuildContext context) {
+  final navigation = MobileLedgerHelpNavigation();
+  return MobileLedgerHelpScope(
+    navigation: navigation,
+    child: MobileShieldScene(
+      phase: MobileShieldPhase.hardware,
+      amount: '0.9912331',
+      title: 'Shield with Ledger',
+      animateHardware: true,
+      onClose: () {},
+      onPrevious: navigation.previous,
+      focusChild: LedgerInlinePresentation(
+        child: MobileLedgerConnectionHelp(
+          platform: TargetPlatform.iOS,
+          pairingInvalid: true,
+          initialModel: LedgerHelpModel.flex,
+          onBack: () {},
+          onClose: () {},
+          onSearch: () {},
+        ),
+      ),
+    ),
+  );
+}
+
 Widget buildLedgerDevicePickerPermissionDeniedUseCase(BuildContext context) {
   return _buildDevicePicker(
     _ScriptedLedgerMobileBleService(permissionGranted: false),
@@ -650,7 +703,8 @@ class _LedgerPreviewReadinessController extends LedgerAppReadinessController {
   LedgerAppReadinessState build() => initialState;
 }
 
-class _ScriptedLedgerMobileBleService implements LedgerMobileBleService {
+class _ScriptedLedgerMobileBleService
+    implements LedgerMobileBleService, LedgerBluetoothPairingSettings {
   _ScriptedLedgerMobileBleService({
     this.permissionGranted = true,
     this.updates = const [],
@@ -703,6 +757,9 @@ class _ScriptedLedgerMobileBleService implements LedgerMobileBleService {
 
   @override
   Future<void> stopDiscovery() async {}
+
+  @override
+  Future<bool> openBluetoothPairingSettings() async => true;
 }
 
 const _ledgerAccountUuid = 'widgetbook-ledger-account';

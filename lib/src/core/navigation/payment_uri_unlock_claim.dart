@@ -34,8 +34,7 @@ class PaymentUriUnlockClaim {
 /// Call it *after* the post-unlock work (`restoreAfterUnlock`,
 /// `refreshAfterUnlock`) and before the `go('/home')`: claiming earlier would
 /// clear the prefill with no way to recover it if either threw, and the
-/// returned decision reads state those calls settle (the migration send gate
-/// reads the account balance `refreshAfterUnlock` loads). The sync start that
+/// returned decision reads state those calls settle. The sync start that
 /// follows them settles nothing the claim reads, so it does not hold the
 /// claim or the navigation.
 ///

@@ -64,9 +64,12 @@ void registerLedgerWaitGuidanceTests() {
             model == 'Ledger Flex' ||
             model == 'Ledger Flex / Stax';
         expect(
-          find.text('It may take about ${fast ? 10 : 30} seconds.'),
+          find.text(
+            'Ledger is preparing to sign. It may seem unresponsive for about ${fast ? 10 : 30} seconds.',
+          ),
           findsOneWidget,
         );
+        expect(find.text('Keep Ledger connected.'), findsOneWidget);
         expect(find.text('Sign transaction'), findsOneWidget);
         expect(tester.takeException(), isNull);
 

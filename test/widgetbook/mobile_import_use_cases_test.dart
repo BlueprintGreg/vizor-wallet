@@ -4,7 +4,7 @@ library;
 import 'package:flutter/material.dart' show MaterialApp;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zcash_wallet/src/core/privacy/sensitive_capture_guard.dart';
+import 'package:zcash_wallet/src/core/privacy/sensitive_privacy_overlay.dart';
 import 'package:zcash_wallet/src/core/theme/app_theme.dart';
 import 'package:zcash_wallet/src/core/widgets/app_button.dart';
 import 'package:zcash_wallet/src/core/widgets/app_icon.dart';
@@ -247,7 +247,7 @@ void main() {
     expect(find.text('Enter your Secret Passphrase'), findsOneWidget);
     expect(find.text('01'), findsOneWidget);
     expect(find.text('Next word'), findsOneWidget);
-    expect(find.text('Finish & review'), findsNothing);
+    expect(find.text('Review & finish'), findsNothing);
   });
 
   testWidgets('mobile import manual typing use case renders suggestions', (
@@ -293,7 +293,7 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('Enter your Secret Passphrase'), findsOneWidget);
     expect(find.text('Accept 12, 15, 18, 21 or 24 words'), findsOneWidget);
-    expect(find.text('Finish & review'), findsOneWidget);
+    expect(find.text('Review & finish'), findsOneWidget);
     expect(find.text('Next word'), findsOneWidget);
     expect(find.text('12'), findsOneWidget);
     expect(find.text('Age'), findsOneWidget);
@@ -306,12 +306,7 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Review Import'), findsOneWidget);
-    expect(
-      tester
-          .widget<SensitiveCaptureGuard>(find.byType(SensitiveCaptureGuard))
-          .sensitiveContentVisible,
-      isTrue,
-    );
+    expect(find.byKey(SensitivePrivacyOverlay.shieldKey), findsNothing);
     expect(find.text('Confirm & continue'), findsOneWidget);
     expect(find.text('Clear secret passphrase'), findsOneWidget);
     final clearButton = tester.widget<AppButton>(

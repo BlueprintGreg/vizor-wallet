@@ -73,10 +73,20 @@ class _SyncKeepAwakePrivacyLockHostState
     final visible = mode != SyncKeepAwakePrivacyLockMode.hidden;
     _syncIdleTimer(active: active, interaction: interaction, visible: visible);
 
+    // The lock covers the app without replacing its route, so the app stays
+    // mounted underneath. While the lock shows, screen readers, keyboard
+    // focus and pointers must not reach it: a screen reader would otherwise
+    // keep its focus on the covered screen and read or activate it.
     return Stack(
       fit: StackFit.expand,
       children: [
-        widget.child,
+        ExcludeSemantics(
+          excluding: visible,
+          child: ExcludeFocus(
+            excluding: visible,
+            child: IgnorePointer(ignoring: visible, child: widget.child),
+          ),
+        ),
         if (visible)
           Positioned.fill(child: SyncKeepAwakePrivacyLockScreen(mode: mode)),
       ],
@@ -208,6 +218,26 @@ class _SyncKeepAwakePrivacyLockScreenState
   var _submittingPasscode = false;
   var _unlockAttemptInFlight = false;
   String? _passcodeError;
+  late final VoidCallback _detachBackHandler;
+
+  @override
+  void initState() {
+    super.initState();
+    _detachBackHandler = ref
+        .read(syncKeepAwakePrivacyLockBackProvider)
+        .attach(_handleSystemBack);
+  }
+
+  void _handleSystemBack() {
+    if (_submittingPasscode || _unlockAttemptInFlight || !_showPasscode) return;
+    _returnToStatusScreen();
+  }
+
+  @override
+  void dispose() {
+    _detachBackHandler();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(SyncKeepAwakePrivacyLockScreen oldWidget) {

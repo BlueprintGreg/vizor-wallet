@@ -471,6 +471,13 @@ class _FakePaymentLinkOperations implements PaymentLinkOperations {
   }) async {}
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() =>
+      loadCreatedLinkRecoveries();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() async => const [];
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() async =>
       const [];
 

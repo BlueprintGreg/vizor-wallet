@@ -429,7 +429,7 @@ class PaymentLinkMessageDesktopView extends StatelessWidget {
     this.subtitle = 'Enter amount & select the design.',
     this.skipLabel = 'Skip message',
     this.emptyContinueLabel = 'Continue',
-    this.continueLabel = 'Confirm & review',
+    this.continueLabel = 'Review & confirm',
     super.key,
   });
 
@@ -1117,6 +1117,7 @@ class PaymentLinkBatchListRow extends StatelessWidget {
     required this.statusText,
     required this.onOpen,
     this.backThumbnail,
+    this.showLoader = false,
     super.key,
   });
 
@@ -1131,6 +1132,7 @@ class PaymentLinkBatchListRow extends StatelessWidget {
   final String dateText;
   final String statusText;
   final VoidCallback onOpen;
+  final bool showLoader;
 
   @override
   Widget build(BuildContext context) {
@@ -1147,12 +1149,23 @@ class PaymentLinkBatchListRow extends StatelessWidget {
       ),
     );
     final date = Text(dateText, style: secondaryStyle);
-    final status = Text(
-      statusText,
-      textAlign: largeText ? TextAlign.start : TextAlign.end,
-      style: secondaryStyle.copyWith(
-        fontFeatures: const [FontFeature.tabularFigures()],
-      ),
+    final status = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(
+          child: Text(
+            statusText,
+            textAlign: largeText ? TextAlign.start : TextAlign.end,
+            style: secondaryStyle.copyWith(
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+        if (showLoader) ...[
+          const SizedBox(width: AppSpacing.xxs),
+          AppIcon(AppIcons.loader, size: 16, color: colors.icon.regular),
+        ],
+      ],
     );
     return PaymentLinkAction(
       semanticLabel: [
@@ -1160,6 +1173,7 @@ class PaymentLinkBatchListRow extends StatelessWidget {
         '$amountText each',
         'created $dateText',
         if (statusText.isNotEmpty) statusText,
+        if (showLoader) 'Checking',
       ].join(', '),
       onPressed: onOpen,
       builder: (context, hovered, focused) => Stack(

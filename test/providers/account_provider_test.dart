@@ -384,6 +384,7 @@ void main() {
       // Companions go before the database, so the wallet is intact and its
       // stored name still finds it.
       expect(database.existsSync(), isTrue);
+      expect(_rustApi.evictionFilePresent, [true]);
       expect(await AppSecureStore.instance.readPlain(kWalletDbNameKey), dbName);
 
       // Once they can be deleted, a retry removes the wallet, its companions
@@ -391,6 +392,7 @@ void main() {
       Process.runSync('chmod', ['700', companions.path]);
       await container.read(accountProvider.notifier).resetWallet();
       expect(database.existsSync(), isFalse);
+      expect(_rustApi.evictionFilePresent, [true, true, false]);
       expect(companions.existsSync(), isFalse);
       expect(orphan.existsSync(), isFalse);
     },
@@ -1685,6 +1687,7 @@ class _SwitchTestSecurityNotifier extends AppSecurityNotifier {
 }
 
 class _AccountMutationRustApiFake implements RustLibApi {
+  final evictionFilePresent = <bool>[];
   final deletedAccountUuids = <String>[];
   final requestedAccounts = <String>[];
   final enhancePirEnabledValues = <bool>[];
@@ -1692,11 +1695,19 @@ class _AccountMutationRustApiFake implements RustLibApi {
   Completer<String>? lookupGate;
 
   void reset() {
+    evictionFilePresent.clear();
     deletedAccountUuids.clear();
     requestedAccounts.clear();
     enhancePirEnabledValues.clear();
     lookupStarted = Completer<void>();
     lookupGate = null;
+  }
+
+  @override
+  Future<void> crateApiWalletEvictWalletSummaryCache({
+    required String dbPath,
+  }) async {
+    evictionFilePresent.add(File(dbPath).existsSync());
   }
 
   @override

@@ -16,6 +16,7 @@ import '../../ledger/ledger_onboarding_policy.dart';
 import '../../ledger/services/ledger_account_service.dart';
 import '../../ledger/services/ledger_app_readiness_service.dart';
 import '../../ledger/services/ledger_bluetooth_access.dart';
+import '../../ledger/services/ledger_bluetooth_connection.dart';
 import '../../ledger/services/ledger_device_request.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
@@ -50,6 +51,7 @@ class _MobileLedgerConnectScreenState
   bool _invalidAccountIndex = false;
   bool _sessionOpen = false;
   bool _connectingAccount = false;
+  bool _reconnectingAccount = false;
   bool _closing = false;
   bool _cancelFailed = false;
   bool _returnToPickerAfterCancel = false;
@@ -132,16 +134,31 @@ class _MobileLedgerConnectScreenState
     final generation = ++_generation;
     setState(() {
       _connectingAccount = true;
+      _reconnectingAccount = reconnect;
       _error = null;
       _requestError = null;
     });
     try {
       final check = ref.read(ledgerDeviceRequestsProvider).capture();
-      if (reconnect) {
-        await ref.read(ledgerMobileBleServiceProvider).connect(device);
+      void checkCurrent() {
         check();
+        if (!_isCurrent(generation)) {
+          throw const LedgerMobileException(
+            LedgerMobileFailure.cancelled,
+            'Ledger operation was cancelled.',
+          );
+        }
       }
-      if (!_isCurrent(generation)) return;
+
+      if (reconnect) {
+        await reconnectLedgerBluetoothDevice(
+          service: ref.read(ledgerMobileBleServiceProvider),
+          device: device,
+          checkCurrent: checkCurrent,
+        );
+        setState(() => _reconnectingAccount = false);
+      }
+      checkCurrent();
       final account = await ref.read(ledgerBluetoothAccountConnectorProvider)(
         _accountIndex,
         device,
@@ -169,7 +186,10 @@ class _MobileLedgerConnectScreenState
       });
     } finally {
       if (mounted && generation == _generation) {
-        setState(() => _connectingAccount = false);
+        setState(() {
+          _connectingAccount = false;
+          _reconnectingAccount = false;
+        });
       }
     }
   }
@@ -199,6 +219,7 @@ class _MobileLedgerConnectScreenState
       setState(() {
         _sessionOpen = returnToPicker;
         _connectingAccount = false;
+        _reconnectingAccount = false;
         _closing = false;
         _cancelFailed = false;
         _error = null;
@@ -239,9 +260,10 @@ class _MobileLedgerConnectScreenState
         purpose: 'add your account',
       );
     }
-    final current =
-        failure == LedgerRequestFailure.declined ||
-            readiness.phase == LedgerAppReadinessPhase.ready
+    final current = _reconnectingAccount
+        ? 0
+        : failure == LedgerRequestFailure.declined ||
+              readiness.phase == LedgerAppReadinessPhase.ready
         ? 2
         : 1;
     final opening = readiness.phase == LedgerAppReadinessPhase.confirmOpening;
@@ -266,7 +288,7 @@ class _MobileLedgerConnectScreenState
                     )
                   : pairingRecovery
                   ? _chooseAnotherDevice
-                  : () => unawaited(_readAccount()),
+                  : () => unawaited(_readAccount(reconnect: true)),
             ),
       children: [
         MobileLedgerIdentity(
@@ -276,7 +298,7 @@ class _MobileLedgerConnectScreenState
         LedgerProcedure(
           currentStep: current,
           steps: [
-            const LedgerStep('Connect Ledger'),
+            LedgerStep('Connect Ledger', busy: current == 0 && pending),
             LedgerStep(
               'Open $appName',
               message: current == 1

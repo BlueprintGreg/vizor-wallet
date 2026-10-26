@@ -12,11 +12,14 @@ import '../../ledger/ledger_device_label.dart';
 import '../../ledger/services/ledger_account_service.dart';
 import '../../ledger/services/ledger_app_readiness_service.dart';
 import '../../ledger/services/ledger_bluetooth_access.dart';
+import '../../ledger/services/ledger_bluetooth_connection.dart';
+import '../../ledger/services/ledger_device_request.dart';
 import '../../../providers/account_models.dart';
 import '../../ledger/services/ledger_failure_guidance.dart';
 import '../../ledger/services/ledger_mobile_ble_service.dart';
 import '../../ledger/services/ledger_signing_service.dart';
 import '../../ledger/widgets/ledger_bluetooth_session.dart';
+import '../../ledger/widgets/ledger_bluetooth_restricted_help.dart';
 import '../../ledger/widgets/ledger_modal_content.dart';
 import '../../ledger/widgets/ledger_procedure.dart';
 
@@ -70,6 +73,7 @@ class _LedgerDesktopConnectModalState
       _closing = false,
       _stoppingSearch = false,
       _cleanupFailed = false,
+      _retryable = true,
       _reselectAfterCleanup = false,
       _requestStarted = false;
   int _generation = 0;
@@ -125,6 +129,7 @@ class _LedgerDesktopConnectModalState
       _devices = const [];
       _device = null;
       _error = null;
+      _retryable = true;
       _accessRecovery = false;
       _declinedStep = null;
       _resumingStep = null;
@@ -215,12 +220,24 @@ class _LedgerDesktopConnectModalState
   Future<void> _readAccount(int generation) async {
     try {
       if (_bluetooth) {
+        final check = ref.read(ledgerDeviceRequestsProvider).capture();
+        void checkCurrent() {
+          check();
+          if (!_current(generation)) {
+            throw const LedgerMobileException(
+              LedgerMobileFailure.cancelled,
+              'Ledger operation was cancelled.',
+            );
+          }
+        }
+
         await _stopDiscovery();
-        if (!_current(generation)) return;
-        await requireLedgerBluetoothAccess(widget.service);
-        if (!_current(generation)) return;
-        await widget.service.connect(_device!);
-        if (!_current(generation)) return;
+        checkCurrent();
+        await reconnectLedgerBluetoothDevice(
+          service: widget.service,
+          device: _device!,
+          checkCurrent: checkCurrent,
+        );
       }
       setState(() => _phase = _Phase.reading);
       final account = _bluetooth
@@ -240,6 +257,9 @@ class _LedgerDesktopConnectModalState
     );
     setState(() {
       _phase = _Phase.failed;
+      _retryable =
+          guidance?.retryable ??
+          LedgerRequestFailure.fromError(error).retryable;
       _declinedStep =
           LedgerRequestFailure.fromError(error) == LedgerRequestFailure.declined
           ? error is LedgerAppReadinessException
@@ -254,7 +274,14 @@ class _LedgerDesktopConnectModalState
           : guidance?.message ??
                 (error is LedgerAppReadinessException
                     ? error.message
-                    : 'Vizor could not read this Ledger account. Try again.');
+                    : _bluetooth
+                    ? 'Vizor could not read this Ledger account. Try again.'
+                    : ledgerUsbErrorMessage(
+                            error,
+                            appInstruction:
+                                'Open the Zcash app, then try again.',
+                          ) ??
+                          'Vizor could not read this Ledger account. Reconnect Ledger with a USB cable, unlock it with your PIN, and open the Zcash app. Then try again.');
     });
   }
 
@@ -288,6 +315,7 @@ class _LedgerDesktopConnectModalState
       setState(() {
         _closing = false;
         _cleanupFailed = true;
+        _accessRecovery = false;
         _phase = _Phase.failed;
         _error = 'Could not finish cleanup. Try again.';
       });
@@ -350,12 +378,29 @@ class _LedgerDesktopConnectModalState
       return LedgerBluetoothSession(
         service: widget.service,
         onRetry: _search,
+        onClose: () => unawaited(_finish()),
         retryLabel: 'Find Ledger',
         builder: (context, model) => LedgerModalContent(
           title: model.title,
           onBack: () => unawaited(_finish()),
-          footer: _footer(label: model.label, action: model.onAction),
-          child: model.busy ? _pending(model.message) : _message(model.message),
+          footer: model.restricted
+              ? Center(
+                  child: AppButton(
+                    size: AppButtonSize.mediumLarge,
+                    minWidth: kAppModalButtonMinWidth,
+                    onPressed: model.onAction,
+                    child: const Text('Close'),
+                  ),
+                )
+              : _footer(label: model.label, action: model.onAction),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              model.busy ? _pending(model.message) : _message(model.message),
+              LedgerBluetoothRestrictedHelp(model: model),
+            ],
+          ),
         ),
       );
     }
@@ -399,9 +444,13 @@ class _LedgerDesktopConnectModalState
                     ),
                   ),
                 ),
-              if (_discovering ||
-                  _phase == _Phase.preparing ||
-                  _phase == _Phase.scanning)
+              if (_phase == _Phase.preparing) ...[
+                _pending('Checking Bluetooth access…'),
+                const SizedBox(height: AppSpacing.s),
+                _message(
+                  'macOS may ask for Bluetooth access. If prompted, allow access for Vizor.',
+                ),
+              ] else if (_discovering || _phase == _Phase.scanning)
                 _pending('Searching for nearby Ledgers…'),
             ],
           ],
@@ -410,13 +459,14 @@ class _LedgerDesktopConnectModalState
     }
     final procedure = !failed || (_declined && !_cleanupFailed);
     final opening = readiness.phase == LedgerAppReadinessPhase.confirmOpening;
-    final current =
-        _declinedStep ??
-        (opening
-            ? 1
-            : readiness.phase == LedgerAppReadinessPhase.ready
-            ? 2
-            : _resumingStep ?? 1);
+    final current = _bluetooth && _phase == _Phase.connecting
+        ? 0
+        : _declinedStep ??
+              (opening
+                  ? 1
+                  : readiness.phase == LedgerAppReadinessPhase.ready
+                  ? 2
+                  : _resumingStep ?? 1);
     return LedgerModalContent(
       title: procedure ? 'Connect Ledger' : 'Could not connect Ledger',
       identity:
@@ -425,9 +475,11 @@ class _LedgerDesktopConnectModalState
       backLabel: 'Choose another Ledger',
       footer: failed
           ? _footer(
-              label: 'Try again',
+              label: !_cleanupFailed && !_retryable ? 'Back' : 'Try again',
               action: _cleanupFailed
                   ? () => unawaited(_finish(reselect: _reselectAfterCleanup))
+                  : !_retryable
+                  ? () => unawaited(_finish())
                   : _choosing
                   ? _search
                   : () => _read(),
@@ -438,7 +490,13 @@ class _LedgerDesktopConnectModalState
               topPadding: 0,
               currentStep: current,
               steps: [
-                const LedgerStep('Connect Ledger'),
+                LedgerStep(
+                  'Connect Ledger',
+                  message: current == 0
+                      ? 'Keep your Ledger nearby and unlocked, with Bluetooth turned on.'
+                      : null,
+                  busy: current == 0 && !failed,
+                ),
                 LedgerStep(
                   'Open Zcash',
                   message: current == 1

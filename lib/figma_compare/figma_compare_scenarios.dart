@@ -1,3 +1,4 @@
+import 'activity_pagination_capture.dart';
 import 'mobile_shield_capture.dart';
 import 'mobile_passcode_capture.dart';
 import 'mobile_receive_capture.dart';
@@ -56,6 +57,7 @@ import 'mobile_method_selection_capture.dart';
 import 'mobile_hardware_selection_capture.dart';
 import 'mobile_onboarding_intro_capture.dart';
 import 'ledger_recovery_capture.dart';
+import 'ledger_onboarding_guidance_capture.dart';
 import 'swap_asset_icons_capture.dart';
 
 typedef FigmaCompareScenarioBuilder = Widget Function(BuildContext context);
@@ -98,6 +100,68 @@ class FigmaCompareScenario {
 /// storage, network, wallet, and Rust state. Widgetbook fixtures are preferred
 /// because they are already used to review the same UI states.
 const figmaCompareScenarios = <FigmaCompareScenario>[
+  FigmaCompareScenario(
+    id: 'mobile-shield-ledger-connection-help',
+    description: 'Ledger pairing recovery inside the mobile shielding scene',
+    builder: buildLedgerInlineConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-mobile-connection-help-ios',
+    description: 'Mobile Ledger discovery and manual pairing recovery on iOS',
+    builder: buildLedgerMobileConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.iOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-mobile-connection-help-android',
+    description:
+        'Mobile Ledger discovery and manual pairing recovery on Android',
+    builder: buildLedgerMobileConnectionHelpUseCase,
+    desktop: false,
+    mobile: true,
+    allowPointer: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-access-preparing',
+    description: 'Ledger onboarding: Bluetooth access check before discovery',
+    builder: buildLedgerOnboardingAccessPreparation,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-access-restricted',
+    description: 'Ledger onboarding: restricted access with close and settings',
+    builder: buildLedgerOnboardingAccessRestricted,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-onboarding-usb-error',
+    description: 'Ledger onboarding: USB account export recovery',
+    builder: buildLedgerOnboardingUsbError,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-recovery-restricted-android',
+    description: 'Ledger recovery: Android nearby devices restricted',
+    builder: buildLedgerPermissionRestrictedCapture,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
+  FigmaCompareScenario(
+    id: 'ledger-recovery-restricted-location',
+    description: 'Ledger recovery: legacy Android location restricted',
+    builder: buildLedgerLocationRestrictedCapture,
+    desktop: false,
+    mobile: true,
+    platform: TargetPlatform.android,
+  ),
   FigmaCompareScenario(
     id: 'mobile-passcode-change',
     description: 'Responsive mobile passcode change',
@@ -301,6 +365,62 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'desktop-home-setup',
     description: 'Desktop Home backup and education reminders',
     builder: buildDesktopHomeSetupUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-cached-balance',
+    description: 'Home and sidebar show cached balance before history loads',
+    builder: buildDesktopHomeCachedBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-activity-skeleton',
+    description: 'Home Activity skeleton with five rows',
+    builder: buildDesktopHomeActivitySkeletonUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-five-activities',
+    description: 'Same Home layout with five loaded Activity rows',
+    builder: buildDesktopHomeFiveActivitiesUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-activity-skeleton',
+    description: 'Mobile Home Activity skeleton with five rows',
+    builder: buildMobileHomeActivitySkeletonUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-home-five-activities',
+    description: 'Same mobile Home layout with five loaded Activity rows',
+    builder: buildMobileHomeFiveActivitiesUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-unknown-balance',
+    description: 'Home and sidebar do not turn an unknown balance into zero',
+    builder: buildDesktopHomeUnknownBalanceUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-initial-scan',
+    description: 'Home and sidebar keep the actual initial scan presentation',
+    builder: buildDesktopHomeInitialScanUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-activity-error',
+    description: 'Activity error message centered below the desktop balance',
+    builder: buildDesktopHomeActivityErrorUseCase,
+    platform: TargetPlatform.macOS,
+  ),
+  FigmaCompareScenario(
+    id: 'desktop-home-empty-activity',
+    description: 'Existing illustrated empty activity state on desktop Home',
+    builder: buildDesktopHomeEmptyActivityUseCase,
     platform: TargetPlatform.macOS,
   ),
   FigmaCompareScenario(
@@ -1745,6 +1865,48 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'pay-completed',
     description: 'Pay activity completed state',
     builder: buildPayCompletedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-skeleton',
+    description: 'Activity list skeleton, desktop',
+    builder: activitySkeletonCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-loaded',
+    description: 'Activity list loaded, desktop',
+    builder: activityLoadedCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'activity-list-append',
+    description: 'Activity list append, desktop',
+    builder: activityAppendCapture,
+    desktop: true,
+    mobile: false,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-skeleton',
+    description: 'Activity list skeleton, mobile',
+    builder: activitySkeletonCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-loaded',
+    description: 'Activity list loaded, mobile',
+    builder: activityLoadedCapture,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-activity-list-append',
+    description: 'Activity list append, mobile',
+    builder: activityAppendCapture,
+    desktop: false,
+    mobile: true,
   ),
   FigmaCompareScenario(
     id: 'activity-gift-cards',

@@ -419,6 +419,7 @@ void main() {
             activityEtaClaimHistoryLoaderProvider.overrideWithValue((
               account,
               network,
+              txids,
             ) {
               expect(account, 'a');
               reads++;

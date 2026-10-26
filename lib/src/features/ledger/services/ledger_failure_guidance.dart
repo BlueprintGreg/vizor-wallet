@@ -335,5 +335,5 @@ String? ledgerUsbErrorMessage(
   if (text.contains('initialize ledger hid')) {
     return 'Vizor could not start USB access for your Ledger. Reconnect the device, then try again.';
   }
-  return 'The USB connection to your Ledger was interrupted. Reconnect and unlock your Ledger, then try again.';
+  return 'The USB connection to your Ledger was interrupted. Reconnect and unlock your Ledger. $appInstruction';
 }

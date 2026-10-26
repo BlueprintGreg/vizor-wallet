@@ -173,12 +173,33 @@ class _Sync extends SyncNotifier {
   /// The stored status: the last sync completed, unless a test says not.
   rust_sync.SyncProgress storedStatus = _completedStatus;
 
+  /// Progress events in flight. Their balance reads go to the fake API
+  /// ([_Api.progressBalance]), so a test can tell them from refreshes.
+  int _progressEvents = 0;
+
+  @override
+  Future<void> handleSyncProgressForTesting(SyncProgressEvent event) async {
+    _progressEvents++;
+    try {
+      await super.handleSyncProgressForTesting(event);
+    } finally {
+      _progressEvents--;
+    }
+  }
+
   @override
   Future<rust_sync.WalletBalance> readWalletBalance({
     required String dbPath,
     required String network,
     required String accountUuid,
   }) async {
+    if (_progressEvents > 0) {
+      return super.readWalletBalance(
+        dbPath: dbPath,
+        network: network,
+        accountUuid: accountUuid,
+      );
+    }
     balanceReads++;
     final result = balance;
     if (!balanceReadStarted.isCompleted) balanceReadStarted.complete();
@@ -326,14 +347,6 @@ void main() {
       expect(sync.statusReads, 1);
       sync.balanceRead.complete();
       await unlock;
-      // Home opens on the account's balance, not the import screen.
-      expect(
-        container
-            .read(syncProvider)
-            .requireValue
-            .hasDataForAccount(_accountUuid),
-        isTrue,
-      );
     },
   );
 
@@ -341,21 +354,13 @@ void main() {
     final (container, sync) = await unlockedAfterLock();
 
     final unlock = sync.refreshAfterUnlock();
-    // The balance read is slow; the resume's tip check starts the sync.
-    await sync.balanceReadStarted.future;
+    // The resume's tip check runs while the unlock still reads, and shares
+    // its stored-status read.
     await sync.checkTipForTesting();
 
     expectCatchUp(container.read(syncProvider).requireValue);
     expect(sync.statusReads, 1);
-    sync.balanceRead.complete();
     await unlock;
-    // Home opens on the account's balance, not the import screen, and the
-    // read the sync start overlapped is used rather than made again.
-    expect(
-      container.read(syncProvider).requireValue.hasDataForAccount(_accountUuid),
-      isTrue,
-    );
-    expect(sync.balanceReads, 1);
   });
 
   group('a balance read in flight', () {
@@ -371,11 +376,10 @@ void main() {
       phase: 'scan',
     );
 
-    test('is dropped once a later read has committed, and an unlock it held '
-        'does not read again', () async {
+    test('is dropped once a later read has committed', () async {
       final (container, sync) = await mounted();
 
-      final unlock = sync.refreshAfterUnlock();
+      final refresh = sync.refreshAfterSend();
       await sync.balanceReadStarted.future;
       // The sync's own read of new notes lands first, with newer data.
       await sync.handleSyncProgressForTesting(newNotes());
@@ -385,7 +389,7 @@ void main() {
       );
 
       sync.balanceRead.complete();
-      await unlock;
+      await refresh;
 
       expect(
         container.read(syncProvider).requireValue.orchardBalance,

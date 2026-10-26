@@ -466,11 +466,9 @@ class _AppMainSidebarState extends ConsumerState<AppMainSidebar> {
     final networkPrivacy = ref.watch(networkPrivacyProvider);
     final accountSync = sync.scopedToAccount(activeAccountUuid);
     final isImporting =
-        activeAccountUuid != null &&
-        !accountSync.hasAccountScopedData &&
-        accountSync.failure == null;
+        activeAccountUuid != null && accountSync.isImportingAccount;
     final balanceText =
-        '${_formatSidebarBalance(accountSync.displayTotalBalance)} '
+        '${accountSync.hasDisplayBalance ? _formatSidebarBalance(accountSync.displayTotalBalance) : '—'} '
         '$kZcashDefaultCurrencyTicker';
     final privacyModeEnabled = ref.watch(privacyModeProvider);
     final balanceLabel = hideAmountIfPrivacyMode(
@@ -547,6 +545,7 @@ class _AppMainSidebarState extends ConsumerState<AppMainSidebar> {
                       _SidebarMigrationHomeSection(
                         status: migrationStatus!,
                         isKeystone: activeAccount?.isKeystone ?? false,
+                        balanceIsAvailable: accountSync.hasDisplayBalance,
                         orchardBalance:
                             accountSync.displayOrchardHoldingsBalance,
                         ironwoodBalance:
@@ -660,6 +659,7 @@ class _SidebarMigrationHomeSection extends StatelessWidget {
   const _SidebarMigrationHomeSection({
     required this.status,
     required this.isKeystone,
+    required this.balanceIsAvailable,
     required this.orchardBalance,
     required this.ironwoodBalance,
     required this.privacyModeEnabled,
@@ -670,6 +670,7 @@ class _SidebarMigrationHomeSection extends StatelessWidget {
 
   final rust_sync.MigrationStatus status;
   final bool isKeystone;
+  final bool balanceIsAvailable;
   final BigInt orchardBalance;
   final BigInt ironwoodBalance;
   final bool privacyModeEnabled;
@@ -686,11 +687,11 @@ class _SidebarMigrationHomeSection extends StatelessWidget {
         status.phase == kIronwoodMigrationReadyToMigratePhase &&
         (signingPartIndices == null || signingPartIndices.isNotEmpty);
     final orchardLabel = hideAmountIfPrivacyMode(
-      '${_formatSidebarBalance(orchardBalance)} ZEC',
+      '${balanceIsAvailable ? _formatSidebarBalance(orchardBalance) : '—'} ZEC',
       privacyModeEnabled: privacyModeEnabled,
     );
     final ironwoodLabel = hideAmountIfPrivacyMode(
-      '${_formatSidebarBalance(ironwoodBalance)} ZEC',
+      '${balanceIsAvailable ? _formatSidebarBalance(ironwoodBalance) : '—'} ZEC',
       privacyModeEnabled: privacyModeEnabled,
     );
 

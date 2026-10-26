@@ -14,12 +14,14 @@ class MobileLedgerSheetContent extends StatefulWidget {
     required this.onClose,
     required this.children,
     this.action,
+    this.onBack,
     super.key,
   });
   final String title;
   final VoidCallback? onClose;
   final List<Widget> children;
   final Widget? action;
+  final VoidCallback? onBack;
 
   @override
   State<MobileLedgerSheetContent> createState() =>
@@ -48,6 +50,7 @@ class _MobileLedgerSheetContentState extends State<MobileLedgerSheetContent> {
         titleMaxLines: 3,
         showClose: widget.onClose != null,
         onClose: widget.onClose ?? () {},
+        leading: widget.onBack == null ? null : _backButton(),
         constrainBody: true,
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -88,6 +91,8 @@ class _MobileLedgerSheetContentState extends State<MobileLedgerSheetContent> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (widget.onBack != null)
+          Align(alignment: Alignment.centerLeft, child: _backButton()),
         if (motion == null)
           heading
         else
@@ -190,6 +195,18 @@ class _MobileLedgerSheetContentState extends State<MobileLedgerSheetContent> {
       ),
     );
   }
+
+  Widget _backButton() => AppButton(
+    variant: AppButtonVariant.ghost,
+    onPressed: widget.onBack,
+    child: Semantics(
+      label: 'Back',
+      button: true,
+      child: const ExcludeSemantics(
+        child: AppIcon(AppIcons.chevronBackward, size: 20),
+      ),
+    ),
+  );
 }
 
 class MobileLedgerMessage extends StatelessWidget {

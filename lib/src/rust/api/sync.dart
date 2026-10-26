@@ -1020,6 +1020,32 @@ Future<void> setTransactionStatus({
   status: status,
 );
 
+Future<ActivityHistoryIndex> getActivityHistoryIndex({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+}) => RustLib.instance.api.crateApiSyncGetActivityHistoryIndex(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+);
+
+/// At most 20 requested transactions, plus their classification dependencies.
+/// Each native detail/output read also contains at most 20 transactions.
+Future<ActivityHistoryRows> getActivityHistoryRows({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+  required String snapshotId,
+  required List<String> txidHexes,
+}) => RustLib.instance.api.crateApiSyncGetActivityHistoryRows(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+  snapshotId: snapshotId,
+  txidHexes: txidHexes,
+);
+
 Future<List<TransactionInfo>> getTransactionHistory({
   required String dbPath,
   required String network,
@@ -1047,6 +1073,20 @@ Future<List<TransactionInfo>> getTransactionRows({
   network: network,
   accountUuid: accountUuid,
   txidHex: txidHex,
+);
+
+/// Activity rows for a set of txids in TransactionInfo storage byte order.
+/// Shares one DB snapshot and returns no rows for unrelated transactions.
+Future<List<TransactionInfo>> getTransactionRowsForTxids({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+  required List<String> txidHexes,
+}) => RustLib.instance.api.crateApiSyncGetTransactionRowsForTxids(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+  txidHexes: txidHexes,
 );
 
 Future<int> getPreviousTransactionCountForAddress({
@@ -1379,6 +1419,86 @@ Future<EnhanceRecoveryStatus> getEnhanceRecoveryStatus({
   dbPath: dbPath,
   network: network,
 );
+
+/// Lightweight account-wide ordering metadata. Reused while this DB snapshot
+/// remains current; it does not establish payment amounts or completeness.
+class ActivityHistoryIndex {
+  final String snapshotId;
+  final List<ActivityHistorySummary> summaries;
+
+  const ActivityHistoryIndex({
+    required this.snapshotId,
+    required this.summaries,
+  });
+
+  @override
+  int get hashCode => snapshotId.hashCode ^ summaries.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityHistoryIndex &&
+          runtimeType == other.runtimeType &&
+          snapshotId == other.snapshotId &&
+          summaries == other.summaries;
+}
+
+class ActivityHistoryRows {
+  final bool stale;
+  final List<TransactionInfo> transactions;
+
+  const ActivityHistoryRows({required this.stale, required this.transactions});
+
+  @override
+  int get hashCode => stale.hashCode ^ transactions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityHistoryRows &&
+          runtimeType == other.runtimeType &&
+          stale == other.stale &&
+          transactions == other.transactions;
+}
+
+class ActivityHistorySummary {
+  final String txidHex;
+  final BigInt minedHeight;
+  final bool expiredUnmined;
+  final BigInt blockTime;
+  final BigInt createdTime;
+  final int sourceOrder;
+
+  const ActivityHistorySummary({
+    required this.txidHex,
+    required this.minedHeight,
+    required this.expiredUnmined,
+    required this.blockTime,
+    required this.createdTime,
+    required this.sourceOrder,
+  });
+
+  @override
+  int get hashCode =>
+      txidHex.hashCode ^
+      minedHeight.hashCode ^
+      expiredUnmined.hashCode ^
+      blockTime.hashCode ^
+      createdTime.hashCode ^
+      sourceOrder.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityHistorySummary &&
+          runtimeType == other.runtimeType &&
+          txidHex == other.txidHex &&
+          minedHeight == other.minedHeight &&
+          expiredUnmined == other.expiredUnmined &&
+          blockTime == other.blockTime &&
+          createdTime == other.createdTime &&
+          sourceOrder == other.sourceOrder;
+}
 
 /// Flat address-validation result for the Dart side.
 ///

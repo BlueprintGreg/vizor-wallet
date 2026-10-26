@@ -33,7 +33,6 @@ import 'src/core/navigation/windows_update_prompt_policy.dart';
 import 'src/core/navigation/payload_page_key.dart';
 import 'src/core/motion/onboarding_motion.dart';
 import 'src/core/security/background_auto_lock_host.dart';
-import 'src/core/privacy/app_privacy_host.dart';
 import 'src/core/theme/app_theme.dart';
 import 'src/core/theme/app_theme_host.dart';
 import 'src/core/theme/legacy_material_theme.dart';
@@ -146,6 +145,7 @@ import 'src/features/voting/screens/voting_status_screen.dart';
 import 'src/features/voting/screens/voting_submission_confirmation_screen.dart';
 import 'src/providers/theme_mode_provider.dart';
 import 'src/providers/app_security_provider.dart';
+import 'src/providers/sync_keep_awake_provider.dart';
 import 'src/providers/enhance_pir_provider.dart';
 import 'src/core/storage/enhance_pir_preference_store.dart';
 import 'src/providers/linux_update_provider.dart';
@@ -574,6 +574,9 @@ final _routerProvider = Provider<_AppRouter>((ref) {
     // to reach the card here or it would navigate — and on the second press
     // exit the app — underneath a modal the user is still looking at.
     handleBackAboveRouter: () {
+      if (ref.read(syncKeepAwakePrivacyLockBackProvider).handleBack()) {
+        return true;
+      }
       if (ref.read(paymentRequestFlowProvider) == null) return false;
       ref.read(paymentRequestFlowProvider.notifier).dismiss();
       return true;
@@ -1936,7 +1939,7 @@ class ZcashWalletApp extends ConsumerWidget {
         return kAppFormFactor == AppFormFactor.mobile
             ? MobileWindowPolicyScope(
                 policy: MobileWindowPolicy.resolve(MediaQuery.of(context)),
-                child: AppPrivacyHost(child: app),
+                child: app,
               )
             : app;
       },

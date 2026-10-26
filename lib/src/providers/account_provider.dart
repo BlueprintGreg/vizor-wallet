@@ -36,6 +36,7 @@ import '../rust/api/sync.dart' as rust_sync;
 import '../rust/api/voting.dart' as rust_voting;
 import '../rust/api/wallet.dart' as rust_wallet;
 import 'account_models.dart';
+import 'wallet_balance_cache_provider.dart';
 import 'app_security_provider.dart';
 import 'enhance_pir_provider.dart';
 import 'public_details_loads_provider.dart';
@@ -571,12 +572,25 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       }
       final uuid = matchingAccount?.uuid;
       if (matchingAccount != null) {
-        _publishCreatedGiftAccount(
-          matchingAccount.uuid,
-          matchingAccount.unifiedAddress,
-          accountName,
-          giftProfilePictureId,
-        );
+        try {
+          final address = await rust_wallet.getUnifiedAddress(
+            dbPath: dbPath,
+            network: network,
+            accountUuid: matchingAccount.uuid,
+          );
+          _publishCreatedGiftAccount(
+            matchingAccount.uuid,
+            address,
+            accountName,
+            giftProfilePictureId,
+          );
+        } catch (addressError) {
+          // The account already exists. Preserve its journal and the original
+          // created-account outcome so the caller cannot retry as a new import.
+          log(
+            'createGiftClaimAccount: recovery address unavailable: $addressError',
+          );
+        }
       }
       log('createGiftClaimAccount: account state unknown after: $error');
       Error.throwWithStackTrace(
@@ -1651,7 +1665,10 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
     final shareTracking = ref.read(votingShareTrackingRegistryProvider);
     final ledgerLifecycle = ref.read(ledgerOperationLifecycleProvider);
     final publicLoads = ref.read(publicDetailsLoadsProvider);
+    final balanceCache = ref.read(walletBalanceCacheProvider);
+    final cacheDrained = balanceCache.suspendAndDrain();
     try {
+      await cacheDrained;
       await ledgerLifecycle.quiesceAndDrain();
       await publicLoads.quiesceAndDrain();
       _storage.invalidatePendingSecretOperations();
@@ -1671,6 +1688,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       ], confirmedUnsharedGiftCardCount);
       await _removeAccountWithShareTrackingStopped(uuid);
     } finally {
+      balanceCache.resume();
       ledgerLifecycle.resume();
       publicLoads.resume();
       claimLifecycle.resume();
@@ -1878,10 +1896,13 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
     final shareTracking = ref.read(votingShareTrackingRegistryProvider);
     final ledgerLifecycle = ref.read(ledgerOperationLifecycleProvider);
     final publicLoads = ref.read(publicDetailsLoadsProvider);
+    final balanceCache = ref.read(walletBalanceCacheProvider);
     var restoreAfterFailure = false;
     var resumeClaimLifecycle = false;
     var resetCompleted = false;
+    final cacheDrained = balanceCache.suspendAndDrain();
     try {
+      await cacheDrained;
       await ledgerLifecycle.quiesceAndDrain();
       await publicLoads.quiesceAndDrain();
       _storage.invalidatePendingSecretOperations();
@@ -1900,6 +1921,7 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
       resumeClaimLifecycle = restoreAfterFailure;
       rethrow;
     } finally {
+      balanceCache.resume();
       ledgerLifecycle.resume();
       publicLoads.resume();
       if (resumeClaimLifecycle) claimLifecycle.resume();
@@ -2910,6 +2932,12 @@ class AccountNotifier extends AsyncNotifier<AccountState> {
   /// Directories go first: when one cannot be deleted the database is still
   /// intact, so the caller keeps its stored name and a retry finds it.
   Future<void> _deleteExistingDb(String dbPath) async {
+    // Activity caches keep a read connection between pages. Close it before
+    // deleting the database, including on platforms that disallow unlinking
+    // an open SQLite file.
+    if (File(dbPath).existsSync()) {
+      await rust_wallet.evictWalletSummaryCache(dbPath: dbPath);
+    }
     for (final path in walletDbCleanupDirectories(dbPath)) {
       final directory = Directory(path);
       if (directory.existsSync()) {
