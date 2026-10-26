@@ -774,7 +774,7 @@ fn post_batch_tip_check_due(
         || since_last_check >= HISTORY_TIP_CHECK_EVERY
 }
 
-/// How often a sync session logs where its time went.
+/// How often a sync session logs where its time went, in debug builds only.
 const SYNC_TIMING_SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The batches of a session since its last timing summary, so a log shows
@@ -5144,11 +5144,13 @@ async fn run_sync_impl(
             scan_started.elapsed(),
         );
         if timing_since.elapsed() >= SYNC_TIMING_SUMMARY_EVERY {
-            log::info!(
-                "[{}] sync: {}",
-                elapsed(),
-                timing.line(timing_since.elapsed(), scan_power::current())
-            );
+            if cfg!(debug_assertions) {
+                log::info!(
+                    "[{}] sync: {}",
+                    elapsed(),
+                    timing.line(timing_since.elapsed(), scan_power::current())
+                );
+            }
             timing = SyncTimingSummary::default();
             timing_since = std::time::Instant::now();
         }
