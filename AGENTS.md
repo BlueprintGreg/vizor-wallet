@@ -697,7 +697,20 @@ a sync's large block download (below).
   and fails closed with it. If the direct connection cannot open, the
   session downloads over Tor. A direct batch that fails, queued or not, is
   downloaded again over Tor, and three failures in a row
-  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the rest of the session to Tor.
+  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the session to Tor
+  (`DirectBlockRoute`). After `DIRECT_BLOCK_RETRY_AFTER` (a minute, doubling
+  with each demotion up to `DIRECT_BLOCK_RETRY_MAX`, ten minutes) the session
+  opens a fresh direct connection at the next batch that would download
+  directly, and restarts its queue; a connection that could not open within
+  `DIRECT_BLOCK_OPEN_TIMEOUT`, or a reopened one whose first batch fails,
+  waits again. A connection that stops answering fails every request on it
+  while a fresh one to the same server works, as on a phone restore where
+  three queued batches timed out together. HTTP/2 pings close such a
+  connection about 35 seconds after its last frame, so requests sent after
+  that reconnect instead of waiting out their deadlines. Only a
+  multi-threaded runtime pings: background migration preparation scans on its
+  single runtime thread, and a long scan would make a healthy connection's
+  reply late.
   Only main-scan batches of ChainTip, Historic and
   LatestPoolActivation ranges, and Verify batches above the blocks scanned
   before the session (the frontier continuity check, often merged into a full
@@ -708,10 +721,12 @@ a sync's large block download (below).
   still tie them to a direct session. Their absence still shows: a FoundNote
   range scanned out of order ends a direct batch, or leaves a gap, at a public
   subtree boundary, so the server can infer which shards hold the wallet's
-  notes. The connection opens once per session, before the Checking stage,
-  only if Tor was already on when the session opened its route, and its open
-  stops with the session. A direct session shows the server the device's IP
-  address with the birthday bucket or resume height, so the connected
+  notes. The connection opens with the session, before the Checking stage,
+  only if Tor was already on when the session opened its route, and its
+  opens stop with the session. A direct session shows the server the
+  device's IP address with the birthday bucket or resume height, and a
+  reconnect after the device changes networks shows the new one, which the
+  continuing block range ties to the first, so the connected
   settings copy says Vizor uses Tor to protect the IP address rather than
   promising that every request goes through Tor; it does not list this
   exception.

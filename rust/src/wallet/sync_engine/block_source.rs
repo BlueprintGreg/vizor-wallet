@@ -100,6 +100,11 @@ impl MemoryBlockSource {
         Some(self.blocks.first()?.height..=self.blocks.last()?.height)
     }
 
+    /// The encoded size of the blocks, as downloaded.
+    pub(super) fn encoded_bytes(&self) -> usize {
+        self.blocks.iter().map(|block| block.bytes.len()).sum()
+    }
+
     pub(super) fn transaction_hashes(&self) -> impl Iterator<Item = &[u8]> {
         self.txids.iter().map(Vec::as_slice)
     }

@@ -599,22 +599,29 @@ pub(crate) async fn resubmit_released_transactions(
     if ready.is_empty() || !allow_resubmit || should_exit() {
         return Ok(ReleasedResubmission::Skipped);
     }
-    let fresh_tip = get_latest_block(client).await;
-    let Some(fresh_tip) = tip_rpc_result_unless_exiting(fresh_tip, should_exit()) else {
+    let fresh_tip = unless_exiting(&should_exit, get_latest_block(client)).await;
+    let Some(fresh_tip) =
+        fresh_tip.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         return Ok(ReleasedResubmission::Skipped);
     };
     let fresh_tip = fresh_tip?;
     let tip = block_height_from_u64(fresh_tip.height, "released resubmission tip")?;
     let stored_hash = stored_hash_for_refreshed_tip(db, tip_height, fresh_tip.height)?;
-    let relation = classify_refreshed_tip_with_fallback(
-        client,
-        tip_height,
-        stored_hash,
-        fresh_tip.height,
-        &fresh_tip.hash,
+    let relation = unless_exiting(
+        &should_exit,
+        classify_refreshed_tip_with_fallback(
+            client,
+            tip_height,
+            stored_hash,
+            fresh_tip.height,
+            &fresh_tip.hash,
+        ),
     )
     .await;
-    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
+    let Some(relation) =
+        relation.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         return Ok(ReleasedResubmission::Skipped);
     };
     match relation? {
@@ -673,17 +680,153 @@ fn fetches_blocks_directly(
     tor_desired && private_queries && pending_download_bytes >= DIRECT_BLOCK_DOWNLOAD_MIN_BYTES
 }
 
-/// Direct batch failures in a row after which a session downloads the rest of
-/// its blocks over Tor. Each failed batch is downloaded again over Tor.
+/// Direct batch failures in a row after which a session downloads its blocks
+/// over Tor until it tries a fresh direct connection. Each failed batch is
+/// downloaded again over Tor.
 const DIRECT_BLOCK_FAILURES_BEFORE_TOR: u32 = 3;
 
-/// The run of direct batch failures after one more direct batch: a success
-/// ends the run.
-fn next_direct_failures(failures: u32, failed: bool) -> u32 {
-    if failed {
-        failures + 1
-    } else {
-        0
+/// How long a session downloads over Tor after its direct connection is
+/// demoted before it opens a fresh one. Each later demotion doubles the wait,
+/// up to [`DIRECT_BLOCK_RETRY_MAX`]. A connection that stops answering (three
+/// queued batches timed out together on a phone restore) fails every request
+/// on it, while a fresh connection to the same server works.
+const DIRECT_BLOCK_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+const DIRECT_BLOCK_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The direct block connection of a session that may download directly: in
+/// use, or demoted to Tor until a fresh connection may be tried.
+#[derive(Debug)]
+struct DirectBlockRoute {
+    /// Direct batch failures in a row.
+    failures: u32,
+    /// Demotions so far, which set the wait before the next fresh connection.
+    demotions: u32,
+    /// When a demoted route may open a fresh connection; `None` while in use.
+    retry_at: Option<std::time::Instant>,
+}
+
+impl DirectBlockRoute {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            demotions: 0,
+            retry_at: None,
+        }
+    }
+
+    fn in_use(&self) -> bool {
+        self.retry_at.is_none()
+    }
+
+    /// Records one direct batch. Returns the wait before a fresh connection
+    /// when this failure demotes the route.
+    fn record(&mut self, failed: bool, now: std::time::Instant) -> Option<std::time::Duration> {
+        if !failed {
+            self.failures = 0;
+            return None;
+        }
+        self.failures += 1;
+        (self.failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR).then(|| self.demote(now))
+    }
+
+    /// Moves the route to Tor and returns the wait before a fresh connection.
+    fn demote(&mut self, now: std::time::Instant) -> std::time::Duration {
+        self.demotions += 1;
+        self.failures = 0;
+        let wait = DIRECT_BLOCK_RETRY_AFTER
+            .saturating_mul(1 << (self.demotions - 1).min(4))
+            .min(DIRECT_BLOCK_RETRY_MAX);
+        self.retry_at = Some(now + wait);
+        wait
+    }
+
+    fn retry_due(&self, now: std::time::Instant) -> bool {
+        self.retry_at.is_some_and(|at| now >= at)
+    }
+
+    /// A fresh connection opened. Its first direct batch decides: a failure
+    /// moves the route back to Tor for a longer wait.
+    fn reopened(&mut self) {
+        self.retry_at = None;
+        self.failures = DIRECT_BLOCK_FAILURES_BEFORE_TOR - 1;
+    }
+}
+
+/// How long a batch that ends far below the chain tip goes without the tip
+/// check after each batch. That check is a round trip over the session's
+/// route, Tor when it is on, which the loop waits for after the scan: a
+/// restore runs thousands of history batches, and on an iPhone restore five
+/// of those checks timed out, three after the full 20 seconds. Batches within
+/// [`HISTORY_TIP_CHECK_DISTANCE`] of the tip still check after every batch,
+/// so tip promotion, resubmission and the completion check near the tip are
+/// unchanged. The schedule depends only on time and the batch's height, so
+/// the requests still carry no wallet state.
+const HISTORY_TIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+const HISTORY_TIP_CHECK_DISTANCE: u64 = 10_000;
+
+/// Whether the batch ending at `batch_end` checks the chain tip after it scans.
+fn post_batch_tip_check_due(
+    batch_end: u64,
+    tip: u64,
+    since_last_check: std::time::Duration,
+) -> bool {
+    batch_end.saturating_add(HISTORY_TIP_CHECK_DISTANCE) >= tip
+        || since_last_check >= HISTORY_TIP_CHECK_EVERY
+}
+
+/// How often a sync session logs where its time went, in debug builds only.
+const SYNC_TIMING_SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The batches of a session since its last timing summary, so a log shows
+/// whether a slow sync waits on downloads or on the scan: time waiting for a
+/// batch's blocks counts as download, time waiting for the tip check after a
+/// batch as tip checks, and time in the scan and the write as scan.
+#[derive(Debug, Default)]
+struct SyncTimingSummary {
+    batches: u32,
+    direct_batches: u32,
+    blocks: u64,
+    bytes: u64,
+    waited: std::time::Duration,
+    scanned: std::time::Duration,
+    tip_waited: std::time::Duration,
+}
+
+impl SyncTimingSummary {
+    fn record(
+        &mut self,
+        direct: bool,
+        blocks: u64,
+        bytes: u64,
+        waited: std::time::Duration,
+        scanned: std::time::Duration,
+    ) {
+        self.batches += 1;
+        self.direct_batches += u32::from(direct);
+        self.blocks += blocks;
+        self.bytes += bytes;
+        self.waited += waited;
+        self.scanned += scanned;
+    }
+
+    /// The summary of `period`, at the scan power in effect.
+    fn line(&self, period: std::time::Duration, power: scan_power::ScanPower) -> String {
+        let seconds = period.as_secs_f64().max(f64::EPSILON);
+        let megabytes = self.bytes as f64 / 1_000_000.0;
+        format!(
+            "last {:.0}s: {} batches ({} direct), {} blocks, {:.1} MB ({:.2} MB/s), \
+             waited {:.1}s for downloads and {:.1}s for tip checks, scanned {:.1}s at \
+             {power:?} power",
+            period.as_secs_f64(),
+            self.batches,
+            self.direct_batches,
+            self.blocks,
+            megabytes,
+            megabytes / seconds,
+            self.waited.as_secs_f64(),
+            self.tip_waited.as_secs_f64(),
+            self.scanned.as_secs_f64(),
+        )
     }
 }
 
@@ -2370,6 +2513,20 @@ pub(crate) async fn watch_for_exit(should_exit: &impl Fn() -> bool) {
     }
 }
 
+/// `request`'s output, or `None` once cancellation or a mode handoff wins. A
+/// request still waiting on a slow server would otherwise hold the session
+/// until its own deadline.
+async fn unless_exiting<T>(
+    should_exit: &impl Fn() -> bool,
+    request: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = watch_for_exit(should_exit) => None,
+        output = request => Some(output),
+    }
+}
+
 fn needs_completion_enhancement_pass(enhancement_after_scan: bool) -> bool {
     !enhancement_after_scan
 }
@@ -3614,8 +3771,14 @@ async fn run_sync_impl(
     // authoritative: `WalletDb::update_chain_tip` deliberately ignores a
     // height below the maximum scanned block, so assigning the server height
     // first could later report completion above a lagging endpoint.
-    let tip_result = get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-    let Some(tip_result) = tip_rpc_result_unless_exiting(tip_result, should_exit()) else {
+    let tip_result = unless_exiting(
+        &should_exit,
+        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+    )
+    .await;
+    let Some(tip_result) =
+        tip_result.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+    else {
         log::info!("[{}] sync: exiting after initial tip fetch", elapsed());
         return Ok(());
     };
@@ -3628,15 +3791,20 @@ async fn run_sync_impl(
         .map(|(_, db_tip)| db_tip);
     let initial_tip_relation = if let Some(db_tip) = db_tip_height {
         let stored_hash = stored_hash_for_refreshed_tip(&db, db_tip, tip.height)?;
-        let relation = classify_refreshed_tip_with_fallback(
-            &mut client,
-            db_tip,
-            stored_hash,
-            tip.height,
-            &tip.hash,
+        let relation = unless_exiting(
+            &should_exit,
+            classify_refreshed_tip_with_fallback(
+                &mut client,
+                db_tip,
+                stored_hash,
+                tip.height,
+                &tip.hash,
+            ),
         )
         .await;
-        let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
+        let Some(relation) =
+            relation.and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+        else {
             log::info!("[{}] sync: exiting after initial tip validation", elapsed());
             return Ok(());
         };
@@ -3860,7 +4028,16 @@ async fn run_sync_impl(
     }
 
     // 3. Download subtree roots (incremental)
-    download_subtree_roots(&mut client, &mut db, network, tip_height).await?;
+    let Some(subtree_roots) = unless_exiting(
+        &should_exit,
+        download_subtree_roots(&mut client, &mut db, network, tip_height),
+    )
+    .await
+    else {
+        log::info!("[{}] sync: exiting during subtree root download", elapsed());
+        return Ok(());
+    };
+    subtree_roots?;
 
     if migration_anchor_retention_required {
         with_wallet_db_write_lock(
@@ -3942,8 +4119,8 @@ async fn run_sync_impl(
             enhancement.policy().is_private(),
             pending_download_bytes,
         );
-    let mut direct_failures = 0;
-    let (mut block_client, mut direct_blocks) = if opens_direct {
+    let mut direct_route = opens_direct.then(DirectBlockRoute::new);
+    let mut block_client = if opens_direct {
         let opened = tokio::select! {
             biased;
             _ = watch_for_exit(&should_exit) => {
@@ -3959,20 +4136,25 @@ async fn run_sync_impl(
                     elapsed(),
                     (pending_download_bytes / 1_000_000.0).round(),
                 );
-                (CompactTxStreamerClient::new(transport), true)
+                CompactTxStreamerClient::new(transport)
             }
             // A network that blocks the server but not Tor keeps the
             // download on Tor rather than failing every attempt.
             Err(error) => {
+                let wait = direct_route
+                    .as_mut()
+                    .map(|route| route.demote(std::time::Instant::now()))
+                    .unwrap_or_default();
                 log::warn!(
-                    "[{}] sync: direct block download unavailable ({error}); downloading over Tor",
+                    "[{}] sync: direct block download unavailable ({error}); downloading over Tor, retrying in {}s",
                     elapsed(),
+                    wait.as_secs(),
                 );
-                (client.clone(), false)
+                client.clone()
             }
         }
     } else {
-        (client.clone(), false)
+        client.clone()
     };
     let (mut job, job_start) = JobProgress::start(
         stored_progress_job,
@@ -4007,6 +4189,9 @@ async fn run_sync_impl(
     let mut queued_tip_refreshed_for: Option<u32> = None;
     // Logged when a batch scans at a different power level than the last.
     let mut last_scan_power = None;
+    let mut timing = SyncTimingSummary::default();
+    let mut timing_since = std::time::Instant::now();
+    let mut last_post_batch_tip_check = std::time::Instant::now();
     log::info!(
         "[{}] sync: {} blocks to scan; progress job {} {:?} at {:.1}% ({:.0} of {:.0} work units left)",
         elapsed(),
@@ -4118,10 +4303,13 @@ async fn run_sync_impl(
         {
             force_tip_refresh = false;
             last_periodic_tip_refresh_attempt = std::time::Instant::now();
-            let fresh_tip_result =
-                get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-            let Some(fresh_tip_result) =
-                tip_rpc_result_unless_exiting(fresh_tip_result, should_exit())
+            let fresh_tip_result = unless_exiting(
+                &should_exit,
+                get_latest_block_recorded(&mut client, lightwalletd_url, network),
+            )
+            .await;
+            let Some(fresh_tip_result) = fresh_tip_result
+                .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
             else {
                 log::info!("[{}] sync: exiting after periodic tip fetch", elapsed());
                 return Ok(());
@@ -4133,15 +4321,19 @@ async fn run_sync_impl(
 
                     let stored_hash =
                         stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                    let relation = classify_refreshed_tip_with_fallback(
-                        &mut client,
-                        current_tip_height,
-                        stored_hash,
-                        fresh_tip.height,
-                        &fresh_tip.hash,
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
-                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!(
                             "[{}] sync: exiting after periodic tip validation",
@@ -4261,10 +4453,13 @@ async fn run_sync_impl(
                     completion_tip_validation_required,
                     last_completion_tip_validation.elapsed(),
                 ) {
-                    let fresh_tip_result =
-                        get_latest_block_recorded(&mut client, lightwalletd_url, network).await;
-                    let Some(fresh_tip_result) =
-                        tip_rpc_result_unless_exiting(fresh_tip_result, should_exit())
+                    let fresh_tip_result = unless_exiting(
+                        &should_exit,
+                        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+                    )
+                    .await;
+                    let Some(fresh_tip_result) = fresh_tip_result
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!("[{}] sync: exiting after final tip fetch", elapsed());
                         return Ok(());
@@ -4276,15 +4471,19 @@ async fn run_sync_impl(
 
                     let stored_hash =
                         stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                    let relation = classify_refreshed_tip_with_fallback(
-                        &mut client,
-                        current_tip_height,
-                        stored_hash,
-                        fresh_tip.height,
-                        &fresh_tip.hash,
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
-                    let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit())
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
                     else {
                         log::info!("[{}] sync: exiting after final tip validation", elapsed());
                         return Ok(());
@@ -4602,10 +4801,48 @@ async fn run_sync_impl(
             batch_size,
         );
 
+        // A demoted direct route opens a fresh connection once its wait is
+        // over and a batch that downloads directly comes up. The queue then
+        // holds batches fetched over Tor, so it starts again from this batch.
+        if let Some(route) = direct_route.as_mut().filter(|route| {
+            route.retry_due(std::time::Instant::now())
+                && batch_uses_direct_connection(
+                    checking_cycle,
+                    range.priority(),
+                    start,
+                    scanned_before_session,
+                )
+        }) {
+            let opened = tokio::select! {
+                biased;
+                _ = watch_for_exit(&should_exit) => {
+                    log::info!("[{}] sync: exiting while reopening the direct block connection", elapsed());
+                    return Ok(());
+                }
+                opened = open_block_download_lwd_transport(lightwalletd_url) => opened,
+            };
+            match opened {
+                Ok(transport) => {
+                    log::info!("[{}] sync: reopened the direct block connection", elapsed());
+                    block_client = CompactTxStreamerClient::new(transport);
+                    route.reopened();
+                    prefetch.clear();
+                }
+                Err(error) => {
+                    let wait = route.demote(std::time::Instant::now());
+                    log::warn!(
+                        "[{}] sync: direct block download still unavailable ({error}); retrying in {}s",
+                        elapsed(),
+                        wait.as_secs(),
+                    );
+                }
+            }
+        }
+
         // Download blocks and their preceding frontier together, or consume a
         // matching tuple that an earlier iteration prefetched.
         let queued = take_queued_batch(&mut prefetch, start, end);
-        let batch_is_direct = direct_blocks
+        let batch_is_direct = direct_route.as_ref().is_some_and(DirectBlockRoute::in_use)
             && batch_uses_direct_connection(
                 checking_cycle,
                 range.priority(),
@@ -4615,6 +4852,7 @@ async fn run_sync_impl(
         // A queued batch reaches the fresh download only when it failed.
         let queued_direct_failed = batch_is_direct && queued.is_some();
         let mut direct_failed = false;
+        let download_started = std::time::Instant::now();
         let batch = resolve_prefetched_or_download(queued, start, end, &should_exit, || {
             let (block_client, client, direct_failed) =
                 (&block_client, &client, &mut direct_failed);
@@ -4635,19 +4873,20 @@ async fn run_sync_impl(
             }
         })
         .await?;
-        if batch_is_direct {
-            // A network that lets the connection open but breaks its streams
-            // fails every batch; a passing blip should not move a restore to Tor.
-            direct_failures = next_direct_failures(direct_failures, direct_failed);
-            if direct_failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR {
-                log::warn!(
-                    "[{}] sync: {direct_failures} direct block downloads failed in a row; downloading the rest over Tor",
-                    elapsed(),
-                );
-                direct_blocks = false;
-                block_client = client.clone();
-                prefetch.clear();
-            }
+        // A network that lets the connection open but breaks its streams
+        // fails every batch; a passing blip should not move a restore to Tor.
+        if let Some(wait) = direct_route
+            .as_mut()
+            .filter(|_| batch_is_direct)
+            .and_then(|route| route.record(direct_failed, std::time::Instant::now()))
+        {
+            log::warn!(
+                "[{}] sync: direct block downloads failed {DIRECT_BLOCK_FAILURES_BEFORE_TOR} times in a row; downloading over Tor, retrying a fresh connection in {}s",
+                elapsed(),
+                wait.as_secs(),
+            );
+            block_client = client.clone();
+            prefetch.clear();
         }
         let Some((block_source, from_state)) = batch else {
             log::info!("[{}] sync: exiting after download", elapsed());
@@ -4662,6 +4901,8 @@ async fn run_sync_impl(
         // derived from it. Neither half is useful without the other.
         validate_scan_batch(&block_source, &from_state, start, end)?;
 
+        let batch_waited = download_started.elapsed();
+        let batch_bytes = block_source.encoded_bytes() as u64;
         let incoming_orchard_checkpoint_heights =
             migration_anchor_retention_required.then(|| block_source.orchard_checkpoint_heights());
 
@@ -4717,8 +4958,16 @@ async fn run_sync_impl(
                 );
             }
         }
-        let tip_prefetch =
-            (!should_exit()).then(|| TipPrefetch::spawn(client.clone(), lightwalletd_url, network));
+        let tip_check_due = post_batch_tip_check_due(
+            u64::from(u32::from(end)),
+            current_tip_height,
+            last_post_batch_tip_check.elapsed(),
+        );
+        if tip_check_due {
+            last_post_batch_tip_check = std::time::Instant::now();
+        }
+        let tip_prefetch = (tip_check_due && !should_exit())
+            .then(|| TipPrefetch::spawn(client.clone(), lightwalletd_url, network));
 
         // Scan from memory. There are three reorg-adjacent signals from
         // librustzcash that all need to land on `SyncError::Continuity`
@@ -4740,6 +4989,7 @@ async fn run_sync_impl(
         // becomes `SyncError::Db` (Fatal). Everything else (non-scan,
         // non-wallet — e.g. block-source errors, unrecognised scan
         // variants) becomes `SyncError::Other` (retry-with-backoff).
+        let scan_started = std::time::Instant::now();
         let scan_result = with_wallet_db_write_lock("sync_engine.retain_and_scan_blocks", || {
             // Persist before scanning advances scan_queue: cancellation or a crash
             // after the scan must not lose this account's recovery work.
@@ -4886,6 +5136,24 @@ async fn run_sync_impl(
         // `MAX_REWINDS_PER_RUN`. A verify range that keeps flapping won't
         // exhaust the budget the main scan needs to handle an unrelated
         // later reorg.
+        timing.record(
+            batch_is_direct,
+            u64::from(u32::from(end) - u32::from(start)),
+            batch_bytes,
+            batch_waited,
+            scan_started.elapsed(),
+        );
+        if timing_since.elapsed() >= SYNC_TIMING_SUMMARY_EVERY {
+            if cfg!(debug_assertions) {
+                log::info!(
+                    "[{}] sync: {}",
+                    elapsed(),
+                    timing.line(timing_since.elapsed(), scan_power::current())
+                );
+            }
+            timing = SyncTimingSummary::default();
+            timing_since = std::time::Instant::now();
+        }
         let scan_summary = match scan_result {
             Ok(s) => s,
             Err(sync_err) => match sync_err.recovery_strategy() {
@@ -5097,23 +5365,39 @@ async fn run_sync_impl(
         // Truncation can temporarily clear a transaction's mined height while
         // retaining note positions that prove compact scanning found it mined.
         // Exclude those transactions from recovery resubmission while scanning
-        // can still restore their mined heights.
-        let post_scan_ranges = db
-            .suggest_scan_ranges()
-            .map_err(|e| SyncError::db(format!("suggest_scan_ranges: {e}")))?;
-        let resubmit_exclusions = recovery_resubmit_exclusions(db_data_path, &post_scan_ranges)?;
+        // can still restore their mined heights. Only a batch that checks the
+        // tip resubmits, so the others skip the lookup.
+        let resubmit_exclusions = if tip_check_due {
+            let post_scan_ranges = db
+                .suggest_scan_ranges()
+                .map_err(|e| SyncError::db(format!("suggest_scan_ranges: {e}")))?;
+            recovery_resubmit_exclusions(db_data_path, &post_scan_ranges)?
+        } else {
+            HashSet::new()
+        };
 
         // Status and transparent history run before the routed payload snapshot,
         // so transactions discovered by history are enhanced in this checkpoint.
+        // Status lookups run only on a batch that checks the tip, so a status
+        // recovered here is completed by this batch's check.
         if enhancement
-            .run_checkpoint(&mut db, &mut client, Some(&block_source), &should_exit)
+            .run_batch_checkpoint(
+                &mut db,
+                &mut client,
+                &block_source,
+                tip_check_due,
+                &should_exit,
+            )
             .await?
         {
             log::info!("[{}] sync: exiting during enhancement", elapsed());
             return Ok(());
         }
-        let ready = enhancement.take_ready_resubmission();
         enhancement_after_scan = true;
+        // A history batch between tip checks skips its own; the schedule never
+        // depends on what the wallet holds.
+        let check_tip = tip_check_due;
+        let ready = enhancement.take_ready_resubmission();
 
         // Post-batch tip reconciliation and auto-resubmit. The resubmit calls
         // match zcash-android-wallet-sdk's lines 593/701 call sites (end of a
@@ -5153,155 +5437,172 @@ async fn run_sync_impl(
             );
             return Ok(());
         }
-        // Started before the scan; usually complete by now. A tip proved
-        // unchanged counts as validated when it was requested, so the final
-        // tip check before completion stays as strict as a fetch made here.
-        let tip_requested_at = tip_prefetch
-            .as_ref()
-            .map_or_else(std::time::Instant::now, |prefetch| prefetch.requested_at);
-        let fresh_tip_result = match tip_prefetch {
-            Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
-            None => Some(get_latest_block_recorded(&mut client, lightwalletd_url, network).await),
-        };
-        let Some(fresh_tip_result) = fresh_tip_result
-            .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
-        else {
-            log::info!("[{}] sync: exiting after post-batch tip fetch", elapsed());
-            return Ok(());
-        };
-        match fresh_tip_result {
-            Ok(fresh_tip) => {
-                let fresh_tip_height =
-                    block_height_from_u64(fresh_tip.height, "post-batch lightwalletd chain tip")?;
-
-                let stored_hash =
-                    stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
-                let relation = classify_refreshed_tip_with_fallback(
-                    &mut client,
-                    current_tip_height,
-                    stored_hash,
-                    fresh_tip.height,
-                    &fresh_tip.hash,
-                )
-                .await;
-                let Some(relation) = tip_rpc_result_unless_exiting(relation, should_exit()) else {
-                    log::info!(
-                        "[{}] sync: exiting after post-batch tip validation",
-                        elapsed()
-                    );
-                    return Ok(());
-                };
-                let relation = relation?;
-                match relation {
-                    RefreshedTipRelation::Unchanged => {
-                        last_completion_tip_validation = tip_requested_at;
-                        completion_tip_validation_required = false;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                    }
-                    RefreshedTipRelation::UnchangedUnverified => {
-                        completion_tip_validation_required = true;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                    }
-                    RefreshedTipRelation::Advanced => {
-                        match with_wallet_db_write_lock(
-                            "sync_engine.update_chain_tip.post_batch",
-                            || db.update_chain_tip(fresh_tip_height),
-                        ) {
-                            Ok(_) => {
-                                current_tip_height = fresh_tip.height;
-                                enhancement::content_failures::at_tip(
-                                    db_data_path,
-                                    current_tip_height,
-                                );
-                                completion_tip_validation_required = true;
-                                last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                            }
-                            Err(e) => {
-                                completion_tip_validation_required = true;
-                                log::warn!(
-                                    "[{}] sync: post-batch update_chain_tip({}) \
-                                         failed, keeping tip at {current_tip_height}: {e}",
-                                    elapsed(),
-                                    fresh_tip.height,
-                                );
-                            }
-                        }
-                    }
-                    RefreshedTipRelation::ServerBehind => {
-                        return Err(lagging_lightwalletd_tip(
-                            current_tip_height,
-                            fresh_tip.height,
-                        ));
-                    }
-                    RefreshedTipRelation::Reorg => {
-                        if main_rewinds_this_run >= MAX_REWINDS_PER_RUN {
-                            return Err(SyncError::continuity(
-                                fresh_tip.height,
-                                "post-batch tip reorg rewind budget exhausted",
-                            ));
-                        }
-                        main_rewinds_this_run += 1;
-                        prefetch.clear();
-                        let (actual_height, repair_ranges, pending_blocks) =
-                            rewind_for_confirmed_tip_reorg(
-                                db_data_path,
-                                &mut db,
-                                fresh_tip.height,
-                            )?;
-                        log::warn!(
-                            "[{}] sync: post-batch tip proved a reorg; rewound to {} \
-                                 and queued {} block(s) toward tip {}",
-                            elapsed(),
-                            actual_height,
-                            pending_blocks,
-                            fresh_tip.height,
-                        );
-                        current_tip_height = fresh_tip.height;
-                        enhancement::content_failures::at_tip(db_data_path, current_tip_height);
-                        initial_total = pending_blocks;
-                        prev_remaining = pending_blocks;
-                        if checking_cycle > 0 && pending_blocks > 0 {
-                            progress_fn(begin_checking(
-                                &mut checking_cycle,
-                                pending_blocks,
-                                current_tip_height,
-                                &job,
-                            ));
-                        }
-                        queued_ranges = Some(repair_ranges);
-                        completion_tip_validation_required = true;
-                        last_periodic_tip_refresh_attempt = std::time::Instant::now();
-                        continue;
-                    }
+        if check_tip {
+            // Started before the scan; usually complete by now. A tip proved
+            // unchanged counts as validated when it was requested, so the final
+            // tip check before completion stays as strict as a fetch made here.
+            let tip_requested_at = tip_prefetch
+                .as_ref()
+                .map_or_else(std::time::Instant::now, |prefetch| prefetch.requested_at);
+            let tip_check_started = std::time::Instant::now();
+            let fresh_tip_result = match tip_prefetch {
+                Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
+                None => {
+                    unless_exiting(
+                        &should_exit,
+                        get_latest_block_recorded(&mut client, lightwalletd_url, network),
+                    )
+                    .await
                 }
+            };
+            timing.tip_waited += tip_check_started.elapsed();
+            let Some(fresh_tip_result) = fresh_tip_result
+                .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+            else {
+                log::info!("[{}] sync: exiting after post-batch tip fetch", elapsed());
+                return Ok(());
+            };
+            match fresh_tip_result {
+                Ok(fresh_tip) => {
+                    let fresh_tip_height = block_height_from_u64(
+                        fresh_tip.height,
+                        "post-batch lightwalletd chain tip",
+                    )?;
 
-                // Use the just-observed network height for the expiry
-                // filter. The authoritative progress tip was promoted
-                // above only when its DB update succeeded; lower or
-                // divergent responses cannot reach this broadcast path.
-                if allow_resubmit {
-                    complete_verified_recovery_statuses(db_data_path, &ready, relation)?;
-                    let _ = crate::wallet::sync::resubmit_pending_transactions(
-                        db_data_path,
-                        lightwalletd_url,
-                        &mut client,
-                        u32::from(fresh_tip_height),
-                        &resubmit_exclusions,
-                        || {
-                            cancel.load(Ordering::Relaxed)
-                                || desired_mode.load(Ordering::SeqCst) != running_mode
-                        },
+                    let stored_hash =
+                        stored_hash_for_refreshed_tip(&db, current_tip_height, fresh_tip.height)?;
+                    let relation = unless_exiting(
+                        &should_exit,
+                        classify_refreshed_tip_with_fallback(
+                            &mut client,
+                            current_tip_height,
+                            stored_hash,
+                            fresh_tip.height,
+                            &fresh_tip.hash,
+                        ),
                     )
                     .await;
+                    let Some(relation) = relation
+                        .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
+                    else {
+                        log::info!(
+                            "[{}] sync: exiting after post-batch tip validation",
+                            elapsed()
+                        );
+                        return Ok(());
+                    };
+                    let relation = relation?;
+                    match relation {
+                        RefreshedTipRelation::Unchanged => {
+                            last_completion_tip_validation = tip_requested_at;
+                            completion_tip_validation_required = false;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                        }
+                        RefreshedTipRelation::UnchangedUnverified => {
+                            completion_tip_validation_required = true;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                        }
+                        RefreshedTipRelation::Advanced => {
+                            match with_wallet_db_write_lock(
+                                "sync_engine.update_chain_tip.post_batch",
+                                || db.update_chain_tip(fresh_tip_height),
+                            ) {
+                                Ok(_) => {
+                                    current_tip_height = fresh_tip.height;
+                                    enhancement::content_failures::at_tip(
+                                        db_data_path,
+                                        current_tip_height,
+                                    );
+                                    completion_tip_validation_required = true;
+                                    last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                                }
+                                Err(e) => {
+                                    completion_tip_validation_required = true;
+                                    log::warn!(
+                                        "[{}] sync: post-batch update_chain_tip({}) \
+                                             failed, keeping tip at {current_tip_height}: {e}",
+                                        elapsed(),
+                                        fresh_tip.height,
+                                    );
+                                }
+                            }
+                        }
+                        RefreshedTipRelation::ServerBehind => {
+                            return Err(lagging_lightwalletd_tip(
+                                current_tip_height,
+                                fresh_tip.height,
+                            ));
+                        }
+                        RefreshedTipRelation::Reorg => {
+                            if main_rewinds_this_run >= MAX_REWINDS_PER_RUN {
+                                return Err(SyncError::continuity(
+                                    fresh_tip.height,
+                                    "post-batch tip reorg rewind budget exhausted",
+                                ));
+                            }
+                            main_rewinds_this_run += 1;
+                            prefetch.clear();
+                            let (actual_height, repair_ranges, pending_blocks) =
+                                rewind_for_confirmed_tip_reorg(
+                                    db_data_path,
+                                    &mut db,
+                                    fresh_tip.height,
+                                )?;
+                            log::warn!(
+                                "[{}] sync: post-batch tip proved a reorg; rewound to {} \
+                                     and queued {} block(s) toward tip {}",
+                                elapsed(),
+                                actual_height,
+                                pending_blocks,
+                                fresh_tip.height,
+                            );
+                            current_tip_height = fresh_tip.height;
+                            enhancement::content_failures::at_tip(db_data_path, current_tip_height);
+                            initial_total = pending_blocks;
+                            prev_remaining = pending_blocks;
+                            if checking_cycle > 0 && pending_blocks > 0 {
+                                progress_fn(begin_checking(
+                                    &mut checking_cycle,
+                                    pending_blocks,
+                                    current_tip_height,
+                                    &job,
+                                ));
+                            }
+                            queued_ranges = Some(repair_ranges);
+                            completion_tip_validation_required = true;
+                            last_periodic_tip_refresh_attempt = std::time::Instant::now();
+                            continue;
+                        }
+                    }
+
+                    // Use the just-observed network height for the expiry
+                    // filter. The authoritative progress tip was promoted
+                    // above only when its DB update succeeded; lower or
+                    // divergent responses cannot reach this broadcast path.
+                    if allow_resubmit {
+                        complete_verified_recovery_statuses(db_data_path, &ready, relation)?;
+                        let _ = crate::wallet::sync::resubmit_pending_transactions(
+                            db_data_path,
+                            lightwalletd_url,
+                            &mut client,
+                            u32::from(fresh_tip_height),
+                            &resubmit_exclusions,
+                            || {
+                                cancel.load(Ordering::Relaxed)
+                                    || desired_mode.load(Ordering::SeqCst) != running_mode
+                            },
+                        )
+                        .await;
+                    }
                 }
-            }
-            Err(e) => {
-                completion_tip_validation_required = true;
-                log::warn!(
-                    "[{}] sync: post-batch tip refresh failed; skipping \
-                     tip promotion and resubmit pass: {e}",
-                    elapsed(),
-                );
+                Err(e) => {
+                    completion_tip_validation_required = true;
+                    log::warn!(
+                        "[{}] sync: post-batch tip refresh failed; skipping \
+                         tip promotion and resubmit pass: {e}",
+                        elapsed(),
+                    );
+                }
             }
         }
         if should_exit() {
@@ -6034,13 +6335,12 @@ mod tests {
 
     #[test]
     fn only_failures_in_a_row_move_a_session_to_tor() {
+        let now = std::time::Instant::now();
         let runs = |outcomes: &[bool]| {
+            let mut route = DirectBlockRoute::new();
             outcomes
                 .iter()
-                .scan(0, |failures, &failed| {
-                    *failures = next_direct_failures(*failures, failed);
-                    Some(*failures >= DIRECT_BLOCK_FAILURES_BEFORE_TOR)
-                })
+                .map(|&failed| route.record(failed, now).is_some())
                 .collect::<Vec<_>>()
         };
         // A success between failures keeps the direct connection.
@@ -6049,6 +6349,85 @@ mod tests {
             [false, false, false, false, false]
         );
         assert_eq!(runs(&[true, true, true]), [false, false, true]);
+    }
+
+    #[test]
+    fn the_timing_summary_splits_download_waits_from_scan_time() {
+        let mut timing = SyncTimingSummary::default();
+        let second = std::time::Duration::from_secs(1);
+        timing.record(true, 100, 11_000_000, 3 * second, second);
+        timing.record(false, 1000, 4_000_000, second, 2 * second);
+        timing.tip_waited += 5 * second;
+        assert_eq!(
+            timing.line(
+                std::time::Duration::from_secs(60),
+                scan_power::ScanPower::Efficient
+            ),
+            "last 60s: 2 batches (1 direct), 1100 blocks, 15.0 MB (0.25 MB/s), \
+             waited 4.0s for downloads and 5.0s for tip checks, scanned 3.0s at \
+             Efficient power"
+        );
+    }
+
+    #[test]
+    fn history_batches_far_below_the_tip_check_it_once_a_minute() {
+        let tip = 3_500_000;
+        let second = std::time::Duration::from_secs(1);
+        // Far below the tip: only once the interval has passed.
+        assert!(!post_batch_tip_check_due(2_000_000, tip, second));
+        assert!(post_batch_tip_check_due(
+            2_000_000,
+            tip,
+            HISTORY_TIP_CHECK_EVERY
+        ));
+        // Near the tip: after every batch.
+        assert!(post_batch_tip_check_due(
+            tip - HISTORY_TIP_CHECK_DISTANCE,
+            tip,
+            second
+        ));
+        assert!(post_batch_tip_check_due(tip, tip, second));
+        assert!(!post_batch_tip_check_due(
+            tip - HISTORY_TIP_CHECK_DISTANCE - 1,
+            tip,
+            second
+        ));
+    }
+
+    #[test]
+    fn a_demoted_direct_route_retries_a_fresh_connection_after_a_wait() {
+        let start = std::time::Instant::now();
+        let mut route = DirectBlockRoute::new();
+        let wait = (0..DIRECT_BLOCK_FAILURES_BEFORE_TOR)
+            .find_map(|_| route.record(true, start))
+            .expect("three failures demote the route");
+        assert_eq!(wait, DIRECT_BLOCK_RETRY_AFTER);
+        assert!(!route.in_use());
+        assert!(!route.retry_due(start + wait - std::time::Duration::from_secs(1)));
+        assert!(route.retry_due(start + wait));
+
+        route.reopened();
+        assert!(route.in_use());
+        assert!(route.record(false, start + wait).is_none());
+        assert!(route.in_use());
+    }
+
+    #[test]
+    fn a_reopened_direct_route_that_fails_at_once_waits_longer() {
+        let start = std::time::Instant::now();
+        let mut route = DirectBlockRoute::new();
+        let first = (0..DIRECT_BLOCK_FAILURES_BEFORE_TOR)
+            .find_map(|_| route.record(true, start))
+            .expect("three failures demote the route");
+        route.reopened();
+        let second = route
+            .record(true, start + first)
+            .expect("the reopened connection's first failure demotes it");
+        assert_eq!(second, DIRECT_BLOCK_RETRY_AFTER * 2);
+
+        // A connection that will not open keeps doubling the wait, up to the cap.
+        let waits: Vec<_> = (0..5).map(|_| route.demote(start).as_secs()).collect();
+        assert_eq!(waits, [240, 480, 600, 600, 600]);
     }
 
     async fn download_routes(
@@ -6297,6 +6676,33 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), prefetch.resolve(&|| true)).await;
 
         assert!(matches!(resolved, Ok(None)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tip_request_yields_to_an_exit_that_arrives_while_the_server_holds_it() {
+        let lwd = test_lwd::CapturingLwd::start_with(Vec::new(), 3_516_998, |_| {}).await;
+        let _held = lwd.hold_responses("/GetLatestBlock");
+        let mut client = lwd.client.clone();
+        let exit = Arc::new(AtomicBool::new(false));
+        let flip = exit.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            flip.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(5),
+            unless_exiting(
+                &|| exit.load(Ordering::SeqCst),
+                get_latest_block(&mut client),
+            ),
+        )
+        .await;
+
+        assert!(matches!(resolved, Ok(None)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(lwd.count("/GetLatestBlock"), 1);
     }
 
     #[test]

@@ -1350,10 +1350,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     );
     // Scan with less of the CPU once a sync job has run a few minutes on a
     // device that is hot or saving power; the keep-awake screen says why.
+    // Debug builds log each state, so the sync's timing summaries can be read
+    // against it.
     final slowdown = ref.read(syncScanSlowdownProvider.notifier);
-    final devicePower = devicePowerEvents().listen(
-      (power) => slowdown.updateDevicePower(syncScanSlowdownFor(power)),
-    );
+    final devicePower = devicePowerEvents().listen((power) {
+      if (kDebugMode) {
+        log(
+          'Device power: thermal ${power.thermal}, low power ${power.lowPower}',
+        );
+      }
+      slowdown.updateDevicePower(syncScanSlowdownFor(power));
+    });
     ref.onDispose(devicePower.cancel);
     listenSelf((_, next) {
       final sync = next.value;
