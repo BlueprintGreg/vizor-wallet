@@ -14,6 +14,7 @@ import '../../../core/widgets/dot_qr_shape.dart';
 import '../domain/swap_contract.dart';
 import '../models/swap_address_formatting.dart';
 import '../models/swap_deposit_qr_payload.dart';
+import '../models/swap_privacy_mask.dart';
 
 class SwapDepositTokensPageContent extends StatelessWidget {
   const SwapDepositTokensPageContent({
@@ -28,6 +29,7 @@ class SwapDepositTokensPageContent extends StatelessWidget {
     this.now,
     this.memo,
     this.mobile = false,
+    this.privacyModeEnabled = false,
     super.key,
   });
 
@@ -47,6 +49,9 @@ class SwapDepositTokensPageContent extends StatelessWidget {
   /// detail rows and a full-width primary action.
   final bool mobile;
 
+  /// Masks the displayed amount; the amount copy action keeps the real value.
+  final bool privacyModeEnabled;
+
   @override
   Widget build(BuildContext context) {
     return _SwapDepositPageShell(
@@ -58,6 +63,7 @@ class SwapDepositTokensPageContent extends StatelessWidget {
       now: now,
       memo: memo,
       mobile: mobile,
+      privacyModeEnabled: privacyModeEnabled,
       showNetworkGuidance: true,
       actionArea: _DepositConfirmActionArea(
         checking: checking,
@@ -83,6 +89,7 @@ class SwapHardwareZecDepositPageContent extends StatelessWidget {
     this.now,
     this.memo,
     this.mobile = false,
+    this.privacyModeEnabled = false,
     super.key,
   });
 
@@ -95,6 +102,7 @@ class SwapHardwareZecDepositPageContent extends StatelessWidget {
   final String? memo;
   final VoidCallback onDepositZec;
   final bool mobile;
+  final bool privacyModeEnabled;
 
   @override
   Widget build(BuildContext context) {
@@ -107,6 +115,7 @@ class SwapHardwareZecDepositPageContent extends StatelessWidget {
       now: now,
       memo: memo,
       mobile: mobile,
+      privacyModeEnabled: privacyModeEnabled,
       actionArea: _DepositConfirmActionArea(
         checking: false,
         warning: null,
@@ -129,6 +138,7 @@ class _SwapDepositPageShell extends StatelessWidget {
     this.now,
     this.memo,
     this.mobile = false,
+    this.privacyModeEnabled = false,
     this.showNetworkGuidance = false,
   });
 
@@ -141,7 +151,13 @@ class _SwapDepositPageShell extends StatelessWidget {
   final String? memo;
   final Widget actionArea;
   final bool mobile;
+  final bool privacyModeEnabled;
   final bool showNetworkGuidance;
+
+  String get _displayAmountText => swapAmountTextForPrivacy(
+    amountText,
+    privacyModeEnabled: privacyModeEnabled,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +177,7 @@ class _SwapDepositPageShell extends StatelessWidget {
           child: _MobileDepositQrCard(
             asset: asset,
             qrData: swapDepositQrPayload(depositAddress, memo),
-            amountText: amountText,
+            amountText: _displayAmountText,
             expiresInLabel: expiresInLabel,
             expiresAt: expiresAt,
             now: now,
@@ -174,6 +190,7 @@ class _SwapDepositPageShell extends StatelessWidget {
         _DepositDetailsList(
           asset: asset,
           amountText: amountText,
+          displayAmountText: _displayAmountText,
           depositAddress: depositAddress,
           memo: memo,
           mobile: true,
@@ -203,7 +220,7 @@ class _SwapDepositPageShell extends StatelessWidget {
             child: _DepositQrCard(
               asset: asset,
               qrData: swapDepositQrPayload(depositAddress, memo),
-              amountText: amountText,
+              amountText: _displayAmountText,
               expiresInLabel: expiresInLabel,
               expiresAt: expiresAt,
               now: now,
@@ -216,6 +233,7 @@ class _SwapDepositPageShell extends StatelessWidget {
           _DepositDetailsList(
             asset: asset,
             amountText: amountText,
+            displayAmountText: _displayAmountText,
             depositAddress: depositAddress,
             memo: memo,
           ),
@@ -975,13 +993,17 @@ class _DepositDetailsList extends StatelessWidget {
   const _DepositDetailsList({
     required this.asset,
     required this.amountText,
+    required this.displayAmountText,
     required this.depositAddress,
     this.memo,
     this.mobile = false,
   });
 
   final SwapAsset asset;
+
+  /// Raw amount for the copy action; [displayAmountText] is what renders.
   final String amountText;
+  final String displayAmountText;
   final String depositAddress;
   final String? memo;
   final bool mobile;
@@ -1004,7 +1026,7 @@ class _DepositDetailsList extends StatelessWidget {
         children: [
           _detailRow(
             label: mobile ? 'Amount to deposit' : 'Amount',
-            value: amountText,
+            value: displayAmountText,
             copyText: _depositAmountCopyText(amountText, asset),
             toastMessage: mobile ? 'Amount copied' : 'Amount Copied',
             copyKey: const ValueKey('swap_copy_deposit_amount'),
