@@ -1185,7 +1185,7 @@ edge in `MobileBottomSafeArea`
 
 Constrained in `rust/Cargo.toml` and resolved in `rust/Cargo.lock`. Key crates: `zcash_client_backend` 0.22.0, `zcash_client_sqlite` 0.20.2, `orchard` 0.13.1, `sapling-crypto` 0.7.0. These must stay compatible — check librustzcash releases before bumping.
 
-`zakura-client-sqlite` is patched (`[patch.crates-io]`) to a revision of the `piatoss3612/wallet-libraries` fork: the zakura-core source of the 0.1.0-rc9.2 release plus zakura-core/wallet-libraries #286, which computes `get_wallet_summary`'s scan progress without a scan queue lookup per block, with a manifest that takes the other wallet crates from crates.io. The `put_blocks` history changes, the Ironwood checkpoint pruning and the split decryption described in `docs/sync.md` are in the releases. Drop the patch once a release includes #286; when bumping the zakura crates before that, move the fork onto the new release instead of leaving the patch at an older revision.
+The zakura wallet crates come from their crates.io releases, with no patch: `zakura-client-backend` and `zakura-client-sqlite` 0.1.0-rc9.4, whose exact requirements also pin the `zakura-pir-*` crates to 0.0.1-rc3 and `zakura-one-time-ivk` to 0.0.1-rc4. The `put_blocks` history changes, the Ironwood checkpoint pruning, the split decryption described in `docs/sync.md` and the scan progress computed without a scan queue lookup per block (zakura-core/wallet-libraries #286) are in these releases. A release that adds a wallet migration makes the database unreadable to builds with an older release.
 
 `tonic` 0.14 with `tls-ring` + `tls-webpki-roots` features for gRPC TLS. `rustls` 0.23+ requires explicit crypto provider — `tls-ring` provides this.
 
