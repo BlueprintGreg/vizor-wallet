@@ -677,59 +677,21 @@ toggle; every foreground lightwalletd and HTTP path goes through the
 policy-aware openers and fails closed while Tor is starting or broken, except
 a sync's large block download (below).
 
-- **Large block downloads leave Tor.** A sync session whose estimated
-  compact-block download, counting only the ranges it may fetch directly
-  (`direct_download_bytes`), reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` fetches its
-  main-scan batches (`GetBlockRange`, the batch-start `GetTreeState`, and
-  `GetBlock` for the predecessor's hash when the first block carries none) over
-  `open_block_download_lwd_transport`, which skips the direct-route lease and
-  never dials an onion server (`block_download_can_go_direct`): only Tor
-  reaches one, and a direct dial would send its name to the system resolver.
-  Compact blocks are public, and one circuit would take hours for a restore.
-  The threshold is per platform, like the batch sizes: 256 MiB on desktop,
-  which keeps syncing in the background (about 13 minutes on one circuit,
-  roughly seven months of recent blocks), and 8 MiB on mobile, where sync runs
-  only on screen (about 25 seconds, roughly five days). It applies only under
-  Private queries: the direct connection opens alongside the session's Tor
-  one, so the server can tie the two together by timing, and Private queries
-  keep address and txid lookups off that Tor connection. Without them every
-  block download stays on Tor. The session still opens its Tor route first
-  and fails closed with it. If the direct connection cannot open, the
-  session downloads over Tor. A direct batch that fails, queued or not, is
-  downloaded again over Tor, and three failures in a row
-  (`DIRECT_BLOCK_FAILURES_BEFORE_TOR`) move the session to Tor
-  (`DirectBlockRoute`). After `DIRECT_BLOCK_RETRY_AFTER` (a minute, doubling
-  with each demotion up to `DIRECT_BLOCK_RETRY_MAX`, ten minutes) the session
-  opens a fresh direct connection at the next batch that would download
-  directly, and restarts its queue; a connection that could not open within
-  `DIRECT_BLOCK_OPEN_TIMEOUT`, or a reopened one whose first batch fails,
-  waits again. A connection that stops answering fails every request on it
-  while a fresh one to the same server works, as on a phone restore where
-  three queued batches timed out together. HTTP/2 pings close such a
-  connection about 35 seconds after its last frame, so requests sent after
-  that reconnect instead of waiting out their deadlines. Only a
-  multi-threaded runtime pings: background migration preparation scans on its
-  single runtime thread, and a long scan would make a healthy connection's
-  reply late.
-  Only main-scan batches of ChainTip, Historic and
-  LatestPoolActivation ranges, and Verify batches above the blocks scanned
-  before the session (the frontier continuity check, often merged into a full
-  queued batch), use it (`batch_uses_direct_connection`). Checking-stage
-  batches, Verify batches over already-scanned blocks (witness repairs a
-  stopped session left), FoundNote and OpenAdjacent ranges, and every request
-  that carries an address, txid or transaction stay on Tor, though timing can
-  still tie them to a direct session. Their absence still shows: a FoundNote
-  range scanned out of order ends a direct batch, or leaves a gap, at a public
-  subtree boundary, so the server can infer which shards hold the wallet's
-  notes. The connection opens with the session, before the Checking stage,
-  only if Tor was already on when the session opened its route, and its
-  opens stop with the session. A direct session shows the server the
-  device's IP address with the birthday bucket or resume height, and a
-  reconnect after the device changes networks shows the new one, which the
-  continuing block range ties to the first, so the connected
-  settings copy says Vizor uses Tor to protect the IP address rather than
-  promising that every request goes through Tor; it does not list this
-  exception.
+- **Large block downloads may leave Tor; nothing identifying does.** With Tor
+  and Private queries on, a sync session whose estimated direct download
+  reaches `DIRECT_BLOCK_DOWNLOAD_MIN_BYTES` downloads its main-scan batches
+  over `open_block_download_lwd_transport`. Keep these rules:
+  - Only the batches `batch_uses_direct_connection` allows use it. Every
+    request that carries an address, txid or transaction stays on Tor.
+  - Never dial an onion server directly (`block_download_can_go_direct`).
+  - The session opens its Tor route first and fails closed with it; a direct
+    failure sends the batch over Tor.
+  - HTTP/2 pings only on a multi-threaded runtime (`keep_alive_fits_runtime`).
+  - Settings copy says Vizor uses Tor to protect the IP address; it does not
+    promise that every request goes through Tor.
+
+  How it opens, falls back and reconnects, and what the server learns from it:
+  "Direct block connection" in `docs/sync.md`.
 - **Voting SDK network clients are constructed only in**
   `rust/src/wallet/voting/network_clients.rs`. Chain, helper, PIR, and
   vote-tree are separate transport roles; injecting a chain transport does
@@ -1185,7 +1147,7 @@ edge in `MobileBottomSafeArea`
 
 Constrained in `rust/Cargo.toml` and resolved in `rust/Cargo.lock`. Key crates: `zcash_client_backend` 0.22.0, `zcash_client_sqlite` 0.20.2, `orchard` 0.13.1, `sapling-crypto` 0.7.0. These must stay compatible — check librustzcash releases before bumping.
 
-The zakura wallet crates come from their crates.io releases, with no patch: `zakura-client-backend` and `zakura-client-sqlite` 0.1.0-rc9.4, whose exact requirements also pin the `zakura-pir-*` crates to 0.0.1-rc3 and `zakura-one-time-ivk` to 0.0.1-rc4. The `put_blocks` history changes, the Ironwood checkpoint pruning, the split decryption described in `docs/sync.md` and the scan progress computed without a scan queue lookup per block (zakura-core/wallet-libraries #286) are in these releases. A release that adds a wallet migration makes the database unreadable to builds with an older release.
+The zakura wallet crates come from their crates.io releases, with no `[patch]`. A release that adds a wallet migration makes the database unreadable to builds with an older release.
 
 `tonic` 0.14 with `tls-ring` + `tls-webpki-roots` features for gRPC TLS. `rustls` 0.23+ requires explicit crypto provider — `tls-ring` provides this.
 
