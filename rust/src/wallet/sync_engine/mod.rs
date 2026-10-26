@@ -3174,6 +3174,39 @@ impl Drop for TipPrefetch {
     }
 }
 
+/// The post-batch tip and when it was requested, or `None` when cancellation
+/// or a mode handoff won. A tip proved unchanged counts as validated when it
+/// was requested, so the final tip check before completion stays as strict as
+/// a fetch made here. The prefetch was requested before this batch's status
+/// lookups, so it cannot validate a status they released: that batch fetches
+/// the tip again, as the completion path does for its own releases.
+async fn post_batch_tip(
+    prefetch: Option<TipPrefetch>,
+    validates_released_statuses: bool,
+    client: &mut CompactTxStreamerClient<Channel>,
+    lightwalletd_url: &str,
+    network: WalletNetwork,
+    should_exit: &impl Fn() -> bool,
+) -> (
+    std::time::Instant,
+    Option<Result<zcash_client_backend::proto::service::BlockId, SyncError>>,
+) {
+    match prefetch.filter(|_| !validates_released_statuses) {
+        Some(prefetch) => {
+            let requested_at = prefetch.requested_at;
+            (requested_at, prefetch.resolve(should_exit).await)
+        }
+        None => (
+            std::time::Instant::now(),
+            unless_exiting(
+                should_exit,
+                get_latest_block_recorded(client, lightwalletd_url, network),
+            )
+            .await,
+        ),
+    }
+}
+
 /// Whether a pending range that starts past the loop's tip should trigger one
 /// tip refresh instead of ending the attempt. The mempool observer writes new
 /// tips to the wallet DB while the loop scans, so the next ChainTip range can
@@ -5379,7 +5412,7 @@ async fn run_sync_impl(
         // Status and transparent history run before the routed payload snapshot,
         // so transactions discovered by history are enhanced in this checkpoint.
         // Status lookups run only on a batch that checks the tip, so a status
-        // recovered here is completed by this batch's check.
+        // recovered here is completed by this batch's check, made after them.
         if enhancement
             .run_batch_checkpoint(
                 &mut db,
@@ -5438,23 +5471,18 @@ async fn run_sync_impl(
             return Ok(());
         }
         if check_tip {
-            // Started before the scan; usually complete by now. A tip proved
-            // unchanged counts as validated when it was requested, so the final
-            // tip check before completion stays as strict as a fetch made here.
-            let tip_requested_at = tip_prefetch
-                .as_ref()
-                .map_or_else(std::time::Instant::now, |prefetch| prefetch.requested_at);
+            // The prefetch started before the scan and is usually complete by
+            // now; a released status is completed only below, with resubmission.
             let tip_check_started = std::time::Instant::now();
-            let fresh_tip_result = match tip_prefetch {
-                Some(tip_prefetch) => tip_prefetch.resolve(&should_exit).await,
-                None => {
-                    unless_exiting(
-                        &should_exit,
-                        get_latest_block_recorded(&mut client, lightwalletd_url, network),
-                    )
-                    .await
-                }
-            };
+            let (tip_requested_at, fresh_tip_result) = post_batch_tip(
+                tip_prefetch,
+                allow_resubmit && !ready.is_empty(),
+                &mut client,
+                lightwalletd_url,
+                network,
+                &should_exit,
+            )
+            .await;
             timing.tip_waited += tip_check_started.elapsed();
             let Some(fresh_tip_result) = fresh_tip_result
                 .and_then(|result| tip_rpc_result_unless_exiting(result, should_exit()))
@@ -6676,6 +6704,65 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), prefetch.resolve(&|| true)).await;
 
         assert!(matches!(resolved, Ok(None)));
+    }
+
+    /// A prefetched tip whose request the server has received, then the
+    /// moment this batch's status lookups finished.
+    async fn prefetch_then_status_lookups(
+        lwd: &test_lwd::CapturingLwd,
+    ) -> (TipPrefetch, std::time::Instant) {
+        let prefetch = TipPrefetch::spawn(lwd.client.clone(), &lwd.url, WalletNetwork::Main);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lwd.count("/GetLatestBlock") == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        (prefetch, std::time::Instant::now())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_batch_without_released_statuses_uses_its_tip_prefetch() {
+        let lwd = test_lwd::CapturingLwd::start_with(Vec::new(), 3_516_998, |_| {}).await;
+        let (prefetch, _) = prefetch_then_status_lookups(&lwd).await;
+        let prefetch_requested_at = prefetch.requested_at;
+        let mut client = lwd.client.clone();
+
+        let (requested_at, tip) = post_batch_tip(
+            Some(prefetch),
+            false,
+            &mut client,
+            &lwd.url,
+            WalletNetwork::Main,
+            &|| false,
+        )
+        .await;
+
+        assert_eq!(tip.unwrap().unwrap().height, 3_516_998);
+        assert_eq!(requested_at, prefetch_requested_at);
+        assert_eq!(lwd.count("/GetLatestBlock"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_released_status_is_checked_against_a_tip_requested_after_its_lookup() {
+        let lwd = test_lwd::CapturingLwd::start_with(Vec::new(), 3_516_998, |_| {}).await;
+        let (prefetch, lookups_done) = prefetch_then_status_lookups(&lwd).await;
+        let mut client = lwd.client.clone();
+
+        let (requested_at, tip) = post_batch_tip(
+            Some(prefetch),
+            true,
+            &mut client,
+            &lwd.url,
+            WalletNetwork::Main,
+            &|| false,
+        )
+        .await;
+
+        assert_eq!(tip.unwrap().unwrap().height, 3_516_998);
+        assert!(requested_at >= lookups_done);
+        assert_eq!(lwd.count("/GetLatestBlock"), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
