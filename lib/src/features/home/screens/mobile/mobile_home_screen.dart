@@ -1,3 +1,6 @@
+import '../../providers/home_activity_state.dart';
+import '../../widgets/home_activity_skeleton.dart';
+import '../../../activity/widgets/deferred_gift_card_recovery.dart';
 import 'dart:async';
 
 import '../../../../providers/app_security_provider.dart';
@@ -85,10 +88,7 @@ class MobileHomeScreen extends ConsumerWidget {
     );
     final isCurrentHomeRoute = GoRouterState.of(context).uri.path == '/home';
 
-    final isImporting =
-        activeAccountUuid != null &&
-        !sync.hasAccountScopedData &&
-        sync.failure == null;
+    final isImporting = activeAccountUuid != null && sync.isImportingAccount;
 
     return SwapActivityStatusAutoRefresh(
       child: Stack(
@@ -997,13 +997,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     // button does.
     final sendDisabled = ref.watch(migrationSendGateProvider);
     final shieldedBalance = migrationRequired
-        ? sync.orchardBalance + sync.orchardPendingBalance
-        : sync.saplingBalance +
-              sync.orchardBalance +
-              sync.ironwoodBalance +
-              sync.saplingPendingBalance +
-              sync.orchardPendingBalance +
-              sync.ironwoodPendingBalance;
+        ? sync.displayOrchardBalance + sync.displayOrchardPendingBalance
+        : sync.displayShieldedBalance;
     final transparentBalance = TransparentBalanceDisplay.of(sync);
     final hasBalance =
         shieldedBalance > BigInt.zero ||
@@ -1034,14 +1029,15 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
 
     final uuid = activeAccountUuid;
-    final giftCardActivityIndex = uuid == null
-        ? GiftCardActivityIndex.empty
-        : ref.watch(giftCardActivityIndexProvider(uuid)).value ??
-              GiftCardActivityIndex.empty;
-    final swapItems = uuid == null
-        ? const <SwapActivityRowItem>[]
-        : ref.watch(swapActivityRowItemsProvider(uuid)).value ??
-              const <SwapActivityRowItem>[];
+    final giftCardSource = uuid == null
+        ? null
+        : ref.watch(giftCardActivityIndexProvider(uuid));
+    final swapSource = uuid == null
+        ? null
+        : ref.watch(swapActivityRowItemsProvider(uuid));
+    final giftCardActivityIndex =
+        giftCardSource?.value ?? GiftCardActivityIndex.empty;
+    final swapItems = swapSource?.value ?? const <SwapActivityRowItem>[];
     final absorption = sync.recentTransactions.isEmpty
         ? SwapActivityLegAbsorption.empty
         : matchSwapActivityLegAbsorption(
@@ -1093,7 +1089,15 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         entry.row,
     ];
 
-    return ListView(
+    final activityState = homeActivityState(
+      accountUuid: activeAccountUuid,
+      sync: sync,
+      hasRows: recentRows.isNotEmpty,
+      localSources: [?giftCardSource, ?swapSource],
+    );
+    final activityLoading = activityState == HomeActivityState.loading;
+
+    final content = ListView(
       padding: EdgeInsets.fromLTRB(
         AppSpacing.sm,
         AppSpacing.sm,
@@ -1117,7 +1121,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         Column(
           children: [
             _BalanceCard(
-              balanceText: privacyModeEnabled
+              balanceText: !sync.hasDisplayBalance
+                  ? '—'
+                  : privacyModeEnabled
                   ? fixedPrivacyMask()
                   : ZecAmount.fromZatoshi(
                       shieldedBalance,
@@ -1150,7 +1156,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               ),
             ),
             const SizedBox(height: AppSpacing.s),
-            if (hasBalance)
+            if (hasBalance || !sync.hasDisplayBalance)
               Row(
                 children: [
                   Expanded(
@@ -1257,10 +1263,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           ],
         ),
         const SizedBox(height: AppSpacing.md),
-        if (recentRows.isEmpty)
-          const _EmptyActivity()
+        if (recentRows.isEmpty && !activityLoading)
+          _EmptyActivity(
+            isUnavailable: activityState == HomeActivityState.unavailable,
+          )
         else
           Padding(
+            key: const ValueKey('mobile_home_activity_list'),
             padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.xs,
               vertical: AppSpacing.s,
@@ -1275,17 +1284,43 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   },
                 ),
                 const SizedBox(height: AppSpacing.md),
-                for (var i = 0; i < recentRows.length; i++) ...[
-                  if (i > 0) const SizedBox(height: AppSpacing.s),
-                  KeyedSubtree(
-                    key: ValueKey('mobile_home_activity_row_$i'),
-                    child: ActivityFeedRowGroup(row: recentRows[i]),
+                Semantics(
+                  label: activityLoading ? 'Loading activity' : null,
+                  child: Column(
+                    children: [
+                      for (
+                        var i = 0;
+                        i <
+                            (activityLoading
+                                ? homeActivitySkeletonCount
+                                : recentRows.length);
+                        i++
+                      ) ...[
+                        if (i > 0) const SizedBox(height: AppSpacing.s),
+                        if (activityLoading)
+                          HomeActivitySkeletonRow(
+                            key: ValueKey('mobile_home_activity_skeleton_$i'),
+                          )
+                        else
+                          KeyedSubtree(
+                            key: ValueKey('mobile_home_activity_row_$i'),
+                            child: ActivityFeedRowGroup(row: recentRows[i]),
+                          ),
+                      ],
+                    ],
                   ),
-                ],
+                ),
               ],
             ),
           ),
       ],
+    );
+    return DeferredGiftCardRecovery(
+      accountUuid: activeAccountUuid,
+      ready:
+          activityState == HomeActivityState.rows ||
+          activityState == HomeActivityState.empty,
+      child: content,
     );
   }
 }
@@ -2342,7 +2377,9 @@ class _RecentActivityHeader extends StatelessWidget {
 }
 
 class _EmptyActivity extends StatelessWidget {
-  const _EmptyActivity();
+  const _EmptyActivity({this.isUnavailable = false});
+
+  final bool isUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -2359,21 +2396,25 @@ class _EmptyActivity extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                'No activity, yet...',
+                isUnavailable
+                    ? 'Unable to load activity.'
+                    : 'No activity, yet...',
                 style: AppTypography.headlineSmall.copyWith(
                   color: colors.text.accent,
                 ),
               ),
-              const SizedBox(height: AppSpacing.xxs),
-              Text(
-                'How about running your\nfirst ZEC tx?',
-                textAlign: TextAlign.center,
-                style: AppTypography.bodyMedium.copyWith(
-                  color: colors.text.secondary,
+              if (!isUnavailable) ...[
+                const SizedBox(height: AppSpacing.xxs),
+                Text(
+                  'How about running your\nfirst ZEC tx?',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: colors.text.secondary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.xxs),
-              const _MobileRestImage(),
+                const SizedBox(height: AppSpacing.xxs),
+                const _MobileRestImage(),
+              ],
             ],
           ),
         ),

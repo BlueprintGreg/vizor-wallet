@@ -26,6 +26,13 @@ class PendingClaimPaymentLinkOperations implements PaymentLinkOperations {
   }) => throw UnimplementedError();
 
   @override
+  Future<List<PaymentLinkRecoveryRecord>> recoverCreatedLinks() =>
+      loadCreatedLinkRecoveries();
+
+  @override
+  Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinks() async => const [];
+
+  @override
   Future<List<PaymentLinkRecoveryRecord>> loadCreatedLinkRecoveries() async =>
       const [];
 

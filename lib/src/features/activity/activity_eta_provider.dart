@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/storage/wallet_paths.dart';
 import '../../providers/account_provider.dart';
 import '../../providers/pending_activity_evidence_provider.dart';
 import '../../providers/rpc_endpoint_provider.dart';
@@ -9,6 +8,7 @@ import '../../providers/sync_failure.dart';
 import '../../rust/api/sync.dart' as rust_sync;
 import '../swap/providers/swap_activity_store.dart';
 import 'gift_card_activity_index.dart';
+import 'activity_history_pager.dart';
 import 'transaction_completeness.dart';
 import '../swap/models/swap_chain_txid.dart';
 
@@ -48,15 +48,16 @@ typedef ActivityEtaClaimHistoryLoader =
     Future<List<rust_sync.TransactionInfo>> Function(
       String accountUuid,
       String network,
+      List<String> txids,
     );
 
 final activityEtaClaimHistoryLoaderProvider =
     Provider<ActivityEtaClaimHistoryLoader>(
       (ref) =>
-          (accountUuid, network) async => rust_sync.getTransactionHistory(
-            dbPath: await getWalletDbPath(),
+          (accountUuid, network, txids) => loadActivityClaimRows(
             network: network,
             accountUuid: accountUuid,
+            txids: txids,
           ),
     );
 
@@ -117,6 +118,11 @@ final activityEtaClaimHistoryProvider =
       return ref.watch(activityEtaClaimHistoryLoaderProvider)(
         account,
         endpoint.networkName,
+        {
+          for (final claim in index!.pendingClaims)
+            for (final txid in claim.claimTxids!.split(','))
+              if (txid.trim().isNotEmpty) txid.trim(),
+        }.toList(),
       );
     });
 

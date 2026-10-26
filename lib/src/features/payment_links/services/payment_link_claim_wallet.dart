@@ -192,13 +192,18 @@ class PaymentLinkClaimWallet {
   Future<bool> matchesLink({
     required VizorPaymentLink link,
     required List<rust_wallet.AccountInfo> accounts,
+    required String dbPath,
   }) async {
     if (accounts.length != 1) return false;
     try {
       await rust_wallet.validateGiftAddress(
         mnemonic: link.mnemonic,
         network: link.network,
-        address: accounts.single.unifiedAddress,
+        address: await rust_wallet.getUnifiedAddress(
+          dbPath: dbPath,
+          network: link.network,
+          accountUuid: accounts.single.uuid,
+        ),
       );
       final advertisedAddress = link.knownAddress;
       if (advertisedAddress != null) {
@@ -218,7 +223,9 @@ class PaymentLinkClaimWallet {
     required VizorPaymentLink link,
     required String dbPath,
     bool allowResubmit = false,
+    void Function()? ensureActive,
   }) {
+    ensureActive?.call();
     final claimId = paymentLinkClaimWalletDirectoryName(link);
     final existing = _claimSyncs[claimId];
     if (existing != null) return existing;
@@ -227,6 +234,7 @@ class PaymentLinkClaimWallet {
       dbPath: dbPath,
       network: link.network,
       allowResubmit: allowResubmit,
+      ensureActive: ensureActive,
     );
     _claimSyncs[claimId] = future;
     return future.whenComplete(() {
@@ -241,12 +249,14 @@ class PaymentLinkClaimWallet {
     required String dbPath,
     required String network,
     required bool allowResubmit,
+    void Function()? ensureActive,
   }) {
     return _ref
         .read(rpcEndpointFailoverProvider.notifier)
         .runWithEndpointFallback<void>(
           operation: 'Gift Card claim sync',
           action: (endpoint) {
+            ensureActive?.call();
             if (endpoint.networkName != network) {
               throw StateError(
                 'Payment link is for $network, but this wallet is using '
@@ -262,6 +272,33 @@ class PaymentLinkClaimWallet {
             );
           },
         );
+  }
+
+  Future<void> cancelAllSyncs() async {
+    final pending = _claimSyncs.entries.toList();
+    if (pending.isEmpty) return;
+    void cancel() {
+      for (final entry in pending) {
+        rust_sync.cancelPaymentLinkClaimSync(claimId: entry.key);
+      }
+    }
+
+    cancel();
+    final timer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => cancel(),
+    );
+    try {
+      await Future.wait(
+        pending.map((entry) async {
+          try {
+            await entry.value;
+          } catch (_) {}
+        }),
+      );
+    } finally {
+      timer.cancel();
+    }
   }
 
   Future<PaymentLinkAvailability?> syncRetained({
@@ -299,7 +336,11 @@ class PaymentLinkClaimWallet {
       dbPath: tempWallet.dbPath,
       network: network,
     );
-    if (!await matchesLink(link: link, accounts: accounts)) {
+    if (!await matchesLink(
+      link: link,
+      accounts: accounts,
+      dbPath: tempWallet.dbPath,
+    )) {
       log(
         'PaymentLinkService: retained claim wallet no longer matches its '
         'Gift Card identity; leaving it recoverable from the stored link',
@@ -350,9 +391,12 @@ class PaymentLinkClaimWallet {
   /// somebody claims the Card, so this creates and imports it if needed, and
   /// leaves it in place for the claim that may still follow.
   Future<List<rust_sync.TransactionInfo>> loadFundingHistory(
-    VizorPaymentLink link,
-  ) async {
+    VizorPaymentLink link, {
+    void Function()? ensureActive,
+  }) async {
+    ensureActive?.call();
     final tempWallet = await createOrOpen(link);
+    ensureActive?.call();
     String? accountUuid;
     if (tempWallet.existed) {
       List<rust_wallet.AccountInfo>? accounts;
@@ -365,15 +409,21 @@ class PaymentLinkClaimWallet {
         log('PaymentLinkClaimWallet: reopening the claim wallet failed: $e');
       }
       if (accounts != null &&
-          await matchesLink(link: link, accounts: accounts)) {
+          await matchesLink(
+            link: link,
+            accounts: accounts,
+            dbPath: tempWallet.dbPath,
+          )) {
         accountUuid = accounts.single.uuid;
       } else {
         // An import that died between creating the file and the account, or a
         // wallet for another identity: recreate, as the claim path does.
+        ensureActive?.call();
         await resetDb(tempWallet.directory);
         await tempWallet.directory.create(recursive: true);
       }
     }
+    ensureActive?.call();
     if (accountUuid == null) {
       final imported = await importClaimAccount(
         link: link,
@@ -383,7 +433,13 @@ class PaymentLinkClaimWallet {
       );
       accountUuid = imported.accountUuid;
     }
-    await runClaimSync(link: link, dbPath: tempWallet.dbPath);
+    ensureActive?.call();
+    await runClaimSync(
+      link: link,
+      dbPath: tempWallet.dbPath,
+      ensureActive: ensureActive,
+    );
+    ensureActive?.call();
     return rust_sync.getTransactionHistory(
       dbPath: tempWallet.dbPath,
       network: link.network,

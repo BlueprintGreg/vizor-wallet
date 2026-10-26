@@ -96,7 +96,6 @@ pub struct SoftwareWalletImportAccount {
 pub struct AccountInfo {
     pub uuid: String,
     pub name: String,
-    pub unified_address: String,
     pub birthday_height: u32,
     pub zip32_account_index: Option<u32>,
     pub is_seed_anchor: bool,
@@ -141,7 +140,7 @@ pub struct ChainUpgradeActivationStatus {
 }
 
 /// Catches panics and converts them to Result<T, String>.
-fn catch<T>(f: impl FnOnce() -> Result<T, String> + panic::UnwindSafe) -> Result<T, String> {
+pub(super) fn catch<T>(f: impl FnOnce() -> Result<T, String> + panic::UnwindSafe) -> Result<T, String> {
     match panic::catch_unwind(f) {
         Ok(result) => result,
         Err(e) => {
@@ -1265,7 +1264,6 @@ pub fn list_accounts(db_path: String, network: String) -> Result<Vec<AccountInfo
             .map(|a| AccountInfo {
                 uuid: a.uuid,
                 name: a.name,
-                unified_address: a.unified_address,
                 birthday_height: a.birthday_height,
                 zip32_account_index: a.zip32_account_index,
                 is_seed_anchor: a.is_seed_anchor,
@@ -1315,6 +1313,7 @@ pub fn delete_account(
 /// Drop process-local wallet summary data after the wallet DB is deleted.
 pub fn evict_wallet_summary_cache(db_path: String) {
     crate::wallet::wallet_summary_cache::evict_db(&db_path);
+    crate::wallet::sync::history_pages::evict_db(&db_path);
 }
 
 /// Current and legacy receive representations owned by a local account.

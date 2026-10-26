@@ -12,6 +12,7 @@ import '../core/config/rpc_endpoint_config.dart';
 import '../core/layout/app_process_work_policy.dart';
 import '../core/lifecycle/app_shutdown_signal.dart';
 import '../core/storage/wallet_paths.dart';
+import '../core/storage/wallet_balance_cache.dart';
 import '../rust/api/sync.dart' as rust_sync;
 import 'account_provider.dart';
 import 'public_details_loads_provider.dart';
@@ -23,6 +24,7 @@ import 'network_privacy_provider.dart'
     show excludeTransparentRecoveryCompanionsFromBackup;
 import 'rpc_endpoint_failover_provider.dart';
 import 'sync_failure.dart';
+import 'wallet_balance_cache_provider.dart';
 
 const kSyncPhasePreflight = 'preflight';
 const kSyncPhaseSetup = 'setup';
@@ -107,12 +109,23 @@ class SyncState {
   /// True after balance fields have been loaded for [accountUuid].
   final bool hasBalanceData;
 
+  /// Previous accepted balance restored from disk; its display fields carry
+  /// amounts, while spendable pool fields remain empty until a live read.
+  final bool hasCachedBalance;
+  bool get hasDisplayBalance => hasBalanceData || hasCachedBalance;
+
+  /// An actual initial scan keeps its importing presentation. A cache miss
+  /// before scan work is known only leaves the balance card unloaded.
+  bool get isImportingAccount =>
+      !hasDisplayBalance && (remainingScanBlocks ?? 0) > 0 && failure == null;
+
   /// True after recent transaction history has been loaded for [accountUuid].
   final bool hasRecentTransactionsData;
+  final bool hasRecentTransactionsError;
 
   /// True only after both balance and history have been loaded for
-  /// [accountUuid]. Activity UIs should use this instead of treating a scoped
-  /// placeholder or partial refresh as renderable account data.
+  /// [accountUuid]. Consumers requiring both use this; Home balance and activity
+  /// surfaces use their independent availability flags.
   bool get hasAccountScopedData => hasBalanceData && hasRecentTransactionsData;
   final bool isSyncing;
   final bool isBackgroundMode;
@@ -284,6 +297,8 @@ class SyncState {
     required bool syncComplete,
     bool releaseSnapshotOnAuthoritativeBalance = false,
   }) {
+    // Persisted and in-memory snapshots share the same release conditions.
+    // A live read during scanning updates actual balances, not this display.
     if (previous?.isUsingCompletedSpendableSnapshot ?? false) {
       final canReleaseSnapshot =
           hasAuthoritativeBalance &&
@@ -321,8 +336,44 @@ class SyncState {
     required bool clearRestoredSnapshotIfUnavailable,
   }) {
     return clearRestoredSnapshotIfUnavailable &&
+        !(previous?.hasCachedBalance ?? false) &&
         !hasAuthoritativeBalance &&
         (previous?.isUsingCompletedSpendableSnapshot ?? false);
+  }
+
+  SyncState withCachedBalance(CachedWalletBalance cached) {
+    final balance = cached.balance;
+    return copyWith(
+      hasCachedBalance: true,
+      displaySpendableFreshness: SpendableBalanceFreshness.lastCompletedSync,
+      displaySpendableBalance: balance.spendable,
+      displayIronwoodBalance: balance.ironwood,
+      displayIronwoodPendingBalance: balance.ironwoodPending,
+      displayOrchardBalance: balance.orchard,
+      displayOrchardPendingBalance: balance.orchardPending,
+      displayOrchardLockedBalance: balance.orchardLocked,
+      displayShieldedBalance:
+          balance.sapling +
+          balance.orchard +
+          balance.ironwood +
+          balance.saplingPending +
+          balance.orchardPending +
+          balance.ironwoodPending,
+      displayTotalBalance: balance.total,
+      // A persisted transparent amount never restores current authority.
+      transparentAuthority: balance.transparentStop != null
+          ? rust_sync.TransparentBalanceAuthority.stopped
+          : rust_sync.TransparentBalanceAuthority.lastKnown,
+      transparentLastKnownBalance:
+          balance.transparentAuthority ==
+              rust_sync.TransparentBalanceAuthority.current
+          ? balance.transparent +
+                balance.transparentPending +
+                balance.transparentLocked
+          : balance.transparentLastKnown,
+      transparentStop: balance.transparentStop,
+      transparentPrivate: balance.transparentPrivate,
+    );
   }
 
   SyncState withSyncActivityStopped() {
@@ -338,6 +389,7 @@ class SyncState {
     BigInt? shieldTransparentFee,
     BigInt? shieldTransparentAmount,
     required bool syncComplete,
+    bool releaseSnapshotOnAuthoritativeBalance = false,
   }) {
     assert(
       balance == null ||
@@ -350,6 +402,8 @@ class SyncState {
       authoritativeSpendable: nextSpendableBalance,
       hasAuthoritativeBalance: hasAuthoritativeBalance,
       syncComplete: syncComplete,
+      releaseSnapshotOnAuthoritativeBalance:
+          releaseSnapshotOnAuthoritativeBalance,
     );
     final preservePoolDisplay =
         spendableDisplay.freshness ==
@@ -357,8 +411,11 @@ class SyncState {
 
     return copyWith(
       hasBalanceData: hasAuthoritativeBalance || hasBalanceData,
+      hasCachedBalance: !hasAuthoritativeBalance && hasCachedBalance,
       hasRecentTransactionsData:
           fetchedRecentTransactions != null || hasRecentTransactionsData,
+      hasRecentTransactionsError:
+          fetchedRecentTransactions == null && hasRecentTransactionsError,
       transparentBalance: balance?.transparent,
       saplingBalance: balance?.sapling,
       orchardBalance: balance?.orchard,
@@ -422,7 +479,9 @@ class SyncState {
     this.accountUuid,
     bool hasAccountScopedData = false,
     bool? hasBalanceData,
+    this.hasCachedBalance = false,
     bool? hasRecentTransactionsData,
+    this.hasRecentTransactionsError = false,
     this.isSyncing = false,
     this.isBackgroundMode = false,
     this.isSyncComplete = false,
@@ -521,7 +580,9 @@ class SyncState {
     String? accountUuid,
     bool? hasAccountScopedData,
     bool? hasBalanceData,
+    bool? hasCachedBalance,
     bool? hasRecentTransactionsData,
+    bool? hasRecentTransactionsError,
     bool? isSyncing,
     bool? isBackgroundMode,
     bool? isSyncComplete,
@@ -579,6 +640,9 @@ class SyncState {
       accountUuid: accountUuid ?? this.accountUuid,
       hasBalanceData:
           hasBalanceData ?? hasAccountScopedData ?? this.hasBalanceData,
+      hasCachedBalance: hasCachedBalance ?? this.hasCachedBalance,
+      hasRecentTransactionsError:
+          hasRecentTransactionsError ?? this.hasRecentTransactionsError,
       hasRecentTransactionsData:
           hasRecentTransactionsData ??
           hasAccountScopedData ??
@@ -1306,7 +1370,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
         initial.accountUuid != null &&
         initial.accountUuid == initialAccountUuid &&
         initial.hasAccountScopedData;
-    final initialState = SyncState(
+    var initialState = SyncState(
       accountUuid: initialAccountUuid,
       hasAccountScopedData: initialBelongsToActiveAccount,
       isSyncing: false,
@@ -1379,6 +1443,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
           : const [],
       phase: '',
     );
+    if (initial.accountUuid == initialAccountUuid &&
+        initial.cachedBalance != null &&
+        !_requiresUnlock) {
+      initialState = initialState.withCachedBalance(initial.cachedBalance!);
+    }
     // Startup may raise or lower the policy after the snapshot was read; the
     // tip has not moved since. See [SyncState.carryingTransparentAuthority].
     final startupApplied = ref
@@ -1504,6 +1573,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       return;
     }
     startSync();
+    refreshHomeInBackground();
     _startPolling();
   }
 
@@ -1612,8 +1682,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       SyncState(
         accountUuid: accountUuid,
         hasBalanceData: scopedPrev?.hasBalanceData ?? false,
+        hasCachedBalance: scopedPrev?.hasCachedBalance ?? false,
         hasRecentTransactionsData:
             scopedPrev?.hasRecentTransactionsData ?? false,
+        hasRecentTransactionsError:
+            scopedPrev?.hasRecentTransactionsError ?? false,
         isSyncing: true,
         isBackgroundMode: false,
         isSyncComplete: false,
@@ -2011,8 +2084,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       SyncState(
         accountUuid: accountUuid,
         hasBalanceData: scopedPrev?.hasBalanceData ?? false,
+        hasCachedBalance: scopedPrev?.hasCachedBalance ?? false,
         hasRecentTransactionsData:
             scopedPrev?.hasRecentTransactionsData ?? false,
+        hasRecentTransactionsError:
+            scopedPrev?.hasRecentTransactionsError ?? false,
         failure: failure,
         error: failure.rawMessage,
         isSyncComplete: false,
@@ -2136,8 +2212,11 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       SyncState(
         accountUuid: accountUuid,
         hasBalanceData: scopedPrev?.hasBalanceData ?? false,
+        hasCachedBalance: scopedPrev?.hasCachedBalance ?? false,
         hasRecentTransactionsData:
             scopedPrev?.hasRecentTransactionsData ?? false,
+        hasRecentTransactionsError:
+            scopedPrev?.hasRecentTransactionsError ?? false,
         isSyncing: false,
         isBackgroundMode: false,
         isSyncComplete: prev?.isSyncComplete ?? false,
@@ -2433,6 +2512,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     _balanceRefreshQueuedClearRestoredSnapshotIfUnavailable = false;
     _balanceRefreshQueuedRequireAuthoritativeBalance = false;
     _lastKnownByAccount.clear();
+    final cacheStore = ref.read(walletBalanceCacheProvider);
+    final cacheDrained = cacheStore.suspendAndDrain();
     state = AsyncData(SyncState());
 
     // Sign-out should cancel the current Rust run immediately so unlock
@@ -2440,6 +2521,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     rust_sync.setSyncMode(mode: 0);
     rust_sync.cancelFullSync();
 
+    await cacheDrained;
+    cacheStore.resume();
     await _waitForRustTasksToStop(
       timeoutMs: 5000,
       onSyncTimeout:
@@ -2942,7 +3025,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (event.hasNewTx || event.isComplete) {
       balanceReadVersion = ++_balanceReadVersion;
       try {
-        final balance = await rust_sync.getBalance(
+        final balance = await readWalletBalance(
           dbPath: dbPath,
           network: network,
           accountUuid: accountUuid,
@@ -2976,7 +3059,7 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       }
       if (!ref.mounted) return;
       try {
-        recentTxs = await rust_sync.getTransactionHistory(
+        recentTxs = await readTransactionHistory(
           dbPath: dbPath,
           network: network,
           limit: 10,
@@ -3027,6 +3110,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     if (progressEventVersion != _progressEventVersion ||
         failureRecordedWhileAwaiting) {
       _mergeFetchedAccountDataIntoLatestState(
+        dbPath: dbPath,
+        network: network,
         accountUuid: accountUuid,
         balance: useFetchedBalance ? fetchedBalance : null,
         recentTransactions: useFetchedRecentTxs ? recentTxs : null,
@@ -3049,6 +3134,13 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     }
     if (useFetchedBalance) {
       ++_authoritativeBalanceVersion;
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        accountUuid,
+        fetchedBalance!,
+        syncComplete: event.isComplete,
+      );
     }
     final stateScopedPrev = _previousScopedState(
       currentState,
@@ -3110,7 +3202,12 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       SyncState(
         accountUuid: stateAccountUuid,
         hasBalanceData: hasBalanceData,
+        hasCachedBalance:
+            !useFetchedBalance && (stateScopedPrev?.hasCachedBalance ?? false),
         hasRecentTransactionsData: hasRecentTransactionsData,
+        hasRecentTransactionsError:
+            !useFetchedRecentTxs &&
+            (stateScopedPrev?.hasRecentTransactionsError ?? false),
         isSyncing: event.isSyncing && !event.isComplete,
         isBackgroundMode: false,
         isSyncComplete: event.isComplete,
@@ -3247,6 +3344,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
   }
 
   void _mergeFetchedAccountDataIntoLatestState({
+    required String dbPath,
+    required String network,
     required String accountUuid,
     rust_sync.WalletBalance? balance,
     List<rust_sync.TransactionInfo>? recentTransactions,
@@ -3258,10 +3357,17 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     final current = _previousScopedState(state.value, accountUuid);
     if (current == null) return;
 
+    final syncComplete = current.isSyncedToTip;
     if (balance != null) {
       ++_authoritativeBalanceVersion;
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        accountUuid,
+        balance,
+        syncComplete: syncComplete,
+      );
     }
-    final syncComplete = current.isSyncedToTip;
     state = AsyncData(
       current.withFetchedAccountData(
         balance: balance,
@@ -3306,7 +3412,58 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     clearRestoredSnapshotIfUnavailable: true,
   );
 
-  Future<void> refreshAfterUnlock() => _requestBalanceRefresh();
+  /// Unlock only waits for one small persisted snapshot, never a wallet summary
+  /// or history. The caller starts live reads after starting sync and routing.
+  Future<void> refreshAfterUnlock() async {
+    final epoch = _sensitiveStateEpoch;
+    final uuid = _getActiveAccountUuid();
+    if (uuid == null || _requiresUnlock) return;
+    try {
+      final path = await _getDbPath();
+      final cached = await ref
+          .read(walletBalanceCacheProvider)
+          .load(
+            dbPath: path,
+            network: _endpointConfig.networkName,
+            accountUuid: uuid,
+          );
+      if (!ref.mounted ||
+          epoch != _sensitiveStateEpoch ||
+          _requiresUnlock ||
+          uuid != _getActiveAccountUuid()) {
+        return;
+      }
+      final current = (state.value ?? SyncState()).scopedToAccount(uuid);
+      if (cached != null && !current.hasBalanceData) {
+        state = AsyncData(current.withCachedBalance(cached));
+      }
+    } catch (error) {
+      log('SyncNotifier: balance cache restore failed: $error');
+    }
+  }
+
+  void refreshHomeInBackground() => unawaited(_refreshBalanceAfterResume());
+
+  void _persistBalanceSnapshot(
+    String dbPath,
+    String network,
+    String uuid,
+    rust_sync.WalletBalance balance, {
+    required bool syncComplete,
+    bool releaseSnapshotOnAuthoritativeBalance = false,
+  }) {
+    // A successful live read can still contain an intermediate scan balance.
+    // Leave the disk snapshot intact until the display may also be replaced.
+    if (!syncComplete && !releaseSnapshotOnAuthoritativeBalance) return;
+    ref
+        .read(walletBalanceCacheProvider)
+        .accept(
+          dbPath: dbPath,
+          network: network,
+          accountUuid: uuid,
+          balance: balance,
+        );
+  }
 
   Future<void> _refreshBalanceAfterResume() async {
     if (_isShuttingDown) return;
@@ -3458,8 +3615,8 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
     );
   }
 
-  /// Waits until a UI-only completed-sync snapshot has been reconciled with
-  /// the latest Rust balance. Editing can continue while the snapshot is
+  /// Waits until a UI-only persisted or completed-sync snapshot has been
+  /// reconciled with the latest Rust balance. Editing can continue while it is
   /// visible, but proposal and Max operations call this before treating the
   /// displayed amount as spendable.
   Future<void> waitForAuthoritativeSpendable({
@@ -3547,290 +3704,196 @@ class SyncNotifier extends AsyncNotifier<SyncState> {
       state = AsyncData(SyncState());
       return;
     }
-    final balanceReadVersion = ++_balanceReadVersion;
+    final version = ++_balanceReadVersion;
     final epoch = _sensitiveStateEpoch;
-    final prev = state.value;
     final dbPath = await _getDbPath();
     final network = _endpointConfig.networkName;
-    final accountUuid = _getActiveAccountUuid();
-    if (accountUuid == null) {
-      log('SyncNotifier: no active account, skipping refresh');
-      return;
-    }
-    final scopedPrev = _previousScopedState(prev, accountUuid);
+    final uuid = _getActiveAccountUuid();
+    if (uuid == null || !_acceptsAccountRead(uuid, epoch, version)) return;
 
-    BigInt? transparent;
-    BigInt? sapling;
-    BigInt? orchard;
-    BigInt? ironwood;
-    BigInt? orchardLocked;
-    BigInt? transparentPending;
-    BigInt? transparentLocked;
-    rust_sync.TransparentBalanceAuthority? transparentAuthority;
-    BigInt? transparentLastKnown;
-    rust_sync.TransparentStopReason? transparentStop;
-    bool? transparentPrivate;
-    BigInt? saplingPending;
-    BigInt? orchardPending;
-    BigInt? ironwoodPending;
-    BigInt? spendable;
-    BigInt? total;
-    bool? canShieldTransparentBalance;
-    BigInt? shieldTransparentFee;
-    BigInt? shieldTransparentAmount;
-    var hasAuthoritativeBalance = false;
-    var didFetchRecentTxs = false;
-
-    // Balance and history are independent reads; issuing both before
-    // awaiting either removes one round trip from every refresh.
-    // `onError` is attached here rather than only in the `catch` blocks
-    // below: if the first await throws, the second future would
-    // otherwise complete with an unobserved error.
-    final balanceRead = readWalletBalance(
+    // Both reads start together, but each publishes as soon as it is ready.
+    // Keep history's errors observed even when the balance read is superseded.
+    final historyUpdate = _refreshAccountHistory(
       dbPath: dbPath,
       network: network,
-      accountUuid: accountUuid,
-    ).then<Object>((value) => value, onError: (Object error) => error);
-    final historyRead = readTransactionHistory(
-      dbPath: dbPath,
-      network: network,
-      limit: 10,
-      accountUuid: accountUuid,
-    ).then<Object>((value) => value, onError: (Object error) => error);
-
+      accountUuid: uuid,
+      epoch: epoch,
+      balanceReadVersion: version,
+    );
+    rust_sync.WalletBalance? balance;
     try {
-      final balanceResult = await balanceRead;
-      if (balanceResult is! rust_sync.WalletBalance) throw balanceResult;
-      final balance = balanceResult;
-      if (balance.availability ==
+      final result = await readWalletBalance(
+        dbPath: dbPath,
+        network: network,
+        accountUuid: uuid,
+      );
+      if (result.availability ==
           rust_sync.WalletBalanceAvailability.available) {
-        transparent = balance.transparent;
-        sapling = balance.sapling;
-        orchard = balance.orchard;
-        ironwood = balance.ironwood;
-        orchardLocked = balance.orchardLocked;
-        transparentPending = balance.transparentPending;
-        transparentLocked = balance.transparentLocked;
-        transparentAuthority = balance.transparentAuthority;
-        transparentLastKnown = balance.transparentLastKnown;
-        transparentStop = balance.transparentStop;
-        transparentPrivate = balance.transparentPrivate;
-        saplingPending = balance.saplingPending;
-        orchardPending = balance.orchardPending;
-        ironwoodPending = balance.ironwoodPending;
-        spendable = balance.spendable;
-        total = balance.total;
-        hasAuthoritativeBalance = true;
-        _logSpendableDropBreakdown(balance, scopedPrev);
+        balance = result;
       } else {
-        _logUnavailableBalance(balance.availability, accountUuid);
+        _logUnavailableBalance(result.availability, uuid);
       }
-    } catch (e) {
+    } catch (error) {
       _logRefreshReadError(
         label: 'balance',
         fallback: 'keeping previous value',
-        error: e,
+        error: error,
       );
     }
-
-    var recentTxs =
-        scopedPrev?.recentTransactions ?? const <rust_sync.TransactionInfo>[];
-    try {
-      final historyResult = await historyRead;
-      if (historyResult is! List<rust_sync.TransactionInfo>) {
-        throw historyResult;
-      }
-      recentTxs = historyResult;
-      didFetchRecentTxs = true;
-    } catch (e) {
-      _logRefreshReadError(
-        label: 'tx history',
-        fallback: 'keeping previous list',
-        error: e,
-      );
-    }
-
-    final shieldStatus = await _getShieldTransparentStatus(
-      dbPath: dbPath,
-      network: network,
-      accountUuid: accountUuid,
-      transparentBalance:
-          transparent ?? scopedPrev?.transparentBalance ?? BigInt.zero,
-    );
-    if (shieldStatus != null) {
-      canShieldTransparentBalance = shieldStatus.canShield;
-      shieldTransparentFee = shieldStatus.fee;
-      shieldTransparentAmount = shieldStatus.amount;
-    }
-
-    if (epoch != _sensitiveStateEpoch ||
-        _requiresUnlock ||
-        accountUuid != _getActiveAccountUuid()) {
-      log(
-        'SyncNotifier: discarding balance refresh after account or lock transition',
-      );
-      return;
-    }
-    if (balanceReadVersion != _balanceReadVersion) {
-      log('SyncNotifier: discarding superseded balance refresh');
-      if (requireAuthoritativeBalance) {
+    if (!_acceptsAccountRead(uuid, epoch, version)) {
+      if (ref.mounted &&
+          requireAuthoritativeBalance &&
+          !_requiresUnlock &&
+          uuid == _getActiveAccountUuid() &&
+          epoch == _sensitiveStateEpoch) {
         _balanceRefreshQueued = true;
         _balanceRefreshQueuedReleaseSnapshot = true;
       }
       return;
     }
-    if (requireAuthoritativeBalance && !hasAuthoritativeBalance) {
+    if (requireAuthoritativeBalance && balance == null) {
       throw StateError('Balance unavailable after releasing send proposal');
     }
-    ref
-        .read(pendingActivityEvidenceProvider.notifier)
-        .historyReadCompleted(accountUuid, available: didFetchRecentTxs);
-    // Commit against the latest state so a slow balance/history refresh
-    // cannot roll sync progress or completion metadata back to the snapshot
-    // captured before the awaits above.
-    final current = state.value;
-    final currentScoped = _previousScopedState(current, accountUuid);
-    final accountFallback = currentScoped ?? scopedPrev;
+    final current = (state.value ?? SyncState()).scopedToAccount(uuid);
     if (SyncState.shouldClearUnavailableRestoredSnapshot(
-      previous: accountFallback,
-      hasAuthoritativeBalance: hasAuthoritativeBalance,
+      previous: current,
+      hasAuthoritativeBalance: balance != null,
       clearRestoredSnapshotIfUnavailable: clearRestoredSnapshotIfUnavailable,
     )) {
-      // The current state is no longer complete after this branch, so a
-      // subsequent switch away will not replace the cached snapshot. Evict it
-      // now to prevent switching back from restoring the same stale balance.
-      _lastKnownByAccount.remove(accountUuid);
-      final cleared = (current ?? SyncState()).withoutAccountScopedData(
-        accountUuid: accountUuid,
-      );
+      _lastKnownByAccount.remove(uuid);
       state = AsyncData(
-        cleared.copyWith(
-          hasRecentTransactionsData:
-              didFetchRecentTxs ||
-              (accountFallback?.hasRecentTransactionsData ?? false),
-          recentTransactions: didFetchRecentTxs
-              ? recentTxs
-              : accountFallback?.recentTransactions ?? const [],
-        ),
+        current
+            .withoutAccountScopedData(accountUuid: uuid)
+            .copyWith(
+              hasRecentTransactionsData: current.hasRecentTransactionsData,
+              hasRecentTransactionsError: current.hasRecentTransactionsError,
+              recentTransactions: current.recentTransactions,
+            ),
       );
+      await historyUpdate;
       return;
     }
-    if (hasAuthoritativeBalance) {
+    if (balance != null) {
+      _logSpendableDropBreakdown(balance, current);
       ++_authoritativeBalanceVersion;
     }
-    final nextSpendableBalance =
-        spendable ?? accountFallback?.spendableBalance ?? BigInt.zero;
-    final syncComplete = current?.isSyncedToTip ?? false;
-    final spendableDisplay = SyncState.resolveSpendableDisplay(
-      previous: accountFallback,
-      authoritativeSpendable: nextSpendableBalance,
-      hasAuthoritativeBalance: hasAuthoritativeBalance,
-      syncComplete: syncComplete,
-      releaseSnapshotOnAuthoritativeBalance:
-          releaseSnapshotOnAuthoritativeBalance,
-    );
-    final preservePoolDisplay =
-        spendableDisplay.freshness ==
-        SpendableBalanceFreshness.lastCompletedSync;
-
+    final syncComplete = current.isSyncedToTip;
     state = AsyncData(
-      SyncState(
+      current.withFetchedAccountData(
+        balance: balance,
+        canShieldTransparentBalance: balance == null ? null : false,
+        shieldTransparentFee: balance == null ? null : BigInt.zero,
+        shieldTransparentAmount: balance == null ? null : BigInt.zero,
+        syncComplete: syncComplete,
+        releaseSnapshotOnAuthoritativeBalance:
+            releaseSnapshotOnAuthoritativeBalance,
+      ),
+    );
+    if (balance != null) {
+      _persistBalanceSnapshot(
+        dbPath,
+        network,
+        uuid,
+        balance,
+        syncComplete: syncComplete,
+        releaseSnapshotOnAuthoritativeBalance:
+            releaseSnapshotOnAuthoritativeBalance,
+      );
+    }
+
+    // Send/release callers can await the whole refresh, while Home sees the
+    // accepted balance above before history and shielding checks finish.
+    await Future.wait([
+      historyUpdate,
+      if (balance != null)
+        _refreshShieldStatus(
+          dbPath: dbPath,
+          network: network,
+          accountUuid: uuid,
+          epoch: epoch,
+          balanceReadVersion: version,
+          transparentBalance: balance.transparent,
+        ),
+    ]);
+  }
+
+  bool _acceptsAccountRead(String uuid, int epoch, int version) =>
+      ref.mounted &&
+      epoch == _sensitiveStateEpoch &&
+      !_requiresUnlock &&
+      uuid == _getActiveAccountUuid() &&
+      version == _balanceReadVersion;
+
+  Future<void> _refreshAccountHistory({
+    required String dbPath,
+    required String network,
+    required String accountUuid,
+    required int epoch,
+    required int balanceReadVersion,
+  }) async {
+    try {
+      final history = await readTransactionHistory(
+        dbPath: dbPath,
+        network: network,
         accountUuid: accountUuid,
-        hasBalanceData:
-            hasAuthoritativeBalance ||
-            (accountFallback?.hasBalanceData ?? false),
-        hasRecentTransactionsData:
-            didFetchRecentTxs ||
-            (accountFallback?.hasRecentTransactionsData ?? false),
-        isSyncing: current?.isSyncing ?? false,
-        isBackgroundMode: current?.isBackgroundMode ?? false,
-        isSyncComplete: current?.isSyncComplete ?? false,
-        percentage: current?.percentage ?? 0.0,
-        displayTargetPercentage:
-            current?.displayTargetPercentage ?? current?.percentage ?? 0.0,
-        displayTargetBlocks: current?.displayTargetBlocks ?? 0,
-        checking: current?.checking,
-        remainingScanBlocks: current?.remainingScanBlocks,
-        pendingScanStartHeight: current?.pendingScanStartHeight,
-        phaseCompletedUnits: current?.phaseCompletedUnits ?? 0,
-        phaseTotalUnits: current?.phaseTotalUnits ?? 0,
-        scannedHeight: current?.scannedHeight ?? 0,
-        chainTipHeight: current?.chainTipHeight ?? 0,
-        transparentBalance: transparent ?? accountFallback?.transparentBalance,
-        saplingBalance: sapling ?? accountFallback?.saplingBalance,
-        orchardBalance: orchard ?? accountFallback?.orchardBalance,
-        ironwoodBalance: ironwood ?? accountFallback?.ironwoodBalance,
-        orchardLockedBalance:
-            orchardLocked ?? accountFallback?.orchardLockedBalance,
-        transparentPendingBalance:
-            transparentPending ?? accountFallback?.transparentPendingBalance,
-        transparentLockedBalance:
-            transparentLocked ?? accountFallback?.transparentLockedBalance,
-        transparentAuthority:
-            transparentAuthority ?? accountFallback?.transparentAuthority,
-        transparentLastKnownBalance: transparentAuthority != null
-            ? transparentLastKnown
-            : accountFallback?.transparentLastKnownBalance,
-        transparentStop: transparentAuthority != null
-            ? transparentStop
-            : accountFallback?.transparentStop,
-        transparentPrivate:
-            transparentPrivate ?? accountFallback?.transparentPrivate,
-        saplingPendingBalance:
-            saplingPending ?? accountFallback?.saplingPendingBalance,
-        orchardPendingBalance:
-            orchardPending ?? accountFallback?.orchardPendingBalance,
-        ironwoodPendingBalance:
-            ironwoodPending ?? accountFallback?.ironwoodPendingBalance,
-        canShieldTransparentBalance:
-            canShieldTransparentBalance ??
-            accountFallback?.canShieldTransparentBalance ??
-            false,
-        shieldTransparentFee:
-            shieldTransparentFee ?? accountFallback?.shieldTransparentFee,
-        shieldTransparentAmount:
-            shieldTransparentAmount ?? accountFallback?.shieldTransparentAmount,
-        spendableBalance: nextSpendableBalance,
-        displaySpendableBalance: spendableDisplay.balance,
-        displayIronwoodBalance: preservePoolDisplay
-            ? accountFallback?.displayIronwoodBalance
-            : ironwood ?? accountFallback?.ironwoodBalance,
-        displayIronwoodPendingBalance: preservePoolDisplay
-            ? accountFallback?.displayIronwoodPendingBalance
-            : ironwoodPending ?? accountFallback?.ironwoodPendingBalance,
-        displayOrchardBalance: preservePoolDisplay
-            ? accountFallback?.displayOrchardBalance
-            : orchard ?? accountFallback?.orchardBalance,
-        displayOrchardPendingBalance: preservePoolDisplay
-            ? accountFallback?.displayOrchardPendingBalance
-            : orchardPending ?? accountFallback?.orchardPendingBalance,
-        displayOrchardLockedBalance: preservePoolDisplay
-            ? accountFallback?.displayOrchardLockedBalance
-            : orchardLocked ?? accountFallback?.orchardLockedBalance,
-        displaySpendableFreshness: spendableDisplay.freshness,
-        totalBalance: total ?? accountFallback?.totalBalance,
-        displayTotalBalance: preservePoolDisplay
-            ? accountFallback?.displayTotalBalance
-            : total ?? accountFallback?.totalBalance,
-        displayShieldedBalance: preservePoolDisplay
-            ? accountFallback?.displayShieldedBalance
-            : hasAuthoritativeBalance
-            ? (sapling ?? BigInt.zero) +
-                  (orchard ?? BigInt.zero) +
-                  (ironwood ?? BigInt.zero) +
-                  (saplingPending ?? BigInt.zero) +
-                  (orchardPending ?? BigInt.zero) +
-                  (ironwoodPending ?? BigInt.zero)
-            : accountFallback?.displayShieldedBalance,
-        failure: current?.failure,
-        error: current?.error,
-        recentTransactions: didFetchRecentTxs
-            ? recentTxs
-            : accountFallback?.recentTransactions ?? const [],
-        lastSyncStartedAt: current?.lastSyncStartedAt,
-        lastSyncCompletedAt: current?.lastSyncCompletedAt,
-        lastSyncFailedAt: current?.lastSyncFailedAt,
-        phase: current?.phase ?? '',
+        limit: 10,
+      );
+      if (!_acceptsAccountRead(accountUuid, epoch, balanceReadVersion)) return;
+      final current = (state.value ?? SyncState()).scopedToAccount(accountUuid);
+      state = AsyncData(
+        current.copyWith(
+          hasRecentTransactionsData: true,
+          hasRecentTransactionsError: false,
+          recentTransactions: history,
+        ),
+      );
+      ref
+          .read(pendingActivityEvidenceProvider.notifier)
+          .historyReadCompleted(accountUuid, available: true);
+    } catch (error) {
+      if (_acceptsAccountRead(accountUuid, epoch, balanceReadVersion)) {
+        state = AsyncData(
+          (state.value ?? SyncState())
+              .scopedToAccount(accountUuid)
+              .copyWith(hasRecentTransactionsError: true),
+        );
+        ref
+            .read(pendingActivityEvidenceProvider.notifier)
+            .historyReadCompleted(accountUuid, available: false);
+      }
+      _logRefreshReadError(
+        label: 'tx history',
+        fallback: 'keeping previous list',
+        error: error,
+      );
+    }
+  }
+
+  Future<void> _refreshShieldStatus({
+    required String dbPath,
+    required String network,
+    required String accountUuid,
+    required int epoch,
+    required int balanceReadVersion,
+    required BigInt transparentBalance,
+  }) async {
+    final status = await _getShieldTransparentStatus(
+      dbPath: dbPath,
+      network: network,
+      accountUuid: accountUuid,
+      transparentBalance: transparentBalance,
+    );
+    if (status == null ||
+        !_acceptsAccountRead(accountUuid, epoch, balanceReadVersion)) {
+      return;
+    }
+    final current = _previousScopedState(state.value, accountUuid);
+    if (current == null || !current.hasBalanceData) return;
+    state = AsyncData(
+      current.copyWith(
+        canShieldTransparentBalance: status.canShield,
+        shieldTransparentFee: status.fee,
+        shieldTransparentAmount: status.amount,
       ),
     );
   }

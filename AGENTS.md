@@ -480,7 +480,8 @@ SyncProvider (sync_provider.dart)
   ├── Sync itself is account-agnostic (covers all accounts)
   ├── Polling pauses on app background (onHide), resumes on foreground (onResume)
   ├── refreshAfterSend() called after account switch for immediate update
-  └── refreshAfterUnlock() refreshes balances/history before foreground sync recovery
+  ├── refreshAfterUnlock() restores only the selected account's persisted display balance
+  └── refreshHomeInBackground() refreshes live balance/history after sync starts; each publishes independently
 
 SyncDisplayPercentageProvider (sync_display_progress_provider.dart)
   ├── Owns the 20 ms UI-only interpolation timer between Rust progress events
@@ -498,9 +499,10 @@ until sync callback arrives" flash.
 
 - `loadAppBootstrap()` reads:
   - secure storage (`zcash_accounts`, `zcash_active_account`, `zcash_wallet_network`)
-  - Rust wallet DB via `list_accounts`
-  - active-account DB data via `get_sync_status`, `get_balance`,
-    `get_transaction_history(limit: 10)`
+  - Rust wallet DB metadata via `list_accounts` (one projection; no viewing-key
+    decoding or address reads)
+  - the selected account's receive address and persisted display balance, only
+    when unlocked; no live balance summary or transaction history before `runApp`
 - If the wallet is locked, bootstrap does **not** hydrate active address or
   initial balance/history; it routes straight to `/unlock` and lets the unlock
   flow repopulate that state.
@@ -511,7 +513,7 @@ until sync callback arrives" flash.
 - `SyncProvider` starts from `bootstrap.initialSyncSnapshot` (balances, recent
   txs, scanned/tip heights) and then kicks off the normal live sync flow.
 - Bootstrap is best-effort: route/account bootstrap can still succeed even if
-  initial balance/history hydration fails, in which case sync state falls back
+  initial address/cache hydration fails, in which case sync state falls back
   to empty and the live sync repopulates it.
 
 ### Sync Engine (Rust-only)
@@ -1058,6 +1060,19 @@ Seed-relevance rule:
 - `onResume`: refreshes balance → `_checkAndSync()` (which starts polling)
 - `onHide`: stops polling (no wasted network in background)
 - `SyncState.recentTransactions`: latest 10 transactions, updated on `hasNewTx`, sync completion, and app resume
+- `hasCachedBalance` permits Home to display the persisted snapshot without setting
+  `hasBalanceData`, current pool balances, sync completion, or spendability. An
+  accepted live read updates current balances independently of history. Persisted
+  display snapshots follow the same release conditions as in-memory completed-sync
+  snapshots: a valid balance at sync completion, or an explicit send, proposal-release,
+  or account-switch refresh. Intermediate reads preserve spendable, pending, and
+  holdings displays. `hasRecentTransactionsData` and `hasRecentTransactionsError`
+  own the activity loading state.
+- Only completed-sync or explicit-release balance reads enqueue display-only
+  snapshots through `walletBalanceCacheProvider`; intermediate reads leave the
+  saved snapshot intact. Deletion/reset suspend and drain its writes.
+  `ext_vizor_balance_cache` is in the wallet DB and removed with its account;
+  writes open existing DB files only and do not invalidate the wallet-summary cache.
 - All balance/history queries pass `activeAccountUuid` from `AccountProvider`
 
 ### Desktop Window Bootstrap

@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/balance_cache.dart';
 import 'api/gift_card_tracking.dart';
 import 'api/keystone.dart';
 import 'api/ledger.dart';
@@ -101,6 +102,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AccountViewingKeys dco_decode_account_viewing_keys(dynamic raw);
+
+  @protected
+  ActivityHistoryIndex dco_decode_activity_history_index(dynamic raw);
+
+  @protected
+  ActivityHistoryRows dco_decode_activity_history_rows(dynamic raw);
+
+  @protected
+  ActivityHistorySummary dco_decode_activity_history_summary(dynamic raw);
 
   @protected
   AddressValidationResult dco_decode_address_validation_result(dynamic raw);
@@ -608,6 +618,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AccountInfo> dco_decode_list_account_info(dynamic raw);
+
+  @protected
+  List<ActivityHistorySummary> dco_decode_list_activity_history_summary(
+    dynamic raw,
+  );
 
   @protected
   List<ApiBallotIntent> dco_decode_list_api_ballot_intent(dynamic raw);
@@ -1468,6 +1483,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ActivityHistoryIndex sse_decode_activity_history_index(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ActivityHistoryRows sse_decode_activity_history_rows(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ActivityHistorySummary sse_decode_activity_history_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AddressValidationResult sse_decode_address_validation_result(
     SseDeserializer deserializer,
   );
@@ -2133,6 +2163,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AccountInfo> sse_decode_list_account_info(SseDeserializer deserializer);
+
+  @protected
+  List<ActivityHistorySummary> sse_decode_list_activity_history_summary(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<ApiBallotIntent> sse_decode_list_api_ballot_intent(
@@ -3224,6 +3259,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_activity_history_index(
+    ActivityHistoryIndex self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_activity_history_rows(
+    ActivityHistoryRows self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_activity_history_summary(
+    ActivityHistorySummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_address_validation_result(
     AddressValidationResult self,
     SseSerializer serializer,
@@ -4030,6 +4083,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_account_info(
     List<AccountInfo> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_activity_history_summary(
+    List<ActivityHistorySummary> self,
     SseSerializer serializer,
   );
 
