@@ -16,6 +16,9 @@ use secrecy::SecretVec;
 use super::*;
 use crate::wallet::keys;
 
+#[path = "history_targeted_tests.rs"]
+pub(super) mod targeted;
+
 const NETWORK: WalletNetwork = WalletNetwork::Regtest;
 // Nonuniform identifiers catch an accidental switch from database byte order
 // to TxId's reversed display encoding at the typed-API boundary.

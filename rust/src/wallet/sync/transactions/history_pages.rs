@@ -465,41 +465,71 @@ pub(crate) fn rows(
         account,
         Some(snapshot_id),
         !requested.is_empty(),
-        |conn, snapshot| {
-            let mut selected = BTreeSet::new();
-            for txid in &requested {
-                if let Some(&i) = snapshot.by_txid.get(txid) {
-                    selected.insert(i);
-                    let base = &snapshot.bases[i];
-                    if let Some(created) = &base.created {
-                        if let Some(peers) =
-                            snapshot.peers.get(&(created.clone(), base.expiry_key()))
-                        {
-                            selected.extend(peers);
-                        }
-                    }
-                }
-            }
-            let mut bases: Vec<_> = selected
-                .into_iter()
-                .map(|i| snapshot.bases[i].clone())
-                .collect();
-            load_details(conn, snapshot, path, network, account, &mut bases)?;
-            let mut rows = assemble_history(
-                &bases,
-                &snapshot.outputs,
-                account.expose_uuid().as_bytes(),
-                None,
-            );
-            let hexes: HashSet<_> = requested.iter().map(hex::encode).collect();
-            rows.retain(|row| hexes.contains(&row.txid_hex));
-            Ok(rows)
-        },
+        |conn, snapshot| requested_rows(conn, snapshot, path, network, account, &requested),
     )?;
     Ok(HistoryRows {
         stale: transactions.is_none(),
         transactions: transactions.unwrap_or_default(),
     })
+}
+
+/// Targeted lookups share the account cache without an Activity page token.
+/// Each call observes the current DB version, and unchanged batches reuse both
+/// summaries and details. A proposal stays within its caller's single read.
+pub(crate) fn targeted(
+    path: &str,
+    network: WalletNetwork,
+    account: AccountUuid,
+    requested: &HashSet<Vec<u8>>,
+) -> Result<Vec<TransactionInfo>, String> {
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(
+        with_snapshot(path, network, account, None, false, |conn, snapshot| {
+            requested_rows(conn, snapshot, path, network, account, requested)
+        })?
+        .unwrap(),
+    )
+}
+
+fn requested_rows(
+    conn: &rusqlite::Connection,
+    snapshot: &mut Snapshot,
+    path: &str,
+    network: WalletNetwork,
+    account: AccountUuid,
+    requested: &HashSet<Vec<u8>>,
+) -> Result<Vec<TransactionInfo>, String> {
+    let mut selected = BTreeSet::new();
+    for txid in requested {
+        if let Some(&i) = snapshot.by_txid.get(txid) {
+            // A previous requested peer already included this entire group.
+            if !selected.insert(i) {
+                continue;
+            }
+            let base = &snapshot.bases[i];
+            if let Some(created) = &base.created {
+                if let Some(peers) = snapshot.peers.get(&(created.clone(), base.expiry_key())) {
+                    selected.extend(peers);
+                }
+            }
+        }
+    }
+    let mut bases: Vec<_> = selected
+        .into_iter()
+        .map(|i| snapshot.bases[i].clone())
+        .collect();
+    load_details(conn, snapshot, path, network, account, &mut bases)?;
+    let mut rows = assemble_history(
+        &bases,
+        &snapshot.outputs,
+        account.expose_uuid().as_bytes(),
+        None,
+    );
+    let hexes: HashSet<_> = requested.iter().map(hex::encode).collect();
+    rows.retain(|row| hexes.contains(&row.txid_hex));
+    Ok(rows)
 }
 
 pub(crate) fn recent(
