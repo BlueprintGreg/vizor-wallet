@@ -1930,6 +1930,9 @@ void main() {
   testWidgets('privacy mode masks the migrating amount in the banner', (
     tester,
   ) async {
+    tester.view.physicalSize =
+        const Size(393, 852) * tester.view.devicePixelRatio;
+    addTearDown(tester.view.resetPhysicalSize);
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       _app(

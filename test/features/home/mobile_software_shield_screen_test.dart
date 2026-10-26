@@ -125,6 +125,9 @@ void main() {
     testWidgets(
       'software shielding amounts with privacy mode $privacyModeEnabled',
       (tester) async {
+        tester.view.physicalSize =
+            const Size(393, 852) * tester.view.devicePixelRatio;
+        addTearDown(tester.view.resetPhysicalSize);
         final result = Completer<ShieldTransparentResult>();
         final router = GoRouter(
           initialLocation: '/home/shield',

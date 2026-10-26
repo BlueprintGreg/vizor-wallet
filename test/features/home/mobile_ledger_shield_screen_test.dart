@@ -313,6 +313,9 @@ void main() {
     testWidgets('review amount with privacy mode $privacyModeEnabled', (
       tester,
     ) async {
+      tester.view.physicalSize =
+          const Size(393, 852) * tester.view.devicePixelRatio;
+      addTearDown(tester.view.resetPhysicalSize);
       final container = ProviderContainer(
         overrides: [
           appBootstrapProvider.overrideWithValue(_bootstrap()),

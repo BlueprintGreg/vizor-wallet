@@ -184,6 +184,9 @@ void main() {
   testWidgets('a privacy-masked amount keeps its art and unit semantics', (
     tester,
   ) async {
+    tester.view.physicalSize =
+        const Size(393, 852) * tester.view.devicePixelRatio;
+    addTearDown(tester.view.resetPhysicalSize);
     final semantics = tester.ensureSemantics();
     Widget scene(MobileShieldPhase phase) => host(
       MobileShieldScene(
