@@ -350,7 +350,7 @@ final giftCardActivityIndexProvider = FutureProvider.autoDispose
       ref.watch(paymentLinkLifecycleRevisionProvider);
       final operations = ref.watch(paymentLinkOperationsProvider);
       final records = await Future.wait<Object>([
-        operations.loadCreatedLinkRecoveries(),
+        operations.loadCreatedLinks(),
         operations.loadReceivedLinkRecoveries(),
       ]);
       final created = records[0] as List<PaymentLinkRecoveryRecord>;

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/storage/wallet_paths.dart';
 import '../../rust/api/sync.dart' as rust_sync;
@@ -94,6 +95,13 @@ abstract class ActivityHistorySource {
     List<String> txids,
   );
 }
+
+/// Tests can replace native history without bypassing the screen's metadata
+/// loading and deferred-recovery path.
+final activityHistorySourceFactoryProvider =
+    Provider<ActivityHistorySource Function(String, String)>(
+      (ref) => LocalActivityHistorySource.new,
+    );
 
 class LocalActivityHistorySource implements ActivityHistorySource {
   LocalActivityHistorySource(this.accountUuid, this.network);

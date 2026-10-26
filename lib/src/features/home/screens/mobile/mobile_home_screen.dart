@@ -1,5 +1,6 @@
 import '../../providers/home_activity_state.dart';
 import '../../widgets/home_activity_skeleton.dart';
+import '../../../activity/widgets/deferred_gift_card_recovery.dart';
 import 'dart:async';
 
 import '../../../../providers/app_security_provider.dart';
@@ -1096,7 +1097,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
     final activityLoading = activityState == HomeActivityState.loading;
 
-    return ListView(
+    final content = ListView(
       padding: EdgeInsets.fromLTRB(
         AppSpacing.sm,
         AppSpacing.sm,
@@ -1313,6 +1314,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             ),
           ),
       ],
+    );
+    return DeferredGiftCardRecovery(
+      accountUuid: activeAccountUuid,
+      ready:
+          activityState == HomeActivityState.rows ||
+          activityState == HomeActivityState.empty,
+      child: content,
     );
   }
 }

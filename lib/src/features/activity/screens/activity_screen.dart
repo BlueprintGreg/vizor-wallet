@@ -30,6 +30,7 @@ import '../models/activity_row_data.dart';
 import '../swap_activity_row_items_provider.dart';
 import '../swap_activity_row_mapper.dart';
 import '../widgets/activity_feed.dart';
+import '../widgets/deferred_gift_card_recovery.dart';
 import 'activity_transaction_status_screen.dart';
 
 /// Loads the full transaction history for one account; injectable so
@@ -147,7 +148,10 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
           source:
               widget.historySource ??
               (loader == null
-                  ? LocalActivityHistorySource(uuid, network)
+                  ? ref.read(activityHistorySourceFactoryProvider)(
+                      uuid,
+                      network,
+                    )
                   : FixtureActivityHistorySource(() => loader(uuid))),
           gifts: _gifts,
           swaps: _swaps,
@@ -427,7 +431,7 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
       entries.take(_pager?.visibleCount ?? activityPageSize).toList(),
     );
 
-    return AppDesktopShell(
+    final content = AppDesktopShell(
       sidebar: const AppMainSidebar(),
       pane: AppDesktopPane(
         padding: EdgeInsets.zero,
@@ -454,6 +458,12 @@ class _ActivityScreenState extends ConsumerState<ActivityScreen> {
           ],
         ),
       ),
+    );
+    return DeferredGiftCardRecovery(
+      accountUuid: accountUuid,
+      sessionKey: _pager,
+      ready: loadedTransactions != null && _pager?.error == null,
+      child: content,
     );
   }
 }

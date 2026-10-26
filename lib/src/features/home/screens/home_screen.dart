@@ -2,6 +2,7 @@
 
 import '../providers/home_activity_state.dart';
 import '../widgets/home_activity_skeleton.dart';
+import '../../activity/widgets/deferred_gift_card_recovery.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -636,7 +637,7 @@ class _HomePaneState extends ConsumerState<_HomePane> {
       ],
     );
 
-    return _HomeDesktopPane(
+    final content = _HomeDesktopPane(
       hasSetupReminders: ref.watch(showDesktopHomeSetupCarouselProvider),
       isImporting: isImporting,
       importingAccountName: activeAccountName,
@@ -667,6 +668,13 @@ class _HomePaneState extends ConsumerState<_HomePane> {
       ironwoodMigrationCta: widget.ironwoodMigrationCta,
       animateMigrationCta: animateMigrationCta,
       onIronwoodMigrationCta: widget.onIronwoodMigrationCta,
+    );
+    return DeferredGiftCardRecovery(
+      accountUuid: activeAccountUuid,
+      ready:
+          activityState == HomeActivityState.rows ||
+          activityState == HomeActivityState.empty,
+      child: content,
     );
   }
 

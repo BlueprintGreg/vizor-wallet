@@ -28,6 +28,7 @@ import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
 import '../../swap_activity_row_items_provider.dart';
 import '../../swap_activity_row_mapper.dart';
 import '../../widgets/activity_feed.dart';
+import '../../widgets/deferred_gift_card_recovery.dart';
 import 'mobile_transaction_status_screen.dart';
 
 /// Loads the full transaction history for one account; injectable so
@@ -148,7 +149,10 @@ class _MobileActivityScreenState extends ConsumerState<MobileActivityScreen> {
           source:
               widget.historySource ??
               (loader == null
-                  ? LocalActivityHistorySource(uuid, network)
+                  ? ref.read(activityHistorySourceFactoryProvider)(
+                      uuid,
+                      network,
+                    )
                   : FixtureActivityHistorySource(() => loader(uuid))),
           gifts: _gifts,
           swaps: _swaps,
@@ -400,7 +404,7 @@ class _MobileActivityScreenState extends ConsumerState<MobileActivityScreen> {
       limit: _pager?.visibleCount ?? activityPageSize,
     );
 
-    return SwapActivityStatusAutoRefresh(
+    final content = SwapActivityStatusAutoRefresh(
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -448,6 +452,12 @@ class _MobileActivityScreenState extends ConsumerState<MobileActivityScreen> {
           ],
         ),
       ),
+    );
+    return DeferredGiftCardRecovery(
+      accountUuid: accountUuid,
+      sessionKey: _pager,
+      ready: loadedTransactions != null && _pager?.error == null,
+      child: content,
     );
   }
 }
