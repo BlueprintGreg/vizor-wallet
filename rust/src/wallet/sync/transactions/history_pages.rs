@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock, TryLockError,
     },
 };
 
@@ -70,87 +70,201 @@ fn next_snapshot_id() -> String {
     NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string()
 }
 
-fn entries() -> &'static Mutex<VecDeque<(Key, Slot)>> {
-    static ENTRIES: OnceLock<Mutex<VecDeque<(Key, Slot)>>> = OnceLock::new();
-    ENTRIES.get_or_init(|| Mutex::new(VecDeque::new()))
+#[derive(Default)]
+struct Registry {
+    active: VecDeque<(Key, Slot)>,
+    // Unlike the LRU, this owns every retired connection until it is closed.
+    retired: Vec<(Key, Slot)>,
+    draining: HashMap<String, usize>,
 }
 
-fn slot(key: Key) -> Slot {
-    let mut entries = entries().lock().unwrap_or_else(|e| e.into_inner());
-    let entry = entries
-        .iter()
-        .position(|(k, _)| k == &key)
-        .and_then(|i| entries.remove(i))
-        .unwrap_or_else(|| {
-            (
-                key,
-                Arc::new(HistorySlot {
-                    retired: AtomicBool::new(false),
-                    entry: Mutex::new(None),
-                }),
-            )
-        });
-    let result = entry.1.clone();
-    entries.push_back(entry);
-    while entries.len() > MAX_ACCOUNTS {
-        entries.pop_front();
+impl Registry {
+    fn retire(&mut self, entry: (Key, Slot)) {
+        entry.1.retired.store(true, Ordering::Release);
+        self.retired.push(entry);
     }
-    result
+}
+
+#[derive(Default)]
+struct HistoryCache {
+    registry: Mutex<Registry>,
+}
+
+struct ReadLease<'a> {
+    cache: &'a HistoryCache,
+    slot: Slot,
+}
+
+impl Drop for ReadLease<'_> {
+    fn drop(&mut self) {
+        // with_snapshot releases its entry guard before this lease. Retired
+        // reads close on their native worker, including error/unwind paths.
+        if self.slot.retired.load(Ordering::Acquire) {
+            drop(self.cache.close_retired(&self.slot, true));
+        }
+    }
+}
+
+struct DbDrain<'a> {
+    cache: &'a HistoryCache,
+    path: &'a str,
+}
+
+impl Drop for DbDrain<'_> {
+    fn drop(&mut self) {
+        let mut registry = self.cache.lock();
+        let count = registry.draining.get_mut(self.path).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            registry.draining.remove(self.path);
+        }
+    }
+}
+
+impl HistoryCache {
+    fn lock(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn slot(&self, key: Key) -> Result<ReadLease<'_>, String> {
+        let (lease, evicted) = {
+            let mut registry = self.lock();
+            if registry.draining.contains_key(&key.path) {
+                return Err("Activity database is being closed".into());
+            }
+            let entry = registry
+                .active
+                .iter()
+                .position(|(k, _)| k == &key)
+                .and_then(|i| registry.active.remove(i))
+                .unwrap_or_else(|| {
+                    (
+                        key,
+                        Arc::new(HistorySlot {
+                            retired: AtomicBool::new(false),
+                            entry: Mutex::new(None),
+                        }),
+                    )
+                });
+            let slot = entry.1.clone();
+            registry.active.push_back(entry);
+            let evicted = if registry.active.len() > MAX_ACCOUNTS {
+                let entry = registry.active.pop_front().unwrap();
+                let slot = entry.1.clone();
+                registry.retire(entry);
+                Some(slot)
+            } else {
+                None
+            };
+            (ReadLease { cache: self, slot }, evicted)
+        };
+        if let Some(slot) = evicted {
+            // LRU eviction must not wait for a different account's read.
+            drop(self.close_retired(&slot, false));
+        }
+        Ok(lease)
+    }
+
+    fn close_retired(&self, slot: &Slot, blocking: bool) -> Option<Snapshot> {
+        let mut entry = if blocking {
+            slot.entry.lock().unwrap_or_else(|e| e.into_inner())
+        } else {
+            match slot.entry.try_lock() {
+                Ok(entry) => entry,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => return None,
+            }
+        };
+        let snapshot = entry.take().and_then(
+            |Entry {
+                 conn,
+                 file,
+                 snapshot,
+             }| {
+                // Keep the entry lock until both file handles are closed. Another
+                // drain must never observe None while a taken connection is open.
+                drop(conn);
+                drop(file);
+                snapshot
+            },
+        );
+        drop(entry);
+        self.lock()
+            .retired
+            .retain(|(_, candidate)| !Arc::ptr_eq(candidate, slot));
+        snapshot
+    }
+
+    fn clear(&self) {
+        let retired = {
+            let mut registry = self.lock();
+            while let Some(entry) = registry.active.pop_front() {
+                registry.retire(entry);
+            }
+            registry
+                .retired
+                .iter()
+                .map(|(_, slot)| slot.clone())
+                .collect::<Vec<_>>()
+        };
+        // Synchronous FFI closes idle handles now but never waits for a read.
+        // Busy slots remain registered and their ReadLease closes them later.
+        let snapshots: Vec<_> = retired
+            .iter()
+            .filter_map(|slot| self.close_retired(slot, false))
+            .collect();
+        if !snapshots.is_empty() {
+            let _ = std::thread::Builder::new()
+                .name("activity-cache-release".into())
+                .spawn(move || drop(snapshots));
+        }
+    }
+
+    fn evict_db(&self, path: &str) {
+        let (_drain, retired) = {
+            let mut registry = self.lock();
+            *registry.draining.entry(path.into()).or_default() += 1;
+            let mut kept = VecDeque::new();
+            while let Some(entry) = registry.active.pop_front() {
+                if entry.0.path == path {
+                    registry.retire(entry);
+                } else {
+                    kept.push_back(entry);
+                }
+            }
+            registry.active = kept;
+            let retired = registry
+                .retired
+                .iter()
+                .filter(|(key, _)| key.path == path)
+                .map(|(_, slot)| slot.clone())
+                .collect::<Vec<_>>();
+            (DbDrain { cache: self, path }, retired)
+        };
+        // No registry lock while waiting. Concurrent drains can still find
+        // each slot until its handles close; new reads of this DB are refused.
+        for slot in retired {
+            drop(self.close_retired(&slot, true));
+        }
+    }
+}
+
+fn cache() -> &'static HistoryCache {
+    static CACHE: OnceLock<HistoryCache> = OnceLock::new();
+    CACHE.get_or_init(HistoryCache::default)
 }
 
 pub(crate) fn clear() {
-    let retired = {
-        let mut active = entries().lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *active)
-    };
-    let mut snapshots = Vec::new();
-    // This function is also called from synchronous FFI. Close idle file
-    // handles now, but destroy potentially large receipt maps off that thread.
-    // Busy entries finish and are dropped on their existing native worker.
-    for (_, slot) in &retired {
-        slot.retired.store(true, Ordering::Release);
-        if let Ok(mut entry) = slot.entry.try_lock() {
-            if let Some(Entry {
-                conn,
-                file,
-                snapshot,
-            }) = entry.take()
-            {
-                drop(conn);
-                drop(file);
-                snapshots.push(snapshot);
-            }
-        }
-    }
-    if !retired.is_empty() {
-        let _ = std::thread::Builder::new()
-            .name("activity-cache-release".into())
-            .spawn(move || drop((retired, snapshots)));
-    }
+    cache().clear();
 }
 
 pub(crate) fn evict_db(path: &str) {
-    let retired = {
-        let mut active = entries().lock().unwrap_or_else(|e| e.into_inner());
-        let mut retired = Vec::new();
-        let mut kept = VecDeque::new();
-        for (key, slot) in active.drain(..) {
-            if key.path == path {
-                slot.retired.store(true, Ordering::Release);
-                retired.push(slot);
-            } else {
-                kept.push_back((key, slot));
-            }
-        }
-        *active = kept;
-        retired
-    };
-    // Reset's asynchronous FFI boundary drains in-flight reads before closing
-    // the cached connections; the caller may delete the file afterwards.
-    for slot in retired {
-        slot.entry.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
+    cache().evict_db(path);
 }
+
+#[cfg(test)]
+#[path = "history_pages/tests.rs"]
+mod tests;
 
 fn with_snapshot<T>(
     path: &str,
@@ -160,13 +274,13 @@ fn with_snapshot<T>(
     rebase_unchanged_summary: bool,
     read: impl FnOnce(&rusqlite::Connection, &mut Snapshot) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
-    let slot = slot(Key {
+    let lease = cache().slot(Key {
         path: path.into(),
         network,
         account,
-    });
-    let mut entry = slot.entry.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.retired.load(Ordering::Acquire) {
+    })?;
+    let mut entry = lease.slot.entry.lock().unwrap_or_else(|e| e.into_inner());
+    if lease.slot.retired.load(Ordering::Acquire) {
         return Err("Activity snapshot is no longer available".into());
     }
     let file = same_file::Handle::from_path(path).map_err(|e| e.to_string())?;
