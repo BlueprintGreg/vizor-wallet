@@ -54,12 +54,19 @@ masking a screen on one form factor requires checking its counterpart.
 - Use the helpers in `lib/src/core/privacy/privacy_mask.dart`:
   `hideAmountIfPrivacyMode` for an amount with its denomination,
   `hideIfPrivacyMode` for a bare value, and `fixedPrivacyMask()` where the
-  denomination or currency is drawn separately.
+  denomination or currency is drawn separately. Swap and Pay amounts use
+  `swapAmountTextForPrivacy`, which keeps the leg's own symbol and masks any
+  unrecognized text that contains a number.
+- If the code appends the unit after the value (`'$amount ZEC'`, or a
+  `Semantics` label that adds the currency), mask the bare number. Masking the
+  full amount there renders `****** ZEC ZEC`.
 - Mask where the display string is built, and pass that same string to `Text`
   and `Semantics`. Keep raw values for logic.
 - Read the flag with `ref.watch(privacyModeProvider)` in the build that
   produces the string, or pass it down as `privacyModeEnabled`, so a toggle
-  updates the screen in place.
+  updates the screen in place. A few presentational widgets default
+  `privacyModeEnabled` to `false` because Widgetbook builds them without a
+  `ProviderScope`; their production callers must still pass the watched flag.
 - Test each masked site with privacy mode on (the raw amount is absent from
   text and semantics) and off (it is shown). Mobile-UI tests carry
   `@Tags(['mobile'])`. Existing examples are
