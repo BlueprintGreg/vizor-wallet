@@ -707,7 +707,10 @@ a sync's large block download (below).
   while a fresh one to the same server works, as on a phone restore where
   three queued batches timed out together. HTTP/2 pings close such a
   connection about 35 seconds after its last frame, so requests sent after
-  that reconnect instead of waiting out their deadlines.
+  that reconnect instead of waiting out their deadlines. Only a
+  multi-threaded runtime pings: background migration preparation scans on its
+  single runtime thread, and a long scan would make a healthy connection's
+  reply late.
   Only main-scan batches of ChainTip, Historic and
   LatestPoolActivation ranges, and Verify batches above the blocks scanned
   before the session (the frontier continuity check, often merged into a full

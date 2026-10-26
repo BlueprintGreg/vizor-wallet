@@ -57,7 +57,8 @@ const LIGHTWALLETD_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// next request. Requests already in flight still end at their own deadlines;
 /// the pings spare the ones sent after that, which would otherwise each wait
 /// out a deadline on the dead connection. The timeout leaves room for an
-/// acknowledgement queued behind batch data on a slow link.
+/// acknowledgement queued behind batch data on a slow link. Only a
+/// multi-threaded runtime pings ([`keep_alive_fits_runtime`]).
 const DIRECT_BLOCK_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DIRECT_BLOCK_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The longest a direct block connection may take to open. The connect
@@ -302,7 +303,7 @@ pub(crate) async fn open_block_download_lwd_transport(
     }
     tokio::time::timeout(
         DIRECT_BLOCK_OPEN_TIMEOUT,
-        open_unleased_direct_transport(lightwalletd_url, true),
+        open_unleased_direct_transport(lightwalletd_url, keep_alive_fits_runtime()),
     )
     .await
     .unwrap_or_else(|_| {
@@ -325,6 +326,15 @@ pub(crate) fn block_download_can_go_direct(lightwalletd_url: &str) -> bool {
                 .ends_with(".onion")
         })
     })
+}
+
+/// Whether the direct block connection may ping on the current runtime. Its
+/// connection task runs on the runtime that opens it, and hyper checks the
+/// ping deadline before it reads the reply. The single-threaded runtime of
+/// background migration preparation scans each batch on that thread, so a
+/// scan longer than the timeout would close a healthy connection.
+fn keep_alive_fits_runtime() -> bool {
+    tokio::runtime::Handle::current().runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
 }
 
 async fn open_unleased_direct_transport(
@@ -1154,6 +1164,16 @@ mod tests {
             height,
             ..Default::default()
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_threaded_runtime_opens_the_direct_connection_without_pings() {
+        assert!(!keep_alive_fits_runtime());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_multi_threaded_runtime_pings_the_direct_connection() {
+        assert!(keep_alive_fits_runtime());
     }
 
     async fn collect_fake_blocks(
