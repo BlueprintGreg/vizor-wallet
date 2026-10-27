@@ -645,8 +645,21 @@ class _SettingsList extends ConsumerWidget {
                 child: EnhancePirPrivacyControl(
                   label: 'NEAR swap privacy',
                   keyPrefix: 'settings_near_swap_privacy',
+                  iconName: AppIcons.linkOff,
                   description: nearSwapPrivacy.description,
-                  onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
+                  unavailableLabel: nearSwapPrivacy.available
+                      ? null
+                      : kNearSwapPrivacyUnavailableLabel,
+                  footer: [
+                    if (nearSwapPrivacy.checkingPastSwaps)
+                      const Padding(
+                        padding: EdgeInsetsDirectional.only(
+                          start: AppSpacing.xxs,
+                        ),
+                        child: NearSwapPrivacyCheckingPastSwaps(),
+                      ),
+                    const NearSwapPrivacyLearnMore(),
+                  ],
                   enabled: nearSwapPrivacy.enabled,
                   transition: nearSwapPrivacy.transition,
                   onToggle: nearSwapPrivacy.canToggle

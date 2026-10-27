@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,6 +11,7 @@ import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_shape.dart';
 import '../../../providers/account_provider.dart';
 import '../../../providers/enhance_pir_provider.dart';
+import '../../../providers/swap_past_swaps_check_provider.dart';
 import 'swap_history_check_control.dart';
 
 /// NEAR swap privacy subtitle while it is on.
@@ -28,12 +31,24 @@ const kNearSwapPrivacyHardwareCopy =
     'Zcash addresses.';
 
 /// What Settings shows for NEAR swap privacy on desktop and mobile.
+/// [available] is false for a hardware wallet account, which shows
+/// [kNearSwapPrivacyUnavailableLabel] instead of a switch.
+/// [checkingPastSwaps] shows [kNearSwapPrivacyCheckingPastSwapsCopy].
 typedef NearSwapPrivacySetting = ({
   bool enabled,
+  bool available,
   String description,
   bool canToggle,
   String? transition,
+  bool checkingPastSwaps,
 });
+
+/// Status in place of the switch for a hardware wallet account.
+const kNearSwapPrivacyUnavailableLabel = 'Not available';
+
+/// Shown under the description while the wallet looks for past one-time
+/// swap payments, as after turning this on or a restore.
+const kNearSwapPrivacyCheckingPastSwapsCopy = 'Checking past swaps';
 
 /// The NEAR swap privacy option's state, or null when Settings doesn't offer
 /// it (see [nearSwapPrivacySettingAvailableProvider]).
@@ -49,6 +64,7 @@ final nearSwapPrivacySettingProvider = Provider<NearSwapPrivacySetting?>((ref) {
       ref.watch(enhancePirTransitionProvider) == kEnhancePirChangingMessage;
   return (
     enabled: enabled,
+    available: !hardwareAccount,
     description: hardwareAccount
         ? kNearSwapPrivacyHardwareCopy
         : !privateQueriesOn
@@ -56,8 +72,10 @@ final nearSwapPrivacySettingProvider = Provider<NearSwapPrivacySetting?>((ref) {
         : enabled
         ? kNearSwapPrivacyOnCopy
         : kNearSwapPrivacyOffCopy,
-    canToggle: !changingRecovery && privateQueriesOn,
+    canToggle: !changingRecovery && privateQueriesOn && !hardwareAccount,
     transition: ref.watch(nearSwapPrivacyTransitionProvider),
+    checkingPastSwaps:
+        enabled && !hardwareAccount && ref.watch(swapPastSwapsCheckProvider),
   );
 });
 
@@ -101,6 +119,61 @@ const kNearSwapPrivacyInfoSections = [
         'queries and NEAR swap privacy are both on.',
   ),
 ];
+
+/// The "Learn more" button under the NEAR swap privacy description, which
+/// opens [showNearSwapPrivacyInfo]. Its icon lines up with the text above.
+class NearSwapPrivacyLearnMore extends StatelessWidget {
+  const NearSwapPrivacyLearnMore({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    void open() => unawaited(showNearSwapPrivacyInfo(context));
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Learn more about NEAR swap privacy',
+      onTap: open,
+      excludeSemantics: true,
+      child: AppButton(
+        key: const ValueKey('near_swap_privacy_learn_more'),
+        variant: AppButtonVariant.ghost,
+        size: AppButtonSize.small,
+        leading: AppIcon(AppIcons.help, color: colors.icon.muted),
+        onPressed: open,
+        child: const Text('Learn more'),
+      ),
+    );
+  }
+}
+
+/// [kNearSwapPrivacyCheckingPastSwapsCopy] with a loader, read out as it
+/// appears and goes.
+class NearSwapPrivacyCheckingPastSwaps extends StatelessWidget {
+  const NearSwapPrivacyCheckingPastSwaps({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Semantics(
+      liveRegion: true,
+      child: Row(
+        key: const ValueKey('near_swap_privacy_checking_past_swaps'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppIcon(AppIcons.loader, size: 16, color: colors.icon.muted),
+          const SizedBox(width: AppSpacing.xxs),
+          Text(
+            kNearSwapPrivacyCheckingPastSwapsCopy,
+            style: AppTypography.bodyMedium.copyWith(
+              color: colors.text.secondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Shows the NEAR swap privacy explanation for this binary's form factor: a
 /// sheet on mobile, a dialog on desktop.
