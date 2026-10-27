@@ -14,6 +14,7 @@ pub mod keystone;
 pub mod ledger;
 pub mod network;
 pub(crate) mod one_time_ivk;
+pub(crate) mod pir_config;
 pub mod secret_payload;
 pub mod secret_store;
 pub mod sync;

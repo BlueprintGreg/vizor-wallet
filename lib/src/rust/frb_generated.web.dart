@@ -12,6 +12,7 @@ import 'api/keystone.dart';
 import 'api/ledger.dart';
 import 'api/network_privacy.dart';
 import 'api/one_time_ivk.dart';
+import 'api/pir_config.dart';
 import 'api/secret.dart';
 import 'api/simple.dart';
 import 'api/sync.dart';
@@ -231,6 +232,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ApiWalletErrorCode dco_decode_api_wallet_error_code(dynamic raw);
+
+  @protected
+  ApiWalletPirConfig dco_decode_api_wallet_pir_config(dynamic raw);
+
+  @protected
+  ApiWalletPirConfigAttempt dco_decode_api_wallet_pir_config_attempt(
+    dynamic raw,
+  );
+
+  @protected
+  ApiWalletPirSelectionState dco_decode_api_wallet_pir_selection_state(
+    dynamic raw,
+  );
+
+  @protected
+  ApiWalletPirServer dco_decode_api_wallet_pir_server(dynamic raw);
+
+  @protected
+  ApiWalletPirStaticConfig dco_decode_api_wallet_pir_static_config(dynamic raw);
 
   @protected
   AuthenticatedRound dco_decode_authenticated_round(dynamic raw);
@@ -663,6 +683,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<ApiSnapshotBundlePirResult>
   dco_decode_list_api_snapshot_bundle_pir_result(dynamic raw);
+
+  @protected
+  List<ApiWalletPirConfigAttempt> dco_decode_list_api_wallet_pir_config_attempt(
+    dynamic raw,
+  );
+
+  @protected
+  List<ApiWalletPirServer> dco_decode_list_api_wallet_pir_server(dynamic raw);
 
   @protected
   List<AuthenticatedRound> dco_decode_list_authenticated_round(dynamic raw);
@@ -1696,6 +1724,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ApiWalletPirConfig sse_decode_api_wallet_pir_config(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiWalletPirConfigAttempt sse_decode_api_wallet_pir_config_attempt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiWalletPirSelectionState sse_decode_api_wallet_pir_selection_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiWalletPirServer sse_decode_api_wallet_pir_server(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ApiWalletPirStaticConfig sse_decode_api_wallet_pir_static_config(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AuthenticatedRound sse_decode_authenticated_round(
     SseDeserializer deserializer,
   );
@@ -2246,6 +2299,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<ApiSnapshotBundlePirResult>
   sse_decode_list_api_snapshot_bundle_pir_result(SseDeserializer deserializer);
+
+  @protected
+  List<ApiWalletPirConfigAttempt> sse_decode_list_api_wallet_pir_config_attempt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<ApiWalletPirServer> sse_decode_list_api_wallet_pir_server(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<AuthenticatedRound> sse_decode_list_authenticated_round(
@@ -3562,6 +3625,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_api_wallet_pir_config(
+    ApiWalletPirConfig self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_pir_config_attempt(
+    ApiWalletPirConfigAttempt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_pir_selection_state(
+    ApiWalletPirSelectionState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_pir_server(
+    ApiWalletPirServer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_api_wallet_pir_static_config(
+    ApiWalletPirStaticConfig self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_authenticated_round(
     AuthenticatedRound self,
     SseSerializer serializer,
@@ -4218,6 +4311,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_api_snapshot_bundle_pir_result(
     List<ApiSnapshotBundlePirResult> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_api_wallet_pir_config_attempt(
+    List<ApiWalletPirConfigAttempt> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_api_wallet_pir_server(
+    List<ApiWalletPirServer> self,
     SseSerializer serializer,
   );
 
