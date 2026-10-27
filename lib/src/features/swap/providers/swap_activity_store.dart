@@ -67,6 +67,11 @@ final swapPendingIntentCountProvider = FutureProvider.family<int, String>((
 abstract interface class SwapActivityStore {
   Future<List<SwapIntentRecord>> loadRecords({required String accountUuid});
 
+  /// Whether [loadRecords] returns every stored record for [accountUuid].
+  /// It skips unreadable records and payloads, so a caller that must account
+  /// for every swap deposit checks this first.
+  Future<bool> recordsAreComplete({required String accountUuid});
+
   Future<void> saveRecords({
     required String accountUuid,
     required List<SwapIntentRecord> records,
@@ -83,34 +88,41 @@ class AppSecureStoreSwapActivityStore implements SwapActivityStore {
   @override
   Future<List<SwapIntentRecord>> loadRecords({
     required String accountUuid,
-  }) async {
+  }) async => (await _readRecords(accountUuid)).records;
+
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async =>
+      (await _readRecords(accountUuid)).complete;
+
+  Future<({List<SwapIntentRecord> records, bool complete})> _readRecords(
+    String accountUuid,
+  ) async {
     final raw = await _storage.readString(_swapActivityKeyFor(accountUuid));
     if (raw == null || raw.trim().isEmpty) {
-      return const [];
+      return (records: const <SwapIntentRecord>[], complete: true);
     }
+    final List<Object?>? items;
     try {
-      final records = _recordItemsFromStorage(jsonDecode(raw));
-      return _recordsFromStorage(records, accountUuid) ?? const [];
+      items = _recordItemsFromStorage(jsonDecode(raw));
     } on FormatException {
-      return const [];
+      return (records: const <SwapIntentRecord>[], complete: false);
     }
-  }
-
-  List<SwapIntentRecord>? _recordsFromStorage(
-    List<Object?>? records,
-    String accountUuid,
-  ) {
-    if (records == null) {
-      return null;
+    if (items == null) {
+      return (records: const <SwapIntentRecord>[], complete: false);
     }
     final restored = <SwapIntentRecord>[];
-    for (final item in records) {
-      if (item is! Map<String, dynamic>) continue;
-      final record = _recordFromJsonOrNull(item);
-      if (record == null) continue;
+    var complete = true;
+    for (final item in items) {
+      final record = item is Map<String, dynamic>
+          ? _recordFromJsonOrNull(item)
+          : null;
+      if (record == null) {
+        complete = false;
+        continue;
+      }
       restored.add(record.copyWith(accountUuid: accountUuid));
     }
-    return restored;
+    return (records: restored, complete: complete);
   }
 
   @override

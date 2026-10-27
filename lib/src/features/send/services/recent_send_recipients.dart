@@ -34,8 +34,9 @@ const _recentRecipientScanLimit = 100;
 /// Recent recipients of [accountUuid], newest first.
 ///
 /// Swap, Pay and Gift Card funding transactions pay one-time addresses, so
-/// they are excluded the way Activity overlays them. Fails closed: when those
-/// records cannot be read, the provider errors and the step shows no Recents.
+/// they are excluded the way Activity overlays them. Fails closed: when any of
+/// those records cannot be read, the provider errors and the step shows no
+/// Recents.
 final recentSendRecipientsProvider = FutureProvider.autoDispose
     .family<List<SendRecentRecipient>, String>((ref, accountUuid) async {
       ref.watch(
@@ -48,6 +49,14 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
       final records = await ref.watch(
         swapActivityRecordsProvider(accountUuid).future,
       );
+      // Unreadable swaps are skipped by the records load; their deposit
+      // addresses would otherwise pass as recents.
+      final swapsComplete = await ref
+          .read(swapActivityStoreProvider)
+          .recordsAreComplete(accountUuid: accountUuid);
+      if (!swapsComplete) {
+        throw StateError('Swap activity is not fully readable.');
+      }
       final giftCards = await ref.watch(
         giftCardActivityIndexProvider(accountUuid).future,
       );

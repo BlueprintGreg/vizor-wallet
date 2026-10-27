@@ -353,6 +353,49 @@ void main() {
     expect(restored.single.id, 'valid-swap');
     expect(restored.single.sellAmountText, '1.0000 ZEC');
     expect(restored.single.accountUuid, 'account-1');
+    expect(
+      await activityStore.recordsAreComplete(accountUuid: 'account-1'),
+      isFalse,
+    );
+  });
+
+  test('reports whether every stored swap record was readable', () async {
+    Future<bool> completeFor(String? raw) async {
+      final key = swapActivityStorageKeyForTest('account-1');
+      if (raw == null) {
+        await secureStore.delete(key);
+      } else {
+        await secureStore.writeString(key, raw);
+      }
+      return activityStore.recordsAreComplete(accountUuid: 'account-1');
+    }
+
+    expect(await completeFor(null), isTrue);
+    expect(
+      await completeFor(
+        jsonEncode({
+          'version': 1,
+          'records': [
+            {
+              'id': 'valid-swap',
+              'provider': 'NEAR Intents',
+              'pair': 'ZEC -> USDC',
+              'sellAmount': '1.0000 ZEC',
+              'receiveEstimate': '100.00 USDC',
+              'status': 'processing',
+              'nextAction': 'Processing',
+            },
+          ],
+        }),
+      ),
+      isTrue,
+    );
+    expect(await completeFor('{not json'), isFalse);
+    expect(
+      await completeFor(jsonEncode({'version': 999, 'records': []})),
+      isFalse,
+    );
+    expect(await completeFor(jsonEncode({'version': 1})), isFalse);
   });
 
   test('round-trips only the last attempted swap pair', () async {

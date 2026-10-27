@@ -1110,6 +1110,9 @@ class _FakeSwapPersistenceStore
         SwapActivityStore,
         SwapComposerPreferencesStore,
         PaySelectedAssetStore {
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async => true;
+
   _FakeSwapPersistenceStore({
     List<SwapIntent> initialIntents = const [],
     SwapComposerPreferences? initialPreferences,

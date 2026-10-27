@@ -555,6 +555,9 @@ SwapIntentSnapshot _snapshot({
 }
 
 class _MemorySwapActivityStore implements SwapActivityStore {
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async => true;
+
   var saveCount = 0;
   List<SwapIntentRecord> savedRecords = const [];
 

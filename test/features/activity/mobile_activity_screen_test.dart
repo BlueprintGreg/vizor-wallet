@@ -156,6 +156,9 @@ Widget _app(
 }
 
 class _FakeSwapActivityStore implements SwapActivityStore {
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async => true;
+
   const _FakeSwapActivityStore(this.records);
 
   final List<SwapIntentRecord> records;

@@ -1884,6 +1884,9 @@ class _MemorySwapPersistenceStore
         SwapActivityStore,
         SwapComposerPreferencesStore,
         PaySelectedAssetStore {
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async => true;
+
   final _records = <String, List<SwapIntentRecord>>{};
   final _preferences = <String, SwapComposerPreferences>{};
   final _payAssets = <String, SwapAsset>{};

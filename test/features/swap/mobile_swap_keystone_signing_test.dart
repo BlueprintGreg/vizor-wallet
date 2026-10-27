@@ -1402,6 +1402,9 @@ class _FakeAddressBookRepository implements AddressBookRepository {
 }
 
 class _FakeSwapActivityStore implements SwapActivityStore {
+  @override
+  Future<bool> recordsAreComplete({required String accountUuid}) async => true;
+
   _FakeSwapActivityStore(List<SwapIntent> initialIntents)
     : _records = [
         for (final intent in initialIntents)
