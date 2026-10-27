@@ -111,4 +111,13 @@ void main() {
     expect(_matchZcash('t1awww', recents).isNotEmpty, isFalse);
     expect(_matchZcash(unified, recents).recents, [unified]);
   });
+
+  test('an uppercase bech32 prefix does not count toward the fragment', () {
+    const unified = 'U1TVG2412A23KSHIELDED0000K64123HHQ6D';
+    const recents = [unified];
+
+    expect(_matchZcash('U1TV', recents).isNotEmpty, isFalse);
+    expect(_matchZcash('U1TVG', recents).isNotEmpty, isFalse);
+    expect(_matchZcash('U1TVG2', recents).recents, [unified]);
+  });
 }

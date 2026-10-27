@@ -80,10 +80,13 @@ bool _addressMatches(
 }
 
 // `0x` for hex addresses, otherwise a bech32-style `hrp1` (`u1`, `zs1`, `tex1`,
-// `bc1`; also the `t1` of a transparent address).
+// `bc1`; also the `t1` of a transparent address). Bech32 may also be written
+// all uppercase, which a mixed-case base58 address never is.
 final _hrpPrefix = RegExp(r'^[a-z]{1,16}1');
+final _upperHrpPrefix = RegExp(r'^[A-Z]{1,16}1');
 
 int _networkPrefixLength(String address) {
   if (address.startsWith('0x')) return 2;
-  return _hrpPrefix.firstMatch(address)?.end ?? 0;
+  final hrp = address == address.toUpperCase() ? _upperHrpPrefix : _hrpPrefix;
+  return hrp.firstMatch(address)?.end ?? 0;
 }
