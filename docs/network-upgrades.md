@@ -105,7 +105,8 @@ of two signs as a stall:
 
 It then asks one fallback from another operator and switches if it is ahead.
 A fallback at the same height counts as a false alarm and pauses the check for
-30 minutes. Custom endpoints still never fail over.
+30 minutes, except one block before the upgrade, where the activation block is
+due. Custom endpoints still never fail over.
 
 An estimate that is not ahead of the tip counts as none: zcashd reports its
 own height once it has synced, and zcashd cannot activate NU7.

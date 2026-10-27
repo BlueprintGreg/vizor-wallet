@@ -698,32 +698,38 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
     if (!_isCurrentContext(context)) return null;
     if (fallback == null) {
       log(
-        'RpcEndpointFailover: ${endpoint.hostPort} looks stalled ($stalled), '
-        'but no fallback endpoint is ahead enough; keeping current endpoint',
+        'RpcEndpointFailover: ${endpoint.hostPort} looks stalled '
+        '(${stalled.reason}), but no fallback endpoint is ahead enough; '
+        'keeping current endpoint',
       );
-      state = state.copyWith(
-        nextStaleTipCheckAt: now.add(settings.staleTipFalseAlarmBackoff),
-      );
+      // A healthy chain also waits there for its activation block, which is
+      // due within minutes, so that verdict is checked again next interval.
+      if (!stalled.atActivation) {
+        state = state.copyWith(
+          nextStaleTipCheckAt: now.add(settings.staleTipFalseAlarmBackoff),
+        );
+      }
       return null;
     }
 
     log(
       'RpcEndpointFailover: switched ${endpoint.hostPort} -> '
-      '${fallback.endpoint.hostPort} during $operation because $stalled; '
-      'fallback is at height ${fallback.health.height}',
+      '${fallback.endpoint.hostPort} during $operation because '
+      '${stalled.reason}; fallback is at height ${fallback.health.height}',
     );
     _switchToFallbackAhead(
       endpoint,
       fallback,
       context: context,
       now: now,
-      failure: 'Endpoint tip looks stalled: $stalled.',
+      failure: 'Endpoint tip looks stalled: ${stalled.reason}.',
     );
     return fallback.health;
   }
 
   /// Why the tip at [height] looks stalled, or null when it does not.
-  Future<String?> _tipLooksStalled(
+  /// [atActivation] marks a tip one block before NU7 activation.
+  Future<({String reason, bool atActivation})?> _tipLooksStalled(
     RpcEndpointConfig endpoint,
     BigInt height,
     RpcEndpointFailoverSettings settings,
@@ -737,7 +743,11 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
       if (estimated > height) {
         final lag = estimated - height;
         return lag > BigInt.from(settings.staleTipLagBlocks)
-            ? 'its node estimates height $estimated, $lag blocks ahead'
+            ? (
+                reason:
+                    'its node estimates height $estimated, $lag blocks ahead',
+                atActivation: false,
+              )
             : null;
       }
     } catch (e) {
@@ -753,7 +763,10 @@ class RpcEndpointFailoverNotifier extends Notifier<RpcEndpointFailoverState> {
         rpcEndpointFailoverNu7ActivationHeightGetterProvider,
       )(endpoint.networkName);
       return activation != null && height + BigInt.one == activation
-          ? 'it stopped one block before NU7 activation'
+          ? (
+              reason: 'it stopped one block before NU7 activation',
+              atActivation: true,
+            )
           : null;
     } catch (e) {
       log('RpcEndpointFailover: NU7 activation height unavailable: $e');

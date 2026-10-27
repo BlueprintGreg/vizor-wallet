@@ -556,6 +556,37 @@ void main() {
         hasLength(1),
       );
     });
+
+    test('rechecks a minute later while the tip waits for NU7', () async {
+      var now = DateTime(2026);
+      final primary = defaultRpcEndpointConfig('main');
+      final heights = {
+        primary.normalizedLightwalletdUrl: BigInt.from(3_543_404),
+        zecRocks: BigInt.from(3_543_404),
+      };
+      final harness = _StaleTipHarness(
+        primary: primary,
+        clock: () => now,
+        heightByUrl: heights,
+        estimatedHeightByUrl: {
+          primary.normalizedLightwalletdUrl: BigInt.from(3_543_404),
+        },
+        nu7ActivationHeight: BigInt.from(3_543_405),
+      );
+      addTearDown(harness.container.dispose);
+
+      await harness.notifier.getLatestBlockHeight();
+      expect(harness.state.isUsingFallback, isFalse);
+
+      // The network activated NU7; the primary did not.
+      heights[zecRocks] = BigInt.from(3_543_406);
+      now = now.add(const Duration(minutes: 1));
+      expect(
+        await harness.notifier.getLatestBlockHeight(),
+        BigInt.from(3_543_406),
+      );
+      expect(harness.state.current.presetId, 'zec-rocks');
+    });
   });
 
   test('switches when current endpoint height progresses too slowly', () async {
