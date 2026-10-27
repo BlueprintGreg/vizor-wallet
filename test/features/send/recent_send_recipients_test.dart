@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/features/send/services/recent_send_recipients.dart';
 import 'package:zcash_wallet/src/features/swap/models/swap_models.dart';
 import 'package:zcash_wallet/src/providers/account_models.dart';
+import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 
 const _activeAccount = 'account-1';
 const _otherAccount = 'account-2';
@@ -137,4 +138,36 @@ void main() {
       expect(selected[1].address, 'u1other0');
     });
   });
+
+  group('recentSendHistoryKey', () {
+    test('changes when a pending send expires', () {
+      final pending = recentSendHistoryKey([_sent(expiredUnmined: false)]);
+
+      expect(recentSendHistoryKey([_sent(expiredUnmined: false)]), pending);
+      expect(
+        recentSendHistoryKey([_sent(expiredUnmined: true)]),
+        isNot(pending),
+      );
+    });
+  });
+}
+
+rust_sync.TransactionInfo _sent({required bool expiredUnmined}) {
+  return rust_sync.TransactionInfo(
+    txidHex: _txid,
+    minedHeight: BigInt.zero,
+    expiredUnmined: expiredUnmined,
+    accountBalanceDelta: -1,
+    fee: BigInt.zero,
+    feeState: rust_sync.TransactionFeeState.notApplicable,
+    detailsComplete: true,
+    provisional: false,
+    amountIncludesFee: false,
+    blockTime: BigInt.zero,
+    isTransparent: false,
+    txKind: 'sent',
+    displayAmount: BigInt.one,
+    displayPool: 'shielded',
+    createdTime: BigInt.from(1800000000),
+  );
 }

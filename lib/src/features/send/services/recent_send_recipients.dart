@@ -42,7 +42,7 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
       ref.watch(
         syncProvider.select(
           (state) =>
-              state.value?.recentTransactions.map((tx) => tx.txidHex).join(','),
+              recentSendHistoryKey(state.value?.recentTransactions ?? const []),
         ),
       );
       final network = ref.watch(rpcEndpointProvider).networkName;
@@ -87,6 +87,14 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
         intents: intents,
       );
     });
+
+/// Changes when a new transaction arrives or one changes in a way that can
+/// add or remove it from Recents, such as a pending send expiring.
+String recentSendHistoryKey(Iterable<rust_sync.TransactionInfo> transactions) =>
+    [
+      for (final tx in transactions)
+        '${tx.txidHex}:${tx.txKind}:${tx.expiredUnmined}',
+    ].join(',');
 
 /// Fetches a few more rows than shown and, when the Dart-side filters leave
 /// too few from a full page, fetches every candidate once.
