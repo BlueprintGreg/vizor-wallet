@@ -721,7 +721,7 @@ impl Service {
 
     /// Answers one request, after any hold on it is released.
     async fn reply(&self, url: &str, body: &[u8], limit: usize) -> Result<Vec<u8>, session::Error> {
-        let route = url.split("/v1/receiver/").nth(1).unwrap().to_owned();
+        let route = url.split("/receiver/v1/").nth(1).unwrap().to_owned();
         let class = route_class(&route, self.witness_server(body).is_some());
         if class == "query" {
             self.record_query();

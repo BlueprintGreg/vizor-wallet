@@ -644,6 +644,7 @@ class _SettingsList extends ConsumerWidget {
                 child: EnhancePirPrivacyControl(
                   label: 'NEAR swap privacy',
                   keyPrefix: 'settings_near_swap_privacy',
+                  serverSettings: false,
                   description: nearSwapPrivacy.description,
                   onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                   enabled: nearSwapPrivacy.enabled,
