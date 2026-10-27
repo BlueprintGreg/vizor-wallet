@@ -10,6 +10,7 @@ import '../../../core/widgets/app_modal_shape.dart';
 import '../../../providers/enhance_pir_provider.dart';
 import '../../accounts/widgets/mobile/account_edit_sheets.dart'
     show MobileSheetCancel;
+import 'near_swap_privacy_turn_off.dart';
 
 /// Title of the confirmation before private queries turn off.
 const kPrivateQueriesTurnOffTitle = 'Turn off private queries?';
@@ -25,10 +26,12 @@ const kPrivateQueriesTurnOffDisclosure =
     'IDs of transactions private recovery found. It can link them to each '
     'other and, without Tor, to your IP address.';
 
-/// Asks whether to turn private queries off. Resolves to true only when the
-/// user confirms. Overridable through [privateQueriesTurnOffConfirmerProvider].
+/// Asks whether to turn private queries off, adding [swapLines] when NEAR
+/// swap privacy, which turns off with it, still has swap ZEC to find.
+/// Resolves to true only when the user confirms. Overridable through
+/// [privateQueriesTurnOffConfirmerProvider].
 typedef PrivateQueriesTurnOffConfirmer =
-    Future<bool> Function(BuildContext context);
+    Future<bool> Function(BuildContext context, {List<String>? swapLines});
 
 /// Overridable in tests; production shows the form factor's confirmation.
 final privateQueriesTurnOffConfirmerProvider =
@@ -38,15 +41,18 @@ final privateQueriesTurnOffConfirmerProvider =
 
 /// Shows the confirmation for this binary's form factor: a sheet on mobile, a
 /// dialog on desktop.
-Future<bool> confirmPrivateQueriesTurnOff(BuildContext context) async {
+Future<bool> confirmPrivateQueriesTurnOff(
+  BuildContext context, {
+  List<String>? swapLines,
+}) async {
   final confirmed = kAppFormFactor == AppFormFactor.mobile
       ? await showAppMobileSheet<bool>(
           context: context,
-          builder: (_) => const PrivateQueriesTurnOffSheet(),
+          builder: (_) => PrivateQueriesTurnOffSheet(swapLines: swapLines),
         )
       : await showDialog<bool>(
           context: context,
-          builder: (_) => const PrivateQueriesTurnOffDialog(),
+          builder: (_) => PrivateQueriesTurnOffDialog(swapLines: swapLines),
         );
   return confirmed == true;
 }
@@ -66,11 +72,22 @@ Future<void> togglePrivateQueries(BuildContext context, WidgetRef ref) async {
 
 Future<bool> _confirmTurnOff(BuildContext context, WidgetRef ref) async {
   if (!ref.read(privateQueriesTurnOffDisclosesProvider)) return true;
-  return ref.read(privateQueriesTurnOffConfirmerProvider)(context);
+  // NEAR swap privacy turns off with private queries.
+  final swapLines = ref.read(nearSwapPrivacyProvider)
+      ? await nearSwapPrivacyTurnOffWarning(ref)
+      : null;
+  if (!context.mounted) return false;
+  return ref.read(privateQueriesTurnOffConfirmerProvider)(
+    context,
+    swapLines: swapLines,
+  );
 }
 
 class PrivateQueriesTurnOffDialog extends StatelessWidget {
-  const PrivateQueriesTurnOffDialog({super.key});
+  const PrivateQueriesTurnOffDialog({this.swapLines, super.key});
+
+  /// See [PrivateQueriesTurnOffConfirmer].
+  final List<String>? swapLines;
 
   @override
   Widget build(BuildContext context) {
@@ -107,6 +124,13 @@ class PrivateQueriesTurnOffDialog extends StatelessWidget {
                   color: colors.text.warning,
                 ),
               ),
+              if (swapLines case final swapLines?) ...[
+                const SizedBox(height: AppSpacing.sm),
+                NearSwapPrivacyTurnOffLines(
+                  lines: swapLines,
+                  color: colors.text.secondary,
+                ),
+              ],
               const SizedBox(height: AppSpacing.md),
               AppButton(
                 key: const ValueKey('private_queries_turn_off_confirm'),
@@ -132,7 +156,10 @@ class PrivateQueriesTurnOffDialog extends StatelessWidget {
 }
 
 class PrivateQueriesTurnOffSheet extends StatelessWidget {
-  const PrivateQueriesTurnOffSheet({super.key});
+  const PrivateQueriesTurnOffSheet({this.swapLines, super.key});
+
+  /// See [PrivateQueriesTurnOffConfirmer].
+  final List<String>? swapLines;
 
   @override
   Widget build(BuildContext context) {
@@ -157,6 +184,13 @@ class PrivateQueriesTurnOffSheet extends StatelessWidget {
               color: colors.text.warning,
             ),
           ),
+          if (swapLines case final swapLines?) ...[
+            const SizedBox(height: AppSpacing.sm),
+            NearSwapPrivacyTurnOffLines(
+              lines: swapLines,
+              color: colors.text.accent,
+            ),
+          ],
           const SizedBox(height: AppSpacing.md),
           AppButton(
             key: const ValueKey('private_queries_turn_off_confirm'),

@@ -7,8 +7,8 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/app_icon_hover_button.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
-import '../../../../providers/enhance_pir_provider.dart';
 import '../near_swap_privacy_info.dart';
+import '../near_swap_privacy_turn_off.dart';
 import '../settings_sub_option.dart';
 import 'mobile_tor_control.dart';
 import 'mobile_private_queries_control.dart';
@@ -71,9 +71,7 @@ class MobileNetworkPrivacyCard extends ConsumerWidget {
                     keyPrefix: 'mobile_settings_near_swap_privacy',
                     enabled: nearSwapPrivacy.enabled,
                     onToggle: nearSwapPrivacy.canToggle
-                        ? () => unawaited(
-                            ref.read(nearSwapPrivacyProvider.notifier).toggle(),
-                          )
+                        ? () => unawaited(toggleNearSwapPrivacy(context, ref))
                         : null,
                     onInfo: () => unawaited(showNearSwapPrivacyInfo(context)),
                   ),
