@@ -240,7 +240,7 @@ void registerSwapActivityPrivacyChecks({required bool mobile}) {
     });
   }
 
-  testWidgets('awaiting-deposit record masks the amount but copies it', (
+  testWidgets('awaiting-deposit page shows the amount to send', (
     tester,
   ) async {
     final clipboardWrites = <String>[];
@@ -283,10 +283,10 @@ void registerSwapActivityPrivacyChecks({required bool mobile}) {
 
     await setPrivacy(tester, privacy, true);
 
-    _expectHidden(['100.37']);
-    // QR card headline and the amount row.
-    expect(find.text('****** USDC'), findsNWidgets(2));
-    _expectNoDenominationMix();
+    // The user may send it from another device, so privacy mode keeps the
+    // QR card headline and the amount row visible (docs/privacy-mode.md).
+    expect(find.text('100.37 USDC'), findsNWidgets(2));
+    expect(find.textContaining('******'), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('swap_copy_deposit_amount')));
     await tester.pump();
@@ -297,7 +297,7 @@ void registerSwapActivityPrivacyChecks({required bool mobile}) {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('hardware ZEC deposit record masks the ZEC amount', (
+  testWidgets('hardware ZEC deposit page shows the ZEC amount', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -324,9 +324,8 @@ void registerSwapActivityPrivacyChecks({required bool mobile}) {
 
     await setPrivacy(tester, privacy, true);
 
-    _expectHidden(['0.0037']);
-    expect(find.text('****** ZEC'), findsNWidgets(2));
-    _expectNoDenominationMix();
+    expect(find.text('0.0037 ZEC'), findsNWidgets(2));
+    expect(find.textContaining('******'), findsNothing);
 
     semantics.dispose();
     await tester.pumpWidget(const SizedBox.shrink());

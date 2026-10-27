@@ -17,8 +17,8 @@ Classify each amount by where it comes from, not by the screen it is on.
 
 | Category | Privacy mode | What belongs here | Examples |
 | --- | --- | --- | --- |
-| Holdings | Mask | Any value derived from the wallet's balances, including a value from which a balance can be worked out | Home and sidebar balances and their fiat; spendable or available labels; `Max: X`, `Use max: X`; "X available" in error copy; a shortfall such as "Additional ZEC needed" (total minus balance); the transparent amount on shield screens; per-account balances in import discovery; migration amounts (Orchard balance, left to migrate, per-note, migrated); voting power and the amount left out of a vote |
-| History | Mask | Amounts and fees of stored records | Activity rows; transaction receipts; swap and Pay detail and status pages, including the awaiting-deposit page; gift card lists and group detail |
+| Holdings | Mask | Any value derived from the wallet's balances, including a value from which a balance can be worked out | Home and sidebar balances and their fiat; spendable or available labels; `Max: X`, `Use max: X`; "X available" in error copy; a shortfall such as "Additional ZEC needed" (total minus balance); the transparent amount on shield screens; migration amounts (Orchard balance, left to migrate, per-note, migrated); voting power and the amount left out of a vote |
+| History | Mask | Amounts and fees of stored records | Activity rows; transaction receipts; swap and Pay detail and status pages; gift card lists and group detail |
 | Current draft | Show | The amount the user is entering in this flow and what is computed from it, through the flow's own result screen | Composer amount, fiat conversion, quote, fee estimate, review; send status after submitting; the gift card ready screen; an incoming card being claimed; the amount in a payment request someone sent |
 | Not wallet data | Show | Values that do not depend on this wallet | Prices and 24h change, swap rates, slippage, fee rates, round-wide vote tallies, protocol minimums |
 
@@ -28,6 +28,13 @@ Boundary rules:
   flow shows the draft. A screen that displays a stored record masks, even when
   the app opens it right after a submit: swap and Pay continue to their
   activity detail page, which is a record screen.
+- **Amounts the user acts on are shown.** When the user needs an amount to do
+  the task in front of them, show it even if it comes from holdings or a
+  record. Import discovery shows per-account balances because the user chooses
+  accounts by them. The swap awaiting-deposit pages show the amount to deposit
+  because the user may send it from another device, and the deposit QR carries
+  no amount. A value that only tells the user how much the wallet holds stays
+  masked, such as Max labels, shortfalls, and the shield amount.
 - **Explicit actions carry real values.** Copy, CSV export, share, and the Max
   fill may use the real amount because the user chose where it goes. After
   tapping Max, the amount field shows the filled amount; the Max label stays

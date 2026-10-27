@@ -260,7 +260,7 @@ void main() {
     expect(find.text('-'), findsOneWidget);
   });
 
-  testWidgets('account discovery modal masks balances in privacy mode', (
+  testWidgets('account discovery modal shows balances in privacy mode', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -288,23 +288,12 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('****** ZEC'), findsNWidgets(2));
-    expect(find.bySemanticsLabel(RegExp(r'\*{6} ZEC')), findsWidgets);
-    expect(find.textContaining('1.2345'), findsNothing);
-    expect(find.text('0 ZEC'), findsNothing);
-    expect(find.bySemanticsLabel(RegExp(r'1\.2345|\b0 ZEC')), findsNothing);
-    expect(find.textContaining('ZEC ZEC'), findsNothing);
-    expect(find.bySemanticsLabel(RegExp('ZEC ZEC')), findsNothing);
-
-    final container = ProviderScope.containerOf(
-      tester.element(find.byType(ImportAccountDiscoveryModal)),
-    );
-    await container.read(privacyModeProvider.notifier).set(false);
-    await tester.pump();
-
+    // The balances are what the user chooses accounts by, so privacy mode
+    // keeps them visible (docs/privacy-mode.md).
     expect(find.text('1.2345 ZEC'), findsOneWidget);
     expect(find.text('0 ZEC'), findsOneWidget);
-    expect(find.text('****** ZEC'), findsNothing);
+    expect(find.textContaining('******'), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'\*{6}')), findsNothing);
     semantics.dispose();
   });
 }

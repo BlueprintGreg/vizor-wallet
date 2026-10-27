@@ -1,16 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/formatting/zec_amount.dart';
 import '../../../core/layout/app_desktop_shell.dart';
-import '../../../core/privacy/privacy_mask.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_modal_card.dart';
 import '../../../core/widgets/app_pane_modal_overlay.dart';
-import '../../../providers/privacy_mode_provider.dart';
 import '../../../rust/api/wallet.dart' as rust_wallet;
 
 typedef ImportAccountTransparentBalanceLoader =
@@ -430,21 +427,20 @@ class _TransparentBalanceState {
   final BigInt? zatoshi;
 }
 
-class _TransparentBalancePreviewLabel extends ConsumerWidget {
+class _TransparentBalancePreviewLabel extends StatelessWidget {
   const _TransparentBalancePreviewLabel({required this.state});
 
   final _TransparentBalanceState state;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = context.colors;
     final balanceText = switch (state.status) {
       _TransparentBalanceStatus.loading => 'Loading',
       _TransparentBalanceStatus.failed => '-',
-      _TransparentBalanceStatus.loaded => hideAmountIfPrivacyMode(
-        ZecAmount.fromZatoshi(state.zatoshi ?? BigInt.zero).activity.toString(),
-        privacyModeEnabled: ref.watch(privacyModeProvider),
-      ),
+      _TransparentBalanceStatus.loaded => ZecAmount.fromZatoshi(
+        state.zatoshi ?? BigInt.zero,
+      ).activity.toString(),
     };
     final color = switch (state.status) {
       _TransparentBalanceStatus.loading => colors.text.secondary,

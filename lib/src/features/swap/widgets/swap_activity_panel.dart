@@ -626,7 +626,8 @@ class SwapActivityDetailPagePanel extends StatelessWidget {
   onShowPayRecipientAddress;
 
   /// Stored records mask their amounts in privacy mode, including right
-  /// after a submit (docs/privacy-mode.md).
+  /// after a submit. The deposit pages show the amount the user must send
+  /// (docs/privacy-mode.md).
   final bool privacyModeEnabled;
 
   @override
@@ -755,7 +756,6 @@ class _SwapActivityFlowContent extends StatelessWidget {
           checkWarning: depositCheckWarning,
           onDeposited: onMarkDeposited,
           mobile: layout == SwapActivityDetailLayout.mobile,
-          privacyModeEnabled: privacyModeEnabled,
         ),
       _ when showHardwareDepositPage && depositInstruction != null =>
         SwapHardwareZecDepositPageContent(
@@ -767,7 +767,6 @@ class _SwapActivityFlowContent extends StatelessWidget {
           memo: depositInstruction.memo,
           onDepositZec: () => onSignZecDeposit(intent),
           mobile: layout == SwapActivityDetailLayout.mobile,
-          privacyModeEnabled: privacyModeEnabled,
         ),
       _ => _SwapStatusForIntent(
         intent: intent,
