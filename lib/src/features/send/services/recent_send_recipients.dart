@@ -39,10 +39,14 @@ const _recentRecipientScanLimit = 100;
 /// Recents.
 final recentSendRecipientsProvider = FutureProvider.autoDispose
     .family<List<SendRecentRecipient>, String>((ref, accountUuid) async {
+      // The Rust scan reaches past the 10 recent transactions; a completed
+      // sync covers changes there, such as an older pending send expiring.
       ref.watch(
         syncProvider.select(
-          (state) =>
-              recentSendHistoryKey(state.value?.recentTransactions ?? const []),
+          (state) => (
+            recentSendHistoryKey(state.value?.recentTransactions ?? const []),
+            state.value?.lastSyncCompletedAt,
+          ),
         ),
       );
       final network = ref.watch(rpcEndpointProvider).networkName;
