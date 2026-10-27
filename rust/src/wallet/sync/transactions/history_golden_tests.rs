@@ -993,6 +993,88 @@ fn golden_transparent_send_excludes_shielded_change_and_ephemeral_output() {
     );
 }
 
+// ======================== Recent send recipients ========================
+
+/// Each recent recipient is the `sent` receipt's recipient, deduplicated
+/// newest first, with excluded sends dropped before deduplication.
+#[test]
+fn golden_recent_send_recipients_are_sent_receipt_recipients() {
+    let mut w = wallet();
+    for (tag, height, pool) in [(0xd0, 180, Pool::Sapling), (0xd1, 185, Pool::Orchard)] {
+        let input = w.fund(w.a, Pool::Orchard, 1_010_000);
+        let tx = w.tx(tag, Some(height), Some(CREATED), Some(10_000));
+        w.spend(input, tx);
+        let to = w.foreign_ua.clone();
+        w.sent(tx, pool, 0, w.a, None, Some(&to), 1_000_000, None);
+    }
+    let input = w.fund(w.a, Pool::Orchard, 5_010_000);
+    let tx = w.tx(0xb2, Some(190), Some(CREATED), Some(10_000));
+    w.spend(input, tx);
+    let to = w.ext_t(w.b).address;
+    w.sent(
+        tx,
+        Pool::Transparent,
+        0,
+        w.a,
+        None,
+        Some(&to),
+        5_000_000,
+        None,
+    );
+    w.recv(tx, Pool::Transparent, 0, w.b, 5_000_000, Recv::Ext, None);
+    // Pending, so its send row ranks first; the funding step has no row.
+    tex_pair(&mut w, 0xa2, 0xa1, 0, 10_010_000, (40_000, 10_000));
+
+    let account = w.a.expose_uuid().to_string();
+    let recent = |limit, exclude: &[String]| {
+        get_recent_send_recipients(&w.path, NETWORK, &account, limit, exclude)
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                let detail =
+                    get_transaction_detail(&w.path, NETWORK, &account, &r.txid_hex, "sent")
+                        .unwrap();
+                assert_eq!(detail.primary_address.as_deref(), Some(r.address.as_str()));
+                format!(
+                    "{} {} shielded={} time={}",
+                    tag(&r.txid_hex),
+                    w.names.name(Some(&r.address)),
+                    r.is_shielded,
+                    r.last_sent_time,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let created = w
+        .history(w.a, None)
+        .into_iter()
+        .find(|row| tag(&row.txid_hex) == "a1")
+        .unwrap()
+        .created_time;
+    assert!(created > 0);
+    assert_eq!(
+        recent(10, &[]),
+        [
+            format!("a1 F.t shielded=false time={created}"),
+            format!("b2 B.t shielded=false time={}", block_time(190)),
+            format!("d1 F.ua shielded=true time={}", block_time(185)),
+        ]
+    );
+    assert_eq!(
+        recent(2, &[hex::encode(txid(0xa1)), hex::encode(txid(0xd1))]),
+        [
+            format!("b2 B.t shielded=false time={}", block_time(190)),
+            format!("d0 F.ua shielded=true time={}", block_time(180)),
+        ]
+    );
+    assert!(recent(0, &[]).is_empty());
+    assert!(
+        get_recent_send_recipients(&w.path, NETWORK, &w.c.expose_uuid().to_string(), 10, &[])
+            .unwrap()
+            .is_empty()
+    );
+}
+
 // ======================== Self-sends and other accounts ========================
 
 /// Was `history_splits_same_account_transparent_self_send`.

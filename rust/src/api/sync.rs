@@ -3063,6 +3063,17 @@ pub struct TransactionDetailOutput {
     pub uses_orchard_receiver: bool,
 }
 
+/// A recent send's recipient, exactly as that send's receipt shows it.
+pub struct RecentSendRecipient {
+    pub address: String,
+    /// Txid (as [`TransactionInfo::txid_hex`]) of the latest send to `address`.
+    pub txid_hex: String,
+    /// Whether the output this address came from is in a shielded pool (Sapling/Orchard/Ironwood).
+    pub is_shielded: bool,
+    /// Unix seconds: block time when mined, else created time (same values TransactionInfo exposes).
+    pub last_sent_time: u64,
+}
+
 /// Lightweight account-wide ordering metadata. Reused while this DB snapshot
 /// remains current; it does not establish payment amounts or completeness.
 pub struct ActivityHistoryIndex {
@@ -3368,6 +3379,40 @@ pub fn get_transaction_detail(
                 _ => Vec::new(),
             },
         })
+    })
+}
+
+/// The newest `limit` distinct recipients of the account's recent sends,
+/// newest first, each the `primary_address` [`get_transaction_detail`] shows
+/// for that send. Only sends this wallet built count: history a restore
+/// rediscovers cannot be checked for one-time addresses. Sends in
+/// `exclude_txid_hexes` are skipped before deduplication; own-account
+/// addresses are not filtered.
+pub fn get_recent_send_recipients(
+    db_path: String,
+    network: String,
+    account_uuid: String,
+    limit: u32,
+    exclude_txid_hexes: Vec<String>,
+) -> Result<Vec<RecentSendRecipient>, String> {
+    catch(|| {
+        let network = parse_network_and_migrate(&db_path, &network)?;
+        let recipients = wallet_sync::get_recent_send_recipients(
+            &db_path,
+            network,
+            &account_uuid,
+            limit,
+            &exclude_txid_hexes,
+        )?;
+        Ok(recipients
+            .into_iter()
+            .map(|recipient| RecentSendRecipient {
+                address: recipient.address,
+                txid_hex: recipient.txid_hex,
+                is_shielded: recipient.is_shielded,
+                last_sent_time: recipient.last_sent_time,
+            })
+            .collect())
     })
 }
 

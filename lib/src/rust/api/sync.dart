@@ -1138,6 +1138,26 @@ Future<TransactionDetail> getTransactionDetail({
   txKind: txKind,
 );
 
+/// The newest `limit` distinct recipients of the account's recent sends,
+/// newest first, each the `primary_address` [`get_transaction_detail`] shows
+/// for that send. Only sends this wallet built count: history a restore
+/// rediscovers cannot be checked for one-time addresses. Sends in
+/// `exclude_txid_hexes` are skipped before deduplication; own-account
+/// addresses are not filtered.
+Future<List<RecentSendRecipient>> getRecentSendRecipients({
+  required String dbPath,
+  required String network,
+  required String accountUuid,
+  required int limit,
+  required List<String> excludeTxidHexes,
+}) => RustLib.instance.api.crateApiSyncGetRecentSendRecipients(
+  dbPath: dbPath,
+  network: network,
+  accountUuid: accountUuid,
+  limit: limit,
+  excludeTxidHexes: excludeTxidHexes,
+);
+
 /// Serves `txid_hex` (as [`TransactionInfo::txid_hex`]) first in the next
 /// transparent txid enhancement run for the wallet at `db_path`. A detail
 /// view calls it on open while the details are pending or unavailable.
@@ -2893,6 +2913,44 @@ class ProposalResult {
           proposalId == other.proposalId &&
           needsSaplingParams == other.needsSaplingParams &&
           feeZatoshi == other.feeZatoshi;
+}
+
+/// A recent send's recipient, exactly as that send's receipt shows it.
+class RecentSendRecipient {
+  final String address;
+
+  /// Txid (as [`TransactionInfo::txid_hex`]) of the latest send to `address`.
+  final String txidHex;
+
+  /// Whether the output this address came from is in a shielded pool (Sapling/Orchard/Ironwood).
+  final bool isShielded;
+
+  /// Unix seconds: block time when mined, else created time (same values TransactionInfo exposes).
+  final BigInt lastSentTime;
+
+  const RecentSendRecipient({
+    required this.address,
+    required this.txidHex,
+    required this.isShielded,
+    required this.lastSentTime,
+  });
+
+  @override
+  int get hashCode =>
+      address.hashCode ^
+      txidHex.hashCode ^
+      isShielded.hashCode ^
+      lastSentTime.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RecentSendRecipient &&
+          runtimeType == other.runtimeType &&
+          address == other.address &&
+          txidHex == other.txidHex &&
+          isShielded == other.isShielded &&
+          lastSentTime == other.lastSentTime;
 }
 
 class ScanRangeInfo {

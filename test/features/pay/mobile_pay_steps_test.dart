@@ -440,9 +440,9 @@ void main() {
         44,
       );
       expect(find.text('Scan a QR code'), findsOneWidget);
-      expect(find.text('Recently sent'), findsOneWidget);
+      expect(find.text('Recents'), findsOneWidget);
       expect(find.text('-1.25 USDC'), findsOneWidget);
-      expect(find.text('2 contacts'), findsOneWidget);
+      expect(find.text('Contacts'), findsOneWidget);
       expect(find.text('Mike'), findsOneWidget);
       expect(find.text('Alice'), findsOneWidget);
       expect(
@@ -528,8 +528,8 @@ void main() {
         find.text("You haven't interacted with this address before."),
         findsOneWidget,
       );
-      expect(find.text('Recently sent'), findsNothing);
-      expect(find.text('2 contacts'), findsNothing);
+      expect(find.text('Recents'), findsNothing);
+      expect(find.text('Contacts'), findsNothing);
       expect(
         tester
             .getRect(find.byKey(const ValueKey('mobile_pay_recipient_actions')))
@@ -547,7 +547,7 @@ void main() {
       expect(continued, isTrue);
     });
 
-    testWidgets('known recent address keeps one row and only Continue', (
+    testWidgets('known recent address keeps one row and offers saving it', (
       tester,
     ) async {
       final controller = TextEditingController(text: _recentRecipient);
@@ -571,11 +571,11 @@ void main() {
         ),
       );
 
-      expect(find.text('Recently sent'), findsOneWidget);
+      expect(find.text('Recents'), findsOneWidget);
       expect(find.text('-1.25 USDC'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('mobile_pay_add_to_contacts_button')),
-        findsNothing,
+        findsOneWidget,
       );
       expect(
         find.byKey(const ValueKey('mobile_pay_recipient_continue_button')),
@@ -851,10 +851,10 @@ void main() {
         ),
       );
 
-      expect(find.text('2 contacts'), findsOneWidget);
+      expect(find.text('Contacts'), findsOneWidget);
       expect(find.text('Mike'), findsOneWidget);
       expect(find.text('Second Mike'), findsOneWidget);
-      expect(find.text('Recently sent'), findsNothing);
+      expect(find.text('Recents'), findsNothing);
       expect(
         find.byKey(
           const ValueKey('mobile_pay_contact_selection_slot_contact-1'),
@@ -905,6 +905,71 @@ void main() {
         findsNothing,
       );
       expect(find.bySemanticsLabel('Selected contact'), findsNothing);
+    });
+
+    testWidgets('a contact name search keeps matches and hides the error', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'ali');
+      addTearDown(controller.dispose);
+
+      await _pumpStep(
+        tester,
+        MobilePayRecipientStep(
+          controller: controller,
+          typedAddress: 'ali',
+          addressError: 'Invalid Ethereum address',
+          contacts: _contacts,
+          recents: _recents,
+          busy: false,
+          externalAsset: SwapAsset.usdc,
+          onAddressChanged: (_) {},
+          onOpenScanner: () {},
+          onChooseRecipient: (_) {},
+          onSelectRecipient: () {},
+          onAddToContacts: () {},
+        ),
+      );
+
+      expect(find.text('Alice'), findsOneWidget);
+      expect(find.text('Mike'), findsNothing);
+      expect(find.text('Recents'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('mobile_pay_recipient_error')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('an address prefix shows the error without suggestions', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: '0x11');
+      addTearDown(controller.dispose);
+
+      await _pumpStep(
+        tester,
+        MobilePayRecipientStep(
+          controller: controller,
+          typedAddress: '0x11',
+          addressError: 'Invalid Ethereum address',
+          contacts: _contacts,
+          recents: _recents,
+          busy: false,
+          externalAsset: SwapAsset.usdc,
+          onAddressChanged: (_) {},
+          onOpenScanner: () {},
+          onChooseRecipient: (_) {},
+          onSelectRecipient: () {},
+          onAddToContacts: () {},
+        ),
+      );
+
+      expect(find.text('Mike'), findsNothing);
+      expect(find.text('Contacts'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('mobile_pay_recipient_error')),
+        findsOneWidget,
+      );
     });
 
     testWidgets('Solana recipient matching remains case-sensitive', (

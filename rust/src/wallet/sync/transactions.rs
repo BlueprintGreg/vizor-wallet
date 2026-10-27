@@ -683,6 +683,15 @@ pub(crate) struct TransactionDetailOutput {
     pub uses_orchard_receiver: bool,
 }
 
+/// A recent send's recipient, as its receipt shows it.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) struct RecentSendRecipient {
+    pub address: String,
+    pub txid_hex: String,
+    pub is_shielded: bool,
+    pub last_sent_time: u64,
+}
+
 pub(crate) struct ExportBirthdayAnchor {
     pub block_height: u64,
 }
@@ -1509,6 +1518,98 @@ pub(crate) fn get_transaction_detail(
     read_transaction_detail(&read_tx, account, txid_hex, tx_kind, |base| {
         read_receipt(&read_tx, db_path, network, account, base)
     })
+}
+
+/// Activity rows a recent-recipient lookup inspects, newest first.
+const RECENT_SEND_SCAN_ROWS: u32 = 100;
+
+/// The newest distinct recipients of the account's recent sends that this
+/// wallet built, each as [`get_transaction_detail`] shows that send's
+/// recipient. `exclude_txid_hexes` (as [`TransactionInfo::txid_hex`]) drop
+/// one-time sends before deduplication.
+pub(crate) fn get_recent_send_recipients(
+    db_path: &str,
+    network: WalletNetwork,
+    account_uuid: &str,
+    limit: u32,
+    exclude_txid_hexes: &[String],
+) -> Result<Vec<RecentSendRecipient>, String> {
+    let account = parse_account_uuid(account_uuid)?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    history_pages::recent_with(
+        db_path,
+        network,
+        account,
+        RECENT_SEND_SCAN_ROWS,
+        |read_tx, rows| {
+            collect_recent_send_recipients(&rows, limit, exclude_txid_hexes, |txid_hex| {
+                read_transaction_detail(read_tx, account, txid_hex, "sent", |base| {
+                    read_receipt(read_tx, db_path, network, account, base)
+                })
+            })
+        },
+    )
+}
+
+/// `rows` newest first; `sent_detail` reads one send's receipt.
+fn collect_recent_send_recipients(
+    rows: &[TransactionInfo],
+    limit: u32,
+    exclude_txid_hexes: &[String],
+    mut sent_detail: impl FnMut(&str) -> Result<TransactionDetail, String>,
+) -> Result<Vec<RecentSendRecipient>, String> {
+    let limit = limit as usize;
+    let excluded: HashSet<String> = exclude_txid_hexes
+        .iter()
+        .map(|txid| txid.trim().to_ascii_lowercase())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut recipients = Vec::new();
+    for row in rows {
+        if recipients.len() >= limit {
+            break;
+        }
+        // Only sends this wallet built have a creation time. Restored history
+        // cannot be checked against this device's one-time-address records.
+        if row.tx_kind != "sent"
+            || row.expired_unmined
+            || row.created_time == 0
+            || excluded.contains(&row.txid_hex)
+        {
+            continue;
+        }
+        let detail = sent_detail(&row.txid_hex)?;
+        let Some(address) = detail.primary_address else {
+            continue;
+        };
+        if address.trim().is_empty() || !seen.insert(address.trim().to_owned()) {
+            continue;
+        }
+        // An attribution-only recipient matches no output: it is transparent.
+        let is_shielded = detail
+            .outputs
+            .iter()
+            .find(|output| output.address.as_deref() == Some(address.as_str()))
+            .is_some_and(|output| {
+                matches!(
+                    output.activity_pool.as_deref(),
+                    Some("sapling" | "orchard" | "ironwood")
+                )
+            });
+        recipients.push(RecentSendRecipient {
+            address,
+            txid_hex: row.txid_hex.clone(),
+            is_shielded,
+            last_sent_time: if row.block_time > 0 {
+                row.block_time
+            } else {
+                row.created_time
+            },
+        });
+    }
+    Ok(recipients)
 }
 
 /// The library's receipt of `base`'s transaction, read in the caller's
@@ -6268,6 +6369,387 @@ mod tests {
         }
     }
 
+    /// A send of 100_000 to one external `address` in `pool`, ordered by `created`.
+    fn insert_external_send(
+        db: &NamedTempFile,
+        account: uuid::Uuid,
+        txid: &[u8],
+        mined_height: Option<i64>,
+        pool: i64,
+        address: &str,
+        created: &str,
+    ) {
+        insert_history_tx(
+            db,
+            account,
+            txid,
+            mined_height,
+            1,
+            Some(1_000_100),
+            -110_000,
+            110_000,
+            0,
+            false,
+            Some(created),
+        );
+        insert_output_with_address(
+            db,
+            txid,
+            pool,
+            Some(account),
+            None,
+            100_000,
+            false,
+            Some(address),
+            None,
+        );
+    }
+
+    /// `get_recent_send_recipients` over the fixture: its history rows and
+    /// `get_transaction_detail` receipts, through the production collector.
+    fn recent_recipients_from_fixture(
+        db: &NamedTempFile,
+        account: uuid::Uuid,
+        limit: u32,
+        exclude_txid_hexes: &[String],
+    ) -> Vec<RecentSendRecipient> {
+        let path = db.path().to_str().unwrap();
+        let rows =
+            history_from_fixture(path, WalletNetwork::Test, None, &account.to_string()).unwrap();
+        collect_recent_send_recipients(&rows, limit, exclude_txid_hexes, |txid_hex| {
+            detail_from_fixture(
+                path,
+                WalletNetwork::Test,
+                &account.to_string(),
+                txid_hex,
+                "sent",
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn recent_send_recipients_are_receipt_addresses_of_sent_rows_newest_first() {
+        let db = fresh_history_db();
+        let account = test_account_uuid();
+        let (alice_old, bob, alice_new) = (fake_txid(0xF1), fake_txid(0xF2), fake_txid(0xF3));
+        let (received, shielding, migration) = (fake_txid(0xF4), fake_txid(0xF5), fake_txid(0xF6));
+        let unaddressed = fake_txid(0xF7);
+        insert_external_send(
+            &db,
+            account,
+            &alice_old,
+            Some(1_000_000),
+            ORCHARD_POOL,
+            "u-alice",
+            "2026-04-28T10:00:00Z",
+        );
+        insert_external_send(
+            &db,
+            account,
+            &bob,
+            Some(1_000_001),
+            TRANSPARENT_POOL,
+            "t-bob",
+            "2026-04-28T10:01:00Z",
+        );
+        insert_external_send(
+            &db,
+            account,
+            &alice_new,
+            Some(1_000_002),
+            SAPLING_POOL,
+            "u-alice",
+            "2026-04-28T10:02:00Z",
+        );
+        // Newer rows that contribute nothing: an external receive, a shielding,
+        // a migration, and a send whose receipt shows no recipient address.
+        insert_history_tx(
+            &db,
+            account,
+            &received,
+            Some(1_000_003),
+            1,
+            Some(1_000_100),
+            500_000,
+            0,
+            500_000,
+            false,
+            Some("2026-04-28T10:03:00Z"),
+        );
+        insert_output_with_address(
+            &db,
+            &received,
+            ORCHARD_POOL,
+            None,
+            Some(account),
+            500_000,
+            false,
+            Some("u-mine"),
+            Some(0),
+        );
+        insert_history_tx(
+            &db,
+            account,
+            &shielding,
+            Some(1_000_004),
+            1,
+            Some(1_000_100),
+            -10_000,
+            10_010_000,
+            10_000_000,
+            true,
+            Some("2026-04-28T10:04:00Z"),
+        );
+        insert_output(
+            &db,
+            &shielding,
+            ORCHARD_POOL,
+            Some(account),
+            Some(account),
+            10_000_000,
+            true,
+        );
+        insert_history_tx(
+            &db,
+            account,
+            &migration,
+            None,
+            1,
+            Some(1_000_100),
+            -20_000,
+            625_000_000,
+            624_980_000,
+            false,
+            Some("2026-04-28T10:05:00Z"),
+        );
+        let output_index = insert_output_with_address_and_memo(
+            &db,
+            &migration,
+            ORCHARD_POOL,
+            Some(account),
+            Some(account),
+            624_980_000,
+            true,
+            None,
+            Some(1),
+            None,
+        );
+        insert_received_note_version(&db, &migration, output_index, IRONWOOD_NOTE_VERSION);
+        insert_spent_note_version(&db, &migration, ORCHARD_NOTE_VERSION);
+        insert_history_tx(
+            &db,
+            account,
+            &unaddressed,
+            Some(1_000_005),
+            1,
+            Some(1_000_100),
+            -110_000,
+            110_000,
+            0,
+            false,
+            Some("2026-04-28T10:06:00Z"),
+        );
+        insert_output(
+            &db,
+            &unaddressed,
+            ORCHARD_POOL,
+            Some(account),
+            None,
+            100_000,
+            false,
+        );
+
+        let rows = history_from_fixture(
+            db.path().to_str().unwrap(),
+            WalletNetwork::Test,
+            None,
+            &account.to_string(),
+        )
+        .unwrap();
+        let kind_of = |txid: &[u8]| {
+            rows.iter()
+                .filter(|row| row.txid_hex == hex::encode(txid))
+                .map(|row| row.tx_kind.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kind_of(&received), ["received"]);
+        assert_eq!(kind_of(&shielding), ["shielded"]);
+        assert_eq!(kind_of(&migration), ["migration"]);
+        assert_eq!(kind_of(&unaddressed), ["sent"]);
+        let created_time = |txid: &[u8]| {
+            rows.iter()
+                .find(|row| row.txid_hex == hex::encode(txid))
+                .unwrap()
+                .created_time
+        };
+
+        let got = recent_recipients_from_fixture(&db, account, 10, &[]);
+
+        assert_eq!(
+            got,
+            [
+                RecentSendRecipient {
+                    address: "u-alice".into(),
+                    txid_hex: hex::encode(alice_new),
+                    is_shielded: true,
+                    last_sent_time: created_time(&alice_new),
+                },
+                RecentSendRecipient {
+                    address: "t-bob".into(),
+                    txid_hex: hex::encode(bob),
+                    is_shielded: false,
+                    last_sent_time: created_time(&bob),
+                },
+            ]
+        );
+        for recipient in &got {
+            let detail = detail_from_fixture(
+                db.path().to_str().unwrap(),
+                WalletNetwork::Test,
+                &account.to_string(),
+                &recipient.txid_hex,
+                "sent",
+            )
+            .unwrap();
+            assert_eq!(
+                detail.primary_address.as_deref(),
+                Some(recipient.address.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn recent_send_recipients_exclude_before_dedupe_and_limit() {
+        let db = fresh_history_db();
+        let account = test_account_uuid();
+        let (alice_old, bob, alice_deposit) = (fake_txid(0xE7), fake_txid(0xE8), fake_txid(0xE9));
+        for (txid, address, created) in [
+            (&alice_old, "u-alice", "2026-04-28T11:00:00Z"),
+            (&bob, "u-bob", "2026-04-28T11:01:00Z"),
+            (&alice_deposit, "u-alice", "2026-04-28T11:02:00Z"),
+        ] {
+            insert_external_send(
+                &db,
+                account,
+                txid,
+                Some(1_000_000),
+                ORCHARD_POOL,
+                address,
+                created,
+            );
+        }
+        let pick = |limit, exclude: &[String]| {
+            recent_recipients_from_fixture(&db, account, limit, exclude)
+                .into_iter()
+                .map(|recipient| (recipient.address, recipient.txid_hex))
+                .collect::<Vec<_>>()
+        };
+        // Callers may pass any hex case; rows use lowercase.
+        let exclude = [hex::encode_upper(alice_deposit)];
+
+        assert_eq!(
+            pick(2, &[]),
+            [
+                ("u-alice".to_owned(), hex::encode(alice_deposit)),
+                ("u-bob".to_owned(), hex::encode(bob)),
+            ]
+        );
+        assert_eq!(pick(1, &exclude), [("u-bob".to_owned(), hex::encode(bob))]);
+        assert_eq!(
+            pick(2, &exclude),
+            [
+                ("u-bob".to_owned(), hex::encode(bob)),
+                ("u-alice".to_owned(), hex::encode(alice_old)),
+            ]
+        );
+        assert!(pick(0, &[]).is_empty());
+    }
+
+    #[test]
+    fn recent_send_recipients_keep_pending_and_own_sends_but_skip_expired() {
+        let db = fresh_history_db();
+        let account = test_account_uuid();
+        let (mined, expired, pending, self_send) = (
+            fake_txid(0xEA),
+            fake_txid(0xEB),
+            fake_txid(0xEC),
+            fake_txid(0xED),
+        );
+        insert_external_send(
+            &db,
+            account,
+            &mined,
+            Some(1_000_000),
+            IRONWOOD_POOL,
+            "u-mined",
+            "2026-04-28T12:00:00Z",
+        );
+        insert_external_send(
+            &db,
+            account,
+            &expired,
+            None,
+            ORCHARD_POOL,
+            "u-expired",
+            "2026-04-28T12:01:00Z",
+        );
+        mark_expired_unmined(&db, &expired);
+        insert_external_send(
+            &db,
+            account,
+            &pending,
+            None,
+            ORCHARD_POOL,
+            "u-pending",
+            "2026-04-28T12:02:00Z",
+        );
+        insert_history_tx(
+            &db,
+            account,
+            &self_send,
+            Some(1_000_001),
+            1,
+            Some(1_000_100),
+            -10_000,
+            1_010_000,
+            1_000_000,
+            false,
+            Some("2026-04-28T12:03:00Z"),
+        );
+        insert_output_with_address(
+            &db,
+            &self_send,
+            ORCHARD_POOL,
+            Some(account),
+            Some(account),
+            1_000_000,
+            true,
+            Some("u-self"),
+            Some(0),
+        );
+        let rows = history_from_fixture(
+            db.path().to_str().unwrap(),
+            WalletNetwork::Test,
+            None,
+            &account.to_string(),
+        )
+        .unwrap();
+        assert!(rows.iter().any(|row| row.txid_hex == hex::encode(expired)
+            && row.tx_kind == "sent"
+            && row.expired_unmined));
+
+        let got = recent_recipients_from_fixture(&db, account, 10, &[]);
+
+        // Pending sends rank first; the self-send is left for the caller to filter.
+        assert_eq!(
+            got.iter()
+                .map(|recipient| (recipient.address.as_str(), recipient.is_shielded))
+                .collect::<Vec<_>>(),
+            [("u-pending", true), ("u-self", true), ("u-mined", true)]
+        );
+    }
+
     fn zero_value_history(db: &NamedTempFile, account: uuid::Uuid) -> Vec<TransactionInfo> {
         history_from_fixture(
             db.path().to_str().unwrap(),
@@ -6292,6 +6774,57 @@ mod tests {
             tx_kind,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn recent_send_recipients_skip_sends_found_by_scanning() {
+        let db = fresh_history_db();
+        let account = test_account_uuid();
+        let (built, scanned) = (fake_txid(0xF1), fake_txid(0xF2));
+        insert_external_send(
+            &db,
+            account,
+            &built,
+            Some(1_000_000),
+            ORCHARD_POOL,
+            "u-built",
+            "2026-04-28T12:00:00Z",
+        );
+        // A restore rediscovers this send from the chain: no creation time.
+        insert_history_tx(
+            &db,
+            account,
+            &scanned,
+            Some(1_000_001),
+            1,
+            Some(1_000_100),
+            -110_000,
+            110_000,
+            0,
+            false,
+            None,
+        );
+        insert_output_with_address(
+            &db,
+            &scanned,
+            TRANSPARENT_POOL,
+            Some(account),
+            None,
+            100_000,
+            false,
+            Some("t-swap-deposit"),
+            None,
+        );
+
+        let recipients = recent_recipients_from_fixture(&db, account, 5, &[]);
+
+        assert_eq!(
+            recipients
+                .iter()
+                .map(|recipient| recipient.address.as_str())
+                .collect::<Vec<_>>(),
+            vec!["u-built"]
+        );
     }
 
     #[test]

@@ -2212,6 +2212,10 @@ class WidgetbookApp extends StatelessWidget {
                       builder: buildMobileSendRecipientContactsUseCase,
                     ),
                     WidgetbookUseCase(
+                      name: 'Recipient recents',
+                      builder: buildMobileSendRecipientRecentsUseCase,
+                    ),
+                    WidgetbookUseCase(
                       name: 'Recipient filled',
                       builder: buildMobileSendRecipientFilledUseCase,
                     ),

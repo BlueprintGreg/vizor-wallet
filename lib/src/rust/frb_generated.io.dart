@@ -783,6 +783,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<RecentSendRecipient> dco_decode_list_recent_send_recipient(dynamic raw);
+
+  @protected
   List<ResubmittedShareView> dco_decode_list_resubmitted_share_view(
     dynamic raw,
   );
@@ -1143,6 +1146,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProposalResult dco_decode_proposal_result(dynamic raw);
+
+  @protected
+  RecentSendRecipient dco_decode_recent_send_recipient(dynamic raw);
 
   @protected
   ResolvedVotingConfig dco_decode_resolved_voting_config(dynamic raw);
@@ -2368,6 +2374,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<RecentSendRecipient> sse_decode_list_recent_send_recipient(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<ResubmittedShareView> sse_decode_list_resubmitted_share_view(
     SseDeserializer deserializer,
   );
@@ -2816,6 +2827,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProposalResult sse_decode_proposal_result(SseDeserializer deserializer);
+
+  @protected
+  RecentSendRecipient sse_decode_recent_send_recipient(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ResolvedVotingConfig sse_decode_resolved_voting_config(
@@ -4336,6 +4352,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_recent_send_recipient(
+    List<RecentSendRecipient> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_resubmitted_share_view(
     List<ResubmittedShareView> self,
     SseSerializer serializer,
@@ -4854,6 +4876,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_proposal_result(
     ProposalResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recent_send_recipient(
+    RecentSendRecipient self,
     SseSerializer serializer,
   );
 

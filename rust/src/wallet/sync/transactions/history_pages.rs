@@ -541,9 +541,21 @@ pub(crate) fn recent(
     if limit == 0 {
         return Ok(Vec::new());
     }
+    recent_with(path, network, account, limit, |_, rows| Ok(rows))
+}
+
+/// [`recent`], then `then` over its rows within the same read transaction, so
+/// per-row reads observe the snapshot the rows were classified from.
+pub(crate) fn recent_with<T>(
+    path: &str,
+    network: WalletNetwork,
+    account: AccountUuid,
+    limit: u32,
+    then: impl FnOnce(&rusqlite::Connection, Vec<TransactionInfo>) -> Result<T, String>,
+) -> Result<T, String> {
     Ok(
         with_snapshot(path, network, account, None, false, |conn, snapshot| {
-            recent_history::assemble_recent_history(
+            let rows = recent_history::assemble_recent_history(
                 snapshot.bases.clone(),
                 account.expose_uuid().as_bytes(),
                 limit,
@@ -559,7 +571,8 @@ pub(crate) fn recent(
                         })
                         .collect())
                 },
-            )
+            )?;
+            then(conn, rows)
         })?
         .unwrap(),
     )

@@ -1,0 +1,86 @@
+import 'address_book_contact.dart';
+import 'address_book_label_lookup.dart';
+
+/// The recent recipients and saved contacts a recipient picker shows for the
+/// current field text.
+class RecipientSuggestions<R> {
+  const RecipientSuggestions({required this.recents, required this.contacts});
+
+  final List<R> recents;
+  final List<AddressBookContact> contacts;
+
+  bool get isNotEmpty => recents.isNotEmpty || contacts.isNotEmpty;
+}
+
+/// Characters an address fragment must match beyond its network prefix.
+const kRecipientAddressFragmentLength = 4;
+
+/// Matches the field text against [recents] and [contacts], shared by the
+/// Send and Pay recipient steps.
+///
+/// Labels match by substring. Addresses match by their start or end, the
+/// parts the app shows: a fragment must cover
+/// [kRecipientAddressFragmentLength] characters past the network prefix
+/// (`u1`, `t1`, `0x`, ...) that every address shares, so a bare prefix lists
+/// nothing. A recent is left out when a matched contact already shows its
+/// address.
+RecipientSuggestions<R> matchRecipientSuggestions<R>({
+  required String query,
+  required AddressBookNetwork network,
+  required List<R> recents,
+  required String Function(R recent) recentAddress,
+  required List<AddressBookContact> contacts,
+}) {
+  final trimmed = query.trim();
+  if (trimmed.isEmpty) {
+    return RecipientSuggestions(recents: recents, contacts: contacts);
+  }
+  final label = trimmed.toLowerCase();
+  final matchedContacts = [
+    for (final contact in contacts)
+      if (contact.label.toLowerCase().contains(label) ||
+          _addressMatches(contact.network, contact.address, trimmed))
+        contact,
+  ];
+  final shownAddresses = {
+    for (final contact in matchedContacts)
+      normalizedAddressBookAddress(network, contact.address),
+  };
+  return RecipientSuggestions(
+    recents: [
+      for (final recent in recents)
+        if (_addressMatches(network, recentAddress(recent), trimmed) &&
+            !shownAddresses.contains(
+              normalizedAddressBookAddress(network, recentAddress(recent)),
+            ))
+          recent,
+    ],
+    contacts: matchedContacts,
+  );
+}
+
+bool _addressMatches(
+  AddressBookNetwork network,
+  String address,
+  String fragment,
+) {
+  final candidate = normalizedAddressBookAddress(network, address);
+  final needle = normalizedAddressBookAddress(network, fragment);
+  if (needle.isEmpty) return false;
+  if (candidate.startsWith(needle) &&
+      needle.length - _networkPrefixLength(candidate) >=
+          kRecipientAddressFragmentLength) {
+    return true;
+  }
+  return needle.length >= kRecipientAddressFragmentLength &&
+      candidate.endsWith(needle);
+}
+
+// `0x` for hex addresses, otherwise a bech32-style `hrp1` (`u1`, `zs1`, `tex1`,
+// `bc1`; also the `t1` of a transparent address).
+final _hrpPrefix = RegExp(r'^[a-z]{1,16}1');
+
+int _networkPrefixLength(String address) {
+  if (address.startsWith('0x')) return 2;
+  return _hrpPrefix.firstMatch(address)?.end ?? 0;
+}
