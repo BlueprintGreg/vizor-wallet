@@ -83,6 +83,20 @@ void main() {
     expect(suggestions.recents, [_recent]);
   });
 
+  test('a recent matches by the name its row shows', () {
+    final suggestions = matchRecipientSuggestions<String>(
+      query: 'sav',
+      network: AddressBookNetwork.ethereum,
+      recents: const [_recent],
+      recentAddress: (address) => address,
+      recentLabel: (_) => 'Savings',
+      contacts: const [_alice, _bob],
+    );
+
+    expect(suggestions.recents, [_recent]);
+    expect(suggestions.contacts, isEmpty);
+  });
+
   test('Zcash prefixes do not count toward the fragment', () {
     const unified = 'u1tvg2412a23kshielded0000k64123hhq6d';
     const transparent = 't1aWwWwqk3jYGkZc7nLGuTvuM8hDywMZCo';

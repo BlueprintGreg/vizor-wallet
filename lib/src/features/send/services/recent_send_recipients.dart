@@ -28,6 +28,9 @@ const kSendRecentRecipientLimit = 5;
 // Headroom for the rows the Dart-side filters below can still drop.
 const _recentRecipientFetchLimit = 12;
 
+// Every candidate: Rust scans the newest 100 Activity rows.
+const _recentRecipientScanLimit = 100;
+
 /// Recent recipients of [accountUuid], newest first.
 ///
 /// Swap, Pay and Gift Card funding transactions pay one-time addresses, so
@@ -52,19 +55,19 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
       final intents = swapIntentsFromRecords(records);
 
       final dbPath = await getWalletDbPath();
-      final rows = await rust_sync.getRecentSendRecipients(
-        dbPath: dbPath,
-        network: network,
-        accountUuid: accountUuid,
-        limit: _recentRecipientFetchLimit,
-        excludeTxidHexes: oneTimeRecipientTxids(
-          intents: intents,
-          giftCardFundingTxids: giftCards.createdTxids,
-        ).toList(),
-      );
-      return selectSendRecentRecipients(
-        rows: [
-          for (final row in rows)
+      final excludeTxidHexes = oneTimeRecipientTxids(
+        intents: intents,
+        giftCardFundingTxids: giftCards.createdTxids,
+      ).toList();
+      return loadSendRecentRecipients(
+        fetch: (limit) async => [
+          for (final row in await rust_sync.getRecentSendRecipients(
+            dbPath: dbPath,
+            network: network,
+            accountUuid: accountUuid,
+            limit: limit,
+            excludeTxidHexes: excludeTxidHexes,
+          ))
             SendRecentRecipient(
               address: row.address,
               isShielded: row.isShielded,
@@ -75,6 +78,30 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
         intents: intents,
       );
     });
+
+/// Fetches a few more rows than shown and, when the Dart-side filters leave
+/// too few from a full page, fetches every candidate once.
+Future<List<SendRecentRecipient>> loadSendRecentRecipients({
+  required Future<List<SendRecentRecipient>> Function(int limit) fetch,
+  required String accountUuid,
+  required Map<String, AccountInfo> ownAccounts,
+  required Iterable<SwapIntent> intents,
+}) async {
+  List<SendRecentRecipient> select(List<SendRecentRecipient> rows) =>
+      selectSendRecentRecipients(
+        rows: rows,
+        accountUuid: accountUuid,
+        ownAccounts: ownAccounts,
+        intents: intents,
+      );
+  final rows = await fetch(_recentRecipientFetchLimit);
+  final selected = select(rows);
+  if (selected.length == kSendRecentRecipientLimit ||
+      rows.length < _recentRecipientFetchLimit) {
+    return selected;
+  }
+  return select(await fetch(_recentRecipientScanLimit));
+}
 
 /// Txids of the transactions that paid a swap or Pay deposit address or
 /// funded a Gift Card, in both byte orders since the stores do not agree on

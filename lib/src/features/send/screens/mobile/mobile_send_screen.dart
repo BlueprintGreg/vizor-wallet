@@ -2341,13 +2341,27 @@ class _MobileSendScreenState extends ConsumerState<MobileSendScreen> {
     bool pending(AsyncValue<Object?>? value) =>
         value != null && !value.hasValue && !value.hasError;
     if (pending(recents) || pending(addressBook)) return null;
+    final allContacts =
+        addressBook.value?.contacts ?? const <AddressBookContact>[];
+    final ownAccounts =
+        ref.watch(ownAccountAddressesProvider).value ??
+        const <String, AccountInfo>{};
     return matchRecipientSuggestions(
       query: _addressController.text,
       network: AddressBookNetwork.zcash,
       recents: recents?.value ?? const <SendRecentRecipient>[],
       recentAddress: (recent) => recent.address,
+      // A recent sent to another account shows, and is found by, its name.
+      recentLabel: (recent) => switch (sendReviewRecipientFor(
+        contacts: allContacts,
+        address: recent.address,
+        ownAccounts: ownAccounts,
+      )) {
+        SendReviewContactRecipient(:final name) => name,
+        _ => null,
+      },
       contacts: filterAddressBookContacts(
-        addressBook.value?.contacts ?? const <AddressBookContact>[],
+        allContacts,
         query: '',
         networks: const {AddressBookNetwork.zcash},
       ),

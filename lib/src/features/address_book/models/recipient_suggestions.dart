@@ -18,17 +18,18 @@ const kRecipientAddressFragmentLength = 4;
 /// Matches the field text against [recents] and [contacts], shared by the
 /// Send and Pay recipient steps.
 ///
-/// Labels match by substring. Addresses match by their start or end, the
-/// parts the app shows: a fragment must cover
-/// [kRecipientAddressFragmentLength] characters past the network prefix
-/// (`u1`, `t1`, `0x`, ...) that every address shares, so a bare prefix lists
-/// nothing. A recent is left out when a matched contact already shows its
-/// address.
+/// Labels match by substring, including the name a recent row shows
+/// ([recentLabel]). Addresses match by their start or end, the parts the app
+/// shows: a fragment must cover [kRecipientAddressFragmentLength] characters
+/// past the network prefix (`u1`, `t1`, `0x`, ...) that every address shares,
+/// so a bare prefix lists nothing. A recent is left out when a matched contact
+/// already shows its address.
 RecipientSuggestions<R> matchRecipientSuggestions<R>({
   required String query,
   required AddressBookNetwork network,
   required List<R> recents,
   required String Function(R recent) recentAddress,
+  String? Function(R recent)? recentLabel,
   required List<AddressBookContact> contacts,
 }) {
   final trimmed = query.trim();
@@ -49,7 +50,9 @@ RecipientSuggestions<R> matchRecipientSuggestions<R>({
   return RecipientSuggestions(
     recents: [
       for (final recent in recents)
-        if (_addressMatches(network, recentAddress(recent), trimmed) &&
+        if ((_addressMatches(network, recentAddress(recent), trimmed) ||
+                (recentLabel?.call(recent)?.toLowerCase().contains(label) ??
+                    false)) &&
             !shownAddresses.contains(
               normalizedAddressBookAddress(network, recentAddress(recent)),
             ))

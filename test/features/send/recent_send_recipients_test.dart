@@ -44,6 +44,56 @@ void main() {
     });
   });
 
+  group('loadSendRecentRecipients', () {
+    List<SendRecentRecipient> rows(int count, {String prefix = 'u1other'}) => [
+      for (var index = 0; index < count; index++)
+        SendRecentRecipient(address: '$prefix$index', isShielded: true),
+    ];
+
+    test('fetches every candidate when filters thin a full page', () async {
+      final limits = <int>[];
+      final ownActive = {
+        for (var index = 0; index < 12; index++)
+          'u1self$index': const AccountInfo(
+            uuid: _activeAccount,
+            name: 'Main',
+            order: 0,
+          ),
+      };
+
+      final selected = await loadSendRecentRecipients(
+        fetch: (limit) async {
+          limits.add(limit);
+          return [...rows(10, prefix: 'u1self'), ...rows(limit - 10)];
+        },
+        accountUuid: _activeAccount,
+        ownAccounts: ownActive,
+        intents: const [],
+      );
+
+      expect(limits, [12, 100]);
+      expect(selected, hasLength(kSendRecentRecipientLimit));
+      expect(selected.first.address, 'u1other0');
+    });
+
+    test('stops after one fetch when it returned every candidate', () async {
+      final limits = <int>[];
+
+      final selected = await loadSendRecentRecipients(
+        fetch: (limit) async {
+          limits.add(limit);
+          return rows(3);
+        },
+        accountUuid: _activeAccount,
+        ownAccounts: const {},
+        intents: const [],
+      );
+
+      expect(limits, [12]);
+      expect(selected, hasLength(3));
+    });
+  });
+
   group('selectSendRecentRecipients', () {
     test('drops the active account and swap deposit addresses', () {
       final selected = selectSendRecentRecipients(

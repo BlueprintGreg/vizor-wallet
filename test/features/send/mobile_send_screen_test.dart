@@ -3422,6 +3422,46 @@ void main() {
     expect(inRecents('Shielded'), findsNothing);
   });
 
+  testWidgets('a recent sent to another account is found by its name', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        ownAccounts: const {
+          _otherAccountAddress: AccountInfo(
+            uuid: 'account-2',
+            name: 'Savings',
+            order: 1,
+          ),
+        },
+        recents: const [
+          SendRecentRecipient(address: _otherAccountAddress, isShielded: true),
+          SendRecentRecipient(address: _transparentAddress, isShielded: false),
+        ],
+        validateAddress: ({required address, required network}) async =>
+            const AddressValidationResult(
+              isValid: false,
+              addressType: '',
+              wrongNetwork: false,
+            ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _enterAddress(tester, 'sav');
+
+    final recents = find.byKey(const ValueKey('mobile_send_recents_section'));
+    expect(
+      find.descendant(of: recents, matching: find.text('Savings')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: recents, matching: find.text('Transparent')),
+      findsNothing,
+    );
+    expect(find.text('Invalid address'), findsNothing);
+  });
+
   testWidgets('recents and contacts appear together once recents load', (
     tester,
   ) async {
