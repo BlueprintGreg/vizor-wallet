@@ -318,9 +318,13 @@ void main() {
       await tester.pump(kWalletPirConfigRefreshInterval);
       await tester.pumpAndSettle();
       expect(h.fetcher.requests, 4);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump(const Duration(minutes: 10));
       expect(h.fetcher.requests, 4);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
       expect(h.fetcher.requests, 6);
@@ -473,7 +477,11 @@ void main() {
   ) async {
     final h = _Harness();
     h.fetcher.servers[_sourceA] = [_a, _b];
-    await tester.runAsync(h.start);
+    // Keep the provider and failing future in the widget test's error zone.
+    final started = h.container.read(walletPirServerProvider.future);
+    await tester.pump();
+    await started;
+    await tester.pump();
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: h.container,
@@ -494,16 +502,16 @@ void main() {
     final failing = h.applyGates[_b[1]] = Completer<void>();
     final second = find.byKey(ValueKey('wallet_pir_server_option_${_b[1]}'));
     await tester.tap(second);
-    await tester.runAsync(() => pumpEventQueue());
+    await tester.pump();
     failing.completeError(StateError('db busy'));
-    await tester.runAsync(() => pumpEventQueue());
+    await tester.pump();
     await tester.pumpAndSettle();
     expect(find.text("Couldn't change server. Try again."), findsOneWidget);
     expect(find.text('Choose a server'), findsOneWidget);
     expect(h.state.selectedBaseUrl, _a[1]);
 
     await tester.tap(second);
-    await tester.runAsync(() => pumpEventQueue());
+    await tester.pump();
     await tester.pumpAndSettle();
     expect(h.state.selectedBaseUrl, _b[1]);
     expect(find.text('Choose a server'), findsNothing);

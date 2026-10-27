@@ -18,7 +18,9 @@ void main() {
     });
     final headers = Completer<void>();
     final finish = Completer<void>();
-    final serving = server.first.then((request) async {
+    final serving = Completer<void>();
+    server.listen((request) async {
+      request.response.bufferOutput = false;
       request.response.add(List.filled(33, 1));
       await request.response.flush();
       headers.complete();
@@ -26,6 +28,7 @@ void main() {
       try {
         await request.response.close();
       } catch (_) {}
+      serving.complete();
     });
     final request = client.request(
       'GET',
@@ -38,7 +41,7 @@ void main() {
       await rejected.timeout(const Duration(seconds: 2));
     } finally {
       finish.complete();
-      await serving;
+      await serving.future;
     }
   });
 
