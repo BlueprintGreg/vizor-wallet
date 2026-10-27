@@ -57,13 +57,13 @@ void main() {
     expect(suggestions.recents, isEmpty);
   });
 
-  test('an address start must cover four characters past 0x', () {
+  test('an address start needs six characters', () {
     expect(_match('0x').isNotEmpty, isFalse);
     expect(_match('0x529').isNotEmpty, isFalse);
     expect(_match('0x5290').contacts, [_alice]);
   });
 
-  test('an address end must cover four characters', () {
+  test('an address end needs four characters', () {
     expect(_match('EE7').isNotEmpty, isFalse);
     expect(_match('9ee7').contacts, [_alice]);
     expect(_match('9EE7').recents, [_recent]);
@@ -97,7 +97,7 @@ void main() {
     expect(suggestions.contacts, isEmpty);
   });
 
-  test('Zcash prefixes do not count toward the fragment', () {
+  test('Zcash addresses match from six leading characters', () {
     const unified = 'u1tvg2412a23kshielded0000k64123hhq6d';
     const transparent = 't1aWwWwqk3jYGkZc7nLGuTvuM8hDywMZCo';
     const recents = [unified, transparent];
@@ -112,34 +112,14 @@ void main() {
     expect(_matchZcash(unified, recents).recents, [unified]);
   });
 
-  test('a NEAR account name has no network prefix', () {
-    const near = AddressBookContact(
-      id: 'near',
-      label: 'Wallet',
-      network: AddressBookNetwork.near,
-      address: 'alice1.near',
-      profilePictureId: 'pfp-03',
-      createdAtMs: 0,
-      updatedAtMs: 0,
-    );
+  test('the start length does not depend on the address format', () {
+    const uppercase = 'U1TVG2412A23KSHIELDED0000K64123HHQ6D';
+    const p2sh = 't3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd';
+    const recents = [uppercase, p2sh];
 
-    final suggestions = matchRecipientSuggestions<String>(
-      query: 'alic',
-      network: AddressBookNetwork.near,
-      recents: const ['alice1.near'],
-      recentAddress: (address) => address,
-      contacts: const [near],
-    );
-
-    expect(suggestions.contacts, [near]);
-  });
-
-  test('an uppercase bech32 prefix does not count toward the fragment', () {
-    const unified = 'U1TVG2412A23KSHIELDED0000K64123HHQ6D';
-    const recents = [unified];
-
-    expect(_matchZcash('U1TV', recents).isNotEmpty, isFalse);
     expect(_matchZcash('U1TVG', recents).isNotEmpty, isFalse);
-    expect(_matchZcash('U1TVG2', recents).recents, [unified]);
+    expect(_matchZcash('U1TVG2', recents).recents, [uppercase]);
+    expect(_matchZcash('t3Vz2', recents).isNotEmpty, isFalse);
+    expect(_matchZcash('t3Vz22', recents).recents, [p2sh]);
   });
 }

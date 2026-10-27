@@ -12,18 +12,22 @@ class RecipientSuggestions<R> {
   bool get isNotEmpty => recents.isNotEmpty || contacts.isNotEmpty;
 }
 
-/// Characters an address fragment must match beyond its network prefix.
-const kRecipientAddressFragmentLength = 4;
+/// Characters an address fragment needs to match the start of an address.
+///
+/// Six covers a two-character network prefix (`u1`, `t1`, `0x`) plus four.
+const kRecipientAddressPrefixLength = 6;
+
+/// Characters an address fragment needs to match the end of an address.
+const kRecipientAddressSuffixLength = 4;
 
 /// Matches the field text against [recents] and [contacts], shared by the
 /// Send and Pay recipient steps.
 ///
 /// Labels match by substring, including the name a recent row shows
 /// ([recentLabel]). Addresses match by their start or end, the parts the app
-/// shows: a fragment must cover [kRecipientAddressFragmentLength] characters
-/// past the network prefix (`u1`, `t1`, `0x`, ...) that every address shares,
-/// so a bare prefix lists nothing. A recent is left out when a matched contact
-/// already shows its address.
+/// shows, once the fragment has [kRecipientAddressPrefixLength] or
+/// [kRecipientAddressSuffixLength] characters. A recent is left out when a
+/// matched contact already shows its address.
 RecipientSuggestions<R> matchRecipientSuggestions<R>({
   required String query,
   required AddressBookNetwork network,
@@ -69,36 +73,8 @@ bool _addressMatches(
 ) {
   final candidate = normalizedAddressBookAddress(network, address);
   final needle = normalizedAddressBookAddress(network, fragment);
-  if (needle.isEmpty) return false;
-  if (candidate.startsWith(needle) &&
-      needle.length - _networkPrefixLength(network, candidate) >=
-          kRecipientAddressFragmentLength) {
-    return true;
-  }
-  return needle.length >= kRecipientAddressFragmentLength &&
-      candidate.endsWith(needle);
+  return (needle.length >= kRecipientAddressPrefixLength &&
+          candidate.startsWith(needle)) ||
+      (needle.length >= kRecipientAddressSuffixLength &&
+          candidate.endsWith(needle));
 }
-
-// `0x` for hex addresses, otherwise, on networks with bech32 addresses, an
-// `hrp1` (`u1`, `zs1`, `tex1`, `bc1`; also the `t1` of a transparent address).
-// Bech32 may also be written all uppercase, which a mixed-case base58 address
-// never is.
-final _hrpPrefix = RegExp(r'^[a-z]{1,16}1');
-final _upperHrpPrefix = RegExp(r'^[A-Z]{1,16}1');
-
-int _networkPrefixLength(AddressBookNetwork network, String address) {
-  if (address.startsWith('0x')) return 2;
-  if (!_hasBech32Addresses(network)) return 0;
-  final hrp = address == address.toUpperCase() ? _upperHrpPrefix : _hrpPrefix;
-  return hrp.firstMatch(address)?.end ?? 0;
-}
-
-// Elsewhere a `1` is part of the address itself, as in a NEAR account name.
-bool _hasBech32Addresses(AddressBookNetwork network) => switch (network) {
-  AddressBookNetwork.zcash ||
-  AddressBookNetwork.bitcoin ||
-  AddressBookNetwork.litecoin ||
-  AddressBookNetwork.cardano ||
-  AddressBookNetwork.aleo => true,
-  _ => false,
-};
