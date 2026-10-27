@@ -13077,6 +13077,7 @@ impl SseDecode for crate::api::sync::MigrationOutboxItem {
         let mut var_scheduledHeight = <u32>::sse_decode(deserializer);
         let mut var_scheduleStartHeight = <u32>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
+        let mut var_targetHeight = <u32>::sse_decode(deserializer);
         return crate::api::sync::MigrationOutboxItem {
             item_id: var_itemId,
             part_index: var_partIndex,
@@ -13086,6 +13087,7 @@ impl SseDecode for crate::api::sync::MigrationOutboxItem {
             scheduled_height: var_scheduledHeight,
             schedule_start_height: var_scheduleStartHeight,
             expiry_height: var_expiryHeight,
+            target_height: var_targetHeight,
         };
     }
 }
@@ -18359,6 +18361,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::sync::MigrationOutboxItem {
             self.scheduled_height.into_into_dart().into_dart(),
             self.schedule_start_height.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
+            self.target_height.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -22781,6 +22784,7 @@ impl SseEncode for crate::api::sync::MigrationOutboxItem {
         <u32>::sse_encode(self.scheduled_height, serializer);
         <u32>::sse_encode(self.schedule_start_height, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
+        <u32>::sse_encode(self.target_height, serializer);
     }
 }
 
