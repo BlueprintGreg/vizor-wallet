@@ -1,11 +1,12 @@
 //! On-device benchmark of the post-quantum signature schemes considered for transparent
-//! spends: WOTS+ and three SLH-DSA (SPHINCS+) parameter sets. Measures the same three
+//! spends: WOTS+, standalone FORS, and three SLH-DSA (SPHINCS+) parameter sets. Measures
+//! the same three
 //! operations as common's `pq_schemes` benchmark: deriving a key pair from a seed, signing
-//! a 32-byte transaction digest, and verifying the signature.
+//! a transaction digest, and verifying the signature.
 
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use slh_dsa::{ParameterSet, Signature, SigningKey, VerifyingKey};
 
 /// Timings for one scheme, as the median of all iterations, in microseconds.
@@ -44,7 +45,8 @@ fn time<T>(samples: &mut Vec<Duration>, f: impl FnOnce() -> T) -> T {
 }
 
 fn bench_wots(iterations: u32) -> PqSchemeTiming {
-    use wots_plus::{MessageDigest, PublicSeed, SIGNATURE_BYTES, SecretSeed, SigningKey};
+    use pq_crypto::wots::{SIGNATURE_BYTES, SigningKey, VerifyingKey};
+    use pq_crypto::{MessageDigest, PublicSeed, SecretSeed};
 
     let (mut keygen, mut sign, mut verify) = (Vec::new(), Vec::new(), Vec::new());
     let mut public_key_bytes = 0;
@@ -65,7 +67,7 @@ fn bench_wots(iterations: u32) -> PqSchemeTiming {
         });
         // WOTS+ verifies by recomputing the public key from the signature.
         let recovered = time(&mut verify, || {
-            wots_plus::VerifyingKey::recover_from_signature(
+            VerifyingKey::recover_from_signature(
                 &MessageDigest::from_bytes(DIGEST),
                 &signature,
                 public.public_seed().clone(),
@@ -75,6 +77,44 @@ fn bench_wots(iterations: u32) -> PqSchemeTiming {
     }
     PqSchemeTiming {
         scheme: "WOTS+ (n=32, w=16)".into(),
+        keygen_us: median(keygen),
+        sign_us: median(sign),
+        verify_us: median(verify),
+        signature_bytes: SIGNATURE_BYTES as u32,
+        public_key_bytes: public_key_bytes as u32,
+        iterations,
+    }
+}
+
+fn bench_fors(iterations: u32) -> PqSchemeTiming {
+    use pq_crypto::fors::{INDEX_DIGEST_BYTES, IndexDigest, SIGNATURE_BYTES, SigningKey};
+    use pq_crypto::{PublicSeed, SecretSeed};
+
+    // FORS signs 40 bytes of tree indices; derive them from the transaction digest.
+    let digest = IndexDigest::from_bytes(
+        Sha512::digest(DIGEST)[..INDEX_DIGEST_BYTES]
+            .try_into()
+            .expect("SHA-512 output is longer than a FORS digest"),
+    );
+    let (mut keygen, mut sign, mut verify) = (Vec::new(), Vec::new(), Vec::new());
+    let mut public_key_bytes = 0;
+    for i in 0..iterations {
+        let (key, public) = time(&mut keygen, || {
+            let key = SigningKey::from_seeds(
+                SecretSeed::from_bytes(seed(b"fors-sk", i)),
+                PublicSeed::from_bytes(seed(b"fors-pk", i)),
+            )
+            .expect("valid seeds");
+            let public = key.verifying_key();
+            (key, public)
+        });
+        public_key_bytes = public.to_bytes().len();
+        let signature = time(&mut sign, || key.sign_digest(&digest));
+        let verified = time(&mut verify, || public.verify_digest(&digest, &signature));
+        assert!(verified.is_ok(), "FORS signature failed to verify");
+    }
+    PqSchemeTiming {
+        scheme: "FORS (k=35, a=9, n=32)".into(),
         keygen_us: median(keygen),
         sign_us: median(sign),
         verify_us: median(verify),
@@ -123,6 +163,7 @@ pub fn run_pq_signature_benchmark(iterations: u32) -> Vec<PqSchemeTiming> {
     let iterations = iterations.max(1);
     vec![
         bench_wots(iterations),
+        bench_fors(iterations),
         bench_slh_dsa::<slh_dsa::Sha2_128s>("SLH-DSA-SHA2-128s", 16, iterations),
         bench_slh_dsa::<slh_dsa::Sha2_128f>("SLH-DSA-SHA2-128f", 16, iterations),
         bench_slh_dsa::<slh_dsa::Sha2_256s>("SLH-DSA-SHA2-256s", 32, iterations),
@@ -134,8 +175,9 @@ mod tests {
     #[test]
     fn every_scheme_signs_and_verifies() {
         let timings = super::run_pq_signature_benchmark(1);
-        assert_eq!(timings.len(), 4);
-        assert_eq!(timings[1].signature_bytes, 7856);
-        assert_eq!(timings[1].public_key_bytes, 32);
+        assert_eq!(timings.len(), 5);
+        assert_eq!(timings[1].signature_bytes, 11_200);
+        assert_eq!(timings[2].signature_bytes, 7856);
+        assert_eq!(timings[2].public_key_bytes, 32);
     }
 }

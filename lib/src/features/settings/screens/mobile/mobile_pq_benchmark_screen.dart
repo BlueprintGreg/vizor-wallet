@@ -9,8 +9,8 @@ import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../rust/api/pq_benchmark.dart';
 
 /// Measures post-quantum signature schemes on this device: key generation,
-/// signing a transaction digest and verification, for WOTS+ and three
-/// SLH-DSA (SPHINCS+) parameter sets. Experimental; not a wallet feature.
+/// signing a transaction digest and verification, for WOTS+, standalone FORS
+/// and three SLH-DSA (SPHINCS+) parameter sets. Experimental; not a wallet feature.
 class MobilePqBenchmarkScreen extends StatefulWidget {
   const MobilePqBenchmarkScreen({super.key});
 

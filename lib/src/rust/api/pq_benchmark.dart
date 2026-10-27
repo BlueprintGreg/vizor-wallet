@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bench_slh_dsa`, `bench_wots`, `median`, `seed`, `time`
+// These functions are ignored because they are not marked as `pub`: `bench_fors`, `bench_slh_dsa`, `bench_wots`, `median`, `seed`, `time`
 
 /// Runs every scheme `iterations` times (at least once) and returns their median timings.
 Future<List<PqSchemeTiming>> runPqSignatureBenchmark({

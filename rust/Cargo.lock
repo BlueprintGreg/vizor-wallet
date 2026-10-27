@@ -4211,6 +4211,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pq-crypto"
+version = "0.1.0-rc2"
+source = "git+https://github.com/p0mvn/pq-crypto?rev=81d4c205f6871a9df7473bc2f95a2bb245fd8d88#81d4c205f6871a9df7473bc2f95a2bb245fd8d88"
+dependencies = [
+ "rand_core 0.10.1",
+ "sha2 0.11.1",
+ "zeroize",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4796,6 +4806,7 @@ dependencies = [
  "nonempty",
  "oslog",
  "pbkdf2",
+ "pq-crypto",
  "prost 0.13.5",
  "prost 0.14.4",
  "rand 0.8.8",
@@ -4826,7 +4837,6 @@ dependencies = [
  "uuid",
  "vote-commitment-tree",
  "voting-crypto-deps",
- "wots-plus",
  "zakura-address",
  "zakura-bls12-381",
  "zakura-client-backend",
@@ -8034,16 +8044,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "wots-plus"
-version = "0.1.0-rc1"
-source = "git+https://github.com/p0mvn/pq-crypto?rev=e61767ce08b1f9042d50062584885aec0e1cdae6#e61767ce08b1f9042d50062584885aec0e1cdae6"
-dependencies = [
- "rand_core 0.10.1",
- "sha2 0.11.1",
- "zeroize",
-]
 
 [[package]]
 name = "writeable"
