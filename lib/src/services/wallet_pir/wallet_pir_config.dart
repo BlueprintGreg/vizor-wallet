@@ -318,6 +318,7 @@ class RoutedWalletPirConfigFetcher implements WalletPirConfigFetcher {
       headers: const {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'},
       timeout: timeout,
       maxRedirects: 0,
+      maxBodyBytes: maxBodyBytes,
     );
     if (response.statusCode != 200) {
       throw WalletPirConfigException(

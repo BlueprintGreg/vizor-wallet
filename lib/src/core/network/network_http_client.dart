@@ -62,13 +62,15 @@ class _DirectRequestOperation<T> {
 /// Tor transport boundary used after the process-wide route selects Tor.
 ///
 /// Implementations must apply each timeout to the underlying transport
-/// operation, not only to the Future returned to Dart.
+/// operation, not only to the Future returned to Dart. A supplied `maxBodyBytes`
+/// must stop reception before buffering more than the requested body budget.
 abstract interface class TorHttpBridge {
   Future<NetworkHttpResponse> get(
     Uri uri, {
     required Map<String, String> headers,
     required Duration? timeout,
     Future<void>? cancelSignal,
+    int? maxBodyBytes,
   });
 
   Future<NetworkHttpResponse> post(
@@ -77,6 +79,7 @@ abstract interface class TorHttpBridge {
     required List<int> bodyBytes,
     required Duration? timeout,
     Future<void>? cancelSignal,
+    int? maxBodyBytes,
   });
 
   Future<NetworkHttpResponse> download(
@@ -97,6 +100,7 @@ class RustTorHttpBridge implements TorHttpBridge {
     required Map<String, String> headers,
     required Duration? timeout,
     Future<void>? cancelSignal,
+    int? maxBodyBytes,
   }) {
     return _request(
       timeout,
@@ -106,6 +110,7 @@ class RustTorHttpBridge implements TorHttpBridge {
         headers: _rustHeaders(headers),
         timeoutMilliseconds: _timeoutMilliseconds(timeout),
         requestId: requestId,
+        maxBodyBytes: maxBodyBytes == null ? null : BigInt.from(maxBodyBytes),
       ),
     );
   }
@@ -117,6 +122,7 @@ class RustTorHttpBridge implements TorHttpBridge {
     required List<int> bodyBytes,
     required Duration? timeout,
     Future<void>? cancelSignal,
+    int? maxBodyBytes,
   }) {
     return _request(
       timeout,
@@ -127,6 +133,7 @@ class RustTorHttpBridge implements TorHttpBridge {
         body: bodyBytes,
         timeoutMilliseconds: _timeoutMilliseconds(timeout),
         requestId: requestId,
+        maxBodyBytes: maxBodyBytes == null ? null : BigInt.from(maxBodyBytes),
       ),
     );
   }
@@ -283,9 +290,13 @@ class NetworkHttpClient {
     List<int> bodyBytes = const [],
     Duration? timeout,
     Future<void>? cancelSignal,
+    int? maxBodyBytes,
     int maxRedirects = _defaultMaxRedirects,
   }) {
     _requirePositiveTimeout(timeout);
+    if (maxBodyBytes != null && maxBodyBytes < 0) {
+      throw ArgumentError.value(maxBodyBytes, 'maxBodyBytes', 'must be nonnegative');
+    }
     final normalizedMethod = method.toUpperCase();
     return _torDesired()
         ? _requestViaTorWithTimeoutRetry(
@@ -295,6 +306,7 @@ class NetworkHttpClient {
             bodyBytes: bodyBytes,
             timeout: timeout,
             cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
             maxRedirects: maxRedirects,
           )
         : _runDirectRequest(
@@ -305,6 +317,7 @@ class NetworkHttpClient {
               bodyBytes: bodyBytes,
               timeout: timeout,
               cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
               maxRedirects: maxRedirects,
             ),
           );
@@ -317,6 +330,7 @@ class NetworkHttpClient {
     required List<int> bodyBytes,
     required Duration? timeout,
     required Future<void>? cancelSignal,
+    int? maxBodyBytes,
     required int maxRedirects,
   }) async {
     try {
@@ -327,6 +341,7 @@ class NetworkHttpClient {
         bodyBytes: bodyBytes,
         timeout: timeout,
         cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
         maxRedirects: maxRedirects,
       );
     } on TimeoutException {
@@ -340,6 +355,7 @@ class NetworkHttpClient {
         bodyBytes: bodyBytes,
         timeout: timeout,
         cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
         maxRedirects: maxRedirects,
       );
     }
@@ -427,6 +443,7 @@ class NetworkHttpClient {
     String? destinationPath,
     required Duration? timeout,
     required Future<void>? cancelSignal,
+    int? maxBodyBytes,
     int maxRedirects = _defaultMaxRedirects,
   }) async {
     if (method != 'GET' && method != 'POST') {
@@ -462,6 +479,7 @@ class NetworkHttpClient {
               headers: currentHeaders,
               timeout: remainingTimeout,
               cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
             )
           : await _torBridge.post(
               currentUri,
@@ -469,6 +487,7 @@ class NetworkHttpClient {
               bodyBytes: currentBody,
               timeout: remainingTimeout,
               cancelSignal: cancelSignal,
+              maxBodyBytes: maxBodyBytes,
             );
       if (!stopwatch.isRunning) stopwatch.start();
       final location = response.header(HttpHeaders.locationHeader);
@@ -507,6 +526,7 @@ class NetworkHttpClient {
     required List<int> bodyBytes,
     required Duration? timeout,
     required Future<void>? cancelSignal,
+    int? maxBodyBytes,
     required int maxRedirects,
   }) {
     HttpClientRequest? activeRequest;
@@ -550,7 +570,16 @@ class NetworkHttpClient {
         final body = responseBody = Completer<Uint8List>();
         final bytes = BytesBuilder();
         responseSubscription = response.listen(
-          bytes.add,
+          (chunk) {
+            if (body.isCompleted) return;
+            if (maxBodyBytes != null && bytes.length + chunk.length > maxBodyBytes) {
+              final error = const HttpException('HTTP response exceeds byte limit');
+              body.completeError(error);
+              unawaited(abort(error));
+              return;
+            }
+            bytes.add(chunk);
+          },
           onError: (Object error, StackTrace stackTrace) {
             if (!body.isCompleted) body.completeError(error, stackTrace);
           },

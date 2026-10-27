@@ -4,10 +4,23 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `network`, `profile`, `view`
+// These functions are ignored because they are not marked as `pub`: `apply_server`, `network`, `profile`, `view`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+/// Validates a user-entered HTTPS base with the same rules as advertised
+/// servers. Returns its canonical identity without contacting the server.
+String normalizeWalletPirServerBase({required String baseUrl}) => RustLib
+    .instance
+    .api
+    .crateApiPirConfigNormalizeWalletPirServerBase(baseUrl: baseUrl);
+
+/// The same public Enhance initialization route used by the client. A ping
+/// measures its HTTPS response and does not create a private query session.
+String walletPirServerPingUrl({required String baseUrl}) => RustLib.instance.api
+    .crateApiPirConfigWalletPirServerPingUrl(baseUrl: baseUrl);
 
 /// Verifies the static document and returns the mirrors to fetch.
 ApiWalletPirStaticConfig resolveWalletPirStaticConfig({
@@ -73,25 +86,16 @@ String selectWalletPirServer({
 String? selectedWalletPirServer() =>
     RustLib.instance.api.crateApiPirConfigSelectedWalletPirServer();
 
-/// Uses `base_url` for Enhance, Status, Transparent and Receiver, or no
-/// server with `None`. Returns whether the applied server changed.
+/// Uses `base_url` for private queries, or no server with `None`.
+/// Returns whether the applied server changed.
 ///
-/// Dart quiesces sync before calling this and restarts it afterwards. On a
-/// change the running Receiver round is cancelled, txid display services of
-/// other servers are dropped and the Receiver inventory cache verified by the
-/// previous server is forgotten. Enhance, Status and Transparent sessions are
-/// built per sync from the applied base, and Transparent companions are bound
-/// to their origin, so no coverage carries across servers. Wallet funds,
-/// keys and history are untouched.
-///
-/// The switch fails closed: the old server stops being used before cleanup
-/// starts, and the new one is installed only once cleanup succeeded. If it
-/// fails the error is returned with no server selected, and the next apply,
-/// of the same base too, runs cleanup again.
-Future<bool> applyWalletPirServer({String? dbPath, String? baseUrl}) => RustLib
-    .instance
-    .api
-    .crateApiPirConfigApplyWalletPirServer(dbPath: dbPath, baseUrl: baseUrl);
+/// Dart pauses sync before calling this and restarts it afterwards. Display
+/// services tied to the old server are dropped. Enhance, Status and Transparent
+/// sessions are rebuilt from the selected base; wallet keys and history stay
+/// unchanged. Receiver routing remains in the shared config, but this app base
+/// has no Receiver recovery integration.
+Future<bool> applyWalletPirServer({String? baseUrl}) => RustLib.instance.api
+    .crateApiPirConfigApplyWalletPirServer(baseUrl: baseUrl);
 
 /// An accepted config and what it means for the saved selection.
 class ApiWalletPirConfig {
