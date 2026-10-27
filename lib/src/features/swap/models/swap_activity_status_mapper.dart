@@ -13,6 +13,7 @@ import 'swap_models.dart';
 import 'swap_status_presentation.dart';
 import 'swap_token_amount_formatting.dart';
 import 'one_time_address_role.dart';
+import 'swap_payout_discovery.dart';
 
 class SwapActivityAccountDetail {
   const SwapActivityAccountDetail({required this.name, this.profilePictureId});
@@ -140,6 +141,7 @@ SwapActivityStatusPresentation swapActivityStatusPresentationForIntent(
   SwapActivityAccountDetail? accountDetail,
   Iterable<AddressBookContact> addressBookContacts = const [],
   BigInt? confirmedDepositFeeZatoshi,
+  bool findingPayout = false,
 }) {
   final sellAsset = swapActivitySellAsset(intent) ?? SwapAsset.zec;
   final receiveAsset = swapActivityReceiveAsset(intent) ?? SwapAsset.usdc;
@@ -195,7 +197,9 @@ SwapActivityStatusPresentation swapActivityStatusPresentationForIntent(
         : null,
     // Keep the generic swap presentation stable. Pay surfaces consume the
     // dedicated [payStatus] contract instead of relabelling generic details.
-    title: _swapActivityStatusTitle(intent),
+    title: findingPayout
+        ? 'Swap in progress...'
+        : _swapActivityStatusTitle(intent),
     payAsset: sellAsset,
     receiveAsset: receiveAsset,
     payFiatText: payFiatText,
@@ -225,10 +229,12 @@ SwapActivityStatusPresentation swapActivityStatusPresentationForIntent(
     payDetailCopyText: payDetailCopyText,
     receiveDetailText: receiveDetailText,
     receiveDetailCopyText: receiveDetailCopyText,
-    statusLabel: intent.status.label,
-    badgeKind: _swapActivityStatusBadgeKind(intent.status),
+    statusLabel: findingPayout ? kSwapFindingPayoutLabel : intent.status.label,
+    badgeKind: findingPayout
+        ? SwapStatusBadgeKind.liveQuote
+        : _swapActivityStatusBadgeKind(intent.status),
     progressIndex: _swapActivityStatusProgressIndex(intent),
-    steps: _swapActivityProgressSteps(intent),
+    steps: _swapActivityProgressSteps(intent, findingPayout: findingPayout),
     details: _swapActivityStatusDetails(
       intent,
       addressBookContacts: addressBookContacts,
@@ -368,7 +374,10 @@ int _swapActivityStatusProgressIndex(SwapIntent intent) {
   };
 }
 
-List<SwapStatusStepData> _swapActivityProgressSteps(SwapIntent intent) {
+List<SwapStatusStepData> _swapActivityProgressSteps(
+  SwapIntent intent, {
+  bool findingPayout = false,
+}) {
   final sourceSymbol = swapActivityPairSymbol(intent.pair, 0);
   final receiveSymbol = swapActivityPairSymbol(intent.pair, 1);
   if (intent.payMode && intent.direction == SwapDirection.zecToExternal) {
@@ -449,13 +458,22 @@ List<SwapStatusStepData> _swapActivityProgressSteps(SwapIntent intent) {
       lastCheckedLabel: lastCheckedLabel,
       description: 'The provider is executing the swap route.',
     ),
-    SwapStatusStepData(
-      title: deliveryTitle,
-      state: SwapStatusStepState.pending,
-      activeTitle: '$deliveryTitle...',
-      lastCheckedLabel: lastCheckedLabel,
-      description: 'Delivering the output asset to the recipient address.',
-    ),
+    if (findingPayout)
+      SwapStatusStepData(
+        title: deliveryTitle,
+        state: SwapStatusStepState.pending,
+        activeTitle: kSwapFindingPayoutLabel,
+        description:
+            'NEAR sent it to your one-time address. Vizor is finding it.',
+      )
+    else
+      SwapStatusStepData(
+        title: deliveryTitle,
+        state: SwapStatusStepState.pending,
+        activeTitle: '$deliveryTitle...',
+        lastCheckedLabel: lastCheckedLabel,
+        description: 'Delivering the output asset to the recipient address.',
+      ),
   ];
 }
 

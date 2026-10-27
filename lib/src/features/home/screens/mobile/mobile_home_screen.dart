@@ -59,6 +59,7 @@ import '../../../migration/widgets/mobile/mobile_ironwood_migration_attention.da
 import '../../../migration/providers/ironwood_migration_coordinator_provider.dart';
 import '../../../migration/widgets/mobile/mobile_ironwood_migration_announcement_sheet.dart';
 import '../../../swap/models/swap_activity_navigation.dart';
+import '../../../swap/providers/swap_payout_discovery_provider.dart';
 import '../../../swap/providers/swap_state_provider.dart';
 import '../../../swap/widgets/swap_activity_status_auto_refresh.dart';
 import '../../services/transparent_balance_display.dart';
@@ -1081,6 +1082,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               null => null,
               final tx => () => _openLoadedTransactionStatus(tx),
             },
+            findingPayout:
+                swapReceiveTxByIntent[item.intentId] == null &&
+                watchSwapFindingPayout(
+                  ref,
+                  accountUuid: uuid,
+                  awaitingTxid: item.payoutAwaitingDiscovery(DateTime.now()),
+                ),
           ),
         ),
     ]..sort(compareActivityEntries);
