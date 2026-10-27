@@ -1,3 +1,6 @@
+@Tags(['mobile'])
+library;
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcash_wallet/src/core/layout/mobile/mobile_bottom_scroll_fade.dart';
