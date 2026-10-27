@@ -112,6 +112,28 @@ void main() {
     expect(_matchZcash(unified, recents).recents, [unified]);
   });
 
+  test('a NEAR account name has no network prefix', () {
+    const near = AddressBookContact(
+      id: 'near',
+      label: 'Wallet',
+      network: AddressBookNetwork.near,
+      address: 'alice1.near',
+      profilePictureId: 'pfp-03',
+      createdAtMs: 0,
+      updatedAtMs: 0,
+    );
+
+    final suggestions = matchRecipientSuggestions<String>(
+      query: 'alic',
+      network: AddressBookNetwork.near,
+      recents: const ['alice1.near'],
+      recentAddress: (address) => address,
+      contacts: const [near],
+    );
+
+    expect(suggestions.contacts, [near]);
+  });
+
   test('an uppercase bech32 prefix does not count toward the fragment', () {
     const unified = 'U1TVG2412A23KSHIELDED0000K64123HHQ6D';
     const recents = [unified];

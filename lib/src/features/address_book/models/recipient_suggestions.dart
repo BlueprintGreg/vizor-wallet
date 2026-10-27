@@ -71,7 +71,7 @@ bool _addressMatches(
   final needle = normalizedAddressBookAddress(network, fragment);
   if (needle.isEmpty) return false;
   if (candidate.startsWith(needle) &&
-      needle.length - _networkPrefixLength(candidate) >=
+      needle.length - _networkPrefixLength(network, candidate) >=
           kRecipientAddressFragmentLength) {
     return true;
   }
@@ -79,14 +79,26 @@ bool _addressMatches(
       candidate.endsWith(needle);
 }
 
-// `0x` for hex addresses, otherwise a bech32-style `hrp1` (`u1`, `zs1`, `tex1`,
-// `bc1`; also the `t1` of a transparent address). Bech32 may also be written
-// all uppercase, which a mixed-case base58 address never is.
+// `0x` for hex addresses, otherwise, on networks with bech32 addresses, an
+// `hrp1` (`u1`, `zs1`, `tex1`, `bc1`; also the `t1` of a transparent address).
+// Bech32 may also be written all uppercase, which a mixed-case base58 address
+// never is.
 final _hrpPrefix = RegExp(r'^[a-z]{1,16}1');
 final _upperHrpPrefix = RegExp(r'^[A-Z]{1,16}1');
 
-int _networkPrefixLength(String address) {
+int _networkPrefixLength(AddressBookNetwork network, String address) {
   if (address.startsWith('0x')) return 2;
+  if (!_hasBech32Addresses(network)) return 0;
   final hrp = address == address.toUpperCase() ? _upperHrpPrefix : _hrpPrefix;
   return hrp.firstMatch(address)?.end ?? 0;
 }
+
+// Elsewhere a `1` is part of the address itself, as in a NEAR account name.
+bool _hasBech32Addresses(AddressBookNetwork network) => switch (network) {
+  AddressBookNetwork.zcash ||
+  AddressBookNetwork.bitcoin ||
+  AddressBookNetwork.litecoin ||
+  AddressBookNetwork.cardano ||
+  AddressBookNetwork.aleo => true,
+  _ => false,
+};
