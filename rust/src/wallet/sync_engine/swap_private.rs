@@ -9,6 +9,7 @@ use crate::wallet::{
     },
     network::WalletNetwork,
     one_time_ivk,
+    pir_config::{client_origin, process_selection, PirProduct},
 };
 use rusqlite::OptionalExtension;
 use std::{
@@ -121,17 +122,6 @@ impl Drop for Running {
     }
 }
 
-const DEFAULT_RECEIVER_ORIGIN: &str = "https://receiver-pir.valargroup.dev";
-
-/// Selects the normal service or an explicit debug-only test endpoint.
-fn receiver_origin() -> String {
-    #[cfg(debug_assertions)]
-    if let Ok(origin) = std::env::var("VIZOR_RECEIVER_PIR_URL") {
-        return origin;
-    }
-    DEFAULT_RECEIVER_ORIGIN.into()
-}
-
 /// The receiver directory uses the same Tor-aware transport as Vizor's other private
 /// services.
 struct SwapTransport<'a, F> {
@@ -220,7 +210,7 @@ const FILTER_BUDGET: Duration = Duration::from_secs(10);
 pub(super) static UNBOUNDED_FILTER_WAITS: AtomicBool = AtomicBool::new(false);
 
 /// The route the library fetches sealed-shard filters from (see `InventoryClient::filter`).
-const SHARD_FILTER_ROUTE: &str = "/v1/receiver/shard-filters/";
+const SHARD_FILTER_ROUTE: &str = "/receiver/v1/shard-filters/";
 
 /// The time one round may spend on optional filters: the rolling block-filter head and
 /// batches, and sealed-shard filters. Filters only save PIR work, and they are fetched
@@ -494,8 +484,16 @@ pub(crate) async fn recover(
     }
     let _running = Running;
     let generation = CANCEL.load(Ordering::SeqCst);
+    // Read the server generation first: a switch racing the origin capture also stops
+    // this round, so the old server never answers for the new one.
+    let selection = process_selection();
+    let server = selection.generation();
+    let Some(origin) = client_origin(PirProduct::Receiver) else {
+        return Err("No private query server is selected.".into());
+    };
     let stop = || {
         CANCEL.load(Ordering::SeqCst) != generation
+            || selection.generation() != server
             || crate::wallet::sync::proposal_locks::is_shutting_down()
     };
     let transport = SwapTransport::new(&stop);
@@ -506,7 +504,7 @@ pub(crate) async fn recover(
             path,
             network,
             manual,
-            &receiver_origin(),
+            &origin,
             &transport,
             &DescriptorTable::new(path, generation),
             generation,
