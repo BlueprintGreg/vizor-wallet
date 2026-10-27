@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart' show TextInputAction;
 
+import '../../../../core/layout/mobile/mobile_bottom_scroll_fade.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_icon.dart';
@@ -134,79 +135,81 @@ class _MobilePayRecipientStepState extends State<MobilePayRecipientStep> {
         Expanded(
           child: unknownAddress
               ? _buildUnknownAddressBody(context)
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.sm,
-                    AppSpacing.s,
-                    AppSpacing.sm,
-                    AppSpacing.md,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildRecipientField(
-                        context,
-                        showError: showAddressError,
-                      ),
-                      const SizedBox(height: AppSpacing.md),
-                      _buildQrRow(context),
-                      if (suggestions.recents.isNotEmpty) ...[
+              : MobileBottomScrollFade(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.sm,
+                      AppSpacing.s,
+                      AppSpacing.sm,
+                      AppSpacing.md,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildRecipientField(
+                          context,
+                          showError: showAddressError,
+                        ),
                         const SizedBox(height: AppSpacing.md),
-                        MobileRecipientSection(
-                          key: const ValueKey(
-                            'mobile_pay_recent_recipients_section',
+                        _buildQrRow(context),
+                        if (suggestions.recents.isNotEmpty) ...[
+                          const SizedBox(height: AppSpacing.md),
+                          MobileRecipientSection(
+                            key: const ValueKey(
+                              'mobile_pay_recent_recipients_section',
+                            ),
+                            title: 'Recents',
+                            children: [
+                              for (final recent in suggestions.recents)
+                                buildRecentRow(recent),
+                            ],
                           ),
-                          title: 'Recents',
-                          children: [
-                            for (final recent in suggestions.recents)
-                              buildRecentRow(recent),
-                          ],
-                        ),
-                      ],
-                      if (suggestions.contacts.isNotEmpty) ...[
-                        const SizedBox(height: AppSpacing.md),
-                        MobileRecipientSection(
-                          key: const ValueKey('mobile_pay_contacts_section'),
-                          title: 'Contacts',
-                          children: [
-                            for (final contact in suggestions.contacts)
-                              MobileRecipientRow(
-                                key: ValueKey(
-                                  'mobile_pay_contact_${contact.id}',
-                                ),
-                                surfaceKey: ValueKey(
-                                  'mobile_pay_contact_row_surface_'
-                                  '${contact.id}',
-                                ),
-                                name: contact.label,
-                                profilePictureId: contact.profilePictureId,
-                                addressText: _compactAddress(contact.address),
-                                selected:
-                                    widget.selectedContactId == contact.id,
-                                selectionSlotKey:
-                                    payContactsForAddress(
-                                          widget.contacts,
-                                          contact.address,
-                                        ).length >
-                                        1
-                                    ? ValueKey(
-                                        'mobile_pay_contact_selection_slot_'
-                                        '${contact.id}',
-                                      )
-                                    : null,
-                                onTap: widget.busy || !widget.enabled
-                                    ? null
-                                    : () => widget.onChooseRecipient(
-                                        PayRecipientSelection(
-                                          address: contact.address,
-                                          contactId: contact.id,
+                        ],
+                        if (suggestions.contacts.isNotEmpty) ...[
+                          const SizedBox(height: AppSpacing.md),
+                          MobileRecipientSection(
+                            key: const ValueKey('mobile_pay_contacts_section'),
+                            title: 'Contacts',
+                            children: [
+                              for (final contact in suggestions.contacts)
+                                MobileRecipientRow(
+                                  key: ValueKey(
+                                    'mobile_pay_contact_${contact.id}',
+                                  ),
+                                  surfaceKey: ValueKey(
+                                    'mobile_pay_contact_row_surface_'
+                                    '${contact.id}',
+                                  ),
+                                  name: contact.label,
+                                  profilePictureId: contact.profilePictureId,
+                                  addressText: _compactAddress(contact.address),
+                                  selected:
+                                      widget.selectedContactId == contact.id,
+                                  selectionSlotKey:
+                                      payContactsForAddress(
+                                            widget.contacts,
+                                            contact.address,
+                                          ).length >
+                                          1
+                                      ? ValueKey(
+                                          'mobile_pay_contact_selection_slot_'
+                                          '${contact.id}',
+                                        )
+                                      : null,
+                                  onTap: widget.busy || !widget.enabled
+                                      ? null
+                                      : () => widget.onChooseRecipient(
+                                          PayRecipientSelection(
+                                            address: contact.address,
+                                            contactId: contact.id,
+                                          ),
                                         ),
-                                      ),
-                              ),
-                          ],
-                        ),
+                                ),
+                            ],
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
         ),

@@ -907,6 +907,49 @@ void main() {
       expect(find.bySemanticsLabel('Selected contact'), findsNothing);
     });
 
+    testWidgets('a long recipient list fades out at the bottom edge', (
+      tester,
+    ) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+
+      await _pumpStep(
+        tester,
+        MobilePayRecipientStep(
+          controller: controller,
+          typedAddress: '',
+          addressError: null,
+          contacts: [
+            for (var index = 0; index < 12; index++)
+              AddressBookContact(
+                id: 'contact-$index',
+                label: 'Contact $index',
+                network: AddressBookNetwork.ethereum,
+                address: '0x${index.toString().padLeft(40, '0')}',
+                profilePictureId: 'pfp-01',
+                createdAtMs: 0,
+                updatedAtMs: 0,
+              ),
+          ],
+          recents: _recents,
+          busy: false,
+          externalAsset: SwapAsset.usdc,
+          onAddressChanged: (_) {},
+          onOpenScanner: () {},
+          onChooseRecipient: (_) {},
+          onSelectRecipient: () {},
+          onAddToContacts: () {},
+        ),
+      );
+      await tester.pump();
+
+      final fade = tester.widget<DecoratedBox>(
+        find.byKey(const ValueKey('mobile_bottom_scroll_fade_layer')),
+      );
+      final gradient = (fade.decoration as BoxDecoration).gradient!;
+      expect(gradient.colors.last.a, 1);
+    });
+
     testWidgets('a contact name search keeps matches and hides the error', (
       tester,
     ) async {
