@@ -4,6 +4,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_icon.dart';
 import '../../../../core/widgets/mobile/mobile_address_verify_sheet.dart';
 import '../../domain/swap_contract.dart';
+import '../one_time_address_label.dart';
 import '../swap_asset_icon.dart';
 
 /// One serif row of the mobile swap review header.
@@ -15,6 +16,7 @@ class MobileSwapReviewHeaderRow {
     this.bottomText,
     this.fullAddress,
     this.addressNetworkLabel,
+    this.oneTimeAddress,
   });
 
   /// "You're paying" / "You're receiving".
@@ -37,6 +39,10 @@ class MobileSwapReviewHeaderRow {
   /// Sheet title network label ("Ethereum address"); defaults to the
   /// asset's chain label.
   final String? addressNetworkLabel;
+
+  /// Set when this row's ZEC goes to or comes back to a one-time address,
+  /// shown where another row has "Full address".
+  final OneTimeAddressRole? oneTimeAddress;
 }
 
 /// Serif paying/receiving block shared by the mobile swap review,
@@ -147,6 +153,8 @@ class _HeaderRow extends StatelessWidget {
                         )
                       else
                         const Spacer(),
+                      if (fullAddress == null && row.oneTimeAddress != null)
+                        OneTimeAddressLabel(role: row.oneTimeAddress!),
                       if (fullAddress != null)
                         _FullAddressButton(
                           onTap: () => showMobileAddressVerifySheet(

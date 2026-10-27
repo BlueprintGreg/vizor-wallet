@@ -70,6 +70,7 @@ class ReviewInfoRow extends StatelessWidget {
     this.trailingActionIconName = AppIcons.eye,
     this.trailingActionKey,
     this.onTrailingAction,
+    this.trailing,
     this.valueFit,
     this.valueStyle,
     this.valuePlaceholder,
@@ -113,6 +114,10 @@ class ReviewInfoRow extends StatelessWidget {
 
   /// Tap handler for the trailing ghost button.
   final VoidCallback? onTrailingAction;
+
+  /// A bottom-right widget in place of the trailing ghost button, for a
+  /// label that is not an action.
+  final Widget? trailing;
 
   /// When set, the headline value shrinks to fit instead of truncating
   /// (long swap amounts scale down rather than ellipsize).
@@ -258,7 +263,9 @@ class ReviewInfoRow extends StatelessWidget {
           )
         else
           const Spacer(),
-        if (trailingActionLabel != null)
+        if (trailing case final trailing?)
+          trailing
+        else if (trailingActionLabel != null)
           AppButton(
             key: trailingActionKey,
             onPressed: onTrailingAction,
