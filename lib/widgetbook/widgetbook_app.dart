@@ -567,6 +567,10 @@ class WidgetbookApp extends StatelessWidget {
                       name: 'Accounts modal',
                       builder: buildMobileHomeAccountsModalUseCase,
                     ),
+                    WidgetbookUseCase(
+                      name: 'NU7 announcement',
+                      builder: buildMobileHomeNu7AnnouncementUseCase,
+                    ),
                   ],
                 ),
                 WidgetbookComponent(
@@ -575,6 +579,10 @@ class WidgetbookApp extends StatelessWidget {
                     WidgetbookUseCase(
                       name: 'Gift Cards',
                       builder: buildDesktopHomeGiftCardsUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'NU7 announcement',
+                      builder: buildDesktopHomeNu7AnnouncementUseCase,
                     ),
                   ],
                 ),
