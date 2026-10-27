@@ -59,9 +59,14 @@ class SyncStatusLabel {
     final failure = sync.failure;
     if (failure != null) {
       final reason = _syncFailureReason(failure.kind);
+      // The mobile top nav shares its row with the account name, so like the
+      // Tor failure label this one leaves out the prefix.
+      final prefix = failure.kind == SyncFailureKind.endpointOutdated
+          ? ''
+          : 'Syncing failed. ';
       return SyncStatusLabel(
         kind: SyncStatusKind.failed,
-        label: 'Syncing failed. $reason...',
+        label: '$prefix$reason...',
         semanticsLabel: 'Syncing failed. $reason',
       );
     }

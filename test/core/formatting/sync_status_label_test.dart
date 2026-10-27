@@ -104,6 +104,20 @@ void main() {
     expect(status.label, 'Syncing failed. Private lookup...');
   });
 
+  test('an outdated endpoint leaves the prefix to screen readers', () {
+    final status = SyncStatusLabel.from(
+      SyncState(
+        failure: classifySyncFailure(
+          'consensus branch ID 0x77190AD9 must be 0x37A5165B',
+        ),
+      ),
+    );
+
+    expect(status.kind, SyncStatusKind.failed);
+    expect(status.label, 'Endpoint outdated...');
+    expect(status.semanticsLabel, 'Syncing failed. Endpoint outdated');
+  });
+
   test('a bootstrapping Tor route reads as connecting, not as synced', () {
     final status = SyncStatusLabel.from(
       SyncState(percentage: 1.0, isSyncing: false),

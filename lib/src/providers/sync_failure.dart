@@ -166,8 +166,7 @@ String _syncFailureUserMessage(SyncFailureKind kind) {
       "Private transaction lookup couldn't determine a transaction's status. Turn off experimental private queries in Settings to continue syncing.",
     SyncFailureKind.endpoint =>
       'Cannot reach the configured Zcash endpoint. Check your endpoint settings.',
-    SyncFailureKind.endpointOutdated =>
-      "This endpoint doesn't support the latest network upgrade. Choose another endpoint in Settings.",
+    SyncFailureKind.endpointOutdated => 'This endpoint is out of date.',
     SyncFailureKind.databaseBusy =>
       "Wallet data is busy. We'll try syncing again automatically.",
     SyncFailureKind.databaseFatal =>
