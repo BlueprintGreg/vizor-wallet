@@ -58,6 +58,7 @@ import 'mobile_hardware_selection_capture.dart';
 import 'mobile_onboarding_intro_capture.dart';
 import 'ledger_recovery_capture.dart';
 import 'ledger_onboarding_guidance_capture.dart';
+import 'review_info_capture.dart';
 import 'swap_asset_icons_capture.dart';
 
 typedef FigmaCompareScenarioBuilder = Widget Function(BuildContext context);
@@ -1865,6 +1866,30 @@ const figmaCompareScenarios = <FigmaCompareScenario>[
     id: 'pay-completed',
     description: 'Pay activity completed state',
     builder: buildPayCompletedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'swap-review-default',
+    description: 'Desktop swap review summary',
+    builder: buildSwapReviewDefaultUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'swap-status-completed',
+    description: 'Desktop swap completed status',
+    builder: buildSwapStatusCompletedUseCase,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-pay-review',
+    description: 'Mobile Pay review cards',
+    builder: buildMobilePayReviewUseCase,
+    desktop: false,
+    mobile: true,
+  ),
+  FigmaCompareScenario(
+    id: 'mobile-review-info-headers',
+    description: 'Mobile swap and Pay status review headers',
+    builder: buildMobileReviewInfoHeadersCapture,
+    desktop: false,
+    mobile: true,
   ),
   FigmaCompareScenario(
     id: 'activity-list-skeleton',
