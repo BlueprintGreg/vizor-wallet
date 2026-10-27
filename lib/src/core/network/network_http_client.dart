@@ -295,7 +295,11 @@ class NetworkHttpClient {
   }) {
     _requirePositiveTimeout(timeout);
     if (maxBodyBytes != null && maxBodyBytes < 0) {
-      throw ArgumentError.value(maxBodyBytes, 'maxBodyBytes', 'must be nonnegative');
+      throw ArgumentError.value(
+        maxBodyBytes,
+        'maxBodyBytes',
+        'must be nonnegative',
+      );
     }
     final normalizedMethod = method.toUpperCase();
     return _torDesired()
@@ -306,7 +310,7 @@ class NetworkHttpClient {
             bodyBytes: bodyBytes,
             timeout: timeout,
             cancelSignal: cancelSignal,
-              maxBodyBytes: maxBodyBytes,
+            maxBodyBytes: maxBodyBytes,
             maxRedirects: maxRedirects,
           )
         : _runDirectRequest(
@@ -341,7 +345,7 @@ class NetworkHttpClient {
         bodyBytes: bodyBytes,
         timeout: timeout,
         cancelSignal: cancelSignal,
-              maxBodyBytes: maxBodyBytes,
+        maxBodyBytes: maxBodyBytes,
         maxRedirects: maxRedirects,
       );
     } on TimeoutException {
@@ -355,7 +359,7 @@ class NetworkHttpClient {
         bodyBytes: bodyBytes,
         timeout: timeout,
         cancelSignal: cancelSignal,
-              maxBodyBytes: maxBodyBytes,
+        maxBodyBytes: maxBodyBytes,
         maxRedirects: maxRedirects,
       );
     }
@@ -572,8 +576,11 @@ class NetworkHttpClient {
         responseSubscription = response.listen(
           (chunk) {
             if (body.isCompleted) return;
-            if (maxBodyBytes != null && bytes.length + chunk.length > maxBodyBytes) {
-              final error = const HttpException('HTTP response exceeds byte limit');
+            if (maxBodyBytes != null &&
+                bytes.length + chunk.length > maxBodyBytes) {
+              final error = const HttpException(
+                'HTTP response exceeds byte limit',
+              );
               body.completeError(error);
               unawaited(abort(error));
               return;
