@@ -94,6 +94,7 @@ class _HeaderRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final fullAddress = row.fullAddress;
+    final oneTimeAddress = fullAddress == null ? row.oneTimeAddress : null;
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 90),
       child: Row(
@@ -140,21 +141,36 @@ class _HeaderRow extends StatelessWidget {
                   height: 24,
                   child: Row(
                     children: [
-                      if (row.bottomText != null)
-                        Expanded(
-                          child: Text(
-                            row.bottomText!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppTypography.labelMedium.copyWith(
-                              color: colors.text.secondary,
-                            ),
-                          ),
-                        )
-                      else
+                      if (row.bottomText case final bottomText?)
+                        // Beside a one-time label the fiat value keeps its
+                        // width and the label takes the rest.
+                        oneTimeAddress != null
+                            ? Text(
+                                bottomText,
+                                maxLines: 1,
+                                style: AppTypography.labelMedium.copyWith(
+                                  color: colors.text.secondary,
+                                ),
+                              )
+                            : Expanded(
+                                child: Text(
+                                  bottomText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppTypography.labelMedium.copyWith(
+                                    color: colors.text.secondary,
+                                  ),
+                                ),
+                              )
+                      else if (oneTimeAddress == null)
                         const Spacer(),
-                      if (fullAddress == null && row.oneTimeAddress != null)
-                        OneTimeAddressLabel(role: row.oneTimeAddress!),
+                      if (oneTimeAddress != null)
+                        Expanded(
+                          child: Align(
+                            alignment: AlignmentDirectional.centerEnd,
+                            child: OneTimeAddressLabel(role: oneTimeAddress),
+                          ),
+                        ),
                       if (fullAddress != null)
                         _FullAddressButton(
                           onTap: () => showMobileAddressVerifySheet(
