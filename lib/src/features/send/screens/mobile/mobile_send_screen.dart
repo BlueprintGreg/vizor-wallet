@@ -29,6 +29,7 @@ import '../../../../core/widgets/mobile/mobile_review_row.dart';
 import '../../../../core/widgets/mobile/mobile_surface_card.dart';
 import '../../../../core/widgets/mobile/mobile_tx_fee_info_sheet.dart';
 import '../../../../core/widgets/mobile_text_field.dart';
+import '../../../../core/widgets/review_info_row.dart';
 import '../../../../providers/account_provider.dart';
 import '../../../../providers/rpc_endpoint_provider.dart';
 import '../../../../providers/sync_provider.dart';
@@ -399,9 +400,6 @@ const _kMobileSendAmountRecipientBlockHeight = 97.0;
 const _kMobileSendAmountRecipientLabelHeight = 25.0;
 const _kMobileSendAmountRecipientRowHeight = 68.0;
 const _kMobileSendReviewInfoHeight = 268.0;
-const _kMobileSendReviewInfoRowHeight = 90.0;
-const _kMobileSendReviewInfoDetailsHeight = 89.0;
-const _kMobileSendReviewIconRowHeight = 24.0;
 const _kMobileSendReviewWrapHeight = 161.0;
 const _kMobileSendReviewRowHeight = 32.0;
 const _kMobileSendReviewDividerHeight = 1.0;
@@ -3171,6 +3169,35 @@ class _MobileSendScreenState extends ConsumerState<MobileSendScreen> {
     );
   }
 
+  Widget _reviewRecipientRow({
+    required String address,
+    required _ReviewRecipientPresentation recipient,
+  }) {
+    final colors = context.colors;
+    final compactAddress = _compactReviewAddress(address);
+    // A request only retitles the row. The headline stays the recipient the
+    // wallet resolved, so an unverified link label never stands in for the
+    // identity being paid.
+    return ReviewInfoRow(
+      leading: recipient.buildReviewLeading(),
+      label: _isAnsweringPaymentRequest ? 'Requested by' : 'To',
+      value: recipient.headline,
+      bottomLeftIconName: _isShieldedAddress
+          ? AppIcons.shieldKeyhole
+          : AppIcons.transparentBalance,
+      bottomLeftIconColor: _isShieldedAddress
+          ? colors.icon.brandCrimson
+          : colors.icon.muted,
+      bottomLeftText: _isTexAddressType(_addressType)
+          ? 'TEX - $compactAddress'
+          : compactAddress,
+      trailingActionLabel: 'Full address',
+      trailingActionKey: const ValueKey('mobile_send_full_address'),
+      onTrailingAction: () =>
+          unawaited(_showFullAddressSheet(address, recipient)),
+    );
+  }
+
   Widget _buildReviewStep(BuildContext context) {
     // Uppercase ticker per the mobile review frame ("123.12 ZEC").
     final amountText =
@@ -3222,47 +3249,23 @@ class _MobileSendScreenState extends ConsumerState<MobileSendScreen> {
                       padding: const EdgeInsets.symmetric(
                         vertical: AppSpacing.md,
                       ),
-                      child: Column(
-                        children: [
-                          _ReviewInfoRow(
+                      child: ReviewInfoFlow(
+                        rows: [
+                          ReviewInfoRow(
                             leading: const _ReviewZecIcon(),
-                            title: 'Amount',
-                            headline: amountText,
-                            headlineKey: const ValueKey(
+                            label: 'Amount',
+                            value: amountText,
+                            valueKey: const ValueKey(
                               'mobile_send_review_amount',
                             ),
-                            detail: amountFiatText,
-                            detailKey: const ValueKey(
+                            bottomLeftText: amountFiatText,
+                            bottomLeftTextKey: const ValueKey(
                               'mobile_send_review_amount_fiat',
                             ),
                           ),
-                          const SizedBox(height: AppSpacing.xs),
-                          const SizedBox(
-                            width: 40,
-                            height: _kMobileSendReviewIconRowHeight,
-                            child: Center(
-                              child: AppIcon(AppIcons.arrowDownward, size: 24),
-                            ),
-                          ),
-                          const SizedBox(height: AppSpacing.xs),
-                          _ReviewInfoRow(
-                            // A request only retitles the row. The headline
-                            // stays the recipient the wallet resolved, so an
-                            // unverified link label never stands in for the
-                            // identity being paid.
-                            leading: recipient.buildReviewLeading(),
-                            title: _isAnsweringPaymentRequest
-                                ? 'Requested by'
-                                : 'To',
-                            headline: recipient.headline,
-                            bottom: _ReviewAddressLine(
-                              address: _compactReviewAddress(address),
-                              addressType: _addressType,
-                              isShielded: _isShieldedAddress,
-                              onFullAddress: () => unawaited(
-                                _showFullAddressSheet(address, recipient),
-                              ),
-                            ),
+                          _reviewRecipientRow(
+                            address: address,
+                            recipient: recipient,
                           ),
                         ],
                       ),
@@ -3731,202 +3734,8 @@ class _ReviewWalletIcon extends StatelessWidget {
   }
 }
 
-class _ReviewInfoRow extends StatelessWidget {
-  const _ReviewInfoRow({
-    required this.leading,
-    required this.title,
-    required this.headline,
-    this.headlineKey,
-    this.detail,
-    this.detailKey,
-    this.bottom,
-  }) : assert(detail == null || bottom == null);
-
-  final Widget leading;
-  final String title;
-  final String headline;
-  final Key? headlineKey;
-  final String? detail;
-  final Key? detailKey;
-  final Widget? bottom;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final detailText = detail;
-    return SizedBox(
-      height: _kMobileSendReviewInfoRowHeight,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          leading,
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: SizedBox(
-              height: _kMobileSendReviewInfoDetailsHeight,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    height: _kMobileSendReviewIconRowHeight,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        title,
-                        style: AppTypography.labelLarge.copyWith(
-                          color: colors.text.secondary,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xxs),
-                  SizedBox(
-                    height: 33,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        headline,
-                        key: headlineKey,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTypography.headlineLarge.copyWith(
-                          color: colors.text.accent,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xxs),
-                  SizedBox(
-                    height: _kMobileSendReviewIconRowHeight,
-                    child:
-                        bottom ??
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: detailText == null
-                              ? const SizedBox.shrink()
-                              : Text(
-                                  detailText,
-                                  key: detailKey,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: AppTypography.labelLarge.copyWith(
-                                    color: colors.text.secondary,
-                                  ),
-                                ),
-                        ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ReviewAddressLine extends StatelessWidget {
-  const _ReviewAddressLine({
-    required this.address,
-    required this.addressType,
-    required this.isShielded,
-    required this.onFullAddress,
-  });
-
-  final String address;
-  final String addressType;
-  final bool isShielded;
-  final VoidCallback onFullAddress;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final isTex = _isTexAddressType(addressType);
-    final label = isTex ? 'TEX - $address' : address;
-    return Row(
-      children: [
-        Expanded(
-          child: Row(
-            children: [
-              AppIcon(
-                isShielded
-                    ? AppIcons.shieldKeyhole
-                    : AppIcons.transparentBalance,
-                size: 16,
-                color: isShielded
-                    ? colors.icon.brandCrimson
-                    : colors.icon.muted,
-              ),
-              const SizedBox(width: AppSpacing.xxs),
-              Expanded(
-                child: Text(
-                  label,
-                  style: AppTypography.labelLarge.copyWith(
-                    color: colors.text.secondary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: AppSpacing.xxs),
-        _ReviewSmallButton(
-          key: const ValueKey('mobile_send_full_address'),
-          icon: AppIcons.eye,
-          label: 'Full address',
-          onTap: onFullAddress,
-        ),
-      ],
-    );
-  }
-}
-
 bool _isTexAddressType(String addressType) =>
     addressType.trim().toLowerCase() == 'tex';
-
-class _ReviewSmallButton extends StatelessWidget {
-  const _ReviewSmallButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    super.key,
-  });
-
-  final String icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return Semantics(
-      button: true,
-      label: label,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.xxs),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AppIcon(icon, size: 16, color: colors.button.ghost.label),
-              const SizedBox(width: AppSpacing.xxs),
-              Text(
-                label,
-                style: AppTypography.labelLarge.copyWith(
-                  color: colors.button.ghost.label,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 class _ReviewWrap extends StatelessWidget {
   const _ReviewWrap({

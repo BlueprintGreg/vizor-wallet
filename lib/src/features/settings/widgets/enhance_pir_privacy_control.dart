@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/app_icon.dart';
 import '../../../core/widgets/app_icon_hover_button.dart';
 import 'network_privacy_control.dart';
+import 'wallet_pir_server_popup.dart';
 
 class EnhancePirPrivacyControl extends StatelessWidget {
   const EnhancePirPrivacyControl({
@@ -15,6 +16,7 @@ class EnhancePirPrivacyControl extends StatelessWidget {
     this.keyPrefix = 'settings_enhance_pir',
     this.description = kPrivateQueriesSettingsCopy,
     this.onInfo,
+    this.serverSettings = true,
     super.key,
   });
 
@@ -26,6 +28,10 @@ class EnhancePirPrivacyControl extends StatelessWidget {
 
   /// Shows an explanation of the setting from an info icon after the label.
   final VoidCallback? onInfo;
+
+  /// Shows the private query server picker after the label. Only the Private
+  /// queries row owns the server choice.
+  final bool serverSettings;
 
   /// Feedback for the user's own toggle only. Recovery queue counts are
   /// deliberately not surfaced here: they are dominated by obligations that
@@ -87,6 +93,12 @@ class EnhancePirPrivacyControl extends StatelessWidget {
                               iconSize: 16,
                               iconColor: colors.icon.muted,
                               onTap: onInfo,
+                            ),
+                          ],
+                          if (serverSettings) ...[
+                            const SizedBox(width: AppSpacing.xxs),
+                            WalletPirServerSettingsButton(
+                              enabled: enabled && onToggle != null,
                             ),
                           ],
                         ],
