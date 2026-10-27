@@ -77,6 +77,7 @@ class GiftCardActivityMetadata {
 class GiftCardActivityIndex {
   const GiftCardActivityIndex({
     this.createdTxids = const <String>{},
+    this.createdAddresses = const <String>{},
     this.redeemedTxids = const <String>{},
     this.createdMetadataByTxid = const <String, GiftCardActivityMetadata>{},
     this.redeemedMetadataByTxid = const <String, GiftCardActivityMetadata>{},
@@ -86,6 +87,7 @@ class GiftCardActivityIndex {
 
   GiftCardActivityIndex._indexed(GiftCardActivityIndex source)
     : createdTxids = source.createdTxids,
+      createdAddresses = source.createdAddresses,
       redeemedTxids = source.redeemedTxids,
       createdMetadataByTxid = source.createdMetadataByTxid,
       redeemedMetadataByTxid = source.redeemedMetadataByTxid,
@@ -117,8 +119,11 @@ class GiftCardActivityIndex {
     final createdMetadata = <String, GiftCardActivityMetadata>{};
     final redeemedMetadata = <String, GiftCardActivityMetadata>{};
     final batchRecordsByTxid = <String, List<PaymentLinkRecoveryRecord>>{};
+    final createdAddresses = <String>{};
     for (final record in createdRecords) {
       if (record.sourceAccountUuid != accountUuid) continue;
+      final address = record.link.knownAddress?.trim() ?? '';
+      if (address.isNotEmpty) createdAddresses.add(address);
       for (final txid in _splitTxids(record.fundingTxids)) {
         if (record.batchId != null) {
           (batchRecordsByTxid[txid] ??= []).add(record);
@@ -170,6 +175,7 @@ class GiftCardActivityIndex {
     return GiftCardActivityIndex._indexed(
       GiftCardActivityIndex(
         createdTxids: createdMetadata.keys.toSet(),
+        createdAddresses: createdAddresses,
         redeemedTxids: redeemedMetadata.keys.toSet(),
         createdMetadataByTxid: createdMetadata,
         redeemedMetadataByTxid: redeemedMetadata,
@@ -188,6 +194,10 @@ class GiftCardActivityIndex {
   static const empty = GiftCardActivityIndex();
 
   final Set<String> createdTxids;
+
+  /// Every created card's one-time address, including a card whose funding
+  /// txid was never learned.
+  final Set<String> createdAddresses;
   final Set<String> redeemedTxids;
   final Map<String, GiftCardActivityMetadata> createdMetadataByTxid;
   final Map<String, GiftCardActivityMetadata> redeemedMetadataByTxid;

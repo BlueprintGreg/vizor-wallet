@@ -82,6 +82,34 @@ void main() {
     },
   );
 
+  test('lists created card addresses even without a funding txid', () {
+    final index = GiftCardActivityIndex.forAccount(
+      accountUuid: 'account-1',
+      createdRecords: [
+        PaymentLinkRecoveryRecord(
+          link: _link('ambiguous-card'),
+          sourceAccountUuid: 'account-1',
+          state: PaymentLinkRecoveryState.draft,
+          updatedAt: DateTime.utc(2026, 9, 23),
+          submittedAtHeight: 100,
+          claimFeeReserveZatoshi: BigInt.from(10000),
+        ),
+        PaymentLinkRecoveryRecord(
+          link: _link('other-account-card'),
+          sourceAccountUuid: 'account-2',
+          state: PaymentLinkRecoveryState.funded,
+          updatedAt: DateTime.utc(2026, 9, 23),
+          fundingTxids: 'other-account-txid',
+          claimFeeReserveZatoshi: BigInt.from(10000),
+        ),
+      ],
+      receivedRecords: const [],
+    );
+
+    expect(index.createdTxids, isEmpty);
+    expect(index.createdAddresses, {'ambiguous-card'});
+  });
+
   test('one funding transaction describes the whole created batch', () {
     final members = List.generate(
       3,

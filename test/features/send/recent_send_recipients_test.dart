@@ -7,6 +7,7 @@ import 'package:zcash_wallet/src/rust/api/sync.dart' as rust_sync;
 const _activeAccount = 'account-1';
 const _otherAccount = 'account-2';
 const _deposit = 't1depositaddress000000000000000000';
+const _giftCard = 'u1giftcard00000000000000000000000000000000';
 const _friend = 'u1friend0000000000000000000000000000000000';
 const _ownActive = 'u1activeaccount00000000000000000000000000';
 const _ownOther = 'u1otheraccount000000000000000000000000000';
@@ -70,6 +71,7 @@ void main() {
         accountUuid: _activeAccount,
         ownAccounts: ownActive,
         intents: const [],
+        giftCardAddresses: const {},
       );
 
       expect(limits, [12, 100]);
@@ -88,6 +90,7 @@ void main() {
         accountUuid: _activeAccount,
         ownAccounts: const {},
         intents: const [],
+        giftCardAddresses: const {},
       );
 
       expect(limits, [12]);
@@ -96,10 +99,11 @@ void main() {
   });
 
   group('selectSendRecentRecipients', () {
-    test('drops the active account and swap deposit addresses', () {
+    test('drops the active account, swap deposit and Gift Card addresses', () {
       final selected = selectSendRecentRecipients(
         rows: const [
           SendRecentRecipient(address: _deposit, isShielded: false),
+          SendRecentRecipient(address: _giftCard, isShielded: true),
           SendRecentRecipient(address: _ownActive, isShielded: true),
           SendRecentRecipient(address: _friend, isShielded: true),
           SendRecentRecipient(address: _ownOther, isShielded: true),
@@ -114,6 +118,7 @@ void main() {
           ),
         },
         intents: [_intent(depositAddress: _deposit)],
+        giftCardAddresses: const {_giftCard},
       );
 
       expect(selected.map((recent) => recent.address), [_friend, _ownOther]);
@@ -130,6 +135,7 @@ void main() {
         accountUuid: _activeAccount,
         ownAccounts: const {},
         intents: const [],
+        giftCardAddresses: const {},
       );
 
       expect(selected, hasLength(kSendRecentRecipientLimit));

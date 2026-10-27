@@ -89,6 +89,7 @@ final recentSendRecipientsProvider = FutureProvider.autoDispose
         accountUuid: accountUuid,
         ownAccounts: ownAccounts,
         intents: intents,
+        giftCardAddresses: giftCards.createdAddresses,
       );
     });
 
@@ -107,6 +108,7 @@ Future<List<SendRecentRecipient>> loadSendRecentRecipients({
   required String accountUuid,
   required Map<String, AccountInfo> ownAccounts,
   required Iterable<SwapIntent> intents,
+  required Set<String> giftCardAddresses,
 }) async {
   List<SendRecentRecipient> select(List<SendRecentRecipient> rows) =>
       selectSendRecentRecipients(
@@ -114,6 +116,7 @@ Future<List<SendRecentRecipient>> loadSendRecentRecipients({
         accountUuid: accountUuid,
         ownAccounts: ownAccounts,
         intents: intents,
+        giftCardAddresses: giftCardAddresses,
       );
   final rows = await fetch(_recentRecipientFetchLimit);
   final selected = select(rows);
@@ -152,13 +155,14 @@ Set<String> oneTimeRecipientTxids({
   return txids;
 }
 
-/// Drops the active account's own addresses and any swap deposit address the
-/// txid exclusion missed, then keeps the first [limit].
+/// Drops the active account's own addresses and any swap deposit or Gift Card
+/// address the txid exclusion missed, then keeps the first [limit].
 List<SendRecentRecipient> selectSendRecentRecipients({
   required List<SendRecentRecipient> rows,
   required String accountUuid,
   required Map<String, AccountInfo> ownAccounts,
   required Iterable<SwapIntent> intents,
+  required Set<String> giftCardAddresses,
   int limit = kSendRecentRecipientLimit,
 }) {
   final depositAddresses = {
@@ -173,6 +177,7 @@ List<SendRecentRecipient> selectSendRecentRecipients({
     if (address.isEmpty || !seen.add(address)) continue;
     if (ownAccounts[address]?.uuid == accountUuid) continue;
     if (depositAddresses.contains(address)) continue;
+    if (giftCardAddresses.contains(address)) continue;
     result.add(row);
     if (result.length == limit) break;
   }
