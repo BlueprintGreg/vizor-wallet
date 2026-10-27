@@ -46,6 +46,9 @@ base64 = "0.22"
 pbkdf2 = "0.12"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+# Post-quantum signature benchmark only (api/pq_benchmark.rs).
+slh-dsa = "0.2.0-rc.5"
+wots-plus = { version = "0.1.0-rc1", git = "https://github.com/p0mvn/pq-crypto", rev = "e61767ce08b1f9042d50062584885aec0e1cdae6" }
 
 # Random number generation
 rand = "0.8"
