@@ -38,7 +38,7 @@ void main() {
   /// address, and asks once more, then shows the wallet's waiting message
   /// instead of looping.
   test(
-    'a persistent limit shows "No swap address is free" after one retry',
+    'a persistent limit says too many swaps are waiting after one retry',
     () async {
       final h = await _Harness.create(
         reserve: (_) async => throw const api.ReceiveError(
@@ -50,10 +50,7 @@ void main() {
       await h.review('25');
       expect(h.reservations, 2);
       expect(h.sync.awaited, 1, reason: 'a recovered payout frees its address');
-      expect(
-        h.state.quoteError,
-        'No swap address is free. Wait for a swap in progress to finish.',
-      );
+      expect(h.state.quoteError, kPrivateSwapAddressLimitMessage);
       expect(h.state.reviewVisible, isFalse);
     },
   );
@@ -74,11 +71,7 @@ void main() {
       await h.review('25');
       expect(h.reservations, 1);
       expect(h.sync.awaited, 0);
-      expect(
-        h.state.quoteError,
-        'Update Vizor to keep checking private swap addresses. '
-        'Your saved progress is kept.',
-      );
+      expect(h.state.quoteError, kSwapRecoveryUpdateMessage);
     },
   );
 

@@ -4474,6 +4474,10 @@ class SwapRecoveryRounds extends Notifier<int> {
   void ended() => state++;
 }
 
+/// Shown wherever private swaps need a newer app: under the quote and in the
+/// swap history check.
+const kSwapRecoveryUpdateMessage = 'Update Vizor to keep using private swaps.';
+
 /// Whether the last swap recovery round found that the receiver service needs a
 /// newer app. The next round that succeeds clears it.
 final swapRecoveryUpdateRequiredProvider =
