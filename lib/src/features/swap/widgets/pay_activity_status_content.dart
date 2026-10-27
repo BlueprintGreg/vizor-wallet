@@ -102,7 +102,7 @@ class PayActivityStatusContent extends StatelessWidget {
           rows: [
             ReviewInfoRow(
               key: const ValueKey('pay_status_amount_row'),
-              label: 'Amount',
+              label: payActivityStatusAmountLabel(status.phase),
               value: amountText,
               leading: SwapAssetIcon(
                 asset: amountAsset,
