@@ -632,6 +632,57 @@ void main() {
     );
   });
 
+  testWidgets('a swipe loads an uncached transparent address before it shows', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1512, 982));
+    addTearDown(() async {
+      await tester.binding.setSurfaceSize(null);
+    });
+
+    late _UncachedDelayedTransparentReceiveAddressService service;
+    await tester.pumpWidget(
+      _receiveHarness(
+        receiveAddressService: (ref) {
+          service = _UncachedDelayedTransparentReceiveAddressService(ref);
+          return service;
+        },
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(service.transparentReceiveLoads, 0);
+
+    // Short of the halfway point, so the page change has not fired yet.
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('receive_qr_pager'))),
+    );
+    await gesture.moveBy(const Offset(-40, 0));
+    await gesture.moveBy(const Offset(-40, 0));
+    await tester.pump();
+
+    expect(service.transparentReceiveLoads, 1);
+    final transparentCard = find.byKey(
+      const ValueKey('receive_qr_transparent'),
+      skipOffstage: false,
+    );
+    expect(
+      find.descendant(
+        of: transparentCard,
+        matching: find.byType(CircularProgressIndicator, skipOffstage: false),
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining("couldn't load your address"), findsNothing);
+
+    await gesture.moveBy(const Offset(-400, 0));
+    await gesture.up();
+    service.completeTransparentRefresh();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(service.transparentReceiveLoads, 1);
+  });
+
   testWidgets('explains transparent address rotation and shielding', (
     tester,
   ) async {
@@ -1693,6 +1744,14 @@ class _DelayedTransparentReceiveAddressService
   void completeTransparentRefresh() {
     _transparentRefresh.complete(_freshTransparentAddress);
   }
+}
+
+class _UncachedDelayedTransparentReceiveAddressService
+    extends _DelayedTransparentReceiveAddressService {
+  _UncachedDelayedTransparentReceiveAddressService(super.ref);
+
+  @override
+  String? getCachedTransparentAddress(String accountUuid) => null;
 }
 
 class _RacyReceiveAddressService extends ReceiveAddressService {

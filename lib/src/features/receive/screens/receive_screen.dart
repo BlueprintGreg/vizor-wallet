@@ -94,6 +94,7 @@ class _ReceiveScreenState extends ConsumerState<ReceiveScreen> {
   @override
   void initState() {
     super.initState();
+    _qrPageController.addListener(_loadTransparentWhenRevealed);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       ref.read(appLayoutProvider.notifier).setMode(AppLayoutMode.large);
@@ -322,6 +323,19 @@ class _ReceiveScreenState extends ConsumerState<ReceiveScreen> {
         ),
       );
     }
+  }
+
+  // A drag shows the transparent card before the page change selects it, so
+  // start its first load as soon as it comes into view. A failed load waits
+  // for the selection to retry rather than retrying on every drag frame.
+  void _loadTransparentWhenRevealed() {
+    if (_selectedType == ReceiveAddressType.transparent) return;
+    if (!_qrPageController.position.haveDimensions) return;
+    if (_qrPageController.page! <= ReceiveAddressType.shielded.index) return;
+    if ((_transparentAddress ?? '').isNotEmpty) return;
+    if (_transparentLoadingAccountUuid != null) return;
+    if (_transparentErrorText != null) return;
+    unawaited(_loadTransparentReceiveAddress());
   }
 
   // A drag already moves the pager; only the selection follows it.
@@ -577,7 +591,11 @@ class _ReceiveScreenState extends ConsumerState<ReceiveScreen> {
               shieldedAddress: _shieldedAddress ?? '',
               transparentAddress: _transparentAddress ?? '',
               isLoadingShielded: _isLoading,
-              isLoadingTransparent: _isLoadingTransparent,
+              // Not yet requested reads as loading, not as a failed load.
+              isLoadingTransparent:
+                  _isLoadingTransparent ||
+                  (_transparentAddress == null &&
+                      _transparentErrorText == null),
               address: address,
               errorText: selectedErrorText,
               isLoading: isLoadingSelectedAddress,
