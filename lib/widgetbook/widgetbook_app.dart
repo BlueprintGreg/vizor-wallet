@@ -641,6 +641,15 @@ class WidgetbookApp extends StatelessWidget {
                       name: 'Migration complete',
                       builder: buildIronwoodMigrationCompleteUseCase,
                     ),
+                    WidgetbookUseCase(
+                      name: 'Migration stopped by upgrade',
+                      builder: buildIronwoodMigrationUpgradeStoppedUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Home - Migration stopped by upgrade',
+                      builder:
+                          buildDesktopHomeIronwoodMigrationUpgradeStoppedUseCase,
+                    ),
                   ],
                 ),
                 WidgetbookComponent(
@@ -772,6 +781,21 @@ class WidgetbookApp extends StatelessWidget {
                       name: 'Home - Migration needs input modal',
                       builder:
                           buildMobileIronwoodMigrationHomeAttentionModalUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Upgrade - Migration stopped',
+                      builder:
+                          buildMobileIronwoodMigrationUpgradeStoppedUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Upgrade - Home banner',
+                      builder:
+                          buildMobileIronwoodMigrationHomeUpgradeStoppedUseCase,
+                    ),
+                    WidgetbookUseCase(
+                      name: 'Upgrade - Home sheet',
+                      builder:
+                          buildMobileIronwoodMigrationHomeUpgradeStoppedModalUseCase,
                     ),
                     WidgetbookUseCase(
                       name: 'Keystone - QR scan help',
